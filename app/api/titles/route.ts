@@ -28,7 +28,9 @@ async function readBody(request: Request) {
   }
 }
 
-function normalizeKeywordPayload(raw: unknown) {
+function normalizeKeywordPayload(
+  raw: unknown,
+): { keyword: string; instruction?: string }[] {
   if (!Array.isArray(raw)) {
     return [];
   }
