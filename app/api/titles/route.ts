@@ -35,24 +35,24 @@ function normalizeKeywordPayload(
     return [];
   }
 
-  return raw
-    .map((item) => {
-      if (!item || typeof item !== "object") {
-        return null;
-      }
-      const record = item as Record<string, unknown>;
-      const keyword = String(record.keyword ?? "").trim();
-      if (!keyword) {
-        return null;
-      }
-      const instruction =
-        typeof record.instruction === "string"
-          ? record.instruction.trim()
-          : undefined;
-      return {
-        keyword,
-        instruction: instruction && instruction.length > 0 ? instruction : undefined,
-      };
-    })
-    .filter((item): item is { keyword: string; instruction?: string } => Boolean(item));
+  const entries: { keyword: string; instruction?: string }[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    const keyword = String(record.keyword ?? "").trim();
+    if (!keyword) {
+      continue;
+    }
+    const instruction =
+      typeof record.instruction === "string"
+        ? record.instruction.trim()
+        : undefined;
+    entries.push({
+      keyword,
+      instruction: instruction && instruction.length > 0 ? instruction : undefined,
+    });
+  }
+  return entries;
 }
