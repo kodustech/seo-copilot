@@ -76,11 +76,19 @@ function normalizeLimit(raw: unknown): number | undefined {
 }
 
 function normalizeLocationCode(raw: unknown): number | undefined {
-  const value = typeof raw === "string" ? Number(raw) : Number(raw);
+  const value =
+    typeof raw === "number"
+      ? raw
+      : typeof raw === "string"
+        ? Number(raw)
+        : undefined;
+
   if (!Number.isFinite(value)) {
     return undefined;
   }
-  return value;
+
+  const numeric = Math.round(Number(value));
+  return numeric;
 }
 
 function normalizeLanguage(raw: unknown): string | undefined {
