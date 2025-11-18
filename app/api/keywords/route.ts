@@ -71,7 +71,8 @@ function normalizeLimit(raw: unknown): number | undefined {
   if (!Number.isFinite(value)) {
     return undefined;
   }
-  const clamped = Math.min(50, Math.max(5, Math.round(value)));
+  const numeric = Math.round(Number(value));
+  const clamped = Math.min(50, Math.max(5, numeric));
   return clamped;
 }
 
