@@ -98,6 +98,9 @@ export function SeoWorkspace() {
     new Set(),
   );
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historySearchTerm, setHistorySearchTerm] = useState("");
+  const [historySortField, setHistorySortField] = useState<"volume" | "cpc" | "difficulty">("volume");
+  const [historySortOrder, setHistorySortOrder] = useState<"desc" | "asc">("desc");
 
   const selectedKeywords = useMemo(
     () => keywords.filter((keyword) => selectedKeywordIds.has(keyword.id)),
@@ -135,6 +138,41 @@ export function SeoWorkspace() {
       sortOrder === "desc" ? b.volume - a.volume : a.volume - b.volume,
     );
   }, [keywords, sortOrder]);
+
+  const filteredAndOrderedHistoryKeywords = useMemo(() => {
+    if (!historyKeywords.length) {
+      return [];
+    }
+    
+    let filtered = historyKeywords;
+    
+    if (historySearchTerm.trim()) {
+      const search = historySearchTerm.toLowerCase();
+      filtered = historyKeywords.filter((keyword) =>
+        keyword.phrase.toLowerCase().includes(search) ||
+        keyword.idea?.toLowerCase().includes(search) ||
+        keyword.language?.toLowerCase().includes(search)
+      );
+    }
+    
+    return [...filtered].sort((a, b) => {
+      let aVal = 0;
+      let bVal = 0;
+      
+      if (historySortField === "volume") {
+        aVal = a.volume ?? 0;
+        bVal = b.volume ?? 0;
+      } else if (historySortField === "cpc") {
+        aVal = a.cpc ?? 0;
+        bVal = b.cpc ?? 0;
+      } else if (historySortField === "difficulty") {
+        aVal = a.difficulty ?? 0;
+        bVal = b.difficulty ?? 0;
+      }
+      
+      return historySortOrder === "desc" ? bVal - aVal : aVal - bVal;
+    });
+  }, [historyKeywords, historySearchTerm, historySortField, historySortOrder]);
 
   useEffect(() => {
     if (!selectedKeywords.length) {
@@ -526,11 +564,20 @@ export function SeoWorkspace() {
 
   function toggleAllHistoryKeywords() {
     setHistorySelectedIds((prev) => {
-      if (prev.size === historyKeywords.length) {
+      if (prev.size === filteredAndOrderedHistoryKeywords.length) {
         return new Set();
       }
-      return new Set(historyKeywords.map((keyword) => keyword.id));
+      return new Set(filteredAndOrderedHistoryKeywords.map((keyword) => keyword.id));
     });
+  }
+
+  function toggleHistorySort(field: "volume" | "cpc" | "difficulty") {
+    if (historySortField === field) {
+      setHistorySortOrder((prev) => (prev === "desc" ? "asc" : "desc"));
+    } else {
+      setHistorySortField(field);
+      setHistorySortOrder("desc");
+    }
   }
 
   function handleApplyHistorySelection() {
@@ -1190,11 +1237,12 @@ export function SeoWorkspace() {
             setHistorySelectedIds(new Set());
             setHistoryError(null);
             setHistoryLoading(false);
+            setHistorySearchTerm("");
           }
         }}
       >
-        <DialogContent className="w-[95vw] max-w-5xl sm:max-w-5xl lg:max-w-6xl border-0 bg-white/95 p-0 text-neutral-900 shadow-2xl dark:bg-neutral-900">
-          <DialogHeader className="space-y-3 border-b border-neutral-200/80 px-6 py-4 dark:border-white/10">
+        <DialogContent className="w-[95vw] max-w-[90vw] sm:max-w-5xl lg:max-w-6xl border-0 bg-white/95 p-0 text-neutral-900 shadow-2xl dark:bg-neutral-900 overflow-hidden flex flex-col max-h-[90vh]">
+          <DialogHeader className="space-y-3 border-b border-neutral-200/80 px-6 py-4 dark:border-white/10 flex-shrink-0">
             <DialogTitle className="text-2xl font-semibold">
               Biblioteca de keywords antigas
             </DialogTitle>
@@ -1203,7 +1251,7 @@ export function SeoWorkspace() {
               Usaremos exatamente as keywords escolhidas no passo seguinte.
             </DialogDescription>
           </DialogHeader>
-          <div className="px-6 py-4">
+          <div className="px-6 py-4 flex-1 overflow-hidden flex flex-col min-h-0">
             {historyLoading && !historyLoaded ? (
               <div className="flex h-48 items-center justify-center text-neutral-500">
                 <Loader2 className="mr-2 h-5 w-5 animate-spin" />
@@ -1218,87 +1266,152 @@ export function SeoWorkspace() {
                 Ainda não temos keywords salvas via Supabase.
               </div>
             ) : (
-              <div className="rounded-2xl border border-neutral-200/80">
-                <div className="flex items-center justify-between border-b border-neutral-200/80 bg-neutral-50/80 px-4 py-3 text-sm text-neutral-600">
-                  <div className="flex items-center gap-3">
-                    <Checkbox
-                      checked={
-                        historySelectedIds.size === historyKeywords.length &&
-                        historyKeywords.length > 0
-                      }
-                      onCheckedChange={toggleAllHistoryKeywords}
-                      aria-label="Selecionar tudo do histórico"
-                    />
-                    <span>
-                      {historySelectedIds.size} selecionadas / {historyKeywords.length} itens
-                    </span>
+              <div className="flex flex-col gap-4 h-full min-h-0">
+                <div className="flex-shrink-0">
+                  <Input
+                    type="text"
+                    placeholder="Buscar por keyword, ideia ou idioma..."
+                    value={historySearchTerm}
+                    onChange={(e) => setHistorySearchTerm(e.target.value)}
+                    className="w-full"
+                  />
+                </div>
+                <div className="rounded-2xl border border-neutral-200/80 flex flex-col min-h-0 flex-1 overflow-hidden">
+                  <div className="flex items-center justify-between border-b border-neutral-200/80 bg-neutral-50/80 px-4 py-3 text-sm text-neutral-600 flex-shrink-0">
+                    <div className="flex items-center gap-3">
+                      <Checkbox
+                        checked={
+                          historySelectedIds.size === filteredAndOrderedHistoryKeywords.length &&
+                          filteredAndOrderedHistoryKeywords.length > 0
+                        }
+                        onCheckedChange={toggleAllHistoryKeywords}
+                        aria-label="Selecionar tudo do histórico"
+                      />
+                      <span>
+                        {historySelectedIds.size} selecionadas / {filteredAndOrderedHistoryKeywords.length} itens
+                        {historySearchTerm && ` (${historyKeywords.length} total)`}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-xs text-neutral-500 dark:text-neutral-400">
+                      <Badge variant="outline" className="rounded-full px-3 py-1">
+                        {historyKeywords.filter((item) => item.idea).length} ideias com contexto
+                      </Badge>
+                      <Badge variant="outline" className="rounded-full px-3 py-1">
+                        {historyKeywords.filter((item) => item.language).length} idiomas salvos
+                      </Badge>
+                    </div>
                   </div>
-                  <div className="flex flex-wrap gap-2 text-xs text-neutral-500 dark:text-neutral-400">
-                    <Badge variant="outline" className="rounded-full px-3 py-1">
-                      {historyKeywords.filter((item) => item.idea).length} ideias com contexto
-                    </Badge>
-                    <Badge variant="outline" className="rounded-full px-3 py-1">
-                      {historyKeywords.filter((item) => item.language).length} idiomas salvos
-                    </Badge>
+                  <div className="flex-1 overflow-auto min-h-0">
+                    <Table>
+                      <TableHeader className="sticky top-0 bg-white dark:bg-neutral-900 z-10">
+                        <TableRow className="text-xs uppercase tracking-wide text-neutral-500">
+                          <TableHead className="w-10"></TableHead>
+                          <TableHead>Keyword</TableHead>
+                          <TableHead>Ideia</TableHead>
+                          <TableHead>Idioma</TableHead>
+                          <TableHead>País</TableHead>
+                          <TableHead className="text-right">
+                            <button
+                              type="button"
+                              onClick={() => toggleHistorySort("volume")}
+                              className="flex items-center gap-1 hover:text-neutral-900 dark:hover:text-white transition w-full justify-end"
+                            >
+                              Volume
+                              {historySortField === "volume" && (
+                                <ArrowDownWideNarrow
+                                  className={`h-3 w-3 transition ${
+                                    historySortOrder === "asc" ? "rotate-180" : ""
+                                  }`}
+                                />
+                              )}
+                            </button>
+                          </TableHead>
+                          <TableHead className="text-right">
+                            <button
+                              type="button"
+                              onClick={() => toggleHistorySort("cpc")}
+                              className="flex items-center gap-1 hover:text-neutral-900 dark:hover:text-white transition w-full justify-end"
+                            >
+                              CPC
+                              {historySortField === "cpc" && (
+                                <ArrowDownWideNarrow
+                                  className={`h-3 w-3 transition ${
+                                    historySortOrder === "asc" ? "rotate-180" : ""
+                                  }`}
+                                />
+                              )}
+                            </button>
+                          </TableHead>
+                          <TableHead className="text-right">
+                            <button
+                              type="button"
+                              onClick={() => toggleHistorySort("difficulty")}
+                              className="flex items-center gap-1 hover:text-neutral-900 dark:hover:text-white transition w-full justify-end"
+                            >
+                              Dificuldade
+                              {historySortField === "difficulty" && (
+                                <ArrowDownWideNarrow
+                                  className={`h-3 w-3 transition ${
+                                    historySortOrder === "asc" ? "rotate-180" : ""
+                                  }`}
+                                />
+                              )}
+                            </button>
+                          </TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {filteredAndOrderedHistoryKeywords.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={8} className="text-center py-8 text-neutral-500">
+                              Nenhuma keyword encontrada com esse filtro.
+                            </TableCell>
+                          </TableRow>
+                        ) : (
+                          filteredAndOrderedHistoryKeywords.map((keyword) => (
+                            <TableRow
+                              key={`history-${keyword.id}`}
+                              className="cursor-pointer text-sm hover:bg-neutral-100/60 dark:hover:bg-neutral-800/40"
+                              onClick={() => toggleHistoryKeyword(keyword.id)}
+                            >
+                              <TableCell>
+                                <Checkbox
+                                  checked={historySelectedIds.has(keyword.id)}
+                                  onCheckedChange={() => toggleHistoryKeyword(keyword.id)}
+                                  onClick={(event) => event.stopPropagation()}
+                                  aria-label={`Selecionar ${keyword.phrase}`}
+                                />
+                              </TableCell>
+                              <TableCell className="font-medium">{keyword.phrase}</TableCell>
+                              <TableCell className="text-neutral-500">
+                                {keyword.idea || "—"}
+                              </TableCell>
+                              <TableCell className="text-neutral-500">
+                                {keyword.language?.toUpperCase() || "—"}
+                              </TableCell>
+                              <TableCell className="text-neutral-500">
+                                {keyword.locationCode ?? "—"}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {keyword.volume ? keyword.volume.toLocaleString("pt-BR") : "—"}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {keyword.cpc ? `R$ ${keyword.cpc.toFixed(2)}` : "—"}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {keyword.difficultyLabel ?? "Sem dado"}
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        )}
+                      </TableBody>
+                    </Table>
                   </div>
                 </div>
-                <ScrollArea className="h-[440px]">
-                  <Table>
-                    <TableHeader>
-                      <TableRow className="text-xs uppercase tracking-wide text-neutral-500">
-                        <TableHead className="w-10"></TableHead>
-                        <TableHead>Keyword</TableHead>
-                        <TableHead>Ideia</TableHead>
-                        <TableHead>Idioma</TableHead>
-                        <TableHead>País</TableHead>
-                        <TableHead className="text-right">Volume</TableHead>
-                        <TableHead className="text-right">CPC</TableHead>
-                        <TableHead className="text-right">Dificuldade</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {historyKeywords.map((keyword) => (
-                        <TableRow
-                          key={`history-${keyword.id}`}
-                          className="cursor-pointer text-sm hover:bg-neutral-100/60 dark:hover:bg-neutral-800/40"
-                          onClick={() => toggleHistoryKeyword(keyword.id)}
-                        >
-                          <TableCell>
-                            <Checkbox
-                              checked={historySelectedIds.has(keyword.id)}
-                              onCheckedChange={() => toggleHistoryKeyword(keyword.id)}
-                              onClick={(event) => event.stopPropagation()}
-                              aria-label={`Selecionar ${keyword.phrase}`}
-                            />
-                          </TableCell>
-                          <TableCell className="font-medium">{keyword.phrase}</TableCell>
-                          <TableCell className="text-neutral-500">
-                            {keyword.idea || "—"}
-                          </TableCell>
-                          <TableCell className="text-neutral-500">
-                            {keyword.language?.toUpperCase() || "—"}
-                          </TableCell>
-                          <TableCell className="text-neutral-500">
-                            {keyword.locationCode ?? "—"}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            {keyword.volume ? keyword.volume.toLocaleString("pt-BR") : "—"}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            {keyword.cpc ? `R$ ${keyword.cpc.toFixed(2)}` : "—"}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            {keyword.difficultyLabel ?? "Sem dado"}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </ScrollArea>
               </div>
             )}
           </div>
-          <DialogFooter className="flex flex-col gap-3 border-t border-neutral-200/80 px-6 py-4 text-sm text-neutral-500 dark:border-white/10">
+          <DialogFooter className="flex flex-col gap-3 border-t border-neutral-200/80 px-6 py-4 text-sm text-neutral-500 dark:border-white/10 flex-shrink-0">
             {historyError && historyKeywords.length > 0 && (
               <p className="text-red-500">{historyError}</p>
             )}
@@ -1309,6 +1422,7 @@ export function SeoWorkspace() {
                 onClick={() => {
                   setHistorySelectedIds(new Set());
                   setHistoryDialogOpen(false);
+                  setHistorySearchTerm("");
                 }}
               >
                 Cancelar
