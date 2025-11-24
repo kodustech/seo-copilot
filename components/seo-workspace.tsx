@@ -52,6 +52,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 type Banner =
   | { intent: "success" | "info"; message: string }
@@ -101,6 +102,10 @@ export function SeoWorkspace() {
   const [historySearchTerm, setHistorySearchTerm] = useState("");
   const [historySortField, setHistorySortField] = useState<"volume" | "cpc" | "difficulty">("volume");
   const [historySortOrder, setHistorySortOrder] = useState<"desc" | "asc">("desc");
+  const [manualKeyword, setManualKeyword] = useState("");
+  const [manualTitle, setManualTitle] = useState("");
+  const [reverseSearchTitle, setReverseSearchTitle] = useState("");
+  const [activeTab, setActiveTab] = useState<"complete" | "reverse" | "manual">("complete");
 
   const selectedKeywords = useMemo(
     () => keywords.filter((keyword) => selectedKeywordIds.has(keyword.id)),
@@ -534,6 +539,117 @@ export function SeoWorkspace() {
     }
   }
 
+  async function handleGenerateArticleManual() {
+    if (!manualTitle.trim()) {
+      setBanner({
+        intent: "error",
+        message: "Digite um título para o artigo.",
+      });
+      return;
+    }
+
+    if (!manualKeyword.trim()) {
+      setBanner({
+        intent: "error",
+        message: "Digite a keyword principal.",
+      });
+      return;
+    }
+
+    setBanner(null);
+    setLoading((state) => ({ ...state, content: true }));
+    try {
+      const ticket = await postJson<{ taskId: number; status?: string | null }>(
+        "/api/articles",
+        {
+          title: manualTitle.trim(),
+          keyword: manualKeyword.trim(),
+          keywordId: `manual-${Date.now()}`,
+          useResearch,
+          researchInstructions,
+          customInstructions,
+          categories: selectedCategories,
+        },
+      );
+      if (!ticket.taskId) {
+        throw new Error("Não recebemos o identificador da task de artigo.");
+      }
+      setArticleContent("");
+      setArticleTaskId(ticket.taskId);
+      setArticleTaskStatus(ticket.status ?? "in-progress");
+      setIsPollingArticle(true);
+      setBanner({
+        intent: "info",
+        message: `Task de artigo #${ticket.taskId} enfileirada. Avisamos quando ficar pronta.`,
+      });
+    } catch (error) {
+      setBanner({
+        intent: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Não conseguimos gerar o artigo agora.",
+      });
+    } finally {
+      setLoading((state) => ({ ...state, content: false }));
+    }
+  }
+
+  async function handleReverseSearchKeywords() {
+    if (!reverseSearchTitle.trim()) {
+      setBanner({
+        intent: "error",
+        message: "Digite um título para buscar keywords relacionadas.",
+      });
+      return;
+    }
+
+    setBanner(null);
+    setLoading((state) => ({ ...state, keywords: true }));
+    setKeywordTaskStatus(null);
+    try {
+      const ticket = await postJson<{
+        taskId: number;
+        status?: string | null;
+      }>("/api/keywords", {
+        idea: `Encontre keywords relacionadas ao seguinte título: "${reverseSearchTitle.trim()}"`,
+        limit: keywordLimit,
+        locationCode,
+        language: languageCode,
+      });
+
+      if (!ticket.taskId) {
+        throw new Error("Não recebemos o identificador da task.");
+      }
+
+      setKeywordTaskId(ticket.taskId);
+      setKeywordTaskStatus(ticket.status ?? "in-progress");
+      setIsPollingTask(true);
+      setKeywords([]);
+      setSortOrder("desc");
+      setSelectedKeywordIds(new Set());
+      setTitles([]);
+      setSelectedTitleId(null);
+      setArticleContent("");
+      setBanner({
+        intent: "info",
+        message: `Buscando keywords relacionadas ao título. Task #${ticket.taskId} enfileirada.`,
+      });
+    } catch (error) {
+      setLoading((state) => ({ ...state, keywords: false }));
+      setIsPollingTask(false);
+      setKeywordTaskId(null);
+      setKeywordTaskStatus(null);
+      setBanner({
+        intent: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Não conseguimos buscar keywords agora.",
+      });
+    }
+  }
+
   function toggleKeyword(id: string) {
     setSelectedKeywordIds((current) => {
       const next = new Set(current);
@@ -704,6 +820,20 @@ export function SeoWorkspace() {
           </Card>
         )}
 
+        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as typeof activeTab)} className="w-full">
+          <TabsList className="grid w-full grid-cols-3 rounded-2xl bg-neutral-100/80 p-1 dark:bg-neutral-800">
+            <TabsTrigger value="complete" className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-neutral-900">
+              Fluxo Completo
+            </TabsTrigger>
+            <TabsTrigger value="reverse" className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-neutral-900">
+              Título → Keywords
+            </TabsTrigger>
+            <TabsTrigger value="manual" className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-neutral-900">
+              Manual Rápido
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="complete" className="mt-8 space-y-8">
         <Card className="border-0 bg-white/80 shadow-sm ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/5">
           <CardHeader className="gap-3 md:flex-row md:items-center md:justify-between">
             <div>
@@ -1213,6 +1343,332 @@ export function SeoWorkspace() {
             </div>
           </CardContent>
         </Card>
+          </TabsContent>
+
+          <TabsContent value="reverse" className="mt-8 space-y-8">
+            <Card className="border-0 bg-gradient-to-br from-indigo-50 to-white shadow-sm ring-1 ring-indigo-100/50 dark:from-indigo-950/30 dark:to-neutral-900 dark:ring-indigo-900/30">
+              <CardHeader>
+                <div className="flex items-center gap-3">
+                  <Badge variant="outline" className="rounded-full px-3 py-1 text-xs border-indigo-300 text-indigo-700 dark:border-indigo-700 dark:text-indigo-300">
+                    Busca Reversa
+                  </Badge>
+                </div>
+                <CardTitle className="text-2xl">Já tem um título? Vamos encontrar keywords</CardTitle>
+                <CardDescription className="text-base">
+                  Digite o título que você já tem em mente e deixe o copiloto buscar keywords relacionadas para otimizar seu conteúdo.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <Textarea
+                  value={reverseSearchTitle}
+                  onChange={(e) => setReverseSearchTitle(e.target.value)}
+                  placeholder="Ex.: Como aumentar conversões em e-commerce com IA..."
+                  className="min-h-[120px] resize-none bg-neutral-50/70 text-base dark:bg-neutral-800"
+                />
+                <Button
+                  variant="default"
+                  className="w-full rounded-2xl bg-indigo-700 px-6 py-6 text-base font-medium hover:bg-indigo-600 text-white"
+                  onClick={handleReverseSearchKeywords}
+                  disabled={loading.keywords || !reverseSearchTitle.trim()}
+                >
+                  {loading.keywords ? (
+                    <>
+                      <Loader2 className="mr-3 h-5 w-5 animate-spin" />
+                      Buscando keywords...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="mr-3 h-5 w-5" />
+                      Buscar keywords relacionadas
+                    </>
+                  )}
+                </Button>
+              </CardContent>
+            </Card>
+
+            {keywords.length > 0 && (
+              <>
+                <Card className="border-0 bg-white/90 shadow-sm ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/5">
+                  <CardHeader className="gap-4 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <CardTitle className="text-2xl">Keywords encontradas</CardTitle>
+                      <CardDescription className="text-base">
+                        Selecione as keywords que fazem sentido para o seu título.
+                      </CardDescription>
+                    </div>
+                    <div className="flex items-center gap-4 text-sm text-neutral-500 dark:text-neutral-400">
+                      <div className="rounded-2xl bg-neutral-100 px-4 py-2 text-center dark:bg-neutral-800">
+                        <p className="text-xs uppercase">Volume médio</p>
+                        <p className="text-lg font-semibold text-neutral-900 dark:text-white">
+                          {keywordStats.avgVolume || "—"}
+                        </p>
+                      </div>
+                      <div className="rounded-2xl bg-neutral-100 px-4 py-2 text-center dark:bg-neutral-800">
+                        <p className="text-xs uppercase">Dificuldade média</p>
+                        <p className="text-lg font-semibold text-neutral-900 dark:text-white">
+                          {keywordStats.avgDifficulty || "—"}
+                        </p>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="rounded-3xl border border-neutral-200/80 bg-white/80 shadow-inner dark:border-white/10 dark:bg-neutral-950/40">
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200/80 px-6 py-4 text-sm text-neutral-500 dark:border-white/10">
+                        <div className="flex items-center gap-3">
+                          <Checkbox
+                            checked={
+                              selectedKeywordIds.size === keywords.length &&
+                              keywords.length > 0
+                            }
+                            onCheckedChange={toggleAllKeywords}
+                            aria-label="Selecionar todas as keywords"
+                          />
+                          <span>
+                            {selectedKeywords.length} selecionadas / {keywords.length}{" "}
+                            resultados
+                          </span>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="rounded-full text-xs font-medium text-neutral-600 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800"
+                          type="button"
+                          onClick={toggleSortOrder}
+                          disabled={keywords.length === 0}
+                        >
+                          Ordenar por volume
+                          <ArrowDownWideNarrow
+                            className={`ml-2 h-4 w-4 transition ${
+                              sortOrder === "asc" ? "rotate-180" : ""
+                            }`}
+                          />
+                        </Button>
+                      </div>
+                      <ScrollArea className="h-[360px]">
+                        <Table>
+                          <TableHeader>
+                            <TableRow className="text-xs uppercase tracking-wide text-neutral-500">
+                              <TableHead className="w-14"></TableHead>
+                              <TableHead>Keyword</TableHead>
+                              <TableHead className="text-right">Volume</TableHead>
+                              <TableHead className="text-right">CPC</TableHead>
+                              <TableHead className="text-right">Dificuldade</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {orderedKeywords.map((keyword) => (
+                              <TableRow
+                                key={keyword.id}
+                                className="cursor-pointer text-sm transition hover:bg-neutral-100/80 dark:hover:bg-neutral-800/50"
+                                onClick={() => toggleKeyword(keyword.id)}
+                              >
+                                <TableCell className="w-14">
+                                  <Checkbox
+                                    checked={selectedKeywordIds.has(keyword.id)}
+                                    onCheckedChange={() => toggleKeyword(keyword.id)}
+                                    aria-label={`Selecionar ${keyword.phrase}`}
+                                    onClick={(event) => event.stopPropagation()}
+                                  />
+                                </TableCell>
+                                <TableCell className="font-medium">{keyword.phrase}</TableCell>
+                                <TableCell className="text-right">
+                                  {keyword.volume.toLocaleString("pt-BR")}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  R$ {keyword.cpc.toFixed(2)}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  <Badge
+                                    variant="outline"
+                                    className="rounded-full px-2 py-0 text-[11px] font-medium uppercase tracking-wide"
+                                  >
+                                    {keyword.difficultyLabel ?? "Sem dado"}
+                                  </Badge>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </ScrollArea>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card className="border-0 bg-indigo-50/50 shadow-sm ring-1 ring-indigo-200/50 dark:bg-indigo-950/20 dark:ring-indigo-900/30">
+                  <CardHeader>
+                    <CardTitle className="text-2xl">Próximos passos</CardTitle>
+                    <CardDescription className="text-base">
+                      Agora você pode gerar títulos alternativos ou ir direto para o fluxo completo.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex flex-wrap gap-3">
+                      <Button
+                        variant="default"
+                        className="flex-1 min-w-[220px] rounded-2xl bg-indigo-700 px-6 py-6 text-base font-medium hover:bg-indigo-600 text-white"
+                        onClick={() => setActiveTab("complete")}
+                      >
+                        Ir para fluxo completo
+                        <ArrowRight className="ml-2 h-5 w-5" />
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              </>
+            )}
+          </TabsContent>
+
+          <TabsContent value="manual" className="mt-8 space-y-8">
+            <Card className="border-0 bg-gradient-to-br from-emerald-50 to-white shadow-sm ring-1 ring-emerald-100/50 dark:from-emerald-950/30 dark:to-neutral-900 dark:ring-emerald-900/30">
+              <CardHeader>
+                <div className="flex items-center gap-3">
+                  <Badge variant="outline" className="rounded-full px-3 py-1 text-xs border-emerald-300 text-emerald-700 dark:border-emerald-700 dark:text-emerald-300">
+                    Modo Rápido
+                  </Badge>
+                </div>
+                <CardTitle className="text-2xl">Keyword + Título → Artigo direto</CardTitle>
+                <CardDescription className="text-base">
+                  Já sabe exatamente a keyword e o título? Pule todas as etapas e vá direto para a geração do artigo.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-neutral-700 dark:text-neutral-200">
+                      Keyword Principal
+                    </label>
+                    <Input
+                      type="text"
+                      value={manualKeyword}
+                      onChange={(e) => setManualKeyword(e.target.value)}
+                      placeholder="Ex.: conversão e-commerce"
+                      className="bg-neutral-50/70 text-base dark:bg-neutral-800"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-neutral-700 dark:text-neutral-200">
+                      Título do Artigo
+                    </label>
+                    <Input
+                      type="text"
+                      value={manualTitle}
+                      onChange={(e) => setManualTitle(e.target.value)}
+                      placeholder="Ex.: 10 Estratégias para Aumentar Conversão em E-commerce"
+                      className="bg-neutral-50/70 text-base dark:bg-neutral-800"
+                    />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {manualKeyword.trim() && manualTitle.trim() && (
+              <Card className="border-0 bg-white/90 shadow-sm ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/5">
+                <CardHeader>
+                  <CardTitle className="text-2xl">Configurações do artigo</CardTitle>
+                  <CardDescription className="text-base">
+                    Personalize como o artigo será gerado
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <div className="grid gap-6 lg:grid-cols-2">
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between rounded-2xl border border-dashed border-neutral-200/80 px-4 py-3 text-sm text-neutral-600 dark:border-white/10 dark:text-neutral-300">
+                        <span>Incluir pesquisa extra</span>
+                        <Switch checked={useResearch} onCheckedChange={(checked) => setUseResearch(Boolean(checked))} />
+                      </div>
+                      {useResearch && (
+                        <Textarea
+                          value={researchInstructions}
+                          onChange={(event) => setResearchInstructions(event.target.value)}
+                          placeholder="Dê instruções sobre como usar a pesquisa. Ex.: foque em ROI, cite fontes específicas..."
+                          className="min-h-[120px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
+                        />
+                      )}
+                      <div className="space-y-2">
+                        <p className="text-xs uppercase text-neutral-500">
+                          Categorias (opcional)
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {ARTICLE_CATEGORIES.map((category) => (
+                            <label
+                              key={category.id}
+                              className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs transition ${selectedCategories.includes(category.id) ? "border-neutral-900 bg-neutral-900 text-white dark:bg-white dark:text-neutral-900" : "border-neutral-200/80 bg-white/80 dark:border-white/10 dark:bg-neutral-900"}`}
+                            >
+                              <Checkbox
+                                checked={selectedCategories.includes(category.id)}
+                                onCheckedChange={(checked) => {
+                                  setSelectedCategories((prev) => {
+                                    const next = new Set(prev);
+                                    if (checked) {
+                                      next.add(category.id);
+                                    } else {
+                                      next.delete(category.id);
+                                    }
+                                    return Array.from(next);
+                                  });
+                                }}
+                              />
+                              <span>{category.label}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                      <Textarea
+                        value={customInstructions}
+                        onChange={(event) => setCustomInstructions(event.target.value)}
+                        placeholder="Adicione notas importantes, CTA, personas, tamanho ideal..."
+                        className="min-h-[150px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
+                      />
+                      <Button
+                        className="w-full rounded-2xl bg-emerald-700 py-6 text-base font-medium hover:bg-emerald-600 text-white"
+                        onClick={handleGenerateArticleManual}
+                        disabled={loading.content}
+                      >
+                        {loading.content ? (
+                          <>
+                            <Loader2 className="mr-3 h-5 w-5 animate-spin" />
+                            Gerando artigo...
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="mr-3 h-5 w-5" />
+                            Gerar artigo completo
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                    <div className="rounded-3xl border border-neutral-200/80 bg-neutral-50/70 p-5 dark:border-white/10 dark:bg-neutral-950/40">
+                      <div className="mb-4 flex items-center gap-2 text-sm font-medium text-neutral-500 dark:text-neutral-300">
+                        <FileText className="h-4 w-4" />
+                        Prévia do artigo
+                      </div>
+                      {articleContent ? (
+                        <div className="space-y-4 text-sm text-neutral-700 dark:text-neutral-300">
+                          <p className="font-medium text-neutral-900 dark:text-white">
+                            Artigo pronto! publique no WordPress:
+                          </p>
+                          <a
+                            href={articleContent}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center text-neutral-900 underline dark:text-white"
+                          >
+                            {articleContent}
+                          </a>
+                        </div>
+                      ) : (
+                        <p className="text-sm text-neutral-500">
+                          Assim que o copiloto finalizar você verá o link para o WordPress aqui.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+        </Tabs>
+
         {articleTaskId && isPollingArticle && (
           <Card className="border-0 bg-white/90 shadow-sm ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/5">
             <CardContent className="flex items-center gap-4 py-5 text-sm text-neutral-700 dark:text-neutral-200">
