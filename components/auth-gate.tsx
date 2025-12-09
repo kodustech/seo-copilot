@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import type { Session } from "@supabase/supabase-js";
 import { Loader2, LogOut } from "lucide-react";
 
@@ -24,6 +26,14 @@ type AuthMode = "signin" | "signup";
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const pathname = usePathname();
+  const links = useMemo(
+    () => [
+      { href: "/", label: "Article Generator" },
+      { href: "/social", label: "Social Posts" },
+    ],
+    [],
+  );
   const [session, setSession] = useState<Session | null>(null);
   const [initializing, setInitializing] = useState(true);
   const [mode, setMode] = useState<AuthMode>("signin");
@@ -235,25 +245,27 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  const userEmail = session.user.email ?? "conta autenticada";
-  const displayName =
-    session.user.user_metadata?.full_name ||
-    session.user.user_metadata?.name ||
-    userEmail;
-
   return (
     <div className="min-h-screen bg-neutral-50">
       <header className="sticky top-0 z-20 border-b border-neutral-200/70 bg-white/80 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-          <div>
-            <p className="text-xs uppercase tracking-wide text-neutral-500">
-              Logado como
-            </p>
-            <p className="text-sm font-semibold text-neutral-800">
-              {displayName}
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
+          <nav className="flex items-center gap-2 text-sm">
+            {links.map((item) => {
+              const active = pathname === item.href;
+              return (
+                <Button
+                  key={item.href}
+                  variant={active ? "default" : "secondary"}
+                  size="sm"
+                  className={`rounded-full ${active ? "bg-neutral-900 text-white hover:bg-neutral-800" : ""}`}
+                  asChild
+                >
+                  <Link href={item.href}>{item.label}</Link>
+                </Button>
+              );
+            })}
+          </nav>
+          <div className="flex items-center gap-3 text-sm">
             <Badge variant="outline" className="rounded-full px-3 py-1">
               {session.user.email}
             </Badge>

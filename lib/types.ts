@@ -32,3 +32,11 @@ export type KeywordTaskTicket = {
   id: number;
   status?: string | null;
 };
+
+export type SocialPostVariation = {
+  variant: number;
+  hook: string;
+  post: string;
+  cta: string;
+  hashtags: string[];
+};

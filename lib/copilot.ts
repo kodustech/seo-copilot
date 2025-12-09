@@ -2,6 +2,7 @@ import type {
   ArticlePost,
   KeywordSuggestion,
   KeywordTaskTicket,
+  SocialPostVariation,
   TitleIdea,
 } from "@/lib/types";
 
@@ -20,6 +21,9 @@ const TITLES_ENDPOINT =
 const POSTS_ENDPOINT =
   process.env.N8N_POST_ENDPOINT ??
   "https://n8n.kodus.io/webhook/generate-post";
+const CONTENT_ENDPOINT =
+  process.env.N8N_CONTENT_ENDPOINT ??
+  "https://n8n.kodus.io/webhook/generate-content";
 const ARTICLES_STATUS_ENDPOINT =
   process.env.N8N_ARTICLES_ENDPOINT ??
   "https://n8n.kodus.io/webhook/get-articles";
@@ -274,6 +278,78 @@ export async function fetchArticleTaskResult(taskId: number): Promise<{
   }
 
   return { ready: true, articles };
+}
+
+export async function generateSocialContent({
+  baseContent,
+  instructions,
+  platform,
+  language,
+  tone,
+  variationStrategy,
+  maxLength,
+  hashtagsPolicy,
+  linksPolicy,
+  ctaStyle,
+  numVariations,
+}: {
+  baseContent: string;
+  instructions?: string;
+  platform: string;
+  language: string;
+  tone?: string;
+  variationStrategy?: string;
+  maxLength?: number;
+  hashtagsPolicy?: string;
+  linksPolicy?: string;
+  ctaStyle?: string;
+  numVariations?: number;
+}): Promise<SocialPostVariation[]> {
+  if (!baseContent.trim()) {
+    throw new Error("Envie um conteúdo base para gerar os posts.");
+  }
+
+  const payload: Record<string, unknown> = {
+    baseContent: baseContent.trim(),
+    platform,
+    language,
+  };
+
+  if (instructions?.trim()) payload.instructions = instructions.trim();
+  if (tone?.trim()) payload.tone = tone.trim();
+  if (variationStrategy?.trim()) payload.variationStrategy = variationStrategy.trim();
+  if (typeof maxLength === "number" && Number.isFinite(maxLength)) {
+    payload.maxLength = Math.max(40, Math.round(maxLength));
+  }
+  if (hashtagsPolicy?.trim()) payload.hashtagsPolicy = hashtagsPolicy.trim();
+  if (linksPolicy?.trim()) payload.linksPolicy = linksPolicy.trim();
+  if (ctaStyle?.trim()) payload.ctaStyle = ctaStyle.trim();
+  if (typeof numVariations === "number" && Number.isFinite(numVariations)) {
+    payload.numVariations = Math.max(1, Math.min(6, Math.round(numVariations)));
+  }
+
+  const response = await fetch(CONTENT_ENDPOINT, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    const text = await safeReadText(response);
+    throw new Error(
+      `Erro ao gerar posts (${response.status}). ${text || "Tente novamente."}`,
+    );
+  }
+
+  const body = await safeReadJson(response);
+  const variations = normalizeSocialPosts(body);
+
+  if (!variations.length) {
+    throw new Error("Não recebemos posts do copiloto.");
+  }
+
+  return variations;
 }
 
 async function safeReadJson(response: Response) {
@@ -533,6 +609,34 @@ function parseTaskTicket(payload: unknown): KeywordTaskTicket | null {
   }
 
   return null;
+}
+
+function normalizeSocialPosts(payload: unknown): SocialPostVariation[] {
+  const list = pickArray(payload, ["data", "results", "posts", "variations"]);
+  return list
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const record = item as Record<string, unknown>;
+      const hook = typeof record.hook === "string" ? record.hook.trim() : "";
+      const post = typeof record.post === "string" ? record.post.trim() : "";
+      const cta = typeof record.cta === "string" ? record.cta.trim() : "";
+      const hashtags = Array.isArray(record.hashtags)
+        ? record.hashtags
+            .map((value) => String(value).trim())
+            .filter(Boolean)
+        : [];
+      if (!post) {
+        return null;
+      }
+      return {
+        variant: Number(record.variant) || 1,
+        hook,
+        post,
+        cta,
+        hashtags,
+      };
+    })
+    .filter((item): item is SocialPostVariation => Boolean(item));
 }
 
 function parseTaskTicketRecord(value: unknown): KeywordTaskTicket | null {
