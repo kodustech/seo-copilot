@@ -156,19 +156,21 @@ export function SocialGenerator() {
         throw new Error("Adicione ao menos uma configuração de plataforma.");
       }
 
+      const userInstructions = instructions.trim();
+      const payloadInstructions = userInstructions
+        ? `${userInstructions}\n\n${FORMATTING_HINT}`
+        : FORMATTING_HINT;
+
       const response = await fetch("/api/content", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           baseContent,
-          instructions,
           language,
           tone,
           variationStrategy,
           platformConfigs: formattedPlatforms,
-          instructions: instructions.trim()
-            ? `${instructions.trim()}\n\n${FORMATTING_HINT}`
-            : FORMATTING_HINT,
+          instructions: payloadInstructions,
         }),
       });
 
