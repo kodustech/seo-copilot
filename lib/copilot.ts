@@ -617,7 +617,16 @@ function parseTaskTicket(payload: unknown): KeywordTaskTicket | null {
 
 function normalizeSocialPosts(payload: unknown): SocialPostVariation[] {
   const list = pickArray(payload, ["data", "results", "posts", "variations"]);
-  return list
+  type RawSocialVariation = {
+    variant: number;
+    hook: string;
+    post: string;
+    cta: string;
+    hashtags: string[];
+    platform?: string;
+  };
+
+  const normalized = list
     .map((item) => {
       if (!item || typeof item !== "object") return null;
       const record = item as Record<string, unknown>;
@@ -636,7 +645,7 @@ function normalizeSocialPosts(payload: unknown): SocialPostVariation[] {
       if (!post) {
         return null;
       }
-      return {
+      const normalizedItem: RawSocialVariation = {
         variant: Number(record.variant) || 1,
         hook,
         post,
@@ -644,8 +653,10 @@ function normalizeSocialPosts(payload: unknown): SocialPostVariation[] {
         hashtags,
         platform,
       };
+      return normalizedItem;
     })
-    .filter((item): item is SocialPostVariation => Boolean(item));
+    .filter((item): item is RawSocialVariation => Boolean(item));
+  return normalized;
 }
 
 function sanitizePlatformConfigs(

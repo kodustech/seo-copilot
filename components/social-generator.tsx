@@ -178,21 +178,26 @@ export function SocialGenerator() {
       if (!response.ok) {
         throw new Error(data?.error || "Não conseguimos gerar posts agora.");
       }
-      const variations = (Array.isArray(data?.posts) ? data.posts : Array.isArray(data) ? data : []) as {
-        variant: number;
-        hook: string;
-        post: string;
-        cta: string;
-        hashtags: string[];
-      }[];
+      const variations =
+        (Array.isArray(data?.posts) ? data.posts : Array.isArray(data) ? data : []) ??
+        [];
 
       if (!variations.length) {
         throw new Error("O copiloto não retornou variações.");
       }
 
+      type SocialVariation = {
+        variant?: number | string;
+        hook?: string;
+        post?: string;
+        cta?: string;
+        hashtags?: unknown[];
+        platform?: string;
+      };
+
       const timestamp = Date.now();
       setPosts(
-        variations.map((item, index) => {
+        variations.map((item: SocialVariation, index: number) => {
           const variantLabel =
             typeof item.variant === "number" && Number.isFinite(item.variant)
               ? String(item.variant)
