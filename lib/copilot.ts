@@ -21,9 +21,9 @@ const TITLES_ENDPOINT =
 const POSTS_ENDPOINT =
   process.env.N8N_POST_ENDPOINT ??
   "https://n8n.kodus.io/webhook/generate-post";
-const CONTENT_ENDPOINT =
-  process.env.N8N_CONTENT_ENDPOINT ??
-  "https://n8n.kodus.io/webhook/generate-content";
+const SOCIAL_ENDPOINT =
+  process.env.N8N_SOCIAL_ENDPOINT ??
+  "https://n8n.kodus.io/webhook/social";
 const ARTICLES_STATUS_ENDPOINT =
   process.env.N8N_ARTICLES_ENDPOINT ??
   "https://n8n.kodus.io/webhook/get-articles";
@@ -332,7 +332,7 @@ export async function generateSocialContent({
   if (tone?.trim()) payload.tone = tone.trim();
   if (variationStrategy?.trim()) payload.variationStrategy = variationStrategy.trim();
 
-  const response = await fetch(CONTENT_ENDPOINT, {
+  const response = await fetch(SOCIAL_ENDPOINT, {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify(payload),

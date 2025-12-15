@@ -19,7 +19,7 @@ Copiloto em Next.js com UI estilo Notion usando shadcn/ui para gerar ideias de k
 
    - `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_ANON_KEY` para habilitar o login (os valores públicos do seu projeto Supabase)
    - `NEXT_PUBLIC_ALLOWED_DOMAIN` para restringir o domínio (por padrão `@kodus.io`)
-   - `N8N_KEYWORDS_ENDPOINT`, `N8N_KEYWORDS_STATUS_ENDPOINT`, `N8N_KEYWORDS_HISTORY_ENDPOINT`, `N8N_TITLES_ENDPOINT`, `N8N_POST_ENDPOINT`, `N8N_ARTICLES_ENDPOINT` caso precise sobrescrever os padrões
+   - `N8N_KEYWORDS_ENDPOINT`, `N8N_KEYWORDS_STATUS_ENDPOINT`, `N8N_KEYWORDS_HISTORY_ENDPOINT`, `N8N_TITLES_ENDPOINT`, `N8N_SOCIAL_ENDPOINT`, `N8N_POST_ENDPOINT`, `N8N_ARTICLES_ENDPOINT` caso precise sobrescrever os padrões
    - `N8N_BEARER_TOKEN` se os webhooks exigirem autenticação
 
 3. Instale dependências e inicie:
