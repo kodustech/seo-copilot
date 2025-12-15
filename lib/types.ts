@@ -39,4 +39,5 @@ export type SocialPostVariation = {
   post: string;
   cta: string;
   hashtags: string[];
+  platform?: string;
 };

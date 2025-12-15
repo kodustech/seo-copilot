@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Clipboard, Loader2, Sparkles, Wand2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Clipboard, Loader2, RefreshCw, Sparkles, Wand2, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -33,6 +33,73 @@ type PostIdea = {
   platform: string;
 };
 
+type PlatformConfigForm = {
+  id: string;
+  platform: string;
+  maxLength: string;
+  linksPolicy: string;
+  ctaStyle: string;
+  hashtagsPolicy: string;
+  numVariations: number;
+};
+
+type FeedPost = {
+  id: string;
+  title: string;
+  link: string;
+  excerpt: string;
+  content: string;
+  publishedAt?: string;
+};
+
+const platformOptions = [
+  { label: "LinkedIn", value: "LinkedIn" },
+  { label: "Instagram", value: "Instagram" },
+  { label: "Twitter / X", value: "Twitter" },
+];
+
+const FORMATTING_HINT =
+  "Separe parágrafos com uma linha em branco e mantenha blocos curtos (máx. 3 frases) para facilitar a leitura nas redes sociais.";
+
+function createConfigId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function createPlatformConfig(
+  overrides: Partial<Omit<PlatformConfigForm, "id">> & { id?: string } = {},
+): PlatformConfigForm {
+  return {
+    id: overrides.id ?? createConfigId(),
+    platform: overrides.platform ?? "LinkedIn",
+    maxLength: overrides.maxLength ?? "900",
+    linksPolicy:
+      overrides.linksPolicy ?? "Sem link no corpo; incentive comentários",
+    ctaStyle: overrides.ctaStyle ?? "Soft CTA, convidando para comentar ou salvar",
+    hashtagsPolicy: overrides.hashtagsPolicy ?? "Até 3 hashtags relevantes",
+    numVariations: overrides.numVariations ?? 3,
+  };
+}
+
+function getDefaultPlatformConfigs() {
+  return [
+    createPlatformConfig({
+      platform: "LinkedIn",
+      maxLength: "900",
+      linksPolicy: "Sem link; pedir comentário",
+      ctaStyle: "Soft CTA",
+    }),
+    createPlatformConfig({
+      platform: "Twitter",
+      maxLength: "500",
+      linksPolicy: "Sem link",
+      ctaStyle: "Soft CTA",
+    }),
+  ];
+}
+
 export function SocialGenerator() {
   const [baseContent, setBaseContent] = useState("");
   const [instructions, setInstructions] = useState("");
@@ -40,25 +107,27 @@ export function SocialGenerator() {
   const [variationStrategy, setVariationStrategy] = useState(
     "Alterar gancho, formato (carrossel/thread/post curto) e CTA entre as variações."
   );
-  const [platform, setPlatform] = useState("LinkedIn");
   const [language, setLanguage] = useState("pt-BR");
-  const [hashtagsPolicy, setHashtagsPolicy] = useState(
-    "Até 3 hashtags relevantes"
+  const [platformConfigs, setPlatformConfigs] = useState<PlatformConfigForm[]>(
+    () => getDefaultPlatformConfigs()
   );
-  const [linksPolicy, setLinksPolicy] = useState(
-    "Sem link no corpo; incentive comentários"
-  );
-  const [ctaStyle, setCtaStyle] = useState(
-    "Soft CTA, convidando para comentar ou salvar"
-  );
-  const [maxLength, setMaxLength] = useState("260");
-  const [numVariations, setNumVariations] = useState(3);
   const [posts, setPosts] = useState<PostIdea[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [feedPosts, setFeedPosts] = useState<FeedPost[]>([]);
+  const [feedLoading, setFeedLoading] = useState(false);
+  const [feedError, setFeedError] = useState<string | null>(null);
+  const [selectedFeedId, setSelectedFeedId] = useState("");
 
-  const canGenerate = baseContent.trim().length > 12 && !loading;
+  const hasValidPlatform = platformConfigs.some(
+    (config) => config.platform.trim().length > 0
+  );
+  const canGenerate = baseContent.trim().length > 12 && hasValidPlatform && !loading;
+
+  useEffect(() => {
+    reloadFeed();
+  }, []);
 
   async function handleGeneratePosts() {
     if (!canGenerate) {
@@ -69,10 +138,23 @@ export function SocialGenerator() {
     setLoading(true);
 
     try {
-      const parsedMaxLength = Number(maxLength);
-      const maxLengthValue = Number.isFinite(parsedMaxLength)
-        ? Math.min(1000, Math.max(40, Math.round(parsedMaxLength)))
-        : undefined;
+      const formattedPlatforms = platformConfigs
+        .map((config) => {
+          const parsedMaxLength = Number(config.maxLength);
+          return {
+            platform: config.platform.trim(),
+            maxLength: Number.isFinite(parsedMaxLength) ? parsedMaxLength : undefined,
+            linksPolicy: config.linksPolicy.trim(),
+            ctaStyle: config.ctaStyle.trim(),
+            hashtagsPolicy: config.hashtagsPolicy.trim(),
+            numVariations: config.numVariations,
+          };
+        })
+        .filter((config) => config.platform.length > 0);
+
+      if (!formattedPlatforms.length) {
+        throw new Error("Adicione ao menos uma configuração de plataforma.");
+      }
 
       const response = await fetch("/api/content", {
         method: "POST",
@@ -80,15 +162,13 @@ export function SocialGenerator() {
         body: JSON.stringify({
           baseContent,
           instructions,
-          platform,
           language,
           tone,
           variationStrategy,
-          maxLength: maxLengthValue,
-          hashtagsPolicy,
-          linksPolicy,
-          ctaStyle,
-          numVariations,
+          platformConfigs: formattedPlatforms,
+          instructions: instructions.trim()
+            ? `${instructions.trim()}\n\n${FORMATTING_HINT}`
+            : FORMATTING_HINT,
         }),
       });
 
@@ -108,6 +188,7 @@ export function SocialGenerator() {
         throw new Error("O copiloto não retornou variações.");
       }
 
+      const timestamp = Date.now();
       setPosts(
         variations.map((item, index) => {
           const variantLabel =
@@ -116,8 +197,12 @@ export function SocialGenerator() {
               : item.variant
                 ? String(item.variant)
                 : String(index + 1);
+          const resolvedPlatform =
+            (typeof item.platform === "string" && item.platform.trim().length > 0
+              ? item.platform.trim()
+              : platformConfigs[index % platformConfigs.length]?.platform) ?? "Social";
           return {
-            id: `${Date.now()}-${variantLabel}`,
+            id: `${timestamp}-${index}`,
             variant: variantLabel,
             hook: item.hook || "",
             content: item.post || "",
@@ -125,7 +210,7 @@ export function SocialGenerator() {
             hashtags: Array.isArray(item.hashtags)
               ? item.hashtags.map((value) => String(value)).filter(Boolean)
               : [],
-            platform,
+            platform: resolvedPlatform,
           };
         })
       );
@@ -139,6 +224,34 @@ export function SocialGenerator() {
     }
   }
 
+  function formatPostForCopy(post: PostIdea) {
+    const sections: string[] = [];
+    if (post.hook.trim()) {
+      sections.push(post.hook.trim());
+    }
+    if (post.content.trim()) {
+      sections.push(post.content.trim());
+    }
+    if (post.cta.trim()) {
+      sections.push(post.cta.trim());
+    }
+    if (post.hashtags.length) {
+      const normalized = post.hashtags
+        .map((tag) => {
+          const clean = tag.trim();
+          if (!clean) return "";
+          const withoutHash = clean.replace(/^#+/, "");
+          return `#${withoutHash}`;
+        })
+        .filter(Boolean)
+        .join(" ");
+      if (normalized) {
+        sections.push(normalized);
+      }
+    }
+    return sections.join("\n\n");
+  }
+
   function copyToClipboard(id: string, content: string) {
     navigator.clipboard
       .writeText(content)
@@ -149,6 +262,65 @@ export function SocialGenerator() {
       .catch(() => {
         setError("Não foi possível copiar o texto agora.");
       });
+  }
+
+  function handleConfigChange(
+    id: string,
+    updates: Partial<Omit<PlatformConfigForm, "id">>
+  ) {
+    setPlatformConfigs((prev) =>
+      prev.map((config) =>
+        config.id === id
+          ? {
+              ...config,
+              ...updates,
+            }
+          : config
+      )
+    );
+  }
+
+  function handleAddPlatform() {
+    setPlatformConfigs((prev) => [...prev, createPlatformConfig()]);
+  }
+
+  function handleRemovePlatform(id: string) {
+    setPlatformConfigs((prev) =>
+      prev.length > 1 ? prev.filter((config) => config.id !== id) : prev
+    );
+  }
+
+  async function reloadFeed() {
+    try {
+      setFeedLoading(true);
+      setFeedError(null);
+      const response = await fetch("/api/feed");
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || "Erro ao buscar posts do blog.");
+      }
+      const posts = Array.isArray(data?.posts) ? data.posts : [];
+      setFeedPosts(posts);
+    } catch (err) {
+      setFeedError(
+        err instanceof Error ? err.message : "Não foi possível buscar o feed agora."
+      );
+    } finally {
+      setFeedLoading(false);
+    }
+  }
+
+  function handleSelectFeedPost(postId: string) {
+    setSelectedFeedId(postId);
+    const match = feedPosts.find((post) => post.id === postId);
+    if (!match) {
+      return;
+    }
+    const composed = [match.title, match.content || match.excerpt]
+      .filter(Boolean)
+      .join("\n\n")
+      .trim();
+    setBaseContent(composed);
   }
 
   const hasPosts = useMemo(() => posts.length > 0, [posts]);
@@ -197,6 +369,50 @@ export function SocialGenerator() {
                 placeholder="Cole o trecho do artigo, briefing ou ideia central..."
                 className="min-h-[160px] resize-none bg-neutral-50/70 text-base dark:bg-neutral-800"
               />
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                <Select
+                  value={selectedFeedId || undefined}
+                  onValueChange={handleSelectFeedPost}
+                  disabled={feedLoading || feedPosts.length === 0}
+                >
+                  <SelectTrigger className="bg-neutral-50/70 text-sm dark:bg-neutral-800">
+                    <SelectValue placeholder="Ou escolha um post recente do blog" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {feedPosts.map((post) => (
+                      <SelectItem key={post.id} value={post.id}>
+                        {post.title}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="text-sm"
+                  onClick={() => {
+                    setSelectedFeedId("");
+                    reloadFeed();
+                  }}
+                  disabled={feedLoading}
+                >
+                  {feedLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Carregando
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="mr-2 h-4 w-4" />
+                      Atualizar feed
+                    </>
+                  )}
+                </Button>
+              </div>
+              {feedError && (
+                <p className="text-xs text-red-500">{feedError}</p>
+              )}
             </div>
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
@@ -223,21 +439,6 @@ export function SocialGenerator() {
             <div className="grid gap-4 md:grid-cols-2">
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-2">
-                  <p className="text-xs uppercase text-neutral-500">
-                    Plataforma
-                  </p>
-                  <Select value={platform} onValueChange={setPlatform}>
-                    <SelectTrigger className="bg-neutral-50/70 dark:bg-neutral-800">
-                      <SelectValue placeholder="Plataforma" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="LinkedIn">LinkedIn</SelectItem>
-                      <SelectItem value="Instagram">Instagram</SelectItem>
-                      <SelectItem value="X">Twitter / X</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
                   <p className="text-xs uppercase text-neutral-500">Idioma</p>
                   <Select value={language} onValueChange={setLanguage}>
                     <SelectTrigger className="bg-neutral-50/70 dark:bg-neutral-800">
@@ -261,70 +462,147 @@ export function SocialGenerator() {
                     className="bg-neutral-50/70 dark:bg-neutral-800"
                   />
                 </div>
-                <div className="space-y-2">
-                  <p className="text-xs uppercase text-neutral-500">
-                    Qtd. variações
-                  </p>
-                  <Input
-                    type="number"
-                    min={1}
-                    max={6}
-                    value={numVariations}
-                    onChange={(event) => {
-                      const next = Number(event.target.value);
-                      if (!Number.isFinite(next)) return;
-                      setNumVariations(
-                        Math.min(6, Math.max(1, Math.round(next)))
-                      );
-                    }}
-                    className="bg-neutral-50/70 dark:bg-neutral-800"
-                  />
-                </div>
               </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <p className="text-xs uppercase text-neutral-500">
-                    Tamanho máximo
-                  </p>
-                  <Input
-                    type="number"
-                    min={40}
-                    max={1000}
-                    value={maxLength}
-                    onChange={(event) => setMaxLength(event.target.value)}
-                    placeholder="Ex.: 260"
-                    className="bg-neutral-50/70 dark:bg-neutral-800"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <p className="text-xs uppercase text-neutral-500">Hashtags</p>
-                  <Input
-                    value={hashtagsPolicy}
-                    onChange={(event) => setHashtagsPolicy(event.target.value)}
-                    placeholder="Ex.: Até 3 hashtags, sem genéricas"
-                    className="bg-neutral-50/70 dark:bg-neutral-800"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <p className="text-xs uppercase text-neutral-500">Links</p>
-                  <Input
-                    value={linksPolicy}
-                    onChange={(event) => setLinksPolicy(event.target.value)}
-                    placeholder="Ex.: sem links no corpo; sugerir comentários"
-                    className="bg-neutral-50/70 dark:bg-neutral-800"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <p className="text-xs uppercase text-neutral-500">
-                    Estilo de CTA
-                  </p>
-                  <Input
-                    value={ctaStyle}
-                    onChange={(event) => setCtaStyle(event.target.value)}
-                    placeholder="Ex.: soft CTA convidando a comentar ou salvar"
-                    className="bg-neutral-50/70 dark:bg-neutral-800"
-                  />
-                </div>
+            </div>
+            <div className="space-y-4 rounded-2xl border border-neutral-200/80 p-4 dark:border-white/10">
+              <div className="flex items-center justify-between">
+                <p className="text-xs uppercase text-neutral-500">
+                  Plataformas e regras
+                </p>
+                <Button variant="ghost" size="sm" onClick={handleAddPlatform}>
+                  + Adicionar plataforma
+                </Button>
+              </div>
+              <div className="space-y-4">
+                {platformConfigs.map((config, index) => (
+                  <div
+                    key={config.id}
+                    className="rounded-2xl border border-neutral-200/80 p-4 dark:border-white/10"
+                  >
+                    <div className="mb-3 flex items-center justify-between">
+                      <p className="text-sm font-medium text-neutral-700 dark:text-neutral-100">
+                        {`Plataforma #${index + 1}`}
+                      </p>
+                      {platformConfigs.length > 1 && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleRemovePlatform(config.id)}
+                          className="text-red-500 hover:text-red-600"
+                        >
+                          <X className="mr-1 h-4 w-4" />
+                          Remover
+                        </Button>
+                      )}
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        <p className="text-xs uppercase text-neutral-500">
+                          Plataforma
+                        </p>
+                        <Select
+                          value={config.platform}
+                          onValueChange={(value) =>
+                            handleConfigChange(config.id, { platform: value })
+                          }
+                        >
+                          <SelectTrigger className="bg-neutral-50/70 dark:bg-neutral-800">
+                            <SelectValue placeholder="Plataforma" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {platformOptions.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-xs uppercase text-neutral-500">
+                          Tamanho máximo
+                        </p>
+                        <Input
+                          type="number"
+                          min={40}
+                          max={1000}
+                          value={config.maxLength}
+                          onChange={(event) =>
+                            handleConfigChange(config.id, {
+                              maxLength: event.target.value,
+                            })
+                          }
+                          placeholder="Ex.: 260"
+                          className="bg-neutral-50/70 dark:bg-neutral-800"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-xs uppercase text-neutral-500">
+                          Qtd. variações
+                        </p>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={6}
+                          value={config.numVariations}
+                          onChange={(event) => {
+                            const next = Number(event.target.value);
+                            if (!Number.isFinite(next)) return;
+                            handleConfigChange(config.id, {
+                              numVariations: Math.min(6, Math.max(1, Math.round(next))),
+                            });
+                          }}
+                          className="bg-neutral-50/70 dark:bg-neutral-800"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-xs uppercase text-neutral-500">
+                          Hashtags
+                        </p>
+                        <Input
+                          value={config.hashtagsPolicy}
+                          onChange={(event) =>
+                            handleConfigChange(config.id, {
+                              hashtagsPolicy: event.target.value,
+                            })
+                          }
+                          placeholder="Ex.: até 3 hashtags específicas"
+                          className="bg-neutral-50/70 dark:bg-neutral-800"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-xs uppercase text-neutral-500">
+                          Links
+                        </p>
+                        <Input
+                          value={config.linksPolicy}
+                          onChange={(event) =>
+                            handleConfigChange(config.id, {
+                              linksPolicy: event.target.value,
+                            })
+                          }
+                          placeholder="Ex.: sem links no corpo"
+                          className="bg-neutral-50/70 dark:bg-neutral-800"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-xs uppercase text-neutral-500">
+                          Estilo de CTA
+                        </p>
+                        <Input
+                          value={config.ctaStyle}
+                          onChange={(event) =>
+                            handleConfigChange(config.id, {
+                              ctaStyle: event.target.value,
+                            })
+                          }
+                          placeholder="Ex.: soft CTA convidando a comentar"
+                          className="bg-neutral-50/70 dark:bg-neutral-800"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
             {error && <p className="text-sm text-red-500">{error}</p>}
@@ -351,20 +629,17 @@ export function SocialGenerator() {
                 className="rounded-2xl px-6 py-6 text-base font-medium"
                 onClick={() => {
                   setBaseContent("");
+                  setSelectedFeedId("");
                   setInstructions("");
                   setTone("Conversational, direto");
                   setVariationStrategy(
                     "Alterar gancho, formato (carrossel/thread/post curto) e CTA entre as variações."
                   );
-                  setPlatform("LinkedIn");
                   setLanguage("pt-BR");
-                  setHashtagsPolicy("Até 3 hashtags relevantes");
-                  setLinksPolicy("Sem link no corpo; incentive comentários");
-                  setCtaStyle("Soft CTA, convidando para comentar ou salvar");
-                  setMaxLength("260");
-                  setNumVariations(3);
+                  setPlatformConfigs(getDefaultPlatformConfigs());
                   setPosts([]);
                   setError(null);
+                  setFeedError(null);
                 }}
                 type="button"
               >
@@ -413,13 +688,36 @@ export function SocialGenerator() {
                     <p className="whitespace-pre-line text-sm leading-relaxed text-neutral-800 dark:text-neutral-200">
                       {post.content}
                     </p>
+                    {post.cta && (
+                      <p className="text-sm text-neutral-700 dark:text-neutral-300">
+                        <span className="text-xs font-semibold uppercase text-neutral-500 dark:text-neutral-400">
+                          CTA:&nbsp;
+                        </span>
+                        {post.cta}
+                      </p>
+                    )}
+                    {post.hashtags.length > 0 && (
+                      <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                        {post.hashtags
+                          .map((tag) => {
+                            const clean = tag.trim();
+                            if (!clean) return "";
+                            const withoutHash = clean.replace(/^#+/, "");
+                            return `#${withoutHash}`;
+                          })
+                          .filter(Boolean)
+                          .join(" ")}
+                      </p>
+                    )}
                     <Separator />
                     <div className="flex items-center gap-2 text-xs text-neutral-500">
                       <Button
                         variant="ghost"
                         size="sm"
                         className="rounded-full px-3 py-2 text-xs"
-                        onClick={() => copyToClipboard(post.id, post.content)}
+                        onClick={() =>
+                          copyToClipboard(post.id, formatPostForCopy(post))
+                        }
                       >
                         <Clipboard className="mr-2 h-4 w-4" />
                         {copiedId === post.id ? "Copiado!" : "Copiar"}

@@ -280,53 +280,57 @@ export async function fetchArticleTaskResult(taskId: number): Promise<{
   return { ready: true, articles };
 }
 
-export async function generateSocialContent({
-  baseContent,
-  instructions,
-  platform,
-  language,
-  tone,
-  variationStrategy,
-  maxLength,
-  hashtagsPolicy,
-  linksPolicy,
-  ctaStyle,
-  numVariations,
-}: {
-  baseContent: string;
-  instructions?: string;
+export type SocialPlatformConfigInput = Partial<{
   platform: string;
-  language: string;
-  tone?: string;
-  variationStrategy?: string;
+  maxLength: number;
+  hashtagsPolicy: string;
+  linksPolicy: string;
+  ctaStyle: string;
+  numVariations: number;
+}>;
+
+type SocialPlatformConfigPayload = {
+  platform: string;
   maxLength?: number;
   hashtagsPolicy?: string;
   linksPolicy?: string;
   ctaStyle?: string;
   numVariations?: number;
+};
+
+export async function generateSocialContent({
+  baseContent,
+  instructions,
+  language,
+  tone,
+  variationStrategy,
+  platformConfigs,
+}: {
+  baseContent: string;
+  instructions?: string;
+  language: string;
+  tone?: string;
+  variationStrategy?: string;
+  platformConfigs?: SocialPlatformConfigInput[];
 }): Promise<SocialPostVariation[]> {
   if (!baseContent.trim()) {
     throw new Error("Envie um conteúdo base para gerar os posts.");
   }
 
+  const normalizedConfigs = sanitizePlatformConfigs(platformConfigs);
+  if (!normalizedConfigs.length) {
+    throw new Error("Defina pelo menos uma plataforma para gerar posts.");
+  }
+
   const payload: Record<string, unknown> = {
     baseContent: baseContent.trim(),
-    platform,
     language,
+    platformConfigs: normalizedConfigs,
   };
 
   if (instructions?.trim()) payload.instructions = instructions.trim();
   if (tone?.trim()) payload.tone = tone.trim();
   if (variationStrategy?.trim()) payload.variationStrategy = variationStrategy.trim();
-  if (typeof maxLength === "number" && Number.isFinite(maxLength)) {
-    payload.maxLength = Math.max(40, Math.round(maxLength));
-  }
-  if (hashtagsPolicy?.trim()) payload.hashtagsPolicy = hashtagsPolicy.trim();
-  if (linksPolicy?.trim()) payload.linksPolicy = linksPolicy.trim();
-  if (ctaStyle?.trim()) payload.ctaStyle = ctaStyle.trim();
-  if (typeof numVariations === "number" && Number.isFinite(numVariations)) {
-    payload.numVariations = Math.max(1, Math.min(6, Math.round(numVariations)));
-  }
 
   const response = await fetch(CONTENT_ENDPOINT, {
     method: "POST",
@@ -620,6 +624,10 @@ function normalizeSocialPosts(payload: unknown): SocialPostVariation[] {
       const hook = typeof record.hook === "string" ? record.hook.trim() : "";
       const post = typeof record.post === "string" ? record.post.trim() : "";
       const cta = typeof record.cta === "string" ? record.cta.trim() : "";
+      const platform =
+        typeof record.platform === "string" && record.platform.trim().length > 0
+          ? record.platform.trim()
+          : undefined;
       const hashtags = Array.isArray(record.hashtags)
         ? record.hashtags
             .map((value) => String(value).trim())
@@ -634,9 +642,62 @@ function normalizeSocialPosts(payload: unknown): SocialPostVariation[] {
         post,
         cta,
         hashtags,
+        platform,
       };
     })
     .filter((item): item is SocialPostVariation => Boolean(item));
+}
+
+function sanitizePlatformConfigs(
+  configs?: SocialPlatformConfigInput[],
+): SocialPlatformConfigPayload[] {
+  if (!Array.isArray(configs)) {
+    return [];
+  }
+
+  return configs
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return null;
+      }
+
+      const platform =
+        typeof entry.platform === "string" && entry.platform.trim().length > 0
+          ? entry.platform.trim()
+          : null;
+
+      if (!platform) {
+        return null;
+      }
+
+      const config: SocialPlatformConfigPayload = { platform };
+
+      if (typeof entry.maxLength === "number" && Number.isFinite(entry.maxLength)) {
+        config.maxLength = Math.min(1000, Math.max(40, Math.round(entry.maxLength)));
+      }
+
+      if (
+        typeof entry.numVariations === "number" &&
+        Number.isFinite(entry.numVariations)
+      ) {
+        config.numVariations = Math.max(1, Math.min(6, Math.round(entry.numVariations)));
+      }
+
+      if (typeof entry.hashtagsPolicy === "string" && entry.hashtagsPolicy.trim()) {
+        config.hashtagsPolicy = entry.hashtagsPolicy.trim();
+      }
+
+      if (typeof entry.linksPolicy === "string" && entry.linksPolicy.trim()) {
+        config.linksPolicy = entry.linksPolicy.trim();
+      }
+
+      if (typeof entry.ctaStyle === "string" && entry.ctaStyle.trim()) {
+        config.ctaStyle = entry.ctaStyle.trim();
+      }
+
+      return config;
+    })
+    .filter((item): item is SocialPlatformConfigPayload => Boolean(item));
 }
 
 function parseTaskTicketRecord(value: unknown): KeywordTaskTicket | null {
