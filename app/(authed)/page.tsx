@@ -1,5 +1,5 @@
-import { SeoWorkspace } from "@/components/seo-workspace";
+import { AgentChat } from "@/components/agent-chat";
 
 export default function Home() {
-  return <SeoWorkspace />;
+  return <AgentChat />;
 }

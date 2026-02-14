@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2, Search, FileText, Newspaper, Share2, Rss, History, Lightbulb, BarChart3, Globe, TrendingUp, Target, GitCompare, TrendingDown, Smartphone, Calendar, List, Trash2 } from "lucide-react";
+import { Loader2, Search, FileText, Newspaper, Share2, Rss, History, Lightbulb, BarChart3, Globe, TrendingUp, Target, GitCompare, TrendingDown, Smartphone, Calendar, List, Trash2, LayoutList } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
 type ToolInvocationState =
@@ -18,6 +18,7 @@ type ToolResultProps = {
 
 const TOOL_META: Record<string, { label: string; loadingMsg: string; icon: React.ElementType }> = {
   generateIdeas: { label: "Pesquisa de Ideias", loadingMsg: "Pesquisando discussoes...", icon: Lightbulb },
+  generateContentPlan: { label: "Plano de Conteúdo", loadingMsg: "Cruzando dados e gerando plano estratégico...", icon: LayoutList },
   generateKeywords: { label: "Pesquisa de Keywords", loadingMsg: "Pesquisando keywords... isso pode levar ~30-90s", icon: Search },
   getKeywordHistory: { label: "Histórico de Keywords", loadingMsg: "Buscando histórico...", icon: History },
   generateTitles: { label: "Geração de Títulos", loadingMsg: "Gerando sugestões de títulos...", icon: FileText },
@@ -325,6 +326,219 @@ function IdeaResultsView({ results }: { results: IdeaResult[] }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Content Plan sub-components
+// ---------------------------------------------------------------------------
+
+type ContentPlanIdea = {
+  rank: number;
+  title: string;
+  type: "new" | "refresh" | "optimize";
+  priority: "high" | "medium" | "low";
+  description: string;
+  rationale: string;
+  dataSignals: string[];
+  suggestedKeywords: string[];
+  estimatedDifficulty: "easy" | "medium" | "hard";
+  existingPage: string | null;
+  nextSteps: string[];
+};
+
+type ContentPlanData = {
+  summary: string;
+  ideas: ContentPlanIdea[];
+  dataCounts: {
+    community: number;
+    opportunities: number;
+    decaying: number;
+    blogPosts: number;
+    keywords: number;
+  };
+};
+
+const TYPE_BADGE: Record<string, string> = {
+  new: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
+  refresh: "bg-amber-500/20 text-amber-400 border-amber-500/30",
+  optimize: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+};
+
+const TYPE_LABEL: Record<string, string> = {
+  new: "Novo",
+  refresh: "Atualizar",
+  optimize: "Otimizar",
+};
+
+const PRIORITY_BADGE: Record<string, string> = {
+  high: "bg-red-500/20 text-red-400 border-red-500/30",
+  medium: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
+  low: "bg-neutral-500/20 text-neutral-400 border-neutral-500/30",
+};
+
+const PRIORITY_LABEL: Record<string, string> = {
+  high: "Alta",
+  medium: "Média",
+  low: "Baixa",
+};
+
+const DIFFICULTY_LABEL: Record<string, string> = {
+  easy: "Fácil",
+  medium: "Média",
+  hard: "Difícil",
+};
+
+function ContentPlanView({ data }: { data: ContentPlanData }) {
+  const counts = data.dataCounts;
+
+  return (
+    <div className="space-y-4">
+      {/* Summary card */}
+      <div className="rounded-lg border border-violet-500/30 bg-violet-500/[0.08] p-3">
+        <p className="text-xs font-semibold uppercase tracking-wider text-violet-400 mb-1">
+          Resumo Executivo
+        </p>
+        <p className="text-sm leading-relaxed text-neutral-300">{data.summary}</p>
+      </div>
+
+      {/* Sources bar */}
+      <div className="flex flex-wrap gap-2">
+        {counts.community > 0 && (
+          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 text-[11px] text-neutral-400">
+            {counts.community} discussões
+          </span>
+        )}
+        {counts.opportunities > 0 && (
+          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 text-[11px] text-neutral-400">
+            {counts.opportunities} oportunidades SEO
+          </span>
+        )}
+        {counts.decaying > 0 && (
+          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 text-[11px] text-neutral-400">
+            {counts.decaying} páginas em queda
+          </span>
+        )}
+        {counts.blogPosts > 0 && (
+          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 text-[11px] text-neutral-400">
+            {counts.blogPosts} posts publicados
+          </span>
+        )}
+        {counts.keywords > 0 && (
+          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 text-[11px] text-neutral-400">
+            {counts.keywords} keywords
+          </span>
+        )}
+      </div>
+
+      {/* Ideas list */}
+      <div className="space-y-3">
+        {data.ideas.map((idea, i) => (
+          <div
+            key={i}
+            className="rounded-lg border border-white/[0.06] bg-white/[0.03] p-3 space-y-2.5"
+          >
+            {/* Header: rank + title + badges */}
+            <div className="flex items-start gap-2.5">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-violet-500/20 text-xs font-bold text-violet-400">
+                {idea.rank}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-neutral-200">
+                  {idea.title}
+                </p>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  <span
+                    className={`inline-block rounded-full border px-2 py-0.5 text-[10px] font-semibold ${TYPE_BADGE[idea.type] ?? TYPE_BADGE.new}`}
+                  >
+                    {TYPE_LABEL[idea.type] ?? idea.type}
+                  </span>
+                  <span
+                    className={`inline-block rounded-full border px-2 py-0.5 text-[10px] font-medium ${PRIORITY_BADGE[idea.priority] ?? PRIORITY_BADGE.medium}`}
+                  >
+                    Prioridade {PRIORITY_LABEL[idea.priority] ?? idea.priority}
+                  </span>
+                  <span className="inline-block rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] text-neutral-500">
+                    {DIFFICULTY_LABEL[idea.estimatedDifficulty] ?? idea.estimatedDifficulty}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Description */}
+            <p className="text-xs leading-relaxed text-neutral-400 pl-8">
+              {idea.description}
+            </p>
+
+            {/* Rationale card */}
+            <div className="ml-8 rounded-md border border-violet-500/20 bg-violet-500/[0.05] px-3 py-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-violet-400/70 mb-0.5">
+                Por que criar
+              </p>
+              <p className="text-xs leading-relaxed text-neutral-400">
+                {idea.rationale}
+              </p>
+            </div>
+
+            {/* Data signals */}
+            {idea.dataSignals?.length > 0 && (
+              <div className="ml-8 flex flex-wrap gap-1">
+                {idea.dataSignals.map((signal, si) => (
+                  <span
+                    key={si}
+                    className="rounded-md border border-white/[0.06] bg-white/[0.03] px-2 py-0.5 text-[10px] text-neutral-500"
+                  >
+                    {signal}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Keywords */}
+            {idea.suggestedKeywords?.length > 0 && (
+              <div className="ml-8 flex flex-wrap gap-1">
+                {idea.suggestedKeywords.map((kw) => (
+                  <Badge
+                    key={kw}
+                    variant="outline"
+                    className="border-violet-500/20 text-[10px] text-violet-400/70"
+                  >
+                    {kw}
+                  </Badge>
+                ))}
+              </div>
+            )}
+
+            {/* Existing page */}
+            {idea.existingPage && (
+              <p className="ml-8 text-[11px] text-neutral-500">
+                Página existente:{" "}
+                <span className="font-mono text-neutral-400">
+                  {idea.existingPage}
+                </span>
+              </p>
+            )}
+
+            {/* Next steps */}
+            {idea.nextSteps?.length > 0 && (
+              <div className="ml-8">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500 mb-1">
+                  Próximos passos
+                </p>
+                <ul className="space-y-0.5">
+                  {idea.nextSteps.map((step, si) => (
+                    <li key={si} className="flex items-start gap-1.5 text-[11px] text-neutral-400">
+                      <span className="mt-0.5 h-1 w-1 shrink-0 rounded-full bg-neutral-600" />
+                      {step}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -899,6 +1113,25 @@ function renderContent(toolName: string, output: Record<string, unknown>) {
       const results = output.results as IdeaResult[] | undefined;
       if (!results?.length) return <p className="text-xs text-neutral-500">Nenhuma ideia encontrada.</p>;
       return <IdeaResultsView results={results} />;
+    }
+    case "generateContentPlan": {
+      const ideas = output.ideas as ContentPlanIdea[] | undefined;
+      if (!ideas?.length) return <p className="text-xs text-neutral-500">Nenhuma ideia gerada.</p>;
+      return (
+        <ContentPlanView
+          data={{
+            summary: (output.summary as string) ?? "",
+            ideas,
+            dataCounts: (output.dataCounts as ContentPlanData["dataCounts"]) ?? {
+              community: 0,
+              opportunities: 0,
+              decaying: 0,
+              blogPosts: 0,
+              keywords: 0,
+            },
+          }}
+        />
+      );
     }
     case "generateKeywords":
     case "getKeywordHistory": {

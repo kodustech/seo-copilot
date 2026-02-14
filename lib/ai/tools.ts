@@ -1,4 +1,4 @@
-import { tool } from "ai";
+import { tool, generateText } from "ai";
 import { z } from "zod";
 import {
   enqueueKeywordTask,
@@ -8,6 +8,7 @@ import {
   enqueueArticleTask,
   fetchArticleTaskResult,
   generateSocialContent,
+  fetchBlogPosts,
 } from "@/lib/copilot";
 import { searchIdeas } from "@/lib/exa";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
@@ -27,6 +28,8 @@ import {
   queryContentDecay,
   querySearchBySegment,
 } from "@/lib/bigquery";
+import { getModel } from "@/lib/ai/provider";
+import { CONTENT_PLAN_SYNTHESIS_PROMPT } from "@/lib/ai/system-prompt";
 
 const WORDPRESS_API_BASE =
   process.env.WORDPRESS_API_BASE?.replace(/\/$/, "") ||
@@ -393,7 +396,7 @@ export const fetchBlogFeed = tool({
       endpoint.searchParams.set("order", "desc");
       endpoint.searchParams.set(
         "_fields",
-        "id,title.rendered,link,date,content.rendered,excerpt.rendered",
+        "id,title.rendered,link,date,excerpt.rendered",
       );
 
       const response = await fetch(endpoint, {
@@ -451,6 +454,204 @@ export const fetchBlogFeed = tool({
         success: false as const,
         message:
           error instanceof Error ? error.message : "Erro ao buscar blog feed.",
+      };
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Content Plan (cross-data synthesis)
+// ---------------------------------------------------------------------------
+
+export const generateContentPlan = tool({
+  description:
+    "Gera um plano estratégico de conteúdo cruzando 5 fontes de dados: comunidade (Exa), oportunidades de SEO (Search Console), content decay (Analytics), blog posts existentes e histórico de keywords. Retorna 5-8 ideias ranqueadas com justificativa baseada em dados. (~10-15s)",
+  inputSchema: z.object({
+    topic: z
+      .string()
+      .optional()
+      .describe(
+        "Foco do plano de conteúdo. Se omitido, usa dados globais sem filtro de tema.",
+      ),
+    daysBack: z
+      .number()
+      .min(7)
+      .max(365)
+      .optional()
+      .default(90)
+      .describe("Período em dias para buscar discussões na comunidade (7-365, default 90)"),
+    analyticsDays: z
+      .number()
+      .min(7)
+      .max(90)
+      .optional()
+      .default(28)
+      .describe("Período em dias para dados de analytics (7-90, default 28)"),
+  }),
+  execute: async ({ topic, daysBack, analyticsDays }) => {
+    try {
+      // Resolve analytics date range
+      const endDate = new Date().toISOString().slice(0, 10);
+      const startDate = new Date(
+        Date.now() - analyticsDays * 86_400_000,
+      )
+        .toISOString()
+        .slice(0, 10);
+
+      // 1. Fetch all 5 sources in parallel
+      const [
+        communityResult,
+        opportunitiesResult,
+        decayResult,
+        blogResult,
+        keywordsResult,
+      ] = await Promise.allSettled([
+        topic
+          ? searchIdeas({ topic, daysBack })
+          : Promise.resolve({ results: [], topic: "" }),
+        queryContentOpportunities({ startDate, endDate, limit: 15 }),
+        queryContentDecay({ startDate, endDate, limit: 15, minPageviews: 5 }),
+        fetchBlogPosts(20),
+        fetchKeywordsHistory(),
+      ]);
+
+      // 2. Extract data from settled results
+      const community =
+        communityResult.status === "fulfilled"
+          ? communityResult.value.results
+          : [];
+      const opportunities =
+        opportunitiesResult.status === "fulfilled"
+          ? opportunitiesResult.value
+          : { lowCtr: [], strikingDistance: [] };
+      const decay =
+        decayResult.status === "fulfilled"
+          ? decayResult.value.decaying
+          : [];
+      const blogPosts =
+        blogResult.status === "fulfilled" ? blogResult.value : [];
+      const keywords =
+        keywordsResult.status === "fulfilled"
+          ? keywordsResult.value
+          : [];
+
+      // 3. Build compact context string (~2-3k tokens)
+      const contextParts: string[] = [];
+
+      if (topic) {
+        contextParts.push(`## Foco do plano: "${topic}"\n`);
+      }
+
+      if (community.length > 0) {
+        contextParts.push("## Discussões na comunidade");
+        community.slice(0, 10).forEach((r) => {
+          contextParts.push(
+            `- [${r.angleLabel}] "${r.title}" (${r.source})${r.summary ? `: ${r.summary.slice(0, 120)}` : ""}`,
+          );
+        });
+        contextParts.push("");
+      }
+
+      if (
+        opportunities.lowCtr.length > 0 ||
+        opportunities.strikingDistance.length > 0
+      ) {
+        contextParts.push("## Oportunidades de SEO (Search Console)");
+        if (opportunities.lowCtr.length > 0) {
+          contextParts.push("### CTR Baixo (muitas impressões, CTR < 2%)");
+          opportunities.lowCtr.slice(0, 8).forEach((r) => {
+            contextParts.push(
+              `- query="${r.query}" impr=${r.impressions} ctr=${(r.ctr * 100).toFixed(1)}% pos=${r.position.toFixed(1)} page=${r.page}`,
+            );
+          });
+        }
+        if (opportunities.strikingDistance.length > 0) {
+          contextParts.push("### Striking Distance (posição 5-20)");
+          opportunities.strikingDistance.slice(0, 8).forEach((r) => {
+            contextParts.push(
+              `- query="${r.query}" impr=${r.impressions} pos=${r.position.toFixed(1)} page=${r.page}`,
+            );
+          });
+        }
+        contextParts.push("");
+      }
+
+      if (decay.length > 0) {
+        contextParts.push("## Páginas perdendo tráfego (Content Decay)");
+        decay.slice(0, 8).forEach((r) => {
+          contextParts.push(
+            `- ${r.page} — de ${r.previousPageviews} para ${r.currentPageviews} pageviews (${r.changePercent.toFixed(0)}%)`,
+          );
+        });
+        contextParts.push("");
+      }
+
+      if (blogPosts.length > 0) {
+        contextParts.push("## Posts já publicados no blog");
+        blogPosts.slice(0, 15).forEach((p) => {
+          contextParts.push(
+            `- "${p.title}" (${p.publishedAt?.slice(0, 10) ?? "sem data"})`,
+          );
+        });
+        contextParts.push("");
+      }
+
+      if (keywords.length > 0) {
+        contextParts.push("## Keywords já pesquisadas");
+        keywords.slice(0, 15).forEach((kw) => {
+          contextParts.push(
+            `- "${kw.phrase}" vol=${kw.volume} diff=${kw.difficulty}${kw.idea ? ` (idea: ${kw.idea})` : ""}`,
+          );
+        });
+        contextParts.push("");
+      }
+
+      const contextString = contextParts.join("\n");
+
+      // 4. Use AI to synthesize and rank ideas
+      const { text } = await generateText({
+        model: getModel(),
+        system: CONTENT_PLAN_SYNTHESIS_PROMPT,
+        prompt: contextString || "Não há dados disponíveis. Gere ideias gerais para um blog de tecnologia focado em DevOps, CI/CD, Code Review e AI.",
+      });
+
+      // 5. Parse JSON response (handle optional code block wrapping)
+      let parsed: Record<string, unknown>;
+      try {
+        const jsonStr = text
+          .replace(/^```(?:json)?\s*/i, "")
+          .replace(/\s*```$/i, "")
+          .trim();
+        parsed = JSON.parse(jsonStr);
+      } catch {
+        return {
+          success: false as const,
+          message: "Erro ao interpretar resposta da AI. Tente novamente.",
+        };
+      }
+
+      return {
+        success: true as const,
+        summary: parsed.summary as string,
+        ideas: parsed.ideas as unknown[],
+        sourcesUsed: parsed.sourcesUsed as Record<string, number>,
+        dataCounts: {
+          community: community.length,
+          opportunities:
+            opportunities.lowCtr.length +
+            opportunities.strikingDistance.length,
+          decaying: decay.length,
+          blogPosts: blogPosts.length,
+          keywords: keywords.length,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Erro ao gerar plano de conteúdo.",
       };
     }
   },
@@ -787,6 +988,7 @@ export const deleteScheduledJob = tool({
 
 export const agentTools = {
   generateIdeas,
+  generateContentPlan,
   generateKeywords,
   getKeywordHistory,
   generateTitles,

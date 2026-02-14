@@ -1,16 +1,46 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
+import type { UIMessage } from "ai";
 import { DefaultChatTransport } from "ai";
 import { useState, useRef, useMemo, useEffect, useCallback } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
-import { Loader2, AlertCircle, RotateCcw, User, Search, FileText, Share2, ArrowUp, BarChart3 } from "lucide-react";
+import { Loader2, AlertCircle, RotateCcw, User, Search, FileText, Share2, ArrowUp, BarChart3, PanelLeft, SquarePen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ToolResultRenderer } from "@/components/agent-tool-results";
+import { ConversationSidebar } from "@/components/conversation-sidebar";
+import { generateTitleFromMessage } from "@/lib/conversations";
+import type { ConversationSummary } from "@/lib/conversations";
+
+// ---------------------------------------------------------------------------
+// Auth hook (same pattern as jobs-page)
+// ---------------------------------------------------------------------------
+
+function useAuthToken() {
+  const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const [token, setToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!supabase) return;
+    supabase.auth.getSession().then(({ data }) => {
+      setToken(data.session?.access_token ?? null);
+    });
+  }, [supabase]);
+
+  return token;
+}
+
+function authHeaders(token: string) {
+  return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+}
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
 const SUGGESTION_CATEGORIES = [
   {
@@ -25,8 +55,8 @@ const SUGGESTION_CATEGORIES = [
     label: "Content",
     icon: FileText,
     prompts: [
+      "Gerar plano de conteúdo estratégico",
       "Gerar um artigo completo do zero",
-      "Sugerir ideias de conteúdo sobre DevOps",
     ],
   },
   {
@@ -46,6 +76,10 @@ const SUGGESTION_CATEGORIES = [
     ],
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
 
 function AtlasAvatar({ size = "md" }: { size?: "sm" | "md" | "lg" }) {
   const sizeClasses = {
@@ -122,9 +156,27 @@ function getToolInfo(part: Record<string, unknown>) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
 export function AgentChat() {
+  const token = useAuthToken();
   const [userEmail, setUserEmail] = useState<string | null>(null);
 
+  // Conversation state
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const activeIdRef = useRef<string | null>(null);
+  const savingRef = useRef(false);
+
+  // Keep ref in sync
+  useEffect(() => {
+    activeIdRef.current = activeConversationId;
+  }, [activeConversationId]);
+
+  // Get user email
   useEffect(() => {
     const supabase = getSupabaseBrowserClient();
     if (!supabase) return;
@@ -133,6 +185,7 @@ export function AgentChat() {
     });
   }, []);
 
+  // Chat transport
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
@@ -141,14 +194,74 @@ export function AgentChat() {
       }),
     [userEmail],
   );
+
+  // Auto-save handler
+  const handleFinish = useCallback(
+    async ({ messages: allMessages, isAbort, isError }: { message: UIMessage; messages: UIMessage[]; isAbort: boolean; isError: boolean }) => {
+      if (isAbort || isError || !token || savingRef.current) return;
+      savingRef.current = true;
+
+      try {
+        const firstUserMsg = allMessages.find((m) => m.role === "user");
+        const titleText = firstUserMsg?.parts
+          ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
+          .map((p) => p.text)
+          .join(" ") ?? "Nova conversa";
+        const title = generateTitleFromMessage(titleText);
+
+        if (activeIdRef.current) {
+          // Update existing conversation
+          await fetch(`/api/conversations/${activeIdRef.current}`, {
+            method: "PATCH",
+            headers: authHeaders(token),
+            body: JSON.stringify({ messages: allMessages, title }),
+          });
+          // Refresh list to update title/timestamp
+          const res = await fetch("/api/conversations", { headers: authHeaders(token) });
+          if (res.ok) {
+            const data = await res.json();
+            setConversations(data.conversations ?? []);
+          }
+        } else {
+          // Create new conversation
+          const res = await fetch("/api/conversations", {
+            method: "POST",
+            headers: authHeaders(token),
+            body: JSON.stringify({ title, messages: allMessages }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const newId = data.conversation?.id;
+            if (newId) {
+              setActiveConversationId(newId);
+              activeIdRef.current = newId;
+            }
+            // Refresh list
+            const listRes = await fetch("/api/conversations", { headers: authHeaders(token) });
+            if (listRes.ok) {
+              const listData = await listRes.json();
+              setConversations(listData.conversations ?? []);
+            }
+          }
+        }
+      } catch {
+        // Silent fail — user can still see messages in memory
+      } finally {
+        savingRef.current = false;
+      }
+    },
+    [token],
+  );
+
   const {
     messages,
     sendMessage,
+    setMessages,
     status,
     error,
     regenerate,
     clearError,
-  } = useChat({ transport });
+  } = useChat({ transport, onFinish: handleFinish });
 
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -170,6 +283,71 @@ export function AgentChat() {
     inputRef.current?.focus();
   }, []);
 
+  // Load conversations on mount
+  useEffect(() => {
+    if (!token) return;
+    fetch("/api/conversations", { headers: authHeaders(token) })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.conversations) setConversations(data.conversations);
+      })
+      .catch(() => {});
+  }, [token]);
+
+  // Handlers
+  const handleSelectConversation = useCallback(
+    async (id: string) => {
+      if (!token || id === activeConversationId) {
+        setSidebarOpen(false);
+        return;
+      }
+      try {
+        const res = await fetch(`/api/conversations/${id}`, {
+          headers: authHeaders(token),
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const conv = data.conversation;
+        if (conv) {
+          setMessages(conv.messages ?? []);
+          setActiveConversationId(id);
+          setSidebarOpen(false);
+        }
+      } catch {
+        // ignore
+      }
+    },
+    [token, activeConversationId, setMessages],
+  );
+
+  const handleNewConversation = useCallback(() => {
+    setMessages([]);
+    setActiveConversationId(null);
+    setSidebarOpen(false);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }, [setMessages]);
+
+  const handleDeleteConversation = useCallback(
+    async (id: string) => {
+      if (!token) return;
+      try {
+        await fetch(`/api/conversations/${id}`, {
+          method: "DELETE",
+          headers: authHeaders(token),
+        });
+        setConversations((prev) => prev.filter((c) => c.id !== id));
+        if (activeConversationId === id) {
+          setMessages([]);
+          setActiveConversationId(null);
+        }
+      } catch {
+        // ignore
+      }
+    },
+    [token, activeConversationId, setMessages],
+  );
+
+  // Form handlers
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const text = input.trim();
@@ -202,223 +380,254 @@ export function AgentChat() {
   );
 
   return (
-    <div className="flex h-[calc(100dvh-73px)] flex-col bg-neutral-950">
-      {/* Header — Dark premium */}
-      <div className="border-b border-white/[0.06] bg-neutral-950">
-        <div className="mx-auto flex max-w-4xl items-center gap-3 px-6 py-4">
-          <div className="relative">
-            <AtlasAvatar size="md" />
-            <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-neutral-950 bg-emerald-400" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-base font-semibold text-white">Atlas</h1>
-              <Badge className="border-0 bg-white/[0.06] text-[10px] font-medium text-neutral-400 hover:bg-white/[0.08]">
-                CMO Agent
-              </Badge>
+    <>
+      <ConversationSidebar
+        conversations={conversations}
+        activeId={activeConversationId}
+        onSelect={handleSelectConversation}
+        onNew={handleNewConversation}
+        onDelete={handleDeleteConversation}
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+      />
+
+      <div className="flex h-[calc(100dvh-73px)] flex-col bg-neutral-950">
+        {/* Header */}
+        <div className="border-b border-white/[0.06] bg-neutral-950">
+          <div className="mx-auto flex max-w-4xl items-center gap-3 px-6 py-4">
+            {/* Sidebar toggle */}
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="rounded-lg p-1.5 text-neutral-400 transition hover:bg-white/[0.06] hover:text-white"
+              title="Conversas"
+            >
+              <PanelLeft className="h-5 w-5" />
+            </button>
+
+            <div className="relative">
+              <AtlasAvatar size="md" />
+              <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-neutral-950 bg-emerald-400" />
             </div>
-            <p className="text-xs text-neutral-500">Chief Marketing Officer</p>
-          </div>
-          <div className="ml-auto flex items-center gap-1.5 text-xs text-neutral-500">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            Online
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-base font-semibold text-white">Atlas</h1>
+                <Badge className="border-0 bg-white/[0.06] text-[10px] font-medium text-neutral-400 hover:bg-white/[0.08]">
+                  CMO Agent
+                </Badge>
+              </div>
+              <p className="text-xs text-neutral-500">Chief Marketing Officer</p>
+            </div>
+            <div className="ml-auto flex items-center gap-3">
+              <div className="flex items-center gap-1.5 text-xs text-neutral-500">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                Online
+              </div>
+              {/* New conversation button */}
+              <button
+                onClick={handleNewConversation}
+                className="rounded-lg p-1.5 text-neutral-400 transition hover:bg-white/[0.06] hover:text-white"
+                title="Nova conversa"
+              >
+                <SquarePen className="h-5 w-5" />
+              </button>
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* Messages area */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto bg-neutral-900">
-        {isEmpty ? (
-          <div className="flex h-full flex-col items-center justify-center gap-8 px-6">
-            {/* Persona */}
-            <div className="flex flex-col items-center text-center">
-              <div className="mb-4">
-                <AtlasAvatar size="lg" />
+        {/* Messages area */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto bg-neutral-900">
+          {isEmpty ? (
+            <div className="flex h-full flex-col items-center justify-center gap-8 px-6">
+              {/* Persona */}
+              <div className="flex flex-col items-center text-center">
+                <div className="mb-4">
+                  <AtlasAvatar size="lg" />
+                </div>
+                <h2 className="text-xl font-semibold text-white">Atlas</h2>
+                <p className="mt-1 text-sm text-neutral-400">
+                  Seu CMO de Growth &amp; SEO
+                </p>
+                <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-neutral-500">
+                  Pesquiso tendências, crio conteúdo e impulsiono seu crescimento
+                  orgânico.
+                </p>
               </div>
-              <h2 className="text-xl font-semibold text-white">Atlas</h2>
-              <p className="mt-1 text-sm text-neutral-400">
-                Seu CMO de Growth &amp; SEO
-              </p>
-              <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-neutral-500">
-                Pesquiso tendências, crio conteúdo e impulsiono seu crescimento
-                orgânico.
-              </p>
-            </div>
 
-            {/* Suggestion categories */}
-            <div className="grid w-full max-w-3xl grid-cols-4 gap-3">
-              {SUGGESTION_CATEGORIES.map((cat) => {
-                const CatIcon = cat.icon;
-                return (
-                  <div
-                    key={cat.label}
-                    className="flex flex-col gap-2.5 rounded-xl border border-white/[0.06] bg-white/[0.03] p-4"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-500/10">
-                        <CatIcon className="h-3.5 w-3.5 text-violet-400" />
-                      </span>
-                      <span className="text-xs font-semibold text-neutral-300">
-                        {cat.label}
-                      </span>
+              {/* Suggestion categories */}
+              <div className="grid w-full max-w-3xl grid-cols-4 gap-3">
+                {SUGGESTION_CATEGORIES.map((cat) => {
+                  const CatIcon = cat.icon;
+                  return (
+                    <div
+                      key={cat.label}
+                      className="flex flex-col gap-2.5 rounded-xl border border-white/[0.06] bg-white/[0.03] p-4"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-500/10">
+                          <CatIcon className="h-3.5 w-3.5 text-violet-400" />
+                        </span>
+                        <span className="text-xs font-semibold text-neutral-300">
+                          {cat.label}
+                        </span>
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        {cat.prompts.map((prompt) => (
+                          <button
+                            key={prompt}
+                            onClick={() => handleSuggestion(prompt)}
+                            className="rounded-lg bg-white/[0.04] px-3 py-2 text-left text-[13px] text-neutral-400 transition hover:bg-violet-500/10 hover:text-violet-300"
+                          >
+                            {prompt}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                    <div className="flex flex-col gap-1.5">
-                      {cat.prompts.map((prompt) => (
-                        <button
-                          key={prompt}
-                          onClick={() => handleSuggestion(prompt)}
-                          className="rounded-lg bg-white/[0.04] px-3 py-2 text-left text-[13px] text-neutral-400 transition hover:bg-violet-500/10 hover:text-violet-300"
-                        >
-                          {prompt}
-                        </button>
-                      ))}
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="mx-auto max-w-4xl space-y-1 px-6 py-4">
+              {messages.map((message) => {
+                const isUser = message.role === "user";
+
+                if (isUser) {
+                  return (
+                    <div key={message.id} className="flex justify-end py-2">
+                      <div className="flex max-w-[75%] items-start gap-2.5">
+                        <div className="rounded-2xl rounded-tr-md bg-violet-600 px-4 py-2.5 text-sm leading-relaxed text-white shadow-sm">
+                          {message.parts?.map((part, i) =>
+                            part.type === "text" ? (
+                              <span key={i}>{part.text}</span>
+                            ) : null,
+                          )}
+                        </div>
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/10">
+                          <User className="h-3.5 w-3.5 text-neutral-300" />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
+                // Assistant message
+                return (
+                  <div key={message.id} className="flex gap-2.5 py-2">
+                    <AtlasAvatar size="sm" />
+                    <div className="min-w-0 flex-1 space-y-2 pt-0.5">
+                      {message.parts?.map((part, i) => {
+                        if (part.type === "text" && part.text) {
+                          return (
+                            <div
+                              key={i}
+                              className="text-sm leading-relaxed text-neutral-200"
+                            >
+                              <ReactMarkdown
+                                remarkPlugins={[remarkGfm]}
+                                components={markdownComponents}
+                              >
+                                {part.text}
+                              </ReactMarkdown>
+                            </div>
+                          );
+                        }
+                        if (isToolPart(part as { type: string })) {
+                          const info = getToolInfo(part as Record<string, unknown>);
+                          return (
+                            <ToolResultRenderer
+                              key={info.toolCallId}
+                              toolName={info.toolName}
+                              state={info.state as "input-streaming" | "input-available" | "output-available" | "output-error"}
+                              input={info.input}
+                              output={info.output}
+                            />
+                          );
+                        }
+                        return null;
+                      })}
                     </div>
                   </div>
                 );
               })}
-            </div>
-          </div>
-        ) : (
-          <div className="mx-auto max-w-4xl space-y-1 px-6 py-4">
-            {messages.map((message) => {
-              const isUser = message.role === "user";
 
-              if (isUser) {
-                return (
-                  <div key={message.id} className="flex justify-end py-2">
-                    <div className="flex max-w-[75%] items-start gap-2.5">
-                      <div className="rounded-2xl rounded-tr-md bg-violet-600 px-4 py-2.5 text-sm leading-relaxed text-white shadow-sm">
-                        {message.parts?.map((part, i) =>
-                          part.type === "text" ? (
-                            <span key={i}>{part.text}</span>
-                          ) : null,
-                        )}
-                      </div>
-                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/10">
-                        <User className="h-3.5 w-3.5 text-neutral-300" />
-                      </div>
-                    </div>
-                  </div>
-                );
-              }
-
-              // Assistant message
-              return (
-                <div key={message.id} className="flex gap-2.5 py-2">
+              {isLoading && !hasActiveToolLoading && (
+                <div className="flex gap-2.5 py-2">
                   <AtlasAvatar size="sm" />
-                  <div className="min-w-0 flex-1 space-y-2 pt-0.5">
-                    {message.parts?.map((part, i) => {
-                      if (part.type === "text" && part.text) {
-                        return (
-                          <div
-                            key={i}
-                            className="text-sm leading-relaxed text-neutral-200"
-                          >
-                            <ReactMarkdown
-                              remarkPlugins={[remarkGfm]}
-                              components={markdownComponents}
-                            >
-                              {part.text}
-                            </ReactMarkdown>
-                          </div>
-                        );
-                      }
-                      if (isToolPart(part as { type: string })) {
-                        const info = getToolInfo(part as Record<string, unknown>);
-                        return (
-                          <ToolResultRenderer
-                            key={info.toolCallId}
-                            toolName={info.toolName}
-                            state={info.state as "input-streaming" | "input-available" | "output-available" | "output-error"}
-                            input={info.input}
-                            output={info.output}
-                          />
-                        );
-                      }
-                      return null;
-                    })}
+                  <div className="flex items-center gap-2 pt-1 text-sm text-neutral-500">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-400" />
+                    Atlas está pensando...
                   </div>
                 </div>
-              );
-            })}
-
-            {isLoading && !hasActiveToolLoading && (
-              <div className="flex gap-2.5 py-2">
-                <AtlasAvatar size="sm" />
-                <div className="flex items-center gap-2 pt-1 text-sm text-neutral-500">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-400" />
-                  Atlas está pensando...
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {error && (
-          <div className="mx-auto max-w-4xl px-6">
-            <div className="mb-4 flex items-center gap-3 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3">
-              <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
-              <p className="flex-1 text-sm text-red-300">
-                Ocorreu um erro. Tente novamente.
-              </p>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  clearError();
-                  regenerate();
-                }}
-                className="text-red-300 hover:bg-red-500/20 hover:text-red-200"
-              >
-                <RotateCcw className="mr-1 h-3 w-3" />
-                Retry
-              </Button>
+              )}
             </div>
-          </div>
-        )}
-      </div>
+          )}
 
-      {/* Input area — Dark premium */}
-      <div className="border-t border-white/[0.06] bg-neutral-950">
-        <div className="mx-auto max-w-4xl px-6 py-4">
-          <form onSubmit={handleSubmit} className="relative">
-            <div className="group rounded-2xl border border-white/[0.08] bg-white/[0.04] transition-all focus-within:border-violet-500/40 focus-within:bg-white/[0.06] focus-within:shadow-[0_0_20px_rgba(139,92,246,0.08)]">
-              <textarea
-                ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Peça algo ao Atlas..."
-                rows={1}
-                className="w-full resize-none bg-transparent px-4 pb-12 pt-4 text-sm leading-relaxed text-white placeholder:text-neutral-500 focus:outline-none"
-                style={{ minHeight: "56px", maxHeight: "160px" }}
-                onInput={(e) => {
-                  const target = e.target as HTMLTextAreaElement;
-                  target.style.height = "auto";
-                  target.style.height = `${Math.min(target.scrollHeight, 160)}px`;
-                }}
-              />
-              <div className="absolute bottom-3 right-3 flex items-center gap-2">
-                <span className="text-[11px] text-neutral-600 select-none">
-                  {navigator.platform?.includes("Mac") ? "⌘" : "Ctrl"}+Enter
-                </span>
+          {error && (
+            <div className="mx-auto max-w-4xl px-6">
+              <div className="mb-4 flex items-center gap-3 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3">
+                <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
+                <p className="flex-1 text-sm text-red-300">
+                  Ocorreu um erro. Tente novamente.
+                </p>
                 <Button
-                  type="submit"
+                  variant="ghost"
                   size="sm"
-                  disabled={isLoading || !input.trim()}
-                  className="h-8 w-8 rounded-lg bg-gradient-to-br from-violet-600 to-indigo-600 p-0 text-white shadow-lg shadow-violet-500/20 transition-all hover:from-violet-500 hover:to-indigo-500 hover:shadow-violet-500/30 disabled:opacity-30 disabled:shadow-none"
+                  onClick={() => {
+                    clearError();
+                    regenerate();
+                  }}
+                  className="text-red-300 hover:bg-red-500/20 hover:text-red-200"
                 >
-                  {isLoading ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <ArrowUp className="h-3.5 w-3.5" />
-                  )}
+                  <RotateCcw className="mr-1 h-3 w-3" />
+                  Retry
                 </Button>
               </div>
             </div>
-          </form>
+          )}
+        </div>
+
+        {/* Input area */}
+        <div className="border-t border-white/[0.06] bg-neutral-950">
+          <div className="mx-auto max-w-4xl px-6 py-4">
+            <form onSubmit={handleSubmit} className="relative">
+              <div className="group rounded-2xl border border-white/[0.08] bg-white/[0.04] transition-all focus-within:border-violet-500/40 focus-within:bg-white/[0.06] focus-within:shadow-[0_0_20px_rgba(139,92,246,0.08)]">
+                <textarea
+                  ref={inputRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Peça algo ao Atlas..."
+                  rows={1}
+                  className="w-full resize-none bg-transparent px-4 pb-12 pt-4 text-sm leading-relaxed text-white placeholder:text-neutral-500 focus:outline-none"
+                  style={{ minHeight: "56px", maxHeight: "160px" }}
+                  onInput={(e) => {
+                    const target = e.target as HTMLTextAreaElement;
+                    target.style.height = "auto";
+                    target.style.height = `${Math.min(target.scrollHeight, 160)}px`;
+                  }}
+                />
+                <div className="absolute bottom-3 right-3 flex items-center gap-2">
+                  <span className="text-[11px] text-neutral-600 select-none">
+                    {navigator.platform?.includes("Mac") ? "⌘" : "Ctrl"}+Enter
+                  </span>
+                  <Button
+                    type="submit"
+                    size="sm"
+                    disabled={isLoading || !input.trim()}
+                    className="h-8 w-8 rounded-lg bg-gradient-to-br from-violet-600 to-indigo-600 p-0 text-white shadow-lg shadow-violet-500/20 transition-all hover:from-violet-500 hover:to-indigo-500 hover:shadow-violet-500/30 disabled:opacity-30 disabled:shadow-none"
+                  >
+                    {isLoading ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <ArrowUp className="h-3.5 w-3.5" />
+                    )}
+                  </Button>
+                </div>
+              </div>
+            </form>
+          </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }

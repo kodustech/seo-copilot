@@ -794,3 +794,58 @@ function toNumber(value: unknown): number {
   );
   return Number.isFinite(parsed) ? parsed : 0;
 }
+
+// ---------------------------------------------------------------------------
+// WordPress Blog Posts (reusable)
+// ---------------------------------------------------------------------------
+
+const WORDPRESS_API_BASE =
+  process.env.WORDPRESS_API_BASE?.replace(/\/$/, "") ||
+  "https://kodus.io/wp-json/wp/v2";
+
+export type BlogPost = {
+  id: string;
+  title: string;
+  link: string;
+  publishedAt?: string;
+};
+
+export async function fetchBlogPosts(
+  perPage = 20,
+): Promise<BlogPost[]> {
+  const endpoint = new URL(`${WORDPRESS_API_BASE}/posts`);
+  endpoint.searchParams.set("per_page", String(perPage));
+  endpoint.searchParams.set("orderby", "date");
+  endpoint.searchParams.set("order", "desc");
+  endpoint.searchParams.set("_fields", "id,title.rendered,link,date");
+
+  const response = await fetch(endpoint, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Erro ao buscar blog posts (${response.status}).`);
+  }
+
+  const data = await response.json();
+  if (!Array.isArray(data)) return [];
+
+  return data
+    .map((item: Record<string, unknown>) => {
+      const title =
+        typeof item.title === "object" && item.title !== null
+          ? String(
+              (item.title as Record<string, unknown>).rendered ?? "",
+            ).replace(/<[^>]*>/g, "")
+          : "";
+      const link = typeof item.link === "string" ? item.link : "";
+      const date =
+        typeof item.date === "string"
+          ? new Date(item.date).toISOString()
+          : undefined;
+      if (!title || !link) return null;
+      return { id: String(item.id), title, link, publishedAt: date } as BlogPost;
+    })
+    .filter((p: BlogPost | null): p is BlogPost => p !== null);
+}
