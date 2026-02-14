@@ -29,8 +29,9 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const links = useMemo(
     () => [
-      { href: "/", label: "Article Generator" },
-      { href: "/social", label: "Social Posts" },
+      { href: "/", label: "Growth Agent" },
+      { href: "/jobs", label: "Scheduled Jobs" },
+      { href: "/manual", label: "Modo Manual" },
     ],
     [],
   );
@@ -245,9 +246,17 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     );
   }
 
+  const isDarkPage = pathname === "/" || pathname === "/jobs";
+
   return (
-    <div className="min-h-screen bg-neutral-50">
-      <header className="sticky top-0 z-20 border-b border-neutral-200/70 bg-white/80 backdrop-blur">
+    <div className={`min-h-screen ${isDarkPage ? "bg-neutral-950" : "bg-neutral-50"}`}>
+      <header
+        className={`sticky top-0 z-20 border-b backdrop-blur ${
+          isDarkPage
+            ? "border-white/[0.06] bg-neutral-950/80"
+            : "border-neutral-200/70 bg-white/80"
+        }`}
+      >
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <nav className="flex items-center gap-2 text-sm">
             {links.map((item) => {
@@ -257,7 +266,15 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
                   key={item.href}
                   variant={active ? "default" : "secondary"}
                   size="sm"
-                  className={`rounded-full ${active ? "bg-neutral-900 text-white hover:bg-neutral-800" : ""}`}
+                  className={`rounded-full ${
+                    active
+                      ? isDarkPage
+                        ? "bg-violet-600 text-white hover:bg-violet-500"
+                        : "bg-neutral-900 text-white hover:bg-neutral-800"
+                      : isDarkPage
+                        ? "bg-white/[0.06] text-neutral-400 hover:bg-white/10 hover:text-white"
+                        : ""
+                  }`}
                   asChild
                 >
                   <Link href={item.href}>{item.label}</Link>
@@ -266,13 +283,20 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
             })}
           </nav>
           <div className="flex items-center gap-3 text-sm">
-            <Badge variant="outline" className="rounded-full px-3 py-1">
+            <Badge
+              variant="outline"
+              className={`rounded-full px-3 py-1 ${
+                isDarkPage ? "border-white/10 text-neutral-400" : ""
+              }`}
+            >
               {session.user.email}
             </Badge>
             <Button
               variant="ghost"
               size="sm"
-              className="rounded-full"
+              className={`rounded-full ${
+                isDarkPage ? "text-neutral-400 hover:bg-white/10 hover:text-white" : ""
+              }`}
               onClick={handleSignOut}
             >
               <LogOut className="mr-2 h-4 w-4" />
