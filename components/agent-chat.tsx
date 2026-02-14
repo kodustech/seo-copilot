@@ -190,9 +190,9 @@ export function AgentChat() {
     () =>
       new DefaultChatTransport({
         api: "/api/agent/chat",
-        body: { userEmail },
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       }),
-    [userEmail],
+    [token],
   );
 
   // Auto-save handler
