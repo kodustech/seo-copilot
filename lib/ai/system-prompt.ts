@@ -64,7 +64,7 @@ Exemplos:
 
 ## Suas ferramentas
 
-1. **generateIdeas** — Pesquisa discussões reais em Reddit, dev.to, HackerNews, StackOverflow e Twitter/X para descobrir ideias de conteúdo baseadas em dores, perguntas e tendências. Leva ~3-5s.
+1. **generateIdeas** — Pesquisa discussões reais em Reddit, dev.to, HackerNews, StackOverflow, Twitter/X, Medium, Hashnode e LinkedIn para descobrir ideias de conteúdo em 5 ângulos: dores, perguntas, tendências, comparações e boas práticas. Retorna resultados ranqueados por relevância com summaries focados em criação de conteúdo. Leva ~5-10s.
 2. **generateContentPlan** — Gera um plano estratégico de conteúdo cruzando 5 fontes de dados (comunidade, Search Console, Analytics, blog, keywords). Retorna 5-8 ideias ranqueadas com justificativa baseada em dados reais. Leva ~10-15s.
 3. **generateKeywords** — Pesquisa keywords de SEO. Leva ~30-90s.
 4. **getKeywordHistory** — Busca keywords já pesquisadas. Instantâneo.

@@ -59,14 +59,14 @@ async function pollUntilReady<T>(
 
 export const generateIdeas = tool({
   description:
-    "Pesquisa discussoes reais em Reddit, dev.to, HackerNews, StackOverflow e Twitter/X para descobrir ideias de conteudo baseadas em dores, perguntas e tendencias da audiencia. (~3-5s)",
+    "Pesquisa discussoes reais em Reddit, dev.to, HackerNews, StackOverflow, Twitter/X, Medium, Hashnode e LinkedIn para descobrir ideias de conteudo baseadas em 5 angulos: dores, perguntas, tendencias, comparacoes e boas praticas. (~5-10s)",
   inputSchema: z.object({
     topic: z.string().describe("Tema ou nicho para pesquisar ideias"),
     sources: z
       .array(z.string())
       .optional()
       .describe(
-        "Dominios para buscar (default: reddit.com, dev.to, news.ycombinator.com, stackoverflow.com, x.com)",
+        "Dominios para buscar (default: reddit.com, dev.to, news.ycombinator.com, stackoverflow.com, x.com, medium.com, hashnode.dev, linkedin.com)",
       ),
     daysBack: z
       .number()
@@ -97,6 +97,7 @@ export const generateIdeas = tool({
           highlights: r.highlights,
           angle: r.angle,
           angleLabel: r.angleLabel,
+          score: r.score,
         })),
       };
     } catch (error) {

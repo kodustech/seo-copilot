@@ -4,7 +4,12 @@ import Exa from "exa-js";
 // Types
 // ---------------------------------------------------------------------------
 
-export type IdeaAngle = "pain_points" | "questions" | "trends";
+export type IdeaAngle =
+  | "pain_points"
+  | "questions"
+  | "trends"
+  | "comparisons"
+  | "best_practices";
 
 export type IdeaResult = {
   id: string;
@@ -16,6 +21,7 @@ export type IdeaResult = {
   highlights: string[];
   angle: IdeaAngle;
   angleLabel: string;
+  score: number | null;
 };
 
 export type SearchIdeasInput = {
@@ -40,25 +46,47 @@ const DEFAULT_DOMAINS = [
   "news.ycombinator.com",
   "stackoverflow.com",
   "x.com",
+  "medium.com",
+  "hashnode.dev",
+  "linkedin.com",
 ];
 
 const ANGLE_CONFIG: Record<
   IdeaAngle,
-  { label: string; querySuffix: string }
+  { label: string; queryTemplate: (topic: string) => string }
 > = {
   pain_points: {
     label: "Dores",
-    querySuffix: "struggling OR frustrated OR problem OR issue",
+    queryTemplate: (topic) =>
+      `developers and teams struggling with ${topic}, common frustrations, problems people face`,
   },
   questions: {
     label: "Perguntas",
-    querySuffix: "how to OR best way OR should I OR recommend",
+    queryTemplate: (topic) =>
+      `how to get started with ${topic}, best way to implement ${topic}, common questions about ${topic}`,
   },
   trends: {
-    label: "Tendencias",
-    querySuffix: "announcement OR release OR new OR trending",
+    label: "Tendências",
+    queryTemplate: (topic) =>
+      `new tools and announcements in ${topic}, latest trends and what's changing in ${topic}`,
+  },
+  comparisons: {
+    label: "Comparações",
+    queryTemplate: (topic) =>
+      `${topic} comparison, alternatives, versus, which one should I choose for ${topic}`,
+  },
+  best_practices: {
+    label: "Boas Práticas",
+    queryTemplate: (topic) =>
+      `${topic} best practices, lessons learned, tips from experience, production ${topic} guide`,
   },
 };
+
+const SUMMARY_PROMPT =
+  "What is the main pain point, question, or insight discussed? Why would this be relevant for creating a blog article? Be specific and actionable in 2-3 sentences.";
+
+const HIGHLIGHTS_PROMPT =
+  "Extract the most interesting quotes, data points, or specific claims that could inspire a blog article.";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -73,6 +101,9 @@ function extractSource(url: string): string {
     if (hostname.includes("stackoverflow.com")) return "StackOverflow";
     if (hostname.includes("x.com") || hostname.includes("twitter.com"))
       return "Twitter";
+    if (hostname.includes("medium.com")) return "Medium";
+    if (hostname.includes("hashnode")) return "Hashnode";
+    if (hostname.includes("linkedin.com")) return "LinkedIn";
     return hostname;
   } catch {
     return "web";
@@ -85,6 +116,27 @@ function makeStartDate(daysBack: number): string {
   return d.toISOString().split("T")[0];
 }
 
+function isQualityResult(r: {
+  title: string | null;
+  summary: string | null;
+}): boolean {
+  if (!r.title || r.title.length < 10) return false;
+  if (!r.summary || r.summary.length < 30) return false;
+  // Filter generic/useless titles
+  const generic = [
+    "home",
+    "index",
+    "untitled",
+    "404",
+    "page not found",
+    "sign in",
+    "login",
+  ];
+  const lower = r.title.toLowerCase();
+  if (generic.some((g) => lower === g)) return false;
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -92,7 +144,7 @@ function makeStartDate(daysBack: number): string {
 export async function searchIdeas({
   topic,
   domains,
-  numResultsPerAngle = 5,
+  numResultsPerAngle = 8,
   daysBack = 90,
 }: SearchIdeasInput): Promise<SearchIdeasOutput> {
   const apiKey = process.env.EXA_API_KEY?.trim();
@@ -114,14 +166,20 @@ export async function searchIdeas({
   const searches = angles.map(async ([angle, config]) => {
     try {
       const response = await exa.searchAndContents(
-        `"${topic}" ${config.querySuffix}`,
+        config.queryTemplate(topic),
         {
-          type: "neural",
+          type: "auto",
           numResults: numResultsPerAngle,
           includeDomains,
           startPublishedDate,
-          highlights: true,
-          summary: true,
+          useAutoprompt: true,
+          highlights: {
+            query: HIGHLIGHTS_PROMPT,
+            maxCharacters: 300,
+          },
+          summary: {
+            query: SUMMARY_PROMPT,
+          },
         },
       );
 
@@ -136,6 +194,7 @@ export async function searchIdeas({
           highlights: r.highlights ?? [],
           angle,
           angleLabel: config.label,
+          score: r.score ?? null,
         }),
       );
     } catch {
@@ -154,5 +213,11 @@ export async function searchIdeas({
     return true;
   });
 
-  return { results: deduped, topic };
+  // Filter low-quality results
+  const quality = deduped.filter((r) => isQualityResult(r));
+
+  // Sort by score (higher = more relevant)
+  quality.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+
+  return { results: quality, topic };
 }
