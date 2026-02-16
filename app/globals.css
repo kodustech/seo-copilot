@@ -120,3 +120,35 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* React Flow dark theme overrides */
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-minimap-background-color: rgba(255, 255, 255, 0.03);
+  --xy-minimap-mask-background-color: rgba(0, 0, 0, 0.6);
+  --xy-controls-button-background-color: rgba(255, 255, 255, 0.06);
+  --xy-controls-button-color: #a3a3a3;
+  --xy-controls-button-border-color: rgba(255, 255, 255, 0.08);
+  --xy-edge-stroke: rgba(255, 255, 255, 0.08);
+  --xy-edge-stroke-selected: rgba(139, 92, 246, 0.5);
+  --xy-node-border-radius: 12px;
+  --xy-node-box-shadow: none;
+  --xy-node-border: none;
+}
+
+.react-flow .react-flow__edge-path {
+  stroke: rgba(255, 255, 255, 0.08);
+  stroke-width: 1.5;
+}
+
+.react-flow .react-flow__controls button:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.react-flow .react-flow__node {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}

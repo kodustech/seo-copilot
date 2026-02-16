@@ -10,7 +10,7 @@ import {
   generateSocialContent,
   fetchBlogPosts,
 } from "@/lib/copilot";
-import { searchIdeas } from "@/lib/exa";
+import { searchIdeas, searchCompetitorContent } from "@/lib/exa";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 import {
   createJob,
@@ -27,6 +27,7 @@ import {
   queryComparePerformance,
   queryContentDecay,
   querySearchBySegment,
+  queryPageKeywords,
 } from "@/lib/bigquery";
 import { getModel } from "@/lib/ai/provider";
 import { CONTENT_PLAN_SYNTHESIS_PROMPT } from "@/lib/ai/system-prompt";
@@ -885,6 +886,113 @@ export const getSearchBySegment = tool({
 });
 
 // ---------------------------------------------------------------------------
+// Page Keywords (keyword-to-page mapping)
+// ---------------------------------------------------------------------------
+
+export const getPageKeywords = tool({
+  description:
+    "Mostra quais keywords do Google trazem tráfego para uma página específica. Aceita URL completa ou path parcial (ex: /blog/code-review). Retorna clicks, impressões, CTR e posição de cada keyword.",
+  inputSchema: z.object({
+    page: z
+      .string()
+      .describe("URL ou path da página (ex: /blog/code-review ou kodus.io/blog/code-review)"),
+    startDate: z
+      .string()
+      .optional()
+      .describe("Data inicial (YYYY-MM-DD). Default: últimos 28 dias."),
+    endDate: z
+      .string()
+      .optional()
+      .describe("Data final (YYYY-MM-DD). Default: hoje."),
+    limit: z
+      .number()
+      .min(1)
+      .max(50)
+      .optional()
+      .default(30)
+      .describe("Número máximo de keywords (1-50, default 30)"),
+  }),
+  execute: async ({ page, startDate, endDate, limit }) => {
+    try {
+      const data = await queryPageKeywords({ page, startDate, endDate, limit });
+      return { success: true as const, ...data };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Erro ao buscar keywords da página.",
+      };
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Competitor Analysis
+// ---------------------------------------------------------------------------
+
+export const analyzeCompetitor = tool({
+  description:
+    "Analisa conteúdo de concorrentes sobre um tema usando busca na web. Retorna os melhores artigos encontrados com resumo, highlights e fonte. Útil para entender o que os concorrentes estão cobrindo e como se diferenciar.",
+  inputSchema: z.object({
+    topic: z
+      .string()
+      .describe("Tema para pesquisar conteúdo concorrente (ex: 'code review best practices')"),
+    targetDomains: z
+      .array(z.string())
+      .optional()
+      .describe("Domínios específicos de concorrentes para focar (ex: ['linearb.io', 'atlassian.com'])"),
+    numResults: z
+      .number()
+      .min(3)
+      .max(20)
+      .optional()
+      .default(10)
+      .describe("Número de resultados (3-20, default 10)"),
+    daysBack: z
+      .number()
+      .min(30)
+      .max(365)
+      .optional()
+      .default(180)
+      .describe("Período em dias para buscar (30-365, default 180)"),
+  }),
+  execute: async ({ topic, targetDomains, numResults, daysBack }) => {
+    try {
+      const data = await searchCompetitorContent({
+        topic,
+        targetDomains,
+        numResults,
+        daysBack,
+      });
+      return {
+        success: true as const,
+        topic: data.topic,
+        totalResults: data.results.length,
+        results: data.results.map((r) => ({
+          id: r.id,
+          title: r.title,
+          url: r.url,
+          source: r.source,
+          publishedDate: r.publishedDate,
+          summary: r.summary,
+          highlights: r.highlights,
+        })),
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Erro ao analisar concorrentes.",
+      };
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Scheduled Jobs Tools
 // ---------------------------------------------------------------------------
 
@@ -987,6 +1095,76 @@ export const deleteScheduledJob = tool({
   },
 });
 
+export const scheduleArticlePublication = tool({
+  description:
+    "Agenda a publicação automática de um artigo. Cria um job agendado que gera o artigo a partir de título e keyword e publica automaticamente. Não precisa de webhook — o artigo é publicado direto no WordPress.",
+  inputSchema: z.object({
+    user_email: z.string().describe("Email do usuário que está criando o agendamento"),
+    title: z.string().describe("Título do artigo a ser gerado"),
+    keyword: z.string().describe("Keyword principal do artigo"),
+    schedule: z
+      .enum(["daily_9am", "weekly_monday", "weekly_friday", "biweekly", "monthly_first"])
+      .describe("Quando publicar o artigo"),
+    useResearch: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe("Se deve usar pesquisa web para enriquecer o artigo"),
+    customInstructions: z
+      .string()
+      .optional()
+      .describe("Instruções customizadas para o artigo"),
+  }),
+  execute: async ({ user_email, title, keyword, schedule, useResearch, customInstructions }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const preset = SCHEDULE_PRESETS[schedule as SchedulePreset];
+
+      // Build a self-contained prompt that the job executor will run
+      const articlePrompt = [
+        `Gere e publique um artigo com o título "${title}" e keyword principal "${keyword}".`,
+        useResearch ? "Use pesquisa web para enriquecer o conteúdo." : "",
+        customInstructions ? `Instruções adicionais: ${customInstructions}` : "",
+        "Execute generateArticle imediatamente.",
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      // Use the internal app URL as webhook so results stay in the system
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}`
+        : "http://localhost:3000";
+
+      const job = await createJob(client, {
+        user_email,
+        name: `Publicar: ${title.slice(0, 60)}`,
+        prompt: articlePrompt,
+        cron_expression: preset.cron,
+        webhook_url: `${appUrl}/api/canvas/explore`,
+      });
+
+      return {
+        success: true as const,
+        job: {
+          id: job.id,
+          name: job.name,
+          title,
+          keyword,
+          schedule: preset.label,
+          cron: preset.cron,
+          enabled: job.enabled,
+        },
+        message: `Artigo "${title}" agendado para ${preset.label}. O artigo será gerado e publicado automaticamente.`,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Erro ao agendar publicação.",
+      };
+    }
+  },
+});
+
 export const agentTools = {
   generateIdeas,
   generateContentPlan,
@@ -1003,7 +1181,10 @@ export const agentTools = {
   comparePerformance,
   getContentDecay,
   getSearchBySegment,
+  getPageKeywords,
+  analyzeCompetitor,
   scheduleJob,
+  scheduleArticlePublication,
   listScheduledJobs,
   deleteScheduledJob,
 };

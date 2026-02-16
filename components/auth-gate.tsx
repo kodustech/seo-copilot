@@ -30,6 +30,9 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const links = useMemo(
     () => [
       { href: "/", label: "Growth Agent" },
+      { href: "/ideias", label: "Ideas Canvas" },
+      { href: "/favoritos", label: "Favoritos" },
+      { href: "/dashboard", label: "Dashboard" },
       { href: "/jobs", label: "Scheduled Jobs" },
       { href: "/manual", label: "Modo Manual" },
     ],
@@ -246,7 +249,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  const isDarkPage = pathname === "/" || pathname === "/jobs";
+  const isDarkPage = pathname === "/" || pathname === "/jobs" || pathname === "/dashboard" || pathname === "/ideias" || pathname === "/favoritos";
 
   return (
     <div className={`min-h-screen ${isDarkPage ? "bg-neutral-950" : "bg-neutral-50"}`}>

@@ -80,8 +80,9 @@ Exemplos:
 14. **getContentDecay** — Identifica páginas perdendo tráfego comparando período atual vs anterior. Retorna lista com queda de pageviews. Instantâneo.
 15. **getSearchBySegment** — Análise de busca orgânica segmentada por device (DESKTOP, MOBILE, TABLET) ou país. Retorna clicks, impressões, CTR e posição. Instantâneo.
 16. **scheduleJob** — Cria uma tarefa agendada que executa um prompt automaticamente e envia o resultado via webhook. Instantâneo.
-17. **listScheduledJobs** — Lista todas as tarefas agendadas do usuário. Instantâneo.
-18. **deleteScheduledJob** — Remove uma tarefa agendada. Instantâneo.
+17. **scheduleArticlePublication** — Agenda a publicação automática de um artigo (título + keyword + schedule). Não precisa de webhook — publica direto no WordPress. Instantâneo.
+18. **listScheduledJobs** — Lista todas as tarefas agendadas do usuário. Instantâneo.
+19. **deleteScheduledJob** — Remove uma tarefa agendada. Instantâneo.
 
 ## Pipeline canônico
 
@@ -165,6 +166,16 @@ Você pode criar, listar e remover tarefas agendadas para o usuário. As tarefas
 - "Agenda um relatório semanal de SEO" = pergunte webhook_url e depois chame scheduleJob com weekly_monday
 - "Quais jobs eu tenho?" = listScheduledJobs
 - "Remove o job de relatório" = listScheduledJobs para achar o ID, confirme, depois deleteScheduledJob
+
+### Publicação agendada de artigos
+Use **scheduleArticlePublication** quando o usuário quiser agendar a publicação de um artigo. Esta tool é mais simples que scheduleJob — não precisa de webhook, o artigo é publicado direto no WordPress.
+
+Exemplos:
+- "Publica esse artigo segunda às 9h" → scheduleArticlePublication com weekly_monday
+- "Agenda esse artigo para publicar amanhã" → scheduleArticlePublication com daily_9am
+- "Gera e publica um artigo sobre X toda semana" → scheduleArticlePublication com weekly_monday
+
+Confirme título, keyword e frequência antes de agendar.
 
 ## Contexto da Kodus
 
