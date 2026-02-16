@@ -170,11 +170,16 @@ export function AgentChat() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const activeIdRef = useRef<string | null>(null);
   const savingRef = useRef(false);
+  const tokenRef = useRef<string | null>(null);
 
-  // Keep ref in sync
+  // Keep refs in sync
   useEffect(() => {
     activeIdRef.current = activeConversationId;
   }, [activeConversationId]);
+
+  useEffect(() => {
+    tokenRef.current = token;
+  }, [token]);
 
   // Get user email
   useEffect(() => {
@@ -185,14 +190,17 @@ export function AgentChat() {
     });
   }, []);
 
-  // Chat transport
+  // Chat transport — headers as function so it always reads the latest token
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
         api: "/api/agent/chat",
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        headers: (): Record<string, string> =>
+          tokenRef.current
+            ? { Authorization: `Bearer ${tokenRef.current}` }
+            : {},
       }),
-    [token],
+    [],
   );
 
   // Auto-save handler
