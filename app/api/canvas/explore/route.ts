@@ -8,6 +8,7 @@ import {
   enqueueArticleTask,
   fetchArticleTaskResult,
 } from "@/lib/copilot";
+import { resolveVoicePolicyForRequest } from "@/lib/voice-policy";
 
 type ExploreBody = {
   action:
@@ -32,7 +33,7 @@ export async function POST(request: Request) {
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json({ error: "Body inválido." }, { status: 400 });
+    return NextResponse.json({ error: "Invalid body." }, { status: 400 });
   }
 
   const { action } = body;
@@ -41,7 +42,7 @@ export async function POST(request: Request) {
     if (action === "explore") {
       if (!body.topic?.trim()) {
         return NextResponse.json(
-          { error: "Informe um tema para explorar." },
+          { error: "Provide a topic to explore." },
           { status: 400 },
         );
       }
@@ -52,11 +53,17 @@ export async function POST(request: Request) {
     if (action === "keywords") {
       if (!body.idea?.trim()) {
         return NextResponse.json(
-          { error: "Informe uma ideia para gerar keywords." },
+          { error: "Provide an idea to generate keywords." },
           { status: 400 },
         );
       }
-      const result = await enqueueKeywordTask({ idea: body.idea.trim() });
+      const voicePolicy = await resolveVoicePolicyForRequest(
+        request.headers.get("authorization"),
+      );
+      const result = await enqueueKeywordTask({
+        idea: body.idea.trim(),
+        voicePolicy,
+      });
       return NextResponse.json(result);
     }
 
@@ -64,7 +71,7 @@ export async function POST(request: Request) {
       const taskId = Number(body.taskId);
       if (!Number.isFinite(taskId)) {
         return NextResponse.json(
-          { error: "Task inválida." },
+          { error: "Invalid task." },
           { status: 400 },
         );
       }
@@ -75,25 +82,35 @@ export async function POST(request: Request) {
     if (action === "titles") {
       if (!Array.isArray(body.keywords) || body.keywords.length === 0) {
         return NextResponse.json(
-          { error: "Informe keywords para gerar títulos." },
+          { error: "Provide keywords to generate titles." },
           { status: 400 },
         );
       }
-      const result = await fetchTitlesFromCopilot({ keywords: body.keywords });
+      const voicePolicy = await resolveVoicePolicyForRequest(
+        request.headers.get("authorization"),
+      );
+      const result = await fetchTitlesFromCopilot({
+        keywords: body.keywords,
+        voicePolicy,
+      });
       return NextResponse.json(result);
     }
 
     if (action === "article") {
       if (!body.title?.trim() || !body.keyword?.trim()) {
         return NextResponse.json(
-          { error: "Informe título e keyword para gerar o artigo." },
+          { error: "Provide a title and keyword to generate the article." },
           { status: 400 },
         );
       }
+      const voicePolicy = await resolveVoicePolicyForRequest(
+        request.headers.get("authorization"),
+      );
       const result = await enqueueArticleTask({
         title: body.title.trim(),
         keyword: body.keyword.trim(),
         useResearch: body.useResearch !== false,
+        voicePolicy,
       });
       return NextResponse.json(result);
     }
@@ -102,7 +119,7 @@ export async function POST(request: Request) {
       const taskId = Number(body.taskId);
       if (!Number.isFinite(taskId)) {
         return NextResponse.json(
-          { error: "Task inválida." },
+          { error: "Invalid task." },
           { status: 400 },
         );
       }
@@ -113,7 +130,7 @@ export async function POST(request: Request) {
     if (action === "competitors") {
       if (!body.topic?.trim()) {
         return NextResponse.json(
-          { error: "Informe um tema para análise de concorrência." },
+          { error: "Provide a topic for competitor analysis." },
           { status: 400 },
         );
       }
@@ -124,7 +141,7 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json(
-      { error: `Action desconhecida: ${action}` },
+      { error: `Unknown action: ${action}` },
       { status: 400 },
     );
   } catch (error) {
@@ -132,7 +149,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error:
-          error instanceof Error ? error.message : "Erro interno no canvas.",
+          error instanceof Error ? error.message : "Internal canvas error.",
       },
       { status: 500 },
     );

@@ -52,7 +52,7 @@ export async function GET(request: Request) {
   } catch (error) {
     console.error("Dashboard API error:", error);
     return NextResponse.json(
-      { error: "Erro ao carregar dados do dashboard." },
+      { error: "Error while carregar dados do dashboard." },
       { status: 500 },
     );
   }

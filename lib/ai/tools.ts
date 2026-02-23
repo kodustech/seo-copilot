@@ -8,8 +8,11 @@ import {
   enqueueArticleTask,
   fetchArticleTaskResult,
   generateSocialContent,
+  fetchSocialAccounts,
+  scheduleSocialPost,
   fetchBlogPosts,
 } from "@/lib/copilot";
+import { resolveVoicePolicyForUser } from "@/lib/voice-policy";
 import { searchIdeas, searchCompetitorContent } from "@/lib/exa";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 import {
@@ -32,9 +35,22 @@ import {
 import { getModel } from "@/lib/ai/provider";
 import { CONTENT_PLAN_SYNTHESIS_PROMPT } from "@/lib/ai/system-prompt";
 
-const WORDPRESS_API_BASE =
-  process.env.WORDPRESS_API_BASE?.replace(/\/$/, "") ||
-  "https://kodus.io/wp-json/wp/v2";
+const INTERNAL_APP_URL = resolveInternalAppUrl();
+
+function resolveInternalAppUrl() {
+  const explicit = process.env.NEXT_PUBLIC_APP_URL?.trim();
+  if (explicit) {
+    return explicit.replace(/\/$/, "");
+  }
+
+  const vercel = process.env.VERCEL_URL?.trim();
+  if (vercel) {
+    const host = vercel.replace(/^https?:\/\//, "").replace(/\/$/, "");
+    return `https://${host}`;
+  }
+
+  return "http://localhost:3000";
+}
 
 // ---------------------------------------------------------------------------
 // Polling helper
@@ -60,14 +76,14 @@ async function pollUntilReady<T>(
 
 export const generateIdeas = tool({
   description:
-    "Pesquisa discussoes reais em Reddit, dev.to, HackerNews, StackOverflow, Twitter/X, Medium, Hashnode e LinkedIn para descobrir ideias de conteudo baseadas em 5 angulos: dores, perguntas, tendencias, comparacoes e boas praticas. (~5-10s)",
+    "Researches real discussions on Reddit, dev.to, HackerNews, StackOverflow, Twitter/X, Medium, Hashnode, and LinkedIn to discover content ideas across 5 angles: pain points, questions, trends, comparisons, and best practices. (~5-10s)",
   inputSchema: z.object({
-    topic: z.string().describe("Tema ou nicho para pesquisar ideias"),
+    topic: z.string().describe("Topic or niche to research ideas"),
     sources: z
       .array(z.string())
       .optional()
       .describe(
-        "Dominios para buscar (default: reddit.com, dev.to, news.ycombinator.com, stackoverflow.com, x.com, medium.com, hashnode.dev, linkedin.com)",
+        "Domains to fetch (default: reddit.com, dev.to, news.ycombinator.com, stackoverflow.com, x.com, medium.com, hashnode.dev, linkedin.com)",
       ),
     daysBack: z
       .number()
@@ -75,7 +91,7 @@ export const generateIdeas = tool({
       .max(365)
       .optional()
       .default(90)
-      .describe("Periodo em dias para buscar (7-365, default 90)"),
+      .describe("Time range in days to fetch (7-365, default 90)"),
   }),
   execute: async ({ topic, sources, daysBack }) => {
     try {
@@ -107,76 +123,82 @@ export const generateIdeas = tool({
         message:
           error instanceof Error
             ? error.message
-            : "Erro ao pesquisar ideias.",
+            : "Error researching ideas.",
       };
     }
   },
 });
 
-export const generateKeywords = tool({
-  description:
-    "Pesquisa keywords de SEO a partir de uma ideia ou tema. Retorna volume de busca, CPC e dificuldade. Operação lenta (~30-90s).",
-  inputSchema: z.object({
-    idea: z.string().describe("Tema ou ideia para pesquisar keywords"),
-    limit: z
-      .number()
-      .min(5)
-      .max(50)
-      .optional()
-      .default(20)
-      .describe("Número máximo de keywords (5-50)"),
-    language: z
-      .string()
-      .optional()
-      .default("pt")
-      .describe("Idioma das keywords (ex: pt, en, es)"),
-    locationCode: z
-      .number()
-      .optional()
-      .default(2076)
-      .describe("Código de localização (2076 = Brasil)"),
-  }),
-  execute: async ({ idea, limit, language, locationCode }) => {
-    try {
-      const { taskId } = await enqueueKeywordTask({
-        idea,
-        limit,
-        language,
-        locationCode,
-      });
-      const result = await pollUntilReady(() =>
-        fetchKeywordTaskResult(taskId),
-      );
-      if (!result.ready || !result.keywords?.length) {
+function createGenerateKeywordsTool(userEmail?: string) {
+  return tool({
+    description:
+      "Researches SEO keywords from an idea or topic. Returns search volume, CPC, and difficulty. Slow operation (~30-90s).",
+    inputSchema: z.object({
+      idea: z.string().describe("Topic or idea to research keywords"),
+      limit: z
+        .number()
+        .min(5)
+        .max(50)
+        .optional()
+        .default(20)
+        .describe("Maximum number of keywords (5-50)"),
+      language: z
+        .string()
+        .optional()
+        .default("pt")
+        .describe("Keyword language (ex: pt, en, es)"),
+      locationCode: z
+        .number()
+        .optional()
+        .default(2076)
+        .describe("Location code (2076 = Brazil)"),
+    }),
+    execute: async ({ idea, limit, language, locationCode }) => {
+      try {
+        const voicePolicy = await resolveVoicePolicyForUser(userEmail);
+        const { taskId } = await enqueueKeywordTask({
+          idea,
+          limit,
+          language,
+          locationCode,
+          voicePolicy,
+        });
+        const result = await pollUntilReady(() =>
+          fetchKeywordTaskResult(taskId),
+        );
+        if (!result.ready || !result.keywords?.length) {
+          return {
+            success: false as const,
+            message: "Timeout ou nenhuma keyword encontrada. Tente novamente.",
+          };
+        }
+        return {
+          success: true as const,
+          keywords: result.keywords.map((kw) => ({
+            id: kw.id,
+            phrase: kw.phrase,
+            volume: kw.volume,
+            cpc: kw.cpc,
+            difficulty: kw.difficulty,
+            difficultyLabel: kw.difficultyLabel,
+          })),
+        };
+      } catch (error) {
         return {
           success: false as const,
-          message: "Timeout ou nenhuma keyword encontrada. Tente novamente.",
+          message:
+            error instanceof Error ? error.message : "Error while pesquisar keywords.",
         };
       }
-      return {
-        success: true as const,
-        keywords: result.keywords.map((kw) => ({
-          id: kw.id,
-          phrase: kw.phrase,
-          volume: kw.volume,
-          cpc: kw.cpc,
-          difficulty: kw.difficulty,
-          difficultyLabel: kw.difficultyLabel,
-        })),
-      };
-    } catch (error) {
-      return {
-        success: false as const,
-        message:
-          error instanceof Error ? error.message : "Erro ao pesquisar keywords.",
-      };
-    }
-  },
-});
+    },
+  });
+}
+
+export const generateKeywords = createGenerateKeywordsTool();
 
 export const getKeywordHistory = tool({
   description:
-    "Busca o histórico de keywords já pesquisadas anteriormente. Operação rápida.",
+    "Fetches keyword history researched previously. Fast operation.",
   inputSchema: z.object({}),
   execute: async () => {
     try {
@@ -199,263 +221,416 @@ export const getKeywordHistory = tool({
         message:
           error instanceof Error
             ? error.message
-            : "Erro ao buscar histórico de keywords.",
+            : "Error while fetch history de keywords.",
       };
     }
   },
 });
 
-export const generateTitles = tool({
-  description:
-    "Gera sugestões de títulos de artigos a partir de keywords. Envie uma lista de keywords.",
-  inputSchema: z.object({
-    keywords: z
-      .array(
-        z.object({
-          keyword: z.string().describe("A keyword principal"),
-          instruction: z
-            .string()
-            .optional()
-            .describe("Instrução adicional para esta keyword"),
-        }),
-      )
-      .min(1)
-      .describe("Lista de keywords para gerar títulos"),
-  }),
-  execute: async ({ keywords }) => {
-    try {
-      const { titles } = await fetchTitlesFromCopilot({ keywords });
-      return {
-        success: true as const,
-        titles: titles.map((t) => ({
-          id: t.id,
-          text: t.text,
-          keywords: t.keywords,
-          mood: t.mood,
-        })),
-      };
-    } catch (error) {
-      return {
-        success: false as const,
-        message:
-          error instanceof Error ? error.message : "Erro ao gerar títulos.",
-      };
-    }
-  },
-});
-
-export const generateArticle = tool({
-  description:
-    "Gera um artigo completo de blog a partir de um título e keyword principal. Operação lenta (~1-3 min).",
-  inputSchema: z.object({
-    title: z.string().describe("Título do artigo"),
-    keyword: z.string().describe("Keyword principal do artigo"),
-    useResearch: z
-      .boolean()
-      .optional()
-      .default(true)
-      .describe("Se deve usar pesquisa web para enriquecer o artigo"),
-    researchInstructions: z
-      .string()
-      .optional()
-      .describe("Instruções para a pesquisa"),
-    customInstructions: z
-      .string()
-      .optional()
-      .describe("Instruções customizadas para o artigo"),
-  }),
-  execute: async ({
-    title,
-    keyword,
-    useResearch,
-    researchInstructions,
-    customInstructions,
-  }) => {
-    try {
-      const { taskId } = await enqueueArticleTask({
-        title,
-        keyword,
-        useResearch,
-        researchInstructions,
-        customInstructions,
-      });
-      const result = await pollUntilReady(() =>
-        fetchArticleTaskResult(taskId),
-      );
-      if (!result.ready || !result.articles?.length) {
+function createGenerateTitlesTool(userEmail?: string) {
+  return tool({
+    description:
+      "Generates article title suggestions from keywords. Provide a list of keywords.",
+    inputSchema: z.object({
+      keywords: z
+        .array(
+          z.object({
+            keyword: z.string().describe("A keyword principal"),
+            instruction: z
+              .string()
+              .optional()
+              .describe("Additional instruction for this keyword"),
+          }),
+        )
+        .min(1)
+        .describe("List of keywords to generate titles"),
+    }),
+    execute: async ({ keywords }) => {
+      try {
+        const voicePolicy = await resolveVoicePolicyForUser(userEmail);
+        const { titles } = await fetchTitlesFromCopilot({ keywords, voicePolicy });
+        return {
+          success: true as const,
+          titles: titles.map((t) => ({
+            id: t.id,
+            text: t.text,
+            keywords: t.keywords,
+            mood: t.mood,
+          })),
+        };
+      } catch (error) {
         return {
           success: false as const,
-          message: "Timeout ou nenhum artigo gerado. Tente novamente.",
+          message:
+            error instanceof Error ? error.message : "Error generating titles.",
         };
       }
-      const article = result.articles[0];
-      return {
-        success: true as const,
-        article: {
-          id: article.id,
-          title: article.title,
-          keyword: article.keyword,
-          content: article.content,
-          url: article.url,
-          status: article.status,
-        },
-      };
-    } catch (error) {
-      return {
-        success: false as const,
-        message:
-          error instanceof Error ? error.message : "Erro ao gerar artigo.",
-      };
-    }
-  },
-});
+    },
+  });
+}
 
-export const generateSocialPosts = tool({
-  description:
-    "Gera posts para redes sociais (LinkedIn, Twitter/X, Instagram) a partir de um conteúdo base.",
-  inputSchema: z.object({
-    baseContent: z
-      .string()
-      .describe("Conteúdo base para gerar os posts (ex: texto de um artigo)"),
-    instructions: z
-      .string()
-      .optional()
-      .describe("Instruções adicionais de estilo ou foco"),
-    language: z
-      .string()
-      .optional()
-      .default("pt-BR")
-      .describe("Idioma dos posts"),
-    tone: z
-      .string()
-      .optional()
-      .default("professional")
-      .describe("Tom dos posts (professional, casual, bold)"),
-    platforms: z
-      .array(
-        z.object({
-          platform: z
-            .string()
-            .describe("Nome da plataforma (linkedin, twitter, instagram)"),
-          numVariations: z
-            .number()
-            .optional()
-            .default(2)
-            .describe("Número de variações por plataforma"),
-        }),
-      )
-      .optional()
-      .default([
-        { platform: "linkedin", numVariations: 2 },
-        { platform: "twitter", numVariations: 2 },
-      ])
-      .describe("Plataformas alvo e número de variações"),
-  }),
-  execute: async ({ baseContent, instructions, language, tone, platforms }) => {
-    try {
-      const posts = await generateSocialContent({
-        baseContent,
-        instructions,
-        language,
-        tone,
-        platformConfigs: platforms.map((p) => ({
-          platform: p.platform,
-          numVariations: p.numVariations,
-        })),
-      });
-      return {
-        success: true as const,
-        posts: posts.map((p) => ({
-          variant: p.variant,
-          hook: p.hook,
-          post: p.post,
-          cta: p.cta,
-          hashtags: p.hashtags,
-          platform: p.platform,
-        })),
-      };
-    } catch (error) {
-      return {
-        success: false as const,
-        message:
-          error instanceof Error
-            ? error.message
-            : "Erro ao gerar social posts.",
-      };
-    }
-  },
-});
+export const generateTitles = createGenerateTitlesTool();
+
+function createGenerateArticleTool(userEmail?: string) {
+  return tool({
+    description:
+      "Generates a full blog article from a title and a primary keyword. Slow operation (~1-3 min).",
+    inputSchema: z.object({
+      title: z.string().describe("Title do article"),
+      keyword: z.string().describe("Main article keyword"),
+      useResearch: z
+        .boolean()
+        .optional()
+        .default(true)
+        .describe("Se deve usar pesquisa web para enriquecer o article"),
+      researchInstructions: z
+        .string()
+        .optional()
+        .describe("Instructions para a pesquisa"),
+      customInstructions: z
+        .string()
+        .optional()
+        .describe("Instructions customizadas para o article"),
+    }),
+    execute: async ({
+      title,
+      keyword,
+      useResearch,
+      researchInstructions,
+      customInstructions,
+    }) => {
+      try {
+        const voicePolicy = await resolveVoicePolicyForUser(userEmail);
+        const { taskId } = await enqueueArticleTask({
+          title,
+          keyword,
+          useResearch,
+          researchInstructions,
+          customInstructions,
+          voicePolicy,
+        });
+        const result = await pollUntilReady(() =>
+          fetchArticleTaskResult(taskId),
+        );
+        if (!result.ready || !result.articles?.length) {
+          return {
+            success: false as const,
+            message: "Timeout ou nenhum article generated. Tente novamente.",
+          };
+        }
+        const article = result.articles[0];
+        return {
+          success: true as const,
+          article: {
+            id: article.id,
+            title: article.title,
+            keyword: article.keyword,
+            content: article.content,
+            url: article.url,
+            status: article.status,
+          },
+        };
+      } catch (error) {
+        return {
+          success: false as const,
+          message:
+            error instanceof Error ? error.message : "Error generating article.",
+        };
+      }
+    },
+  });
+}
+
+export const generateArticle = createGenerateArticleTool();
+
+function createGenerateSocialPostsTool(userEmail?: string) {
+  return tool({
+    description:
+      "Gera posts para redes sociais (LinkedIn, Twitter/X, Instagram) a partir de um content base.",
+    inputSchema: z.object({
+      baseContent: z
+        .string()
+        .describe("Base content used to generate posts (example: article text)"),
+      instructions: z
+        .string()
+        .optional()
+        .describe("Instructions adicionais de estilo ou foco"),
+      language: z
+        .string()
+        .optional()
+        .default("pt-BR")
+        .describe("Language dos posts"),
+      tone: z
+        .string()
+        .optional()
+        .default("professional")
+        .describe("Tom dos posts (professional, casual, bold)"),
+      platforms: z
+        .array(
+          z.object({
+            platform: z
+              .string()
+              .describe("Nome da plataforma (linkedin, twitter, instagram)"),
+            numVariations: z
+              .number()
+              .optional()
+              .default(2)
+              .describe("Number of variations per platform"),
+          }),
+        )
+        .optional()
+        .default([
+          { platform: "linkedin", numVariations: 2 },
+          { platform: "twitter", numVariations: 2 },
+        ])
+        .describe("Target platforms and number of variations"),
+    }),
+    execute: async ({ baseContent, instructions, language, tone, platforms }) => {
+      try {
+        const voicePolicy = await resolveVoicePolicyForUser(userEmail);
+        const posts = await generateSocialContent({
+          baseContent,
+          instructions,
+          language,
+          tone,
+          platformConfigs: platforms.map((p) => ({
+            platform: p.platform,
+            numVariations: p.numVariations,
+          })),
+          voicePolicy,
+        });
+        return {
+          success: true as const,
+          posts: posts.map((p) => ({
+            variant: p.variant,
+            hook: p.hook,
+            post: p.post,
+            cta: p.cta,
+            hashtags: p.hashtags,
+            platform: p.platform,
+          })),
+        };
+      } catch (error) {
+        return {
+          success: false as const,
+          message:
+            error instanceof Error
+              ? error.message
+              : "Error generating social posts.",
+        };
+      }
+    },
+  });
+}
+
+export const generateSocialPosts = createGenerateSocialPostsTool();
+
+function createListSocialAccountsTool(userEmail?: string) {
+  return tool({
+    description:
+      "Lists social accounts connected in Post-Bridge for scheduling social posts.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      try {
+        const accounts = await fetchSocialAccounts({ userEmail });
+        return {
+          success: true as const,
+          accounts,
+        };
+      } catch (error) {
+        return {
+          success: false as const,
+          message:
+            error instanceof Error
+              ? error.message
+              : "Error fetching social accounts.",
+        };
+      }
+    },
+  });
+}
+
+export const listSocialAccounts = createListSocialAccountsTool();
+
+function createScheduleSocialPostTool(userEmail?: string) {
+  return tool({
+    description:
+      "Schedules a social post in Post-Bridge for one or more connected social accounts.",
+    inputSchema: z.object({
+      caption: z.string().describe("Full post caption/text to publish"),
+      scheduledAt: z
+        .string()
+        .describe("Publish datetime in ISO format (example: 2026-02-25T14:00:00Z)"),
+      socialAccountIds: z
+        .array(z.number().int().positive())
+        .min(1)
+        .describe("Target social account IDs from listSocialAccounts"),
+    }),
+    execute: async ({ caption, scheduledAt, socialAccountIds }) => {
+      try {
+        const post = await scheduleSocialPost({
+          caption,
+          scheduledAt,
+          socialAccountIds,
+          userEmail,
+        });
+        return {
+          success: true as const,
+          post,
+          message: `Social post scheduled (${post.id}).`,
+        };
+      } catch (error) {
+        return {
+          success: false as const,
+          message:
+            error instanceof Error
+              ? error.message
+              : "Error scheduling social post.",
+        };
+      }
+    },
+  });
+}
+
+export const scheduleSocialPostTool = createScheduleSocialPostTool();
 
 export const fetchBlogFeed = tool({
   description:
-    "Busca os posts mais recentes publicados no blog da Kodus (WordPress). Retorna título, link, excerpt e data.",
-  inputSchema: z.object({}),
-  execute: async () => {
+    "Fetches Kodus feed items for ideation. Supports blog posts (WordPress), changelog updates, or both.",
+  inputSchema: z.object({
+    source: z
+      .enum(["blog", "changelog", "all"])
+      .optional()
+      .default("blog")
+      .describe("Feed source: blog, changelog, or all"),
+  }),
+  execute: async ({ source }) => {
     try {
-      const endpoint = new URL(`${WORDPRESS_API_BASE}/posts`);
-      endpoint.searchParams.set("per_page", "20");
-      endpoint.searchParams.set("orderby", "date");
-      endpoint.searchParams.set("order", "desc");
-      endpoint.searchParams.set(
-        "_fields",
-        "id,title.rendered,link,date,excerpt.rendered",
-      );
+      const endpoint = new URL("/api/feed", INTERNAL_APP_URL);
+      endpoint.searchParams.set("source", source ?? "blog");
 
-      const response = await fetch(endpoint, {
+      const response = await fetch(endpoint.toString(), {
         headers: { Accept: "application/json" },
         cache: "no-store",
       });
 
+      let data: unknown = null;
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
+      }
+
       if (!response.ok) {
+        const errorMessage =
+          typeof data === "object" &&
+          data !== null &&
+          "error" in data &&
+          typeof (data as { error?: unknown }).error === "string"
+            ? (data as { error: string }).error
+            : `Error while fetch feed (${response.status}).`;
+
         return {
           success: false as const,
-          message: `Erro ao buscar feed (${response.status}).`,
+          message: errorMessage,
         };
       }
 
-      const data = await response.json();
-      if (!Array.isArray(data)) {
-        return { success: true as const, posts: [] as { id: string; title: string; link: string; excerpt: string; publishedAt: string | undefined }[] };
-      }
+      const rawPosts =
+        typeof data === "object" &&
+        data !== null &&
+        "posts" in data &&
+        Array.isArray((data as { posts?: unknown[] }).posts)
+          ? (data as { posts: unknown[] }).posts
+          : [];
 
-      const posts = data
-        .map((item: Record<string, unknown>) => {
+      const posts = rawPosts
+        .map((entry) => {
+          if (!entry || typeof entry !== "object") {
+            return null;
+          }
+
+          const record = entry as Record<string, unknown>;
+          const id =
+            typeof record.id === "string" || typeof record.id === "number"
+              ? String(record.id)
+              : null;
           const title =
-            typeof item.title === "object" && item.title !== null
-              ? String(
-                  (item.title as Record<string, unknown>).rendered ?? "",
-                ).replace(/<[^>]*>/g, "")
-              : "";
-          const link = typeof item.link === "string" ? item.link : "";
-          const date =
-            typeof item.date === "string"
-              ? new Date(item.date).toISOString()
-              : undefined;
-          const excerptObj = item.excerpt as
-            | Record<string, unknown>
-            | undefined;
+            typeof record.title === "string" ? record.title.trim() : "";
+          const link = typeof record.link === "string" ? record.link.trim() : "";
           const excerpt =
-            typeof excerptObj?.rendered === "string"
-              ? excerptObj.rendered.replace(/<[^>]*>/g, "").trim().slice(0, 260)
-              : "";
+            typeof record.excerpt === "string" ? record.excerpt.trim() : "";
+          const content =
+            typeof record.content === "string" ? record.content.trim() : "";
+          const publishedAt =
+            typeof record.publishedAt === "string" && record.publishedAt.trim().length > 0
+              ? record.publishedAt
+              : undefined;
+          const itemSource =
+            record.source === "changelog"
+              ? "changelog"
+              : record.source === "blog"
+                ? "blog"
+                : source ?? "blog";
 
-          if (!title || !link) return null;
+          if (!id || !title || !link) {
+            return null;
+          }
+
           return {
-            id: String(item.id),
+            id,
             title,
             link,
             excerpt,
-            publishedAt: date,
+            content,
+            publishedAt,
+            source: itemSource,
           };
         })
         .filter(Boolean);
 
-      return { success: true as const, posts };
+      const resolvedSource =
+        typeof data === "object" &&
+        data !== null &&
+        "source" in data &&
+        typeof (data as { source?: unknown }).source === "string"
+          ? (data as { source: string }).source
+          : source ?? "blog";
+
+      if (!posts.length) {
+        return {
+          success: true as const,
+          source: resolvedSource,
+          posts: [] as {
+            id: string;
+            title: string;
+            link: string;
+            excerpt: string;
+            content: string;
+            publishedAt: string | undefined;
+            source: string;
+          }[],
+        };
+      }
+
+      return {
+        success: true as const,
+        source: resolvedSource,
+        posts: posts as {
+          id: string;
+          title: string;
+          link: string;
+          excerpt: string;
+          content: string;
+          publishedAt: string | undefined;
+          source: string;
+        }[],
+      };
     } catch (error) {
       return {
         success: false as const,
         message:
-          error instanceof Error ? error.message : "Erro ao buscar blog feed.",
+          error instanceof Error ? error.message : "Error while fetch feed.",
       };
     }
   },
@@ -467,13 +642,13 @@ export const fetchBlogFeed = tool({
 
 export const generateContentPlan = tool({
   description:
-    "Gera um plano estratégico de conteúdo cruzando 5 fontes de dados: comunidade (Exa), oportunidades de SEO (Search Console), content decay (Analytics), blog posts existentes e histórico de keywords. Retorna 5-8 ideias ranqueadas com justificativa baseada em dados. (~10-15s)",
+    "Generates a strategic content plan by combining 5 data sources: community (Exa), SEO opportunities (Search Console), content decay (Analytics), existing blog posts, and keyword history. Returns 5-8 ranked ideas with data-backed rationale. (~10-15s)",
   inputSchema: z.object({
     topic: z
       .string()
       .optional()
       .describe(
-        "Foco do plano de conteúdo. Se omitido, usa dados globais sem filtro de tema.",
+        "Focus of the content plan. If omitted, uses global data without topic filtering.",
       ),
     daysBack: z
       .number()
@@ -481,14 +656,14 @@ export const generateContentPlan = tool({
       .max(365)
       .optional()
       .default(90)
-      .describe("Período em dias para buscar discussões na comunidade (7-365, default 90)"),
+      .describe("Time range in days to fetch community discussions (7-365, default 90)"),
     analyticsDays: z
       .number()
       .min(7)
       .max(90)
       .optional()
       .default(28)
-      .describe("Período em dias para dados de analytics (7-90, default 28)"),
+      .describe("Time range in days for analytics data (7-90, default 28)"),
   }),
   execute: async ({ topic, daysBack, analyticsDays }) => {
     try {
@@ -541,11 +716,11 @@ export const generateContentPlan = tool({
       const contextParts: string[] = [];
 
       if (topic) {
-        contextParts.push(`## Foco do plano: "${topic}"\n`);
+        contextParts.push(`## Plan focus: "${topic}"\n`);
       }
 
       if (community.length > 0) {
-        contextParts.push("## Discussões na comunidade");
+        contextParts.push("## Community discussions");
         community.slice(0, 10).forEach((r) => {
           contextParts.push(
             `- [${r.angleLabel}] "${r.title}" (${r.source})${r.summary ? `: ${r.summary.slice(0, 120)}` : ""}`,
@@ -560,7 +735,7 @@ export const generateContentPlan = tool({
       ) {
         contextParts.push("## Oportunidades de SEO (Search Console)");
         if (opportunities.lowCtr.length > 0) {
-          contextParts.push("### CTR Baixo (muitas impressões, CTR < 2%)");
+          contextParts.push("### CTR Baixo (muitas impressions, CTR < 2%)");
           opportunities.lowCtr.slice(0, 8).forEach((r) => {
             contextParts.push(
               `- query="${r.query}" impr=${r.impressions} ctr=${(r.ctr * 100).toFixed(1)}% pos=${r.position.toFixed(1)} page=${r.page}`,
@@ -568,7 +743,7 @@ export const generateContentPlan = tool({
           });
         }
         if (opportunities.strikingDistance.length > 0) {
-          contextParts.push("### Striking Distance (posição 5-20)");
+          contextParts.push("### Striking Distance (position 5-20)");
           opportunities.strikingDistance.slice(0, 8).forEach((r) => {
             contextParts.push(
               `- query="${r.query}" impr=${r.impressions} pos=${r.position.toFixed(1)} page=${r.page}`,
@@ -579,7 +754,7 @@ export const generateContentPlan = tool({
       }
 
       if (decay.length > 0) {
-        contextParts.push("## Páginas perdendo tráfego (Content Decay)");
+        contextParts.push("## Pages perdendo traffic (Content Decay)");
         decay.slice(0, 8).forEach((r) => {
           contextParts.push(
             `- ${r.page} — de ${r.previousPageviews} para ${r.currentPageviews} pageviews (${r.changePercent.toFixed(0)}%)`,
@@ -589,7 +764,7 @@ export const generateContentPlan = tool({
       }
 
       if (blogPosts.length > 0) {
-        contextParts.push("## Posts já publicados no blog");
+        contextParts.push("## Posts already published on the blog");
         blogPosts.slice(0, 15).forEach((p) => {
           contextParts.push(
             `- "${p.title}" (${p.publishedAt?.slice(0, 10) ?? "sem data"})`,
@@ -599,7 +774,7 @@ export const generateContentPlan = tool({
       }
 
       if (keywords.length > 0) {
-        contextParts.push("## Keywords já pesquisadas");
+        contextParts.push("## Keywords already researched");
         keywords.slice(0, 15).forEach((kw) => {
           contextParts.push(
             `- "${kw.phrase}" vol=${kw.volume} diff=${kw.difficulty}${kw.idea ? ` (idea: ${kw.idea})` : ""}`,
@@ -614,7 +789,7 @@ export const generateContentPlan = tool({
       const { text } = await generateText({
         model: getModel(),
         system: CONTENT_PLAN_SYNTHESIS_PROMPT,
-        prompt: contextString || "Não há dados disponíveis. Gere ideias gerais para um blog de tecnologia focado em DevOps, CI/CD, Code Review e AI.",
+        prompt: contextString || "No data available. Generate general ideas for a technology blog focused on DevOps, CI/CD, Code Review, and AI.",
       });
 
       // 5. Parse JSON response (handle optional code block wrapping)
@@ -628,7 +803,7 @@ export const generateContentPlan = tool({
       } catch {
         return {
           success: false as const,
-          message: "Erro ao interpretar resposta da AI. Tente novamente.",
+          message: "Error while interpretar resposta da AI. Tente novamente.",
         };
       }
 
@@ -653,7 +828,7 @@ export const generateContentPlan = tool({
         message:
           error instanceof Error
             ? error.message
-            : "Erro ao gerar plano de conteúdo.",
+            : "Error generating content plan.",
       };
     }
   },
@@ -667,23 +842,23 @@ const dateSchema = {
   startDate: z
     .string()
     .optional()
-    .describe("Data inicial (YYYY-MM-DD). Default: últimos 28 dias."),
+    .describe("Start date (YYYY-MM-DD). Default: last 28 days."),
   endDate: z
     .string()
     .optional()
-    .describe("Data final (YYYY-MM-DD). Default: hoje."),
+    .describe("End date (YYYY-MM-DD). Default: today."),
   limit: z
     .number()
     .min(1)
     .max(50)
     .optional()
     .default(20)
-    .describe("Número máximo de resultados (1-50, default 20)"),
+    .describe("Maximum number of results (1-50, default 20)"),
 };
 
 export const getSearchPerformance = tool({
   description:
-    "Busca métricas de performance de busca orgânica do Google Search Console (clicks, impressões, CTR, posição). Retorna totais + top queries + top pages.",
+    "Fetches organic search performance metrics from Google Search Console (clicks, impressions, CTR, position). Returns totals plus top queries and top pages.",
   inputSchema: z.object(dateSchema),
   execute: async ({ startDate, endDate, limit }) => {
     try {
@@ -695,7 +870,7 @@ export const getSearchPerformance = tool({
         message:
           error instanceof Error
             ? error.message
-            : "Erro ao buscar dados do Search Console.",
+            : "Error while fetch dados do Search Console.",
       };
     }
   },
@@ -703,7 +878,7 @@ export const getSearchPerformance = tool({
 
 export const getTrafficOverview = tool({
   description:
-    "Busca visão geral de tráfego do Google Analytics: usuários, sessões, pageviews, fontes de tráfego e tendência diária.",
+    "Fetches Google Analytics traffic overview: users, sessions, pageviews, traffic sources, and daily trend.",
   inputSchema: z.object(dateSchema),
   execute: async ({ startDate, endDate, limit }) => {
     try {
@@ -715,7 +890,7 @@ export const getTrafficOverview = tool({
         message:
           error instanceof Error
             ? error.message
-            : "Erro ao buscar dados de tráfego.",
+            : "Error while fetch dados de traffic.",
       };
     }
   },
@@ -723,13 +898,13 @@ export const getTrafficOverview = tool({
 
 export const getTopContent = tool({
   description:
-    "Busca as páginas com mais tráfego no Google Analytics: pageviews e bounce rate. Aceita filtro de path (ex: /blog).",
+    "Fetches pages with the most traffic in Google Analytics: pageviews and bounce rate. Accepts path filter (example: /blog).",
   inputSchema: z.object({
     ...dateSchema,
     pathFilter: z
       .string()
       .optional()
-      .describe("Filtro de path (ex: /blog). Retorna pages que começam com esse prefixo."),
+      .describe("Path filter (example: /blog). Returns pages that start with this prefix."),
   }),
   execute: async ({ startDate, endDate, limit, pathFilter }) => {
     try {
@@ -746,7 +921,7 @@ export const getTopContent = tool({
         message:
           error instanceof Error
             ? error.message
-            : "Erro ao buscar top content.",
+            : "Error while fetch top content.",
       };
     }
   },
@@ -754,7 +929,7 @@ export const getTopContent = tool({
 
 export const getContentOpportunities = tool({
   description:
-    "Identifica oportunidades de conteúdo: queries com muitas impressões mas CTR baixo (<2%), e queries em striking distance (posição 5-20 no Google).",
+    "Identifies content opportunities: queries with many impressions but low CTR (<2%), and striking-distance queries (position 5-20 on Google).",
   inputSchema: z.object(dateSchema),
   execute: async ({ startDate, endDate, limit }) => {
     try {
@@ -770,7 +945,7 @@ export const getContentOpportunities = tool({
         message:
           error instanceof Error
             ? error.message
-            : "Erro ao buscar oportunidades.",
+            : "Error while fetch oportunidades.",
       };
     }
   },
@@ -778,16 +953,16 @@ export const getContentOpportunities = tool({
 
 export const comparePerformance = tool({
   description:
-    "Compara métricas de busca orgânica (Search Console) e tráfego (GA) entre o período atual e o anterior de mesmo tamanho. Retorna totais + % de variação.",
+    "Compares organic search metrics (Search Console) and traffic (GA) between the current and previous period of the same length. Returns totals plus percentage change.",
   inputSchema: z.object({
     startDate: z
       .string()
       .optional()
-      .describe("Data inicial (YYYY-MM-DD). Default: últimos 28 dias."),
+      .describe("Start date (YYYY-MM-DD). Default: last 28 days."),
     endDate: z
       .string()
       .optional()
-      .describe("Data final (YYYY-MM-DD). Default: hoje."),
+      .describe("End date (YYYY-MM-DD). Default: today."),
   }),
   execute: async ({ startDate, endDate }) => {
     try {
@@ -799,7 +974,7 @@ export const comparePerformance = tool({
         message:
           error instanceof Error
             ? error.message
-            : "Erro ao comparar períodos.",
+            : "Error comparing periods.",
       };
     }
   },
@@ -807,28 +982,28 @@ export const comparePerformance = tool({
 
 export const getContentDecay = tool({
   description:
-    "Identifica páginas que estão perdendo tráfego comparando o período atual com o anterior. Retorna lista de páginas com queda de pageviews, ordenada por maior queda.",
+    "Identifies pages losing traffic by comparing the current period with the previous one. Returns pages with pageview decline sorted by largest drop.",
   inputSchema: z.object({
     startDate: z
       .string()
       .optional()
-      .describe("Data inicial (YYYY-MM-DD). Default: últimos 28 dias."),
+      .describe("Start date (YYYY-MM-DD). Default: last 28 days."),
     endDate: z
       .string()
       .optional()
-      .describe("Data final (YYYY-MM-DD). Default: hoje."),
+      .describe("End date (YYYY-MM-DD). Default: today."),
     limit: z
       .number()
       .min(1)
       .max(50)
       .optional()
       .default(30)
-      .describe("Número máximo de páginas (1-50, default 30)"),
+      .describe("Maximum number of pages (1-50, default 30)"),
     minPageviews: z
       .number()
       .optional()
       .default(10)
-      .describe("Mínimo de pageviews no período anterior para considerar (default 10)"),
+      .describe("Minimum pageviews in the previous period to consider (default 10)"),
   }),
   execute: async ({ startDate, endDate, limit, minPageviews }) => {
     try {
@@ -840,7 +1015,7 @@ export const getContentDecay = tool({
         message:
           error instanceof Error
             ? error.message
-            : "Erro ao buscar content decay.",
+            : "Error while fetch content decay.",
       };
     }
   },
@@ -848,16 +1023,16 @@ export const getContentDecay = tool({
 
 export const getSearchBySegment = tool({
   description:
-    "Analisa métricas de busca orgânica segmentadas por device (DESKTOP, MOBILE, TABLET) ou país. Retorna clicks, impressões, CTR e posição por segmento.",
+    "Analyzes organic search metrics segmented by device (DESKTOP, MOBILE, TABLET) or country. Returns clicks, impressions, CTR, and position by segment.",
   inputSchema: z.object({
     startDate: z
       .string()
       .optional()
-      .describe("Data inicial (YYYY-MM-DD). Default: últimos 28 dias."),
+      .describe("Start date (YYYY-MM-DD). Default: last 28 days."),
     endDate: z
       .string()
       .optional()
-      .describe("Data final (YYYY-MM-DD). Default: hoje."),
+      .describe("End date (YYYY-MM-DD). Default: today."),
     segment: z
       .enum(["device", "country"])
       .describe("Segmento para agrupar: 'device' ou 'country'"),
@@ -867,7 +1042,7 @@ export const getSearchBySegment = tool({
       .max(50)
       .optional()
       .default(20)
-      .describe("Número máximo de segmentos (1-50, default 20)"),
+      .describe("Maximum number of segments (1-50, default 20)"),
   }),
   execute: async ({ startDate, endDate, segment, limit }) => {
     try {
@@ -879,7 +1054,7 @@ export const getSearchBySegment = tool({
         message:
           error instanceof Error
             ? error.message
-            : "Erro ao buscar dados por segmento.",
+            : "Error while fetch dados por segmento.",
       };
     }
   },
@@ -891,26 +1066,26 @@ export const getSearchBySegment = tool({
 
 export const getPageKeywords = tool({
   description:
-    "Mostra quais keywords do Google trazem tráfego para uma página específica. Aceita URL completa ou path parcial (ex: /blog/code-review). Retorna clicks, impressões, CTR e posição de cada keyword.",
+    "Shows which Google keywords bring traffic to a specific page. Accepts full URL or partial path (example: /blog/code-review). Returns clicks, impressions, CTR, and position for each keyword.",
   inputSchema: z.object({
     page: z
       .string()
-      .describe("URL ou path da página (ex: /blog/code-review ou kodus.io/blog/code-review)"),
+      .describe("URL ou path da page (ex: /blog/code-review ou kodus.io/blog/code-review)"),
     startDate: z
       .string()
       .optional()
-      .describe("Data inicial (YYYY-MM-DD). Default: últimos 28 dias."),
+      .describe("Start date (YYYY-MM-DD). Default: last 28 days."),
     endDate: z
       .string()
       .optional()
-      .describe("Data final (YYYY-MM-DD). Default: hoje."),
+      .describe("End date (YYYY-MM-DD). Default: today."),
     limit: z
       .number()
       .min(1)
       .max(50)
       .optional()
       .default(30)
-      .describe("Número máximo de keywords (1-50, default 30)"),
+      .describe("Maximum number of keywords (1-50, default 30)"),
   }),
   execute: async ({ page, startDate, endDate, limit }) => {
     try {
@@ -922,7 +1097,7 @@ export const getPageKeywords = tool({
         message:
           error instanceof Error
             ? error.message
-            : "Erro ao buscar keywords da página.",
+            : "Error while fetch keywords da page.",
       };
     }
   },
@@ -934,29 +1109,29 @@ export const getPageKeywords = tool({
 
 export const analyzeCompetitor = tool({
   description:
-    "Analisa conteúdo de concorrentes sobre um tema usando busca na web. Retorna os melhores artigos encontrados com resumo, highlights e fonte. Útil para entender o que os concorrentes estão cobrindo e como se diferenciar.",
+    "Analyzes competitor content on a topic using web search. Returns the best articles found with summaries, highlights, and source. Useful to understand competitor coverage and differentiate.",
   inputSchema: z.object({
     topic: z
       .string()
-      .describe("Tema para pesquisar conteúdo concorrente (ex: 'code review best practices')"),
+      .describe("Topic to research competitor content (example: 'code review best practices')"),
     targetDomains: z
       .array(z.string())
       .optional()
-      .describe("Domínios específicos de concorrentes para focar (ex: ['linearb.io', 'atlassian.com'])"),
+      .describe("Specific competitor domains to focus on (example: ['linearb.io', 'atlassian.com'])"),
     numResults: z
       .number()
       .min(3)
       .max(20)
       .optional()
       .default(10)
-      .describe("Número de resultados (3-20, default 10)"),
+      .describe("Number of results (3-20, default 10)"),
     daysBack: z
       .number()
       .min(30)
       .max(365)
       .optional()
       .default(180)
-      .describe("Período em dias para buscar (30-365, default 180)"),
+      .describe("Time range in days to search (30-365, default 180)"),
   }),
   execute: async ({ topic, targetDomains, numResults, daysBack }) => {
     try {
@@ -986,7 +1161,7 @@ export const analyzeCompetitor = tool({
         message:
           error instanceof Error
             ? error.message
-            : "Erro ao analisar concorrentes.",
+            : "Error while analisar concorrentes.",
       };
     }
   },
@@ -998,15 +1173,15 @@ export const analyzeCompetitor = tool({
 
 export const scheduleJob = tool({
   description:
-    "Cria uma tarefa agendada (scheduled job) que executa um prompt automaticamente de forma recorrente e envia o resultado via webhook.",
+    "Creates a scheduled job that runs a prompt automatically on a recurring basis and sends results via webhook.",
   inputSchema: z.object({
-    user_email: z.string().describe("Email do usuário que está criando o job"),
-    name: z.string().describe("Nome descritivo do job (ex: 'Relatório SEO Semanal')"),
-    prompt: z.string().describe("O prompt que será executado automaticamente a cada execução"),
+    user_email: z.string().describe("Email of the user creating the job"),
+    name: z.string().describe("Descriptive job name (example: 'Weekly SEO Report')"),
+    prompt: z.string().describe("The prompt that will run automatically at each execution"),
     schedule: z
       .enum(["daily_9am", "weekly_monday", "weekly_friday", "biweekly", "monthly_first"])
-      .describe("Frequência do agendamento"),
-    webhook_url: z.string().url().describe("URL do webhook que receberá o resultado via POST"),
+      .describe("Schedule frequency"),
+    webhook_url: z.string().url().describe("Webhook URL that receives the result via POST"),
   }),
   execute: async ({ user_email, name, prompt, schedule, webhook_url }) => {
     try {
@@ -1033,16 +1208,16 @@ export const scheduleJob = tool({
     } catch (error) {
       return {
         success: false as const,
-        message: error instanceof Error ? error.message : "Erro ao criar job agendado.",
+        message: error instanceof Error ? error.message : "Error while criar job scheduled.",
       };
     }
   },
 });
 
 export const listScheduledJobs = tool({
-  description: "Lista todas as tarefas agendadas (scheduled jobs) do usuário.",
+  description: "Lists all scheduled jobs for the user.",
   inputSchema: z.object({
-    user_email: z.string().describe("Email do usuário"),
+    user_email: z.string().describe("User email"),
   }),
   execute: async ({ user_email }) => {
     try {
@@ -1066,16 +1241,16 @@ export const listScheduledJobs = tool({
     } catch (error) {
       return {
         success: false as const,
-        message: error instanceof Error ? error.message : "Erro ao listar jobs.",
+        message: error instanceof Error ? error.message : "Error while listar jobs.",
       };
     }
   },
 });
 
 export const deleteScheduledJob = tool({
-  description: "Remove uma tarefa agendada (scheduled job) do usuário.",
+  description: "Removes a user's scheduled job.",
   inputSchema: z.object({
-    user_email: z.string().describe("Email do usuário"),
+    user_email: z.string().describe("User email"),
     job_id: z.string().uuid().describe("ID do job a ser removido"),
   }),
   execute: async ({ user_email, job_id }) => {
@@ -1089,7 +1264,7 @@ export const deleteScheduledJob = tool({
     } catch (error) {
       return {
         success: false as const,
-        message: error instanceof Error ? error.message : "Erro ao deletar job.",
+        message: error instanceof Error ? error.message : "Error while deletar job.",
       };
     }
   },
@@ -1097,23 +1272,23 @@ export const deleteScheduledJob = tool({
 
 export const scheduleArticlePublication = tool({
   description:
-    "Agenda a publicação automática de um artigo. Cria um job agendado que gera o artigo a partir de título e keyword e publica automaticamente. Não precisa de webhook — o artigo é publicado direto no WordPress.",
+    "Schedules automatic article publication. Creates a scheduled job that generates the article from title and keyword and publishes it automatically. No webhook required; it publishes directly to WordPress.",
   inputSchema: z.object({
-    user_email: z.string().describe("Email do usuário que está criando o agendamento"),
-    title: z.string().describe("Título do artigo a ser gerado"),
-    keyword: z.string().describe("Keyword principal do artigo"),
+    user_email: z.string().describe("User email creating the schedule"),
+    title: z.string().describe("Title do article a ser generated"),
+    keyword: z.string().describe("Main article keyword"),
     schedule: z
       .enum(["daily_9am", "weekly_monday", "weekly_friday", "biweekly", "monthly_first"])
-      .describe("Quando publicar o artigo"),
+      .describe("Quando publicar o article"),
     useResearch: z
       .boolean()
       .optional()
       .default(true)
-      .describe("Se deve usar pesquisa web para enriquecer o artigo"),
+      .describe("Se deve usar pesquisa web para enriquecer o article"),
     customInstructions: z
       .string()
       .optional()
-      .describe("Instruções customizadas para o artigo"),
+      .describe("Instructions customizadas para o article"),
   }),
   execute: async ({ user_email, title, keyword, schedule, useResearch, customInstructions }) => {
     try {
@@ -1122,9 +1297,9 @@ export const scheduleArticlePublication = tool({
 
       // Build a self-contained prompt that the job executor will run
       const articlePrompt = [
-        `Gere e publique um artigo com o título "${title}" e keyword principal "${keyword}".`,
-        useResearch ? "Use pesquisa web para enriquecer o conteúdo." : "",
-        customInstructions ? `Instruções adicionais: ${customInstructions}` : "",
+        `Gere e publique um article com o title "${title}" e keyword principal "${keyword}".`,
+        useResearch ? "Use pesquisa web para enriquecer o content." : "",
+        customInstructions ? `Instructions adicionais: ${customInstructions}` : "",
         "Execute generateArticle imediatamente.",
       ]
         .filter(Boolean)
@@ -1154,37 +1329,43 @@ export const scheduleArticlePublication = tool({
           cron: preset.cron,
           enabled: job.enabled,
         },
-        message: `Artigo "${title}" agendado para ${preset.label}. O artigo será gerado e publicado automaticamente.`,
+        message: `Article "${title}" scheduled for ${preset.label}. The article will be generated and published automatically.`,
       };
     } catch (error) {
       return {
         success: false as const,
-        message: error instanceof Error ? error.message : "Erro ao agendar publicação.",
+        message: error instanceof Error ? error.message : "Error scheduling publication.",
       };
     }
   },
 });
 
-export const agentTools = {
-  generateIdeas,
-  generateContentPlan,
-  generateKeywords,
-  getKeywordHistory,
-  generateTitles,
-  generateArticle,
-  generateSocialPosts,
-  fetchBlogFeed,
-  getSearchPerformance,
-  getTrafficOverview,
-  getTopContent,
-  getContentOpportunities,
-  comparePerformance,
-  getContentDecay,
-  getSearchBySegment,
-  getPageKeywords,
-  analyzeCompetitor,
-  scheduleJob,
-  scheduleArticlePublication,
-  listScheduledJobs,
-  deleteScheduledJob,
-};
+export function createAgentTools(userEmail?: string) {
+  return {
+    generateIdeas,
+    generateContentPlan,
+    generateKeywords: createGenerateKeywordsTool(userEmail),
+    getKeywordHistory,
+    generateTitles: createGenerateTitlesTool(userEmail),
+    generateArticle: createGenerateArticleTool(userEmail),
+    generateSocialPosts: createGenerateSocialPostsTool(userEmail),
+    listSocialAccounts: createListSocialAccountsTool(userEmail),
+    scheduleSocialPost: createScheduleSocialPostTool(userEmail),
+    fetchBlogFeed,
+    getSearchPerformance,
+    getTrafficOverview,
+    getTopContent,
+    getContentOpportunities,
+    comparePerformance,
+    getContentDecay,
+    getSearchBySegment,
+    getPageKeywords,
+    analyzeCompetitor,
+    scheduleJob,
+    scheduleArticlePublication,
+    listScheduledJobs,
+    deleteScheduledJob,
+  };
+}
+
+export const agentTools = createAgentTools();

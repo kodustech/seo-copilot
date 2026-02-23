@@ -47,32 +47,32 @@ const SUGGESTION_CATEGORIES = [
     label: "SEO",
     icon: Search,
     prompts: [
-      "Pesquisar keywords sobre DevOps",
-      "Analisar competidores no meu nicho",
+      "Research keywords about DevOps",
+      "Analyze competitors in my niche",
     ],
   },
   {
     label: "Content",
     icon: FileText,
     prompts: [
-      "Gerar plano de conteúdo estratégico",
-      "Gerar um artigo completo do zero",
+      "Generate a strategic content plan",
+      "Generate a full article from scratch",
     ],
   },
   {
     label: "Social",
     icon: Share2,
     prompts: [
-      "Criar posts sociais a partir do ultimo blog post",
-      "Adaptar artigo para LinkedIn",
+      "Create social posts from the latest blog post",
+      "Adapt the article for LinkedIn",
     ],
   },
   {
     label: "Analytics",
     icon: BarChart3,
     prompts: [
-      "Como está a performance de busca orgânica?",
-      "Compare esse mês com o anterior",
+      "How is organic search performing?",
+      "Compare this month with the previous one",
     ],
   },
 ];
@@ -214,7 +214,7 @@ export function AgentChat() {
         const titleText = firstUserMsg?.parts
           ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
           .map((p) => p.text)
-          .join(" ") ?? "Nova conversa";
+          .join(" ") ?? "New conversation";
         const title = generateTitleFromMessage(titleText);
 
         if (activeIdRef.current) {
@@ -434,7 +434,7 @@ export function AgentChat() {
               <button
                 onClick={handleNewConversation}
                 className="rounded-lg p-1.5 text-neutral-400 transition hover:bg-white/[0.06] hover:text-white"
-                title="Nova conversa"
+                title="New conversation"
               >
                 <SquarePen className="h-5 w-5" />
               </button>
@@ -456,8 +456,8 @@ export function AgentChat() {
                   Seu CMO de Growth &amp; SEO
                 </p>
                 <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-neutral-500">
-                  Pesquiso tendências, crio conteúdo e impulsiono seu crescimento
-                  orgânico.
+                  I research trends, create content, and drive your organic
+                  growth.
                 </p>
               </div>
 
@@ -563,7 +563,7 @@ export function AgentChat() {
                   <AtlasAvatar size="sm" />
                   <div className="flex items-center gap-2 pt-1 text-sm text-neutral-500">
                     <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-400" />
-                    Atlas está pensando...
+                    Atlas is thinking...
                   </div>
                 </div>
               )}
@@ -604,7 +604,7 @@ export function AgentChat() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="Peça algo ao Atlas..."
+                  placeholder="Ask Atlas something..."
                   rows={1}
                   className="w-full resize-none bg-transparent px-4 pb-12 pt-4 text-sm leading-relaxed text-white placeholder:text-neutral-500 focus:outline-none"
                   style={{ minHeight: "56px", maxHeight: "160px" }}

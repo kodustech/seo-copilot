@@ -33,11 +33,11 @@ import {
 } from "@/components/ui/select";
 
 const PRESETS = [
-  { value: "daily_9am", label: "Diariamente as 9h" },
-  { value: "weekly_monday", label: "Toda segunda as 9h" },
-  { value: "weekly_friday", label: "Toda sexta as 9h" },
-  { value: "biweekly", label: "Quinzenalmente" },
-  { value: "monthly_first", label: "Mensalmente" },
+  { value: "daily_9am", label: "Daily at 9am" },
+  { value: "weekly_monday", label: "Every Monday at 9am" },
+  { value: "weekly_friday", label: "Every Friday at 9am" },
+  { value: "biweekly", label: "Every two weeks" },
+  { value: "monthly_first", label: "Monthly" },
 ];
 
 type Job = {
@@ -81,11 +81,11 @@ function authHeaders(token: string) {
 
 function presetLabel(cron: string): string {
   const map: Record<string, string> = {
-    "0 9 * * *": "Diariamente as 9h",
-    "0 9 * * 1": "Toda segunda as 9h",
-    "0 9 * * 5": "Toda sexta as 9h",
-    "0 9 1,15 * *": "Quinzenalmente",
-    "0 9 1 * *": "Mensalmente",
+    "0 9 * * *": "Daily at 9am",
+    "0 9 * * 1": "Every Monday at 9am",
+    "0 9 * * 5": "Every Friday at 9am",
+    "0 9 1,15 * *": "Every two weeks",
+    "0 9 1 * *": "Monthly",
   };
   return map[cron] ?? cron;
 }
@@ -199,30 +199,30 @@ export function JobsPage() {
         <div>
           <h1 className="text-xl font-semibold text-white">Scheduled Jobs</h1>
           <p className="mt-1 text-sm text-neutral-500">
-            Tarefas que executam automaticamente e enviam resultado via webhook.
+            Tasks that run automatically and send output via webhook.
           </p>
         </div>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
             <Button className="rounded-lg bg-violet-600 text-white hover:bg-violet-500">
               <Plus className="mr-2 h-4 w-4" />
-              Novo Job
+              New Job
             </Button>
           </DialogTrigger>
           <DialogContent className="border-white/10 bg-neutral-950 text-white sm:max-w-lg">
             <DialogHeader>
-              <DialogTitle>Novo Job Agendado</DialogTitle>
+              <DialogTitle>New Scheduled Job</DialogTitle>
               <DialogDescription className="text-neutral-400">
-                Configure o prompt, frequencia e webhook de destino.
+                Configure the prompt, frequency, and destination webhook.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-2">
               <div>
                 <label className="mb-1 block text-xs font-medium text-neutral-400">
-                  Nome
+                  Name
                 </label>
                 <Input
-                  placeholder="Relatorio SEO Semanal"
+                  placeholder="Weekly SEO Report"
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
                   className="border-white/10 bg-neutral-900 text-white"
@@ -233,7 +233,7 @@ export function JobsPage() {
                   Prompt
                 </label>
                 <Textarea
-                  placeholder="Analise a performance de SEO da ultima semana e gere um relatorio..."
+                  placeholder="Analyze SEO performance for the last week and generate a report..."
                   value={formPrompt}
                   onChange={(e) => setFormPrompt(e.target.value)}
                   rows={4}
@@ -242,7 +242,7 @@ export function JobsPage() {
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-neutral-400">
-                  Frequencia
+                  Frequency
                 </label>
                 <Select value={formSchedule} onValueChange={setFormSchedule}>
                   <SelectTrigger className="border-white/10 bg-neutral-900 text-white">
@@ -280,7 +280,7 @@ export function JobsPage() {
                 ) : (
                   <Plus className="mr-2 h-4 w-4" />
                 )}
-                Criar Job
+                Create Job
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -296,10 +296,10 @@ export function JobsPage() {
         <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-white/[0.06] bg-white/[0.03] py-16">
           <Calendar className="h-10 w-10 text-neutral-700" />
           <p className="text-sm text-neutral-500">
-            Nenhum job agendado ainda.
+            No scheduled jobs yet.
           </p>
           <p className="text-xs text-neutral-600">
-            Crie pelo botao acima ou pelo chat do Atlas.
+            Create one using the button above or in the Atlas chat.
           </p>
         </div>
       ) : (
@@ -323,8 +323,8 @@ export function JobsPage() {
                     {presetLabel(job.cron_expression)}
                     {job.last_run_at && (
                       <>
-                        {" "}· Ultimo run:{" "}
-                        {new Date(job.last_run_at).toLocaleDateString("pt-BR", {
+                        {" "}· Last run:{" "}
+                        {new Date(job.last_run_at).toLocaleDateString("en-US", {
                           day: "2-digit",
                           month: "short",
                           hour: "2-digit",
@@ -373,13 +373,13 @@ export function JobsPage() {
                   </p>
 
                   <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
-                    Historico de execucoes
+                    Execution history
                   </p>
                   {runsLoading[job.id] ? (
                     <Loader2 className="h-4 w-4 animate-spin text-neutral-500" />
                   ) : !runs[job.id]?.length ? (
                     <p className="text-xs text-neutral-600">
-                      Nenhuma execucao ainda.
+                      No executions yet.
                     </p>
                   ) : (
                     <div className="space-y-2">
@@ -402,7 +402,7 @@ export function JobsPage() {
                             </Badge>
                             <span className="text-[11px] tabular-nums text-neutral-500">
                               {new Date(run.started_at).toLocaleDateString(
-                                "pt-BR",
+                                "en-US",
                                 {
                                   day: "2-digit",
                                   month: "short",

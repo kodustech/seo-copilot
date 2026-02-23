@@ -20,10 +20,10 @@ function groupByDate(conversations: ConversationSummary[]) {
   const weekAgo = new Date(today.getTime() - 7 * 86_400_000);
 
   const groups: { label: string; items: ConversationSummary[] }[] = [
-    { label: "Hoje", items: [] },
-    { label: "Ontem", items: [] },
-    { label: "Últimos 7 dias", items: [] },
-    { label: "Mais antigos", items: [] },
+    { label: "Today", items: [] },
+    { label: "Yesterday", items: [] },
+    { label: "Last 7 days", items: [] },
+    { label: "Older", items: [] },
   ];
 
   for (const c of conversations) {
@@ -64,19 +64,19 @@ export function ConversationSidebar({
       >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-white/[0.06] px-4 py-3">
-          <h2 className="text-sm font-semibold text-neutral-200">Conversas</h2>
+          <h2 className="text-sm font-semibold text-neutral-200">Conversations</h2>
           <div className="flex items-center gap-1">
             <button
               onClick={onNew}
               className="rounded-lg p-1.5 text-neutral-400 transition hover:bg-white/[0.06] hover:text-white"
-              title="Nova conversa"
+              title="New conversation"
             >
               <Plus className="h-4 w-4" />
             </button>
             <button
               onClick={onClose}
               className="rounded-lg p-1.5 text-neutral-400 transition hover:bg-white/[0.06] hover:text-white"
-              title="Fechar"
+              title="Close"
             >
               <X className="h-4 w-4" />
             </button>
@@ -87,7 +87,7 @@ export function ConversationSidebar({
         <div className="flex-1 overflow-y-auto px-2 py-2">
           {conversations.length === 0 ? (
             <p className="px-2 py-8 text-center text-xs text-neutral-500">
-              Nenhuma conversa ainda
+              No conversations yet
             </p>
           ) : (
             groupByDate(conversations).map((group) => (
@@ -113,7 +113,7 @@ export function ConversationSidebar({
                         onDelete(c.id);
                       }}
                       className="hidden shrink-0 rounded p-1 text-neutral-500 transition hover:bg-red-500/20 hover:text-red-400 group-hover:block"
-                      title="Deletar conversa"
+                      title="Delete conversation"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>

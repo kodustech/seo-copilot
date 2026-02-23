@@ -21,6 +21,11 @@ Copiloto em Next.js com UI estilo Notion usando shadcn/ui para gerar ideias de k
    - `NEXT_PUBLIC_ALLOWED_DOMAIN` para restringir o domínio (por padrão `@kodus.io`)
    - `N8N_KEYWORDS_ENDPOINT`, `N8N_KEYWORDS_STATUS_ENDPOINT`, `N8N_KEYWORDS_HISTORY_ENDPOINT`, `N8N_TITLES_ENDPOINT`, `N8N_SOCIAL_ENDPOINT`, `N8N_POST_ENDPOINT`, `N8N_ARTICLES_ENDPOINT` caso precise sobrescrever os padrões
    - `N8N_BEARER_TOKEN` se os webhooks exigirem autenticação
+   - `POST_BRIDGE_API_URL` (default `https://api.post-bridge.com`) e `POST_BRIDGE_API_KEY` para listar contas e agendar posts sociais direto do app
+   - `CHANGELOG_API_URL` (base URL ou endpoint completo) para buscar updates de changelog como ideias de social (`source=changelog`)
+   - `CHANGELOG_REPOSITORY` no formato `owner/repo` (default `kodustech/kodus-ai`)
+   - `CHANGELOG_LOOKBACK_DAYS` para janela de busca (1-365, default `30`)
+   - `CHANGELOG_GITHUB_TOKEN` opcional, caso o repositório seja privado
 
 3. Instale dependências e inicie:
 
@@ -30,6 +35,25 @@ Copiloto em Next.js com UI estilo Notion usando shadcn/ui para gerar ideias de k
    ```
 
 A interface em `/` já traz todo o fluxo: dois botões para gerar keywords (com ou sem ideia), multi-seleção para gerar títulos, e um bloco final para gerar e visualizar o artigo. Tudo foi construído com componentes shadcn (button, card, table, checkbox etc.) seguindo o visual minimalista do Notion.
+
+## Calendário de growth
+
+- A página `/calendario` unifica:
+  - execuções futuras dos Scheduled Jobs,
+  - posts sociais agendados no Post-Bridge,
+  - posts já publicados no WordPress.
+
+## Kanban unificado
+
+- A página `/kanban` centraliza o fluxo completo em colunas:
+  - `Backlog` → `Research` → `SEO Ready` → `Drafting` → `Review` → `Scheduled` → `Published`
+- Você pode:
+  - criar cards manuais (ideia, keyword, título, artigo, social)
+  - importar ideias do `blog`, `changelog` ou ambos
+  - mover cards entre estágios
+- A persistência usa a tabela `growth_work_items`.
+- Antes de usar, rode o SQL:
+  - `docs/growth_work_items.sql`
 
 ### Parâmetros extras na geração de keywords
 
@@ -47,3 +71,17 @@ A interface em `/` já traz todo o fluxo: dois botões para gerar keywords (com 
 - Ao solicitar um artigo, enviamos um POST para `N8N_POST_ENDPOINT` com título, keyword selecionada, opções de pesquisa e instruções customizadas. O webhook retorna apenas o `taskId`.
 - A UI passa a exibir o status da task e consulta periodicamente `N8N_ARTICLES_ENDPOINT?task_id=<id>` até que o conteúdo esteja pronto. Quando o texto chega, a prévia é atualizada automaticamente.
 - O usuário também pode escolher categorias específicas (IDs fornecidos acima). Esses IDs são enviados na mesma requisição, permitindo que o n8n associe cada artigo a uma taxonomia no Supabase.
+
+### Social: gerar e agendar
+
+- A aba de Social continua gerando variações via `N8N_SOCIAL_ENDPOINT`.
+- No bloco de conteúdo base, você pode trocar a fonte entre:
+  - `Blog posts` (WordPress)
+  - `Changelog (build in public)` (via `CHANGELOG_API_URL` -> `POST /api/v1/changelog` em `format=json`)
+- Cada variação agora possui botão de agendamento:
+  - ao abrir o modal, o app consulta `GET /api/social/accounts`, que chama `GET /v1/social-accounts` no Post-Bridge;
+  - ao confirmar, o app envia para `POST /api/social/schedule`, que chama `POST /v1/posts` no Post-Bridge com:
+    - `caption`
+    - `scheduled_at` (ISO UTC)
+    - `social_accounts` (array de IDs numéricos)
+- Após retorno com sucesso, o evento aparece no calendário via leitura dos posts `scheduled` no Post-Bridge.

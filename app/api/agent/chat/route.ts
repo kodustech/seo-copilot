@@ -1,7 +1,7 @@
 import { streamText, stepCountIs, convertToModelMessages } from "ai";
 import { getModel } from "@/lib/ai/provider";
 import { GROWTH_AGENT_SYSTEM_PROMPT } from "@/lib/ai/system-prompt";
-import { agentTools } from "@/lib/ai/tools";
+import { createAgentTools } from "@/lib/ai/tools";
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 
 export const maxDuration = 300;
@@ -23,13 +23,13 @@ export async function POST(req: Request) {
   const { messages: uiMessages } = await req.json();
   const messages = await convertToModelMessages(uiMessages);
 
-  const systemWithUser = `${GROWTH_AGENT_SYSTEM_PROMPT}\n\n## Contexto do Usuário\nEmail do usuário logado: ${userEmail}\nQuando usar tools de scheduled jobs, SEMPRE passe este email no campo user_email.`;
+  const systemWithUser = `${GROWTH_AGENT_SYSTEM_PROMPT}\n\n## User Context\nLogged-in user email: ${userEmail}\nUse this email context for user-scoped tools (scheduled jobs and social scheduling integrations).`;
 
   const result = streamText({
     model: getModel(),
     system: systemWithUser,
     messages,
-    tools: agentTools,
+    tools: createAgentTools(userEmail),
     stopWhen: stepCountIs(10),
   });
 

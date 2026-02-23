@@ -56,27 +56,27 @@ const ANGLE_CONFIG: Record<
   { label: string; queryTemplate: (topic: string) => string }
 > = {
   pain_points: {
-    label: "Dores",
+    label: "Pain Points",
     queryTemplate: (topic) =>
       `developers and teams struggling with ${topic}, common frustrations, problems people face`,
   },
   questions: {
-    label: "Perguntas",
+    label: "Questions",
     queryTemplate: (topic) =>
       `how to get started with ${topic}, best way to implement ${topic}, common questions about ${topic}`,
   },
   trends: {
-    label: "Tendências",
+    label: "Trends",
     queryTemplate: (topic) =>
       `new tools and announcements in ${topic}, latest trends and what's changing in ${topic}`,
   },
   comparisons: {
-    label: "Comparações",
+    label: "Comparisons",
     queryTemplate: (topic) =>
       `${topic} comparison, alternatives, versus, which one should I choose for ${topic}`,
   },
   best_practices: {
-    label: "Boas Práticas",
+    label: "Best Practices",
     queryTemplate: (topic) =>
       `${topic} best practices, lessons learned, tips from experience, production ${topic} guide`,
   },
@@ -178,7 +178,7 @@ export async function searchCompetitorContent({
   const apiKey = process.env.EXA_API_KEY?.trim();
   if (!apiKey) {
     throw new Error(
-      "EXA_API_KEY nao configurada. Adicione a variavel de ambiente para usar a analise de concorrentes.",
+      "EXA_API_KEY is not configured. Add the environment variable to use competitor analysis.",
     );
   }
 
@@ -207,7 +207,7 @@ export async function searchCompetitorContent({
   const results: CompetitorResult[] = (response.results ?? []).map(
     (r): CompetitorResult => ({
       id: r.id ?? r.url,
-      title: r.title ?? "Sem titulo",
+      title: r.title ?? "Untitled",
       url: r.url,
       source: extractSource(r.url),
       publishedDate: r.publishedDate ?? null,
@@ -237,7 +237,7 @@ export async function searchIdeas({
   const apiKey = process.env.EXA_API_KEY?.trim();
   if (!apiKey) {
     throw new Error(
-      "EXA_API_KEY nao configurada. Adicione a variavel de ambiente para usar a pesquisa de ideias.",
+      "EXA_API_KEY is not configured. Add the environment variable to use idea research.",
     );
   }
 

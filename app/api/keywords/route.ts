@@ -4,6 +4,7 @@ import {
   enqueueKeywordTask,
   fetchKeywordTaskResult,
 } from "@/lib/copilot";
+import { resolveVoicePolicyForRequest } from "@/lib/voice-policy";
 
 export async function POST(request: Request) {
   const body = await readBody(request);
@@ -13,17 +14,21 @@ export async function POST(request: Request) {
       body.locationCode ?? body.location_code,
     );
     const language = normalizeLanguage(body.language);
+    const voicePolicy = await resolveVoicePolicyForRequest(
+      request.headers.get("authorization"),
+    );
     const result = await enqueueKeywordTask({
       idea: typeof body.idea === "string" ? body.idea : undefined,
       limit,
       locationCode,
       language,
+      voicePolicy,
     });
     return NextResponse.json(result);
   } catch (error) {
-    console.error("Erro ao gerar keywords", error);
+    console.error("Error generating keywords", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Falha ao gerar keywords." },
+      { error: error instanceof Error ? error.message : "Failed to generate keywords." },
       { status: 400 },
     );
   }
@@ -36,7 +41,7 @@ export async function GET(request: Request) {
 
   if (!Number.isFinite(numericId)) {
     return NextResponse.json(
-      { error: "Task inválida." },
+      { error: "Invalid task." },
       { status: 400 },
     );
   }
@@ -45,9 +50,9 @@ export async function GET(request: Request) {
     const result = await fetchKeywordTaskResult(numericId);
     return NextResponse.json(result);
   } catch (error) {
-    console.error("Erro ao consultar task", error);
+    console.error("Error fetching task", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Falha ao consultar task." },
+      { error: error instanceof Error ? error.message : "Failed to fetch task." },
       { status: 400 },
     );
   }

@@ -17,26 +17,28 @@ type ToolResultProps = {
 };
 
 const TOOL_META: Record<string, { label: string; loadingMsg: string; icon: React.ElementType }> = {
-  generateIdeas: { label: "Pesquisa de Ideias", loadingMsg: "Pesquisando discussoes...", icon: Lightbulb },
-  generateContentPlan: { label: "Plano de Conteúdo", loadingMsg: "Cruzando dados e gerando plano estratégico...", icon: LayoutList },
-  generateKeywords: { label: "Pesquisa de Keywords", loadingMsg: "Pesquisando keywords... isso pode levar ~30-90s", icon: Search },
-  getKeywordHistory: { label: "Histórico de Keywords", loadingMsg: "Buscando histórico...", icon: History },
-  generateTitles: { label: "Geração de Títulos", loadingMsg: "Gerando sugestões de títulos...", icon: FileText },
-  generateArticle: { label: "Geração de Artigo", loadingMsg: "Gerando artigo completo... isso pode levar ~1-3 min", icon: Newspaper },
-  generateSocialPosts: { label: "Social Posts", loadingMsg: "Gerando posts para redes sociais...", icon: Share2 },
-  fetchBlogFeed: { label: "Blog Feed", loadingMsg: "Buscando posts do blog...", icon: Rss },
-  getSearchPerformance: { label: "Search Performance", loadingMsg: "Buscando dados do Search Console...", icon: BarChart3 },
-  getTrafficOverview: { label: "Traffic Overview", loadingMsg: "Buscando dados de tráfego...", icon: Globe },
-  getTopContent: { label: "Top Content", loadingMsg: "Buscando top páginas...", icon: TrendingUp },
-  getContentOpportunities: { label: "Content Opportunities", loadingMsg: "Analisando oportunidades...", icon: Target },
-  comparePerformance: { label: "Comparação de Períodos", loadingMsg: "Comparando períodos...", icon: GitCompare },
-  getContentDecay: { label: "Content Decay", loadingMsg: "Analisando content decay...", icon: TrendingDown },
-  getSearchBySegment: { label: "Análise por Segmento", loadingMsg: "Analisando segmentos...", icon: Smartphone },
-  getPageKeywords: { label: "Keywords da Página", loadingMsg: "Buscando keywords que trazem tráfego...", icon: Link2 },
-  analyzeCompetitor: { label: "Análise de Concorrentes", loadingMsg: "Analisando conteúdo concorrente...", icon: Eye },
-  scheduleJob: { label: "Agendar Tarefa", loadingMsg: "Criando job agendado...", icon: Calendar },
-  listScheduledJobs: { label: "Jobs Agendados", loadingMsg: "Buscando jobs agendados...", icon: List },
-  deleteScheduledJob: { label: "Remover Job", loadingMsg: "Removendo job...", icon: Trash2 },
+  generateIdeas: { label: "Idea Research", loadingMsg: "Researching discussions...", icon: Lightbulb },
+  generateContentPlan: { label: "Content Plan", loadingMsg: "Combining data and generating a strategic plan...", icon: LayoutList },
+  generateKeywords: { label: "Keyword Research", loadingMsg: "Researching keywords... this may take ~30-90s", icon: Search },
+  getKeywordHistory: { label: "Keyword History", loadingMsg: "Loading history...", icon: History },
+  generateTitles: { label: "Title Generation", loadingMsg: "Generating title suggestions...", icon: FileText },
+  generateArticle: { label: "Article Generation", loadingMsg: "Generating full article... this may take ~1-3 min", icon: Newspaper },
+  generateSocialPosts: { label: "Social Posts", loadingMsg: "Generating social posts...", icon: Share2 },
+  listSocialAccounts: { label: "Social Accounts", loadingMsg: "Loading social accounts...", icon: List },
+  scheduleSocialPost: { label: "Schedule Social", loadingMsg: "Scheduling social post...", icon: Calendar },
+  fetchBlogFeed: { label: "Blog Feed", loadingMsg: "Fetching blog posts...", icon: Rss },
+  getSearchPerformance: { label: "Search Performance", loadingMsg: "Fetching Search Console data...", icon: BarChart3 },
+  getTrafficOverview: { label: "Traffic Overview", loadingMsg: "Fetching traffic data...", icon: Globe },
+  getTopContent: { label: "Top Content", loadingMsg: "Fetching top pages...", icon: TrendingUp },
+  getContentOpportunities: { label: "Content Opportunities", loadingMsg: "Analyzing opportunities...", icon: Target },
+  comparePerformance: { label: "Period Comparison", loadingMsg: "Comparing periods...", icon: GitCompare },
+  getContentDecay: { label: "Content Decay", loadingMsg: "Analyzing content decay...", icon: TrendingDown },
+  getSearchBySegment: { label: "Segment Analysis", loadingMsg: "Analyzing segments...", icon: Smartphone },
+  getPageKeywords: { label: "Page Keywords", loadingMsg: "Fetching keywords that drive traffic...", icon: Link2 },
+  analyzeCompetitor: { label: "Competitor Analysis", loadingMsg: "Analyzing competitor content...", icon: Eye },
+  scheduleJob: { label: "Schedule Task", loadingMsg: "Creating scheduled job...", icon: Calendar },
+  listScheduledJobs: { label: "Scheduled Jobs", loadingMsg: "Fetching scheduled jobs...", icon: List },
+  deleteScheduledJob: { label: "Remove Job", loadingMsg: "Removing job...", icon: Trash2 },
 };
 
 function difficultyColor(score: number): string {
@@ -70,7 +72,7 @@ function KeywordsTable({ keywords }: { keywords: Keyword[] }) {
             <th className="pb-2 pr-4 text-xs font-medium text-neutral-400">Keyword</th>
             <th className="pb-2 pr-4 text-right text-xs font-medium text-neutral-400">Volume</th>
             <th className="pb-2 pr-4 text-right text-xs font-medium text-neutral-400">CPC</th>
-            <th className="pb-2 text-center text-xs font-medium text-neutral-400">Dificuldade</th>
+            <th className="pb-2 text-center text-xs font-medium text-neutral-400">Difficulty</th>
           </tr>
         </thead>
         <tbody>
@@ -78,7 +80,7 @@ function KeywordsTable({ keywords }: { keywords: Keyword[] }) {
             <tr key={kw.id ?? i} className="border-b border-white/[0.04] last:border-0">
               <td className="py-2 pr-4 font-medium text-neutral-200">{kw.phrase}</td>
               <td className="py-2 pr-4 text-right tabular-nums text-neutral-400">
-                {kw.volume.toLocaleString("pt-BR")}
+                {kw.volume.toLocaleString("en-US")}
               </td>
               <td className="py-2 pr-4 text-right tabular-nums text-neutral-400">
                 ${kw.cpc.toFixed(2)}
@@ -195,6 +197,33 @@ function SocialPostsView({ posts }: { posts: SocialPost[] }) {
   );
 }
 
+type SocialAccountItem = { id: number; platform: string; username: string };
+
+function SocialAccountsView({ accounts }: { accounts: SocialAccountItem[] }) {
+  if (!accounts.length) {
+    return <p className="text-xs text-neutral-500">No social account found.</p>;
+  }
+
+  return (
+    <div className="space-y-2">
+      {accounts.map((account) => (
+        <div
+          key={`${account.id}-${account.platform}`}
+          className="flex items-center justify-between rounded-lg border border-white/[0.08] bg-white/[0.02] px-3 py-2"
+        >
+          <div className="text-sm text-neutral-200">
+            <span className="font-medium">{account.platform}</span>{" "}
+            <span className="text-neutral-400">@{account.username}</span>
+          </div>
+          <Badge variant="outline" className="border-white/10 text-[10px] text-neutral-400">
+            ID {account.id}
+          </Badge>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 type FeedPost = { id: string; title: string; link: string; excerpt?: string; publishedAt?: string };
 
 function BlogFeedList({ posts }: { posts: FeedPost[] }) {
@@ -204,7 +233,7 @@ function BlogFeedList({ posts }: { posts: FeedPost[] }) {
         <div key={post.id} className="flex items-baseline gap-2 text-sm">
           {post.publishedAt && (
             <span className="shrink-0 text-xs tabular-nums text-neutral-500">
-              {new Date(post.publishedAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" })}
+              {new Date(post.publishedAt).toLocaleDateString("en-US", { day: "2-digit", month: "short" })}
             </span>
           )}
           <a href={post.link} target="_blank" rel="noopener noreferrer" className="font-medium text-neutral-300 hover:text-violet-400 hover:underline">
@@ -298,7 +327,7 @@ function IdeaResultsView({ results }: { results: IdeaResult[] }) {
                       {r.publishedDate && (
                         <span className="ml-2 text-[10px] text-neutral-500">
                           {new Date(r.publishedDate).toLocaleDateString(
-                            "pt-BR",
+                            "en-US",
                             { day: "2-digit", month: "short", year: "numeric" },
                           )}
                         </span>
@@ -382,14 +411,14 @@ const PRIORITY_BADGE: Record<string, string> = {
 
 const PRIORITY_LABEL: Record<string, string> = {
   high: "Alta",
-  medium: "Média",
+  medium: "Medium",
   low: "Baixa",
 };
 
 const DIFFICULTY_LABEL: Record<string, string> = {
-  easy: "Fácil",
-  medium: "Média",
-  hard: "Difícil",
+  easy: "Easy",
+  medium: "Medium",
+  hard: "Hard",
 };
 
 function ContentPlanView({ data }: { data: ContentPlanData }) {
@@ -409,7 +438,7 @@ function ContentPlanView({ data }: { data: ContentPlanData }) {
       <div className="flex flex-wrap gap-2">
         {counts.community > 0 && (
           <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 text-[11px] text-neutral-400">
-            {counts.community} discussões
+            {counts.community} discussions
           </span>
         )}
         {counts.opportunities > 0 && (
@@ -419,7 +448,7 @@ function ContentPlanView({ data }: { data: ContentPlanData }) {
         )}
         {counts.decaying > 0 && (
           <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 text-[11px] text-neutral-400">
-            {counts.decaying} páginas em queda
+            {counts.decaying} pages em queda
           </span>
         )}
         {counts.blogPosts > 0 && (
@@ -515,7 +544,7 @@ function ContentPlanView({ data }: { data: ContentPlanData }) {
             {/* Existing page */}
             {idea.existingPage && (
               <p className="ml-8 text-[11px] text-neutral-500">
-                Página existente:{" "}
+                Page existente:{" "}
                 <span className="font-mono text-neutral-400">
                   {idea.existingPage}
                 </span>
@@ -526,7 +555,7 @@ function ContentPlanView({ data }: { data: ContentPlanData }) {
             {idea.nextSteps?.length > 0 && (
               <div className="ml-8">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500 mb-1">
-                  Próximos passos
+                  Next steps
                 </p>
                 <ul className="space-y-0.5">
                   {idea.nextSteps.map((step, si) => (
@@ -560,7 +589,7 @@ function KpiCard({ label, value, sub }: { label: string; value: string; sub?: st
 }
 
 function formatNum(n: number): string {
-  return n.toLocaleString("pt-BR");
+  return n.toLocaleString("en-US");
 }
 
 function formatPct(n: number): string {
@@ -598,9 +627,9 @@ function SearchPerformanceView({ data }: { data: SearchPerfData }) {
     <div className="space-y-4">
       <div className="grid grid-cols-4 gap-2">
         <KpiCard label="Cliques" value={formatNum(data.totals.clicks)} />
-        <KpiCard label="Impressões" value={formatNum(data.totals.impressions)} />
-        <KpiCard label="CTR Médio" value={formatPct(data.totals.avgCtr)} />
-        <KpiCard label="Posição Média" value={formatPos(data.totals.avgPosition)} />
+        <KpiCard label="Impressions" value={formatNum(data.totals.impressions)} />
+        <KpiCard label="Average CTR" value={formatPct(data.totals.avgCtr)} />
+        <KpiCard label="Average Position" value={formatPos(data.totals.avgPosition)} />
       </div>
 
       {data.topQueries.length > 0 && (
@@ -678,14 +707,14 @@ function TrafficOverviewView({ data }: { data: TrafficData }) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-3 gap-2">
-        <KpiCard label="Usuários" value={formatNum(data.overview.users)} />
-        <KpiCard label="Sessões" value={formatNum(data.overview.sessions)} />
+        <KpiCard label="Users" value={formatNum(data.overview.users)} />
+        <KpiCard label="Sessions" value={formatNum(data.overview.sessions)} />
         <KpiCard label="Pageviews" value={formatNum(data.overview.pageviews)} />
       </div>
 
       {data.topSources.length > 0 && (
         <div>
-          <p className="mb-1.5 text-xs font-semibold text-neutral-400">Fontes de Tráfego</p>
+          <p className="mb-1.5 text-xs font-semibold text-neutral-400">Fontes de Traffic</p>
           <div className="space-y-1">
             {data.topSources.map((s, i) => (
               <div key={i} className="flex items-center justify-between text-sm">
@@ -701,7 +730,7 @@ function TrafficOverviewView({ data }: { data: TrafficData }) {
 
       {data.dailyTrend.length > 0 && (
         <div>
-          <p className="mb-1.5 text-xs font-semibold text-neutral-400">Tendência Diária</p>
+          <p className="mb-1.5 text-xs font-semibold text-neutral-400">Daily Trend</p>
           <div className="flex items-end gap-px" style={{ height: 48 }}>
             {data.dailyTrend.map((d, i) => (
               <div
@@ -728,7 +757,7 @@ function TopContentView({ data }: { data: TopContentData }) {
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-white/[0.06] text-left">
-            <th className="pb-2 pr-4 text-xs font-medium text-neutral-400">Página</th>
+            <th className="pb-2 pr-4 text-xs font-medium text-neutral-400">Page</th>
             <th className="pb-2 pr-4 text-right text-xs font-medium text-neutral-400">Pageviews</th>
             <th className="pb-2 text-right text-xs font-medium text-neutral-400">Bounce Rate</th>
           </tr>
@@ -795,7 +824,7 @@ function ContentOpportunitiesView({ data }: { data: OpportunitiesData }) {
               CTR Baixo
             </Badge>
             <span className="text-[10px] text-neutral-500">
-              Muitas impressões, CTR &lt; 2%
+              Muitas impressions, CTR &lt; 2%
             </span>
           </div>
           <OpportunityTable rows={data.lowCtr} />
@@ -809,7 +838,7 @@ function ContentOpportunitiesView({ data }: { data: OpportunitiesData }) {
               Striking Distance
             </Badge>
             <span className="text-[10px] text-neutral-500">
-              Posição 5-20 — próximas do topo
+              Position 5-20 — close to the top
             </span>
           </div>
           <OpportunityTable rows={data.strikingDistance} />
@@ -817,7 +846,7 @@ function ContentOpportunitiesView({ data }: { data: OpportunitiesData }) {
       )}
 
       {data.lowCtr.length === 0 && data.strikingDistance.length === 0 && (
-        <p className="text-xs text-neutral-500">Nenhuma oportunidade identificada no período.</p>
+        <p className="text-xs text-neutral-500">No opportunities identified in this period.</p>
       )}
     </div>
   );
@@ -883,17 +912,17 @@ function ComparePerformanceView({ data }: { data: ComparePerformanceData }) {
         <p className="mb-1.5 text-xs font-semibold text-neutral-400">Search Console</p>
         <div>
           <CompareRow label="Clicks" current={data.search.current.clicks} previous={data.search.previous.clicks} change={data.search.change.clicks} formatter={formatNum} />
-          <CompareRow label="Impressões" current={data.search.current.impressions} previous={data.search.previous.impressions} change={data.search.change.impressions} formatter={formatNum} />
-          <CompareRow label="CTR Médio" current={data.search.current.avgCtr} previous={data.search.previous.avgCtr} change={data.search.change.avgCtr} formatter={formatPct} />
-          <CompareRow label="Posição Média" current={data.search.current.avgPosition} previous={data.search.previous.avgPosition} change={data.search.change.avgPosition} formatter={formatPos} />
+          <CompareRow label="Impressions" current={data.search.current.impressions} previous={data.search.previous.impressions} change={data.search.change.impressions} formatter={formatNum} />
+          <CompareRow label="Average CTR" current={data.search.current.avgCtr} previous={data.search.previous.avgCtr} change={data.search.change.avgCtr} formatter={formatPct} />
+          <CompareRow label="Average Position" current={data.search.current.avgPosition} previous={data.search.previous.avgPosition} change={data.search.change.avgPosition} formatter={formatPos} />
         </div>
       </div>
 
       <div>
         <p className="mb-1.5 text-xs font-semibold text-neutral-400">Google Analytics</p>
         <div>
-          <CompareRow label="Usuários" current={data.traffic.current.users} previous={data.traffic.previous.users} change={data.traffic.change.users} formatter={formatNum} />
-          <CompareRow label="Sessões" current={data.traffic.current.sessions} previous={data.traffic.previous.sessions} change={data.traffic.change.sessions} formatter={formatNum} />
+          <CompareRow label="Users" current={data.traffic.current.users} previous={data.traffic.previous.users} change={data.traffic.change.users} formatter={formatNum} />
+          <CompareRow label="Sessions" current={data.traffic.current.sessions} previous={data.traffic.previous.sessions} change={data.traffic.change.sessions} formatter={formatNum} />
           <CompareRow label="Pageviews" current={data.traffic.current.pageviews} previous={data.traffic.previous.pageviews} change={data.traffic.change.pageviews} formatter={formatNum} />
         </div>
       </div>
@@ -915,16 +944,16 @@ function ContentDecayView({ data }: { data: ContentDecayData }) {
     <div className="space-y-3">
       <p className="text-[10px] font-medium uppercase tracking-wider text-neutral-500">{data.periodLabel}</p>
       {data.decaying.length === 0 ? (
-        <p className="text-xs text-neutral-500">Nenhuma página com queda significativa.</p>
+        <p className="text-xs text-neutral-500">No page with significant decline.</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-white/[0.06] text-left">
-                <th className="pb-2 pr-4 text-xs font-medium text-neutral-400">Página</th>
+                <th className="pb-2 pr-4 text-xs font-medium text-neutral-400">Page</th>
                 <th className="pb-2 pr-4 text-right text-xs font-medium text-neutral-400">Atual</th>
-                <th className="pb-2 pr-4 text-right text-xs font-medium text-neutral-400">Anterior</th>
-                <th className="pb-2 text-right text-xs font-medium text-neutral-400">Variação</th>
+                <th className="pb-2 pr-4 text-right text-xs font-medium text-neutral-400">Previous</th>
+                <th className="pb-2 text-right text-xs font-medium text-neutral-400">Change</th>
               </tr>
             </thead>
             <tbody>
@@ -960,7 +989,7 @@ function SearchBySegmentView({ data }: { data: SearchBySegmentData }) {
   return (
     <div className="overflow-x-auto">
       {data.segments.length === 0 ? (
-        <p className="text-xs text-neutral-500">Nenhum dado por segmento.</p>
+        <p className="text-xs text-neutral-500">No dado por segmento.</p>
       ) : (
         <table className="w-full text-sm">
           <thead>
@@ -1002,10 +1031,10 @@ function PageKeywordsView({ data }: { data: PageKeywordsData }) {
   return (
     <div className="space-y-3">
       <p className="text-xs text-neutral-500">
-        Keywords que trazem tráfego para <span className="font-mono text-neutral-400">{data.page}</span>
+        Keywords que trazem traffic para <span className="font-mono text-neutral-400">{data.page}</span>
       </p>
       {data.keywords.length === 0 ? (
-        <p className="text-xs text-neutral-500">Nenhuma keyword encontrada para esta página.</p>
+        <p className="text-xs text-neutral-500">No keyword found for this page.</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -1054,7 +1083,7 @@ function CompetitorAnalysisView({ results, topic }: { results: CompetitorResultI
   return (
     <div className="space-y-3">
       <p className="text-xs text-neutral-500">
-        {results.length} artigos encontrados sobre <span className="font-medium text-neutral-400">&ldquo;{topic}&rdquo;</span>
+        {results.length} articles encontrados sobre <span className="font-medium text-neutral-400">&ldquo;{topic}&rdquo;</span>
       </p>
       <div className="space-y-2">
         {results.map((r) => (
@@ -1077,7 +1106,7 @@ function CompetitorAnalysisView({ results, topic }: { results: CompetitorResultI
                 </a>
                 {r.publishedDate && (
                   <span className="ml-2 text-[10px] text-neutral-500">
-                    {new Date(r.publishedDate).toLocaleDateString("pt-BR", {
+                    {new Date(r.publishedDate).toLocaleDateString("en-US", {
                       day: "2-digit",
                       month: "short",
                       year: "numeric",
@@ -1133,7 +1162,7 @@ function ScheduledJobCreatedView({ job }: { job: ScheduledJobResult }) {
         <span className="text-sm font-medium text-neutral-200">{job.name}</span>
       </div>
       <div className="space-y-1 text-xs text-neutral-400">
-        <p>Frequência: <span className="text-neutral-300">{job.schedule}</span></p>
+        <p>Frequency: <span className="text-neutral-300">{job.schedule}</span></p>
         <p>Cron: <span className="font-mono text-neutral-300">{job.cron}</span></p>
         <p>Webhook: <span className="font-mono text-neutral-300 break-all">{job.webhook_url}</span></p>
       </div>
@@ -1152,7 +1181,7 @@ type ScheduledJobListItem = {
 
 function ScheduledJobListView({ jobs }: { jobs: ScheduledJobListItem[] }) {
   if (jobs.length === 0) {
-    return <p className="text-xs text-neutral-500">Nenhum job agendado.</p>;
+    return <p className="text-xs text-neutral-500">No scheduled jobs.</p>;
   }
   return (
     <div className="space-y-2">
@@ -1169,7 +1198,7 @@ function ScheduledJobListView({ jobs }: { jobs: ScheduledJobListItem[] }) {
             <p className="text-[11px] text-neutral-500">
               {job.schedule_label}
               {job.last_run_at && (
-                <> · Último run: {new Date(job.last_run_at).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</>
+                <> · Last run: {new Date(job.last_run_at).toLocaleDateString("en-US", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</>
               )}
             </p>
           </div>
@@ -1203,12 +1232,12 @@ export function ToolResultRenderer({ toolName, state, input: _input, output }: T
     );
   }
 
-  // Error state
+  // Errorr state
   if (output.success === false) {
     return (
       <div className="my-1.5 rounded-lg border border-red-500/20 bg-red-500/10 px-3.5 py-2.5 text-sm">
-        <p className="text-xs font-medium text-red-400">{meta.label} — Erro</p>
-        <p className="mt-0.5 text-xs text-red-400/80">{String(output.message || "Erro desconhecido.")}</p>
+        <p className="text-xs font-medium text-red-400">{meta.label} — Error</p>
+        <p className="mt-0.5 text-xs text-red-400/80">{String(output.message || "Unknown error.")}</p>
       </div>
     );
   }
@@ -1234,12 +1263,12 @@ function renderContent(toolName: string, output: Record<string, unknown>) {
   switch (toolName) {
     case "generateIdeas": {
       const results = output.results as IdeaResult[] | undefined;
-      if (!results?.length) return <p className="text-xs text-neutral-500">Nenhuma ideia encontrada.</p>;
+      if (!results?.length) return <p className="text-xs text-neutral-500">No idea found.</p>;
       return <IdeaResultsView results={results} />;
     }
     case "generateContentPlan": {
       const ideas = output.ideas as ContentPlanIdea[] | undefined;
-      if (!ideas?.length) return <p className="text-xs text-neutral-500">Nenhuma ideia gerada.</p>;
+      if (!ideas?.length) return <p className="text-xs text-neutral-500">No idea generated.</p>;
       return (
         <ContentPlanView
           data={{
@@ -1259,42 +1288,63 @@ function renderContent(toolName: string, output: Record<string, unknown>) {
     case "generateKeywords":
     case "getKeywordHistory": {
       const keywords = output.keywords as Keyword[] | undefined;
-      if (!keywords?.length) return <p className="text-xs text-neutral-500">Nenhuma keyword encontrada.</p>;
+      if (!keywords?.length) return <p className="text-xs text-neutral-500">No keyword found.</p>;
       return <KeywordsTable keywords={keywords} />;
     }
     case "generateTitles": {
       const titles = output.titles as TitleItem[] | undefined;
-      if (!titles?.length) return <p className="text-xs text-neutral-500">Nenhum título gerado.</p>;
+      if (!titles?.length) return <p className="text-xs text-neutral-500">No title gerado.</p>;
       return <TitlesList titles={titles} />;
     }
     case "generateArticle": {
       const article = output.article as ArticlePreview | undefined;
-      if (!article) return <p className="text-xs text-neutral-500">Nenhum artigo gerado.</p>;
+      if (!article) return <p className="text-xs text-neutral-500">No article gerado.</p>;
       return <ArticlePreviewCard article={article} />;
     }
     case "generateSocialPosts": {
       const posts = output.posts as SocialPost[] | undefined;
-      if (!posts?.length) return <p className="text-xs text-neutral-500">Nenhum post gerado.</p>;
+      if (!posts?.length) return <p className="text-xs text-neutral-500">No post gerado.</p>;
       return <SocialPostsView posts={posts} />;
+    }
+    case "listSocialAccounts": {
+      const accounts = output.accounts as SocialAccountItem[] | undefined;
+      return <SocialAccountsView accounts={accounts ?? []} />;
+    }
+    case "scheduleSocialPost": {
+      const post = output.post as { id?: string; status?: string; scheduledAt?: string } | undefined;
+      if (!post?.id) return <p className="text-xs text-neutral-500">No scheduled post returned.</p>;
+      return (
+        <div className="space-y-1 text-sm">
+          <p className="text-neutral-200">
+            Scheduled post ID: <span className="font-mono text-neutral-100">{post.id}</span>
+          </p>
+          {post.status && <p className="text-neutral-400">Status: {post.status}</p>}
+          {post.scheduledAt && (
+            <p className="text-neutral-400">
+              Scheduled at: {new Date(post.scheduledAt).toLocaleString("en-US")}
+            </p>
+          )}
+        </div>
+      );
     }
     case "fetchBlogFeed": {
       const posts = output.posts as FeedPost[] | undefined;
-      if (!posts?.length) return <p className="text-xs text-neutral-500">Nenhum post encontrado.</p>;
+      if (!posts?.length) return <p className="text-xs text-neutral-500">No post encontrado.</p>;
       return <BlogFeedList posts={posts} />;
     }
     case "getSearchPerformance": {
       const data = output as unknown as SearchPerfData;
-      if (!data.totals) return <p className="text-xs text-neutral-500">Sem dados de performance.</p>;
+      if (!data.totals) return <p className="text-xs text-neutral-500">No performance data.</p>;
       return <SearchPerformanceView data={data} />;
     }
     case "getTrafficOverview": {
       const data = output as unknown as TrafficData;
-      if (!data.overview) return <p className="text-xs text-neutral-500">Sem dados de tráfego.</p>;
+      if (!data.overview) return <p className="text-xs text-neutral-500">No traffic data.</p>;
       return <TrafficOverviewView data={data} />;
     }
     case "getTopContent": {
       const data = output as unknown as TopContentData;
-      if (!data.pages?.length) return <p className="text-xs text-neutral-500">Nenhuma página encontrada.</p>;
+      if (!data.pages?.length) return <p className="text-xs text-neutral-500">No page found.</p>;
       return <TopContentView data={data} />;
     }
     case "getContentOpportunities": {
@@ -1303,7 +1353,7 @@ function renderContent(toolName: string, output: Record<string, unknown>) {
     }
     case "comparePerformance": {
       const data = output as unknown as ComparePerformanceData;
-      if (!data.search) return <p className="text-xs text-neutral-500">Sem dados de comparação.</p>;
+      if (!data.search) return <p className="text-xs text-neutral-500">No comparison data.</p>;
       return <ComparePerformanceView data={data} />;
     }
     case "getContentDecay": {
@@ -1316,18 +1366,18 @@ function renderContent(toolName: string, output: Record<string, unknown>) {
     }
     case "getPageKeywords": {
       const data = output as unknown as PageKeywordsData;
-      if (!data.page) return <p className="text-xs text-neutral-500">Sem dados de keywords.</p>;
+      if (!data.page) return <p className="text-xs text-neutral-500">No keyword data.</p>;
       return <PageKeywordsView data={data} />;
     }
     case "analyzeCompetitor": {
       const results = output.results as CompetitorResultItem[] | undefined;
       const topic = (output.topic as string) ?? "";
-      if (!results?.length) return <p className="text-xs text-neutral-500">Nenhum conteúdo concorrente encontrado.</p>;
+      if (!results?.length) return <p className="text-xs text-neutral-500">No competitor content found.</p>;
       return <CompetitorAnalysisView results={results} topic={topic} />;
     }
     case "scheduleJob": {
       const job = output.job as ScheduledJobResult | undefined;
-      if (!job) return <p className="text-xs text-neutral-500">Nenhum job criado.</p>;
+      if (!job) return <p className="text-xs text-neutral-500">No job criado.</p>;
       return <ScheduledJobCreatedView job={job} />;
     }
     case "listScheduledJobs": {

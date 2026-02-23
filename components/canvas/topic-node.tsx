@@ -25,25 +25,25 @@ function TopicNodeComponent({ data }: NodeProps) {
           onClick={onExplore}
           className="rounded-full bg-white/20 px-5 py-1.5 text-sm font-medium text-white transition hover:bg-white/30"
         >
-          Explorar
+          Explore
         </button>
       )}
 
       {status === "loading" && (
         <div className="flex items-center gap-2 text-violet-200">
           <Loader2 className="h-4 w-4 animate-spin" />
-          <span className="text-sm">Buscando ideias...</span>
+          <span className="text-sm">Searching ideas...</span>
         </div>
       )}
 
       {status === "done" && (
-        <span className="text-xs text-violet-200/70">Clique nos ângulos abaixo</span>
+        <span className="text-xs text-violet-200/70">Click the angles below</span>
       )}
 
       {status === "error" && (
         <div className="flex items-center gap-1.5 text-red-300">
           <AlertCircle className="h-4 w-4" />
-          <span className="text-sm">Erro ao buscar</span>
+          <span className="text-sm">Search error</span>
         </div>
       )}
 

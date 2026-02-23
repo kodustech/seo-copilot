@@ -38,7 +38,7 @@ export function getModel(): LanguageModel {
     }
     default:
       throw new Error(
-        `AI_PROVIDER "${provider}" não suportado. Use: google, openai ou anthropic.`,
+        `AI_PROVIDER "${provider}" is not supported. Use: google, openai, or anthropic.`,
       );
   }
 }

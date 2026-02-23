@@ -2,30 +2,63 @@ import { NextResponse } from "next/server";
 
 import {
   generateSocialContent,
+  type SocialContentSource,
+  type SocialGenerationMode,
   type SocialPlatformConfigInput,
 } from "@/lib/copilot";
+import {
+  applyVoicePolicyMode,
+  resolveVoicePolicyForRequest,
+  type VoicePolicyMode,
+} from "@/lib/voice-policy";
 
 export async function POST(request: Request) {
   const body = await readBody(request);
 
   try {
+    const voiceMode = normalizeVoiceMode(body.voiceMode);
+    const customTone =
+      typeof body.tone === "string" ? body.tone.trim() : undefined;
+
+    if (voiceMode === "custom" && !customTone) {
+      return NextResponse.json(
+        { error: "Provide a custom tone when Voice Source is set to custom." },
+        { status: 400 },
+      );
+    }
+
+    const resolvedPolicy = await resolveVoicePolicyForRequest(
+      request.headers.get("authorization"),
+    );
+    const voicePolicy = applyVoicePolicyMode(
+      resolvedPolicy,
+      voiceMode,
+      customTone,
+    );
+
     const variations = await generateSocialContent({
       baseContent: typeof body.baseContent === "string" ? body.baseContent : "",
       instructions:
         typeof body.instructions === "string" ? body.instructions : undefined,
       language: typeof body.language === "string" ? body.language : "pt-BR",
-      tone: typeof body.tone === "string" ? body.tone : undefined,
+      tone: voiceMode === "custom" ? customTone : undefined,
       variationStrategy:
         typeof body.variationStrategy === "string"
           ? body.variationStrategy
           : undefined,
       platformConfigs: normalizePlatformConfigs(body.platformConfigs),
+      contentSource: normalizeContentSource(body.contentSource),
+      generationMode: normalizeGenerationMode(
+        body.generationMode,
+        body.contentSource,
+      ),
+      voicePolicy,
     });
     return NextResponse.json({ posts: variations });
   } catch (error) {
-    console.error("Erro ao gerar posts sociais", error);
+    console.error("Error generating social posts", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Falha ao gerar posts." },
+      { error: error instanceof Error ? error.message : "Failed to generate posts." },
       { status: 400 },
     );
   }
@@ -106,4 +139,36 @@ function normalizePlatformConfigs(
   }
 
   return configs.length ? configs : undefined;
+}
+
+function normalizeVoiceMode(raw: unknown): VoicePolicyMode {
+  if (raw === "global" || raw === "user" || raw === "custom") {
+    return raw;
+  }
+  return "auto";
+}
+
+function normalizeContentSource(raw: unknown): SocialContentSource {
+  if (raw === "changelog") {
+    return "changelog";
+  }
+  if (raw === "manual") {
+    return "manual";
+  }
+  return "blog";
+}
+
+function normalizeGenerationMode(
+  rawMode: unknown,
+  rawSource: unknown,
+): SocialGenerationMode {
+  if (rawMode === "build_in_public" || rawMode === "content_marketing") {
+    return rawMode;
+  }
+
+  if (rawSource === "changelog") {
+    return "build_in_public";
+  }
+
+  return "content_marketing";
 }

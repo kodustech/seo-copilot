@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Star, ExternalLink, Trash2, Sparkles } from "lucide-react";
+import { Star, ExternalLink, Trash2, Sparkles, Calendar } from "lucide-react";
 import Link from "next/link";
+
 import { useFavorites, type FavoriteIdea } from "@/lib/use-favorites";
 import type { IdeaAngle } from "@/lib/exa";
 
@@ -29,6 +30,7 @@ type FilterAngle = IdeaAngle | "all";
 
 export function FavoritesPage() {
   const { favorites, removeFavorite } = useFavorites();
+
   const [filter, setFilter] = useState<FilterAngle>("all");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -61,23 +63,32 @@ export function FavoritesPage() {
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-10">
-      <div className="mb-8 flex items-center justify-between">
+      <div className="mb-8 flex items-center justify-between gap-3">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-bold text-white">
             <Star className="h-6 w-6 fill-yellow-400 text-yellow-400" />
-            Favoritos
+            Favorites
           </h1>
           <p className="mt-1 text-sm text-neutral-500">
-            {favorites.length} {favorites.length === 1 ? "ideia salva" : "ideias salvas"}
+            {favorites.length} {favorites.length === 1 ? "saved idea" : "saved ideas"}
           </p>
         </div>
-        <Link
-          href="/ideias"
-          className="flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-violet-500"
-        >
-          <Sparkles className="h-4 w-4" />
-          Explorar mais
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/calendario"
+            className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-neutral-200 transition hover:bg-white/10"
+          >
+            <Calendar className="h-4 w-4" />
+            View calendar
+          </Link>
+          <Link
+            href="/ideias"
+            className="flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-violet-500"
+          >
+            <Sparkles className="h-4 w-4" />
+            Explore more
+          </Link>
+        </div>
       </div>
 
       {/* Filters */}
@@ -91,7 +102,7 @@ export function FavoritesPage() {
                 : "bg-white/[0.04] text-neutral-500 hover:text-neutral-300"
             }`}
           >
-            Todos ({favorites.length})
+            All ({favorites.length})
           </button>
           {(Object.keys(ANGLE_BADGES) as IdeaAngle[]).map((angle) => {
             const count = angleCounts[angle] || 0;
@@ -118,12 +129,12 @@ export function FavoritesPage() {
       {favorites.length === 0 && (
         <div className="flex flex-col items-center gap-4 py-20 text-center">
           <Star className="h-12 w-12 text-neutral-800" />
-          <p className="text-neutral-500">Nenhuma ideia favoritada ainda.</p>
+          <p className="text-neutral-500">No favorited ideas yet.</p>
           <Link
             href="/ideias"
             className="rounded-lg bg-violet-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-violet-500"
           >
-            Ir para o Ideas Canvas
+            Go to Ideas Canvas
           </Link>
         </div>
       )}
@@ -205,7 +216,7 @@ function FavoriteCard({
       </div>
 
       {expanded && (
-        <div className="border-t border-white/[0.04] px-5 py-4 space-y-3">
+        <div className="space-y-3 border-t border-white/[0.04] px-5 py-4">
           {idea.summary && (
             <p className="text-sm leading-relaxed text-neutral-400">{idea.summary}</p>
           )}

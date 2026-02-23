@@ -5,6 +5,7 @@ import type {
   SocialPostVariation,
   TitleIdea,
 } from "@/lib/types";
+import type { VoicePolicyPayload } from "@/lib/voice-policy";
 
 const KEYWORDS_ENDPOINT =
   process.env.N8N_KEYWORDS_ENDPOINT ??
@@ -27,6 +28,10 @@ const SOCIAL_ENDPOINT =
 const ARTICLES_STATUS_ENDPOINT =
   process.env.N8N_ARTICLES_ENDPOINT ??
   "https://n8n.kodus.io/webhook/get-articles";
+const POST_BRIDGE_API_URL =
+  process.env.POST_BRIDGE_API_URL?.replace(/\/$/, "") ??
+  "https://api.post-bridge.com";
+const POST_BRIDGE_API_KEY = process.env.POST_BRIDGE_API_KEY?.trim();
 
 const n8nBearerToken = process.env.N8N_BEARER_TOKEN?.trim();
 const jsonHeaders: Record<string, string> = {
@@ -42,11 +47,13 @@ export async function enqueueKeywordTask({
   limit,
   locationCode,
   language,
+  voicePolicy,
 }: {
   idea?: string | null;
   limit?: number | null;
   locationCode?: number | null;
   language?: string | null;
+  voicePolicy?: VoicePolicyPayload | null;
 }): Promise<{ taskId: number; status?: string | null }> {
   const payload: Record<string, unknown> = {};
   if (idea?.trim()) {
@@ -61,6 +68,9 @@ export async function enqueueKeywordTask({
   if (typeof language === "string" && language.trim().length > 0) {
     payload.language = language.trim();
   }
+  if (voicePolicy) {
+    payload.voicePolicy = voicePolicy;
+  }
   const response = await fetch(KEYWORDS_ENDPOINT, {
     method: "POST",
     headers: jsonHeaders,
@@ -71,7 +81,7 @@ export async function enqueueKeywordTask({
   if (!response.ok) {
     const text = await safeReadText(response);
     throw new Error(
-      `Erro ao enfileirar geração (${response.status}). ${text || "Tente novamente."}`,
+      `Error queueing generation (${response.status}). ${text || "Try again."}`,
     );
   }
 
@@ -79,7 +89,7 @@ export async function enqueueKeywordTask({
   const ticket = parseTaskTicket(body);
 
   if (!ticket) {
-    throw new Error("Não recebemos o identificador da task.");
+    throw new Error("We did not receive the task identifier.");
   }
 
   return { taskId: ticket.id, status: ticket.status };
@@ -90,7 +100,7 @@ export async function fetchKeywordTaskResult(taskId: number): Promise<{
   keywords?: KeywordSuggestion[];
 }> {
   if (!Number.isFinite(taskId)) {
-    throw new Error("Task inválida.");
+    throw new Error("Invalid task.");
   }
 
   const statusUrl = new URL(KEYWORDS_STATUS_ENDPOINT);
@@ -105,7 +115,7 @@ export async function fetchKeywordTaskResult(taskId: number): Promise<{
   if (!response.ok) {
     const text = await safeReadText(response);
     throw new Error(
-      `Erro ao checar task (${response.status}). ${text || "Tente novamente."}`,
+      `Error checking task (${response.status}). ${text || "Try again."}`,
     );
   }
 
@@ -134,7 +144,7 @@ export async function fetchKeywordsHistory(): Promise<KeywordSuggestion[]> {
   if (!response.ok) {
     const text = await safeReadText(response);
     throw new Error(
-      `Erro ao buscar histórico (${response.status}). ${text || "Tente novamente."}`,
+      `Error fetching history (${response.status}). ${text || "Try again."}`,
     );
   }
 
@@ -150,26 +160,33 @@ type TitleKeywordPayload = {
 
 export async function fetchTitlesFromCopilot({
   keywords,
+  voicePolicy,
 }: {
   keywords: TitleKeywordPayload[];
+  voicePolicy?: VoicePolicyPayload | null;
 }): Promise<{ titles: TitleIdea[] }> {
   if (!keywords.length) {
-    throw new Error("Escolha pelo menos uma keyword para gerar títulos.");
+    throw new Error("Choose at least one keyword to generate titles.");
+  }
+
+  const payload: Record<string, unknown> = {
+    keywords,
+  };
+  if (voicePolicy) {
+    payload.voicePolicy = voicePolicy;
   }
 
   const response = await fetch(TITLES_ENDPOINT, {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({
-      keywords,
-    }),
+    body: JSON.stringify(payload),
     cache: "no-store",
   });
 
   if (!response.ok) {
     const text = await safeReadText(response);
     throw new Error(
-      `Erro ao gerar títulos (${response.status}). ${text || "Tente novamente."}`,
+      `Error generating titles (${response.status}). ${text || "Try again."}`,
     );
   }
 
@@ -180,7 +197,7 @@ export async function fetchTitlesFromCopilot({
   );
 
   if (!titles.length) {
-    throw new Error("Não recebemos nenhuma sugestão de título.");
+    throw new Error("We did not receive any title suggestions.");
   }
 
   return { titles };
@@ -194,16 +211,17 @@ type ArticleTaskPayload = {
   researchInstructions?: string;
   customInstructions?: string;
   categories?: number[];
+  voicePolicy?: VoicePolicyPayload | null;
 };
 
 export async function enqueueArticleTask(
   payload: ArticleTaskPayload,
 ): Promise<{ taskId: number; status?: string | null }> {
   if (!payload.title.trim()) {
-    throw new Error("Escolha um título para o artigo.");
+    throw new Error("Choose a title for the article.");
   }
   if (!payload.keyword.trim()) {
-    throw new Error("Escolha uma keyword principal para o artigo.");
+    throw new Error("Choose a main keyword for the article.");
   }
 
   const response = await fetch(POSTS_ENDPOINT, {
@@ -220,6 +238,7 @@ export async function enqueueArticleTask(
         payload.categories && payload.categories.length > 0
           ? payload.categories.map((value) => Number(value))
           : undefined,
+      voicePolicy: payload.voicePolicy ?? undefined,
     }),
     cache: "no-store",
   });
@@ -227,7 +246,7 @@ export async function enqueueArticleTask(
   if (!response.ok) {
     const text = await safeReadText(response);
     throw new Error(
-      `Erro ao enfileirar artigo (${response.status}). ${text || "Tente novamente."}`,
+      `Error queueing article (${response.status}). ${text || "Try again."}`,
     );
   }
 
@@ -235,7 +254,7 @@ export async function enqueueArticleTask(
   const ticket = parseTaskTicket(body);
 
   if (!ticket) {
-    throw new Error("Não recebemos o identificador da task de artigo.");
+    throw new Error("We did not receive the article task identifier.");
   }
 
   return { taskId: ticket.id, status: ticket.status };
@@ -246,7 +265,7 @@ export async function fetchArticleTaskResult(taskId: number): Promise<{
   articles?: ArticlePost[];
 }> {
   if (!Number.isFinite(taskId)) {
-    throw new Error("Task inválida.");
+    throw new Error("Invalid task.");
   }
 
   const statusUrl = new URL(ARTICLES_STATUS_ENDPOINT);
@@ -261,7 +280,7 @@ export async function fetchArticleTaskResult(taskId: number): Promise<{
   if (!response.ok) {
     const text = await safeReadText(response);
     throw new Error(
-      `Erro ao checar artigo (${response.status}). ${text || "Tente novamente."}`,
+      `Error checking article (${response.status}). ${text || "Try again."}`,
     );
   }
 
@@ -298,6 +317,29 @@ type SocialPlatformConfigPayload = {
   numVariations?: number;
 };
 
+export type SocialAccount = {
+  id: number;
+  platform: string;
+  username: string;
+};
+
+export type ScheduledSocialPost = {
+  id: string;
+  status: string | null;
+  scheduledAt: string | null;
+};
+
+export type ScheduledSocialCalendarPost = {
+  id: string;
+  caption: string;
+  status: string | null;
+  scheduledAt: string | null;
+  socialAccountIds: number[];
+};
+
+export type SocialContentSource = "blog" | "changelog" | "manual";
+export type SocialGenerationMode = "content_marketing" | "build_in_public";
+
 export async function generateSocialContent({
   baseContent,
   instructions,
@@ -305,6 +347,9 @@ export async function generateSocialContent({
   tone,
   variationStrategy,
   platformConfigs,
+  contentSource,
+  generationMode,
+  voicePolicy,
 }: {
   baseContent: string;
   instructions?: string;
@@ -312,25 +357,35 @@ export async function generateSocialContent({
   tone?: string;
   variationStrategy?: string;
   platformConfigs?: SocialPlatformConfigInput[];
+  contentSource?: SocialContentSource;
+  generationMode?: SocialGenerationMode;
+  voicePolicy?: VoicePolicyPayload | null;
 }): Promise<SocialPostVariation[]> {
   if (!baseContent.trim()) {
-    throw new Error("Envie um conteúdo base para gerar os posts.");
+    throw new Error("Provide base content to generate posts.");
   }
 
   const normalizedConfigs = sanitizePlatformConfigs(platformConfigs);
   if (!normalizedConfigs.length) {
-    throw new Error("Defina pelo menos uma plataforma para gerar posts.");
+    throw new Error("Define at least one platform to generate posts.");
   }
+
+  const resolvedGenerationMode =
+    generationMode ??
+    (contentSource === "changelog" ? "build_in_public" : "content_marketing");
 
   const payload: Record<string, unknown> = {
     baseContent: baseContent.trim(),
     language,
     platformConfigs: normalizedConfigs,
+    generationMode: resolvedGenerationMode,
   };
 
   if (instructions?.trim()) payload.instructions = instructions.trim();
   if (tone?.trim()) payload.tone = tone.trim();
   if (variationStrategy?.trim()) payload.variationStrategy = variationStrategy.trim();
+  if (contentSource) payload.contentSource = contentSource;
+  if (voicePolicy) payload.voicePolicy = voicePolicy;
 
   const response = await fetch(SOCIAL_ENDPOINT, {
     method: "POST",
@@ -342,7 +397,7 @@ export async function generateSocialContent({
   if (!response.ok) {
     const text = await safeReadText(response);
     throw new Error(
-      `Erro ao gerar posts (${response.status}). ${text || "Tente novamente."}`,
+      `Error generating posts (${response.status}). ${text || "Try again."}`,
     );
   }
 
@@ -350,10 +405,170 @@ export async function generateSocialContent({
   const variations = normalizeSocialPosts(body);
 
   if (!variations.length) {
-    throw new Error("Não recebemos posts do copiloto.");
+    throw new Error("We did not receive posts from the copilot.");
   }
 
   return variations;
+}
+
+export async function fetchSocialAccounts({
+  userEmail,
+}: {
+  userEmail?: string;
+} = {}): Promise<SocialAccount[]> {
+  // Keep argument for compatibility with existing call sites/tools.
+  void userEmail;
+
+  const response = await fetch(`${POST_BRIDGE_API_URL}/v1/social-accounts?limit=100`, {
+    method: "GET",
+    headers: postBridgeHeaders(),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    const text = await safeReadText(response);
+    throw new Error(
+      `Error fetching social accounts (${response.status}). ${text || "Try again."}`,
+    );
+  }
+
+  const body = await safeReadJson(response);
+  return normalizeSocialAccounts(body);
+}
+
+export async function scheduleSocialPost({
+  caption,
+  scheduledAt,
+  socialAccountIds,
+  userEmail,
+}: {
+  caption: string;
+  scheduledAt: string;
+  socialAccountIds: number[];
+  userEmail?: string;
+}): Promise<ScheduledSocialPost> {
+  const trimmedCaption = caption.trim();
+  if (!trimmedCaption) {
+    throw new Error("Provide a caption before scheduling.");
+  }
+
+  const normalizedIds = Array.from(
+    new Set(
+      socialAccountIds
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value > 0),
+    ),
+  );
+
+  if (!normalizedIds.length) {
+    throw new Error("Choose at least one social account.");
+  }
+
+  const scheduledDate = new Date(scheduledAt);
+  if (Number.isNaN(scheduledDate.getTime())) {
+    throw new Error("Invalid schedule date.");
+  }
+
+  const payload: Record<string, unknown> = {
+    caption: trimmedCaption,
+    scheduled_at: scheduledDate.toISOString(),
+    social_accounts: normalizedIds,
+  };
+
+  // Keep argument for compatibility with existing call sites/tools.
+  void userEmail;
+
+  const response = await fetch(`${POST_BRIDGE_API_URL}/v1/posts`, {
+    method: "POST",
+    headers: postBridgeHeaders(),
+    body: JSON.stringify(payload),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    const text = await safeReadText(response);
+    throw new Error(
+      `Error scheduling social post (${response.status}). ${text || "Try again."}`,
+    );
+  }
+
+  const body = await safeReadJson(response);
+  const scheduledPost = normalizeScheduledSocialPost(body);
+  if (!scheduledPost) {
+    throw new Error("Invalid response while scheduling social post.");
+  }
+
+  return scheduledPost;
+}
+
+export async function fetchScheduledSocialPosts(): Promise<
+  ScheduledSocialCalendarPost[]
+> {
+  const posts: ScheduledSocialCalendarPost[] = [];
+  let nextUrl: URL | null = new URL(`${POST_BRIDGE_API_URL}/v1/posts`);
+  nextUrl.searchParams.set("status", "scheduled");
+  nextUrl.searchParams.set("limit", "100");
+
+  let pages = 0;
+  while (nextUrl && pages < 8) {
+    pages += 1;
+
+    const response = await fetch(nextUrl.toString(), {
+      method: "GET",
+      headers: postBridgeHeaders(),
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      const text = await safeReadText(response);
+      throw new Error(
+        `Error fetching scheduled social posts (${response.status}). ${
+          text || "Try again."
+        }`,
+      );
+    }
+
+    const body = await safeReadJson(response);
+    posts.push(...normalizeScheduledSocialPosts(body));
+
+    const root = asRecord(body);
+    const meta = asRecord(root?.meta);
+    const nextCandidate =
+      typeof meta?.next === "string" ? meta.next.trim() : "";
+    const next =
+      nextCandidate && nextCandidate.toLowerCase() !== "null"
+        ? nextCandidate
+        : null;
+
+    if (!next) {
+      nextUrl = null;
+      continue;
+    }
+
+    try {
+      nextUrl = new URL(next, POST_BRIDGE_API_URL);
+    } catch {
+      nextUrl = null;
+    }
+  }
+
+  const unique = new Map<string, ScheduledSocialCalendarPost>();
+  for (const post of posts) {
+    unique.set(post.id, post);
+  }
+
+  return Array.from(unique.values());
+}
+
+function postBridgeHeaders(): Record<string, string> {
+  if (!POST_BRIDGE_API_KEY) {
+    throw new Error("Missing POST_BRIDGE_API_KEY.");
+  }
+
+  return {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${POST_BRIDGE_API_KEY}`,
+  };
 }
 
 async function safeReadJson(response: Response) {
@@ -498,7 +713,7 @@ function normalizeArticleResult(item: unknown): ArticlePost | null {
     return content
       ? {
           id: crypto.randomUUID(),
-          title: content.slice(0, 64) || "Artigo",
+          title: content.slice(0, 64) || "Article",
           content,
         }
       : null;
@@ -659,6 +874,154 @@ function normalizeSocialPosts(payload: unknown): SocialPostVariation[] {
   return normalized;
 }
 
+function normalizeSocialAccounts(payload: unknown): SocialAccount[] {
+  const list = pickArray(payload, ["data", "accounts", "socialAccounts", "results"]);
+
+  return list
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const record = item as Record<string, unknown>;
+
+      const id = Number(record.id ?? record.account_id ?? record.accountId);
+      if (!Number.isInteger(id) || id <= 0) {
+        return null;
+      }
+
+      const platform =
+        typeof record.platform === "string" && record.platform.trim().length > 0
+          ? record.platform.trim()
+          : "unknown";
+
+      const username =
+        typeof record.username === "string" && record.username.trim().length > 0
+          ? record.username.trim()
+          : `account-${id}`;
+
+      return { id, platform, username };
+    })
+    .filter((item): item is SocialAccount => Boolean(item))
+    .sort((a, b) => {
+      const byPlatform = a.platform.localeCompare(b.platform);
+      if (byPlatform !== 0) return byPlatform;
+      return a.username.localeCompare(b.username);
+    });
+}
+
+function normalizeScheduledSocialPosts(
+  payload: unknown,
+): ScheduledSocialCalendarPost[] {
+  const list = pickArray(payload, ["data", "posts", "results"]);
+
+  return list
+    .map((item) => {
+      const record = asRecord(item);
+      if (!record) return null;
+
+      const idRaw = record.id ?? record.post_id ?? record.postId;
+      if (idRaw === undefined || idRaw === null) {
+        return null;
+      }
+
+      const id = String(idRaw).trim();
+      if (!id) return null;
+
+      const caption =
+        typeof record.caption === "string" && record.caption.trim().length > 0
+          ? record.caption.trim()
+          : "Scheduled social post";
+
+      const status =
+        typeof record.status === "string" && record.status.trim().length > 0
+          ? record.status.trim()
+          : null;
+
+      const scheduledAt = normalizeDateString(
+        record.scheduled_at ?? record.scheduledAt,
+      );
+
+      const socialAccountIds = parseNumericIdArray(
+        record.social_accounts ?? record.socialAccounts,
+      );
+
+      return {
+        id,
+        caption,
+        status,
+        scheduledAt,
+        socialAccountIds,
+      } as ScheduledSocialCalendarPost;
+    })
+    .filter((item): item is ScheduledSocialCalendarPost => Boolean(item));
+}
+
+function normalizeScheduledSocialPost(payload: unknown): ScheduledSocialPost | null {
+  const root = asRecord(payload);
+  if (!root) return null;
+
+  const candidates: Record<string, unknown>[] = [root];
+  const post = asRecord(root.post);
+  if (post) candidates.push(post);
+  const data = asRecord(root.data);
+  if (data) candidates.push(data);
+  const result = asRecord(root.result);
+  if (result) candidates.push(result);
+
+  for (const candidate of candidates) {
+    const idRaw = candidate.id ?? candidate.post_id ?? candidate.postId;
+    if (idRaw === undefined || idRaw === null) {
+      continue;
+    }
+
+    const id = String(idRaw).trim();
+    if (!id) continue;
+
+    const status =
+      typeof candidate.status === "string" && candidate.status.trim().length > 0
+        ? candidate.status.trim()
+        : null;
+
+    const scheduledValue =
+      candidate.scheduled_at ??
+      candidate.scheduledAt ??
+      root.scheduled_at ??
+      root.scheduledAt;
+    const scheduledDate = normalizeDateString(scheduledValue);
+
+    return {
+      id,
+      status,
+      scheduledAt: scheduledDate,
+    };
+  }
+
+  return null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function normalizeDateString(value: unknown): string | null {
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+  return null;
+}
+
+function parseNumericIdArray(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((entry) => Number(entry))
+    .filter((entry) => Number.isInteger(entry) && entry > 0);
+}
+
 function sanitizePlatformConfigs(
   configs?: SocialPlatformConfigInput[],
 ): SocialPlatformConfigPayload[] {
@@ -733,13 +1096,13 @@ const difficultyTextMap: Record<
   string,
   { score: number; label: string }
 > = {
-  VERY_LOW: { score: 15, label: "Muito baixa" },
-  LOW: { score: 30, label: "Baixa" },
-  MEDIUM: { score: 55, label: "Média" },
-  HIGH: { score: 75, label: "Alta" },
-  VERY_HIGH: { score: 90, label: "Muito alta" },
-  EASY: { score: 25, label: "Fácil" },
-  HARD: { score: 85, label: "Difícil" },
+  VERY_LOW: { score: 15, label: "Very low" },
+  LOW: { score: 30, label: "Low" },
+  MEDIUM: { score: 55, label: "Medium" },
+  HIGH: { score: 75, label: "High" },
+  VERY_HIGH: { score: 90, label: "Very high" },
+  EASY: { score: 25, label: "Easy" },
+  HARD: { score: 85, label: "Hard" },
 };
 
 function parseDifficulty(
@@ -773,11 +1136,11 @@ function difficultyLabelFromScore(score: number) {
     return null;
   }
 
-  if (score < 20) return "Muito baixa";
-  if (score < 40) return "Baixa";
-  if (score < 60) return "Média";
-  if (score < 80) return "Alta";
-  return "Muito alta";
+  if (score < 20) return "Very low";
+  if (score < 40) return "Low";
+  if (score < 60) return "Medium";
+  if (score < 80) return "High";
+  return "Very high";
 }
 
 function titleCase(value: string) {
@@ -825,7 +1188,7 @@ export async function fetchBlogPosts(
   });
 
   if (!response.ok) {
-    throw new Error(`Erro ao buscar blog posts (${response.status}).`);
+    throw new Error(`Error fetching blog posts (${response.status}).`);
   }
 
   const data = await response.json();

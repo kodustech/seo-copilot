@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   X,
   Star,
@@ -16,13 +16,14 @@ import {
 } from "lucide-react";
 import type { IdeaResult, IdeaAngle, CompetitorResult } from "@/lib/exa";
 import type { KeywordSuggestion, TitleIdea, ArticlePost } from "@/lib/types";
+import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
 const ANGLE_BADGES: Record<IdeaAngle, { label: string; className: string }> = {
-  pain_points: { label: "Dores", className: "bg-red-500/20 text-red-300" },
-  questions: { label: "Perguntas", className: "bg-blue-500/20 text-blue-300" },
-  trends: { label: "Tendencias", className: "bg-emerald-500/20 text-emerald-300" },
-  comparisons: { label: "Comparacoes", className: "bg-amber-500/20 text-amber-300" },
-  best_practices: { label: "Boas Praticas", className: "bg-purple-500/20 text-purple-300" },
+  pain_points: { label: "Pain Points", className: "bg-red-500/20 text-red-300" },
+  questions: { label: "Questions", className: "bg-blue-500/20 text-blue-300" },
+  trends: { label: "Trends", className: "bg-emerald-500/20 text-emerald-300" },
+  comparisons: { label: "Comparisons", className: "bg-amber-500/20 text-amber-300" },
+  best_practices: { label: "Best Practices", className: "bg-purple-500/20 text-purple-300" },
 };
 
 type Props = {
@@ -36,14 +37,36 @@ type Props = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function canvasPost(body: Record<string, unknown>) {
+function useAuthToken() {
+  const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const [token, setToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!supabase) return;
+    supabase.auth.getSession().then(({ data }) => {
+      setToken(data.session?.access_token ?? null);
+    });
+  }, [supabase]);
+
+  return token;
+}
+
+function jsonHeaders(token?: string | null) {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+async function canvasPost(body: Record<string, unknown>, token?: string | null) {
   const res = await fetch("/api/canvas/explore", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: jsonHeaders(token),
     body: JSON.stringify(body),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Erro na requisição.");
+  if (!res.ok) throw new Error(data.error || "Request error.");
   return data;
 }
 
@@ -103,6 +126,7 @@ function PipelineButton({
 // ---------------------------------------------------------------------------
 
 export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: Props) {
+  const token = useAuthToken();
   // Keywords
   const [keywords, setKeywords] = useState<KeywordSuggestion[] | null>(null);
   const [keywordsLoading, setKeywordsLoading] = useState(false);
@@ -135,20 +159,20 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
     setKeywordsLoading(true);
     setKeywordsError(null);
     try {
-      const data = await canvasPost({ action: "keywords", idea: idea.title });
+      const data = await canvasPost({ action: "keywords", idea: idea.title }, token);
       const taskId = data.taskId as number;
 
       for (let i = 0; i < 20; i++) {
         await new Promise((r) => setTimeout(r, 3000));
-        const statusData = await canvasPost({ action: "keywords_status", taskId });
+        const statusData = await canvasPost({ action: "keywords_status", taskId }, token);
         if (statusData.ready && statusData.keywords) {
           setKeywords(statusData.keywords);
           return;
         }
       }
-      throw new Error("Timeout: keywords demoraram demais.");
+      throw new Error("Timeout: keywords took too long.");
     } catch (err) {
-      setKeywordsError(err instanceof Error ? err.message : "Erro desconhecido.");
+      setKeywordsError(err instanceof Error ? err.message : "Unknown error.");
     } finally {
       setKeywordsLoading(false);
     }
@@ -160,10 +184,10 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
     setTitlesError(null);
     try {
       const topKeywords = keywords.slice(0, 5).map((k) => ({ keyword: k.phrase }));
-      const data = await canvasPost({ action: "titles", keywords: topKeywords });
+      const data = await canvasPost({ action: "titles", keywords: topKeywords }, token);
       setTitles(data.titles);
     } catch (err) {
-      setTitlesError(err instanceof Error ? err.message : "Erro desconhecido.");
+      setTitlesError(err instanceof Error ? err.message : "Unknown error.");
     } finally {
       setTitlesLoading(false);
     }
@@ -179,20 +203,20 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
         title: selectedTitle.text,
         keyword: keywords[0].phrase,
         useResearch: true,
-      });
+      }, token);
       const taskId = data.taskId as number;
 
       for (let i = 0; i < 40; i++) {
         await new Promise((r) => setTimeout(r, 4000));
-        const statusData = await canvasPost({ action: "article_status", taskId });
+        const statusData = await canvasPost({ action: "article_status", taskId }, token);
         if (statusData.ready && statusData.articles?.length) {
           setArticle(statusData.articles[0]);
           return;
         }
       }
-      throw new Error("Timeout: artigo demorou demais.");
+      throw new Error("Timeout: article took too long.");
     } catch (err) {
-      setArticleError(err instanceof Error ? err.message : "Erro desconhecido.");
+      setArticleError(err instanceof Error ? err.message : "Unknown error.");
     } finally {
       setArticleLoading(false);
     }
@@ -202,11 +226,11 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
     setCompetitorsLoading(true);
     setCompetitorsError(null);
     try {
-      const data = await canvasPost({ action: "competitors", topic: idea.title });
+      const data = await canvasPost({ action: "competitors", topic: idea.title }, token);
       setCompetitors(data.results);
       setCompetitorsOpen(true);
     } catch (err) {
-      setCompetitorsError(err instanceof Error ? err.message : "Erro desconhecido.");
+      setCompetitorsError(err instanceof Error ? err.message : "Unknown error.");
     } finally {
       setCompetitorsLoading(false);
     }
@@ -220,7 +244,7 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
     <div className="fixed right-0 top-0 z-50 flex h-full w-[400px] flex-col border-l border-white/[0.06] bg-neutral-950/95 backdrop-blur-xl">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-4">
-        <span className="text-sm font-medium text-neutral-400">Detalhes da Ideia</span>
+        <span className="text-sm font-medium text-neutral-400">Idea Details</span>
         <button
           onClick={onClose}
           className="rounded-lg p-1.5 text-neutral-500 transition hover:bg-white/10 hover:text-white"
@@ -262,7 +286,7 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
             className="inline-flex items-center gap-1 text-xs text-neutral-500 transition hover:text-white"
           >
             <ExternalLink className="h-3 w-3" />
-            Abrir
+            Open
           </a>
         </div>
 
@@ -270,7 +294,7 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
         {idea.summary && (
           <div>
             <h4 className="mb-1.5 text-xs font-medium uppercase tracking-wider text-neutral-500">
-              Resumo
+              Summary
             </h4>
             <p className="text-sm leading-relaxed text-neutral-300">{idea.summary}</p>
           </div>
@@ -280,7 +304,7 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
         {idea.highlights.length > 0 && (
           <div>
             <h4 className="mb-1.5 text-xs font-medium uppercase tracking-wider text-neutral-500">
-              Destaques
+              Highlights
             </h4>
             <div className="space-y-2">
               {idea.highlights.map((h, i) => (
@@ -303,7 +327,7 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
         <div className="border-t border-white/[0.06] pt-4">
           <div className="mb-1 flex items-center gap-2">
             <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-600">
-              Passo 1
+              Step 1
             </span>
             {keywords && <CheckCircle2 className="h-3 w-3 text-emerald-500" />}
           </div>
@@ -312,9 +336,9 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
             disabled={keywordsLoading || keywords !== null}
             loading={keywordsLoading}
             done={keywords !== null}
-            doneLabel={`${keywords?.length ?? 0} keywords encontradas`}
-            loadingLabel="Gerando keywords..."
-            idleLabel="Gerar Keywords"
+            doneLabel={`${keywords?.length ?? 0} keywords found`}
+            loadingLabel="Generating keywords..."
+            idleLabel="Generate Keywords"
             icon={Key}
           />
           {keywordsError && <p className="mt-2 text-xs text-red-400">{keywordsError}</p>}
@@ -341,7 +365,7 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
           <div className="border-t border-white/[0.06] pt-4">
             <div className="mb-1 flex items-center gap-2">
               <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-600">
-                Passo 2
+                Step 2
               </span>
               {titles && <CheckCircle2 className="h-3 w-3 text-emerald-500" />}
             </div>
@@ -350,9 +374,9 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
               disabled={titlesLoading || titles !== null}
               loading={titlesLoading}
               done={titles !== null}
-              doneLabel={`${titles?.length ?? 0} titulos gerados`}
-              loadingLabel="Gerando titulos..."
-              idleLabel="Gerar Titulos"
+              doneLabel={`${titles?.length ?? 0} titles generated`}
+              loadingLabel="Generating titles..."
+              idleLabel="Generate Titles"
               icon={FileText}
               doneColor="text-violet-400"
             />
@@ -373,7 +397,7 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
                   </button>
                 ))}
                 {!selectedTitle && (
-                  <p className="text-xs text-neutral-600">Selecione um titulo para continuar</p>
+                  <p className="text-xs text-neutral-600">Select a title to continue</p>
                 )}
               </div>
             )}
@@ -385,7 +409,7 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
           <div className="border-t border-white/[0.06] pt-4">
             <div className="mb-1 flex items-center gap-2">
               <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-600">
-                Passo 3
+                Step 3
               </span>
               {article && <CheckCircle2 className="h-3 w-3 text-emerald-500" />}
             </div>
@@ -394,9 +418,9 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
               disabled={articleLoading || article !== null}
               loading={articleLoading}
               done={article !== null}
-              doneLabel="Artigo gerado!"
-              loadingLabel="Gerando artigo (~1-3 min)..."
-              idleLabel={`Gerar Artigo: "${selectedTitle.text.slice(0, 40)}..."`}
+              doneLabel="Article generated!"
+              loadingLabel="Generating article (~1-3 min)..."
+              idleLabel={`Generate Article: "${selectedTitle.text.slice(0, 40)}..."`}
               icon={Newspaper}
             />
             {articleError && <p className="mt-2 text-xs text-red-400">{articleError}</p>}
@@ -411,7 +435,7 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
                     className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 px-3 py-1 text-xs font-medium text-emerald-300 transition hover:bg-emerald-500/30"
                   >
                     <ExternalLink className="h-3 w-3" />
-                    Ver no WordPress
+                    View in WordPress
                   </a>
                 )}
                 {article.status && (
@@ -441,9 +465,9 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
             disabled={competitorsLoading || competitors !== null}
             loading={competitorsLoading}
             done={competitors !== null}
-            doneLabel={`${competitors?.length ?? 0} concorrentes encontrados`}
-            loadingLabel="Analisando concorrencia..."
-            idleLabel="Analisar Concorrencia"
+            doneLabel={`${competitors?.length ?? 0} competitors found`}
+            loadingLabel="Analyzing competitors..."
+            idleLabel="Analyze Competitors"
             icon={Swords}
             doneColor="text-amber-400"
           />
@@ -461,7 +485,7 @@ export function IdeaDetailPanel({ idea, favorited, onToggleFavorite, onClose }: 
                 ) : (
                   <ChevronDown className="h-3 w-3" />
                 )}
-                {competitorsOpen ? "Recolher" : "Expandir"} resultados
+                {competitorsOpen ? "Collapse" : "Expand"} results
               </button>
               {competitorsOpen && (
                 <div className="space-y-3">

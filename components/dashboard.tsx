@@ -89,11 +89,11 @@ export function Dashboard() {
     setError(null);
     try {
       const res = await fetch(`/api/dashboard?period=${p}`);
-      if (!res.ok) throw new Error("Erro ao carregar dados.");
+      if (!res.ok) throw new Error("Error while carregar dados.");
       const json = await res.json();
       setData(json);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro desconhecido.");
+      setError(err instanceof Error ? err.message : "Unknown error.");
     } finally {
       setLoading(false);
     }
@@ -147,13 +147,13 @@ export function Dashboard() {
       {/* KPI Cards */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
         <KpiCard
-          title="Usuários"
+          title="Users"
           value={data ? formatNumber(data.traffic.overview.users) : undefined}
           change={data ? data.compare.traffic.change.users : undefined}
           loading={loading}
         />
         <KpiCard
-          title="Sessões"
+          title="Sessions"
           value={data ? formatNumber(data.traffic.overview.sessions) : undefined}
           change={data ? data.compare.traffic.change.sessions : undefined}
           loading={loading}
@@ -165,13 +165,13 @@ export function Dashboard() {
           loading={loading}
         />
         <KpiCard
-          title="CTR Médio"
+          title="Average CTR"
           value={data ? formatPercent(data.search.totals.avgCtr) : undefined}
           change={data ? data.compare.search.change.avgCtr : undefined}
           loading={loading}
         />
         <KpiCard
-          title="Posts Publicados"
+          title="Published Posts"
           value={data ? String(publishedPosts) : undefined}
           loading={loading}
         />
@@ -181,7 +181,7 @@ export function Dashboard() {
       <Card className="border-white/10 bg-neutral-900">
         <CardHeader>
           <CardTitle className="text-sm font-medium text-neutral-300">
-            Visitas Diárias (Usuários)
+            Daily Visits (Users)
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -217,7 +217,7 @@ export function Dashboard() {
                   stroke="#8b5cf6"
                   strokeWidth={2}
                   dot={false}
-                  name="Usuários"
+                  name="Users"
                 />
               </LineChart>
             </ResponsiveContainer>
@@ -237,11 +237,11 @@ export function Dashboard() {
                     Striking Distance
                   </CardTitle>
                   <Badge variant="outline" className="border-amber-500/30 text-amber-400 text-[10px]">
-                    Posição 5-20
+                    Position 5-20
                   </Badge>
                 </div>
                 <p className="text-xs text-neutral-500">
-                  Keywords quase na primeira página — otimize para subir
+                  Keywords close to page one — optimize to move up
                 </p>
               </CardHeader>
               <CardContent>
@@ -250,8 +250,8 @@ export function Dashboard() {
                     <TableHeader>
                       <TableRow className="border-white/10">
                         <TableHead className="text-neutral-400">Query</TableHead>
-                        <TableHead className="text-right text-neutral-400">Impressões</TableHead>
-                        <TableHead className="text-right text-neutral-400">Posição</TableHead>
+                        <TableHead className="text-right text-neutral-400">Impressions</TableHead>
+                        <TableHead className="text-right text-neutral-400">Position</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -281,14 +281,14 @@ export function Dashboard() {
               <CardHeader>
                 <div className="flex items-center gap-2">
                   <CardTitle className="text-sm font-medium text-orange-400">
-                    CTR Baixo
+                    Low CTR
                   </CardTitle>
                   <Badge variant="outline" className="border-orange-500/30 text-orange-400 text-[10px]">
                     CTR &lt; 2%
                   </Badge>
                 </div>
                 <p className="text-xs text-neutral-500">
-                  Alto volume de impressões mas poucos clicks — melhore títulos e meta descriptions
+                  High impressions but low clicks — improve titles and meta descriptions
                 </p>
               </CardHeader>
               <CardContent>
@@ -297,7 +297,7 @@ export function Dashboard() {
                     <TableHeader>
                       <TableRow className="border-white/10">
                         <TableHead className="text-neutral-400">Query</TableHead>
-                        <TableHead className="text-right text-neutral-400">Impressões</TableHead>
+                        <TableHead className="text-right text-neutral-400">Impressions</TableHead>
                         <TableHead className="text-right text-neutral-400">CTR</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -330,14 +330,14 @@ export function Dashboard() {
           <CardHeader>
             <div className="flex items-center gap-2">
               <CardTitle className="text-sm font-medium text-red-400">
-                Conteúdo em Queda
+                Content Decay
               </CardTitle>
               <Badge variant="outline" className="border-red-500/30 text-red-400 text-[10px]">
-                {data.decay.decaying.length} páginas
+                {data.decay.decaying.length} pages
               </Badge>
             </div>
             <p className="text-xs text-neutral-500">
-              Páginas perdendo tráfego vs período anterior ({data.decay.periodLabel})
+              Pages losing traffic vs previous period ({data.decay.periodLabel})
             </p>
           </CardHeader>
           <CardContent>
@@ -345,11 +345,11 @@ export function Dashboard() {
               <Table>
                 <TableHeader>
                   <TableRow className="border-white/10">
-                    <TableHead className="text-neutral-400">Página</TableHead>
-                    <TableHead className="text-right text-neutral-400">Antes</TableHead>
+                    <TableHead className="text-neutral-400">Page</TableHead>
+                    <TableHead className="text-right text-neutral-400">Before</TableHead>
                     <TableHead className="text-right text-neutral-400" />
-                    <TableHead className="text-right text-neutral-400">Agora</TableHead>
-                    <TableHead className="text-right text-neutral-400">Variação</TableHead>
+                    <TableHead className="text-right text-neutral-400">Now</TableHead>
+                    <TableHead className="text-right text-neutral-400">Change</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -385,7 +385,7 @@ export function Dashboard() {
         <Card className="border-white/10 bg-neutral-900">
           <CardHeader>
             <CardTitle className="text-sm font-medium text-neutral-300">
-              Top Páginas
+              Top Pages
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -396,7 +396,7 @@ export function Dashboard() {
                 <Table>
                   <TableHeader>
                     <TableRow className="border-white/10">
-                      <TableHead className="text-neutral-400">Página</TableHead>
+                      <TableHead className="text-neutral-400">Page</TableHead>
                       <TableHead className="text-right text-neutral-400">Pageviews</TableHead>
                       <TableHead className="text-right text-neutral-400">Bounce Rate</TableHead>
                     </TableRow>
@@ -440,7 +440,7 @@ export function Dashboard() {
                       <TableHead className="text-neutral-400">Query</TableHead>
                       <TableHead className="text-right text-neutral-400">Clicks</TableHead>
                       <TableHead className="text-right text-neutral-400">CTR</TableHead>
-                      <TableHead className="text-right text-neutral-400">Posição</TableHead>
+                      <TableHead className="text-right text-neutral-400">Position</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -472,7 +472,7 @@ export function Dashboard() {
       <Card className="border-white/10 bg-neutral-900">
         <CardHeader>
           <CardTitle className="text-sm font-medium text-neutral-300">
-            Fontes de Tráfego
+            Traffic Sources
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -485,7 +485,7 @@ export function Dashboard() {
                   <TableRow className="border-white/10">
                     <TableHead className="text-neutral-400">Source</TableHead>
                     <TableHead className="text-neutral-400">Medium</TableHead>
-                    <TableHead className="text-right text-neutral-400">Usuários</TableHead>
+                    <TableHead className="text-right text-neutral-400">Users</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -548,7 +548,7 @@ function KpiCard({
                 {isPositive && <TrendingUp className="h-3 w-3" />}
                 {isNegative && <TrendingDown className="h-3 w-3" />}
                 <span>{formatChangePercent(change)}</span>
-                <span className="text-neutral-600">vs anterior</span>
+                <span className="text-neutral-600">vs previous</span>
               </div>
             )}
           </div>

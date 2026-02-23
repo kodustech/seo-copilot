@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
 
 import { enqueueArticleTask, fetchArticleTaskResult } from "@/lib/copilot";
+import { resolveVoicePolicyForRequest } from "@/lib/voice-policy";
 
 export async function POST(request: Request) {
   const body = await readBody(request);
 
   try {
+    const voicePolicy = await resolveVoicePolicyForRequest(
+      request.headers.get("authorization"),
+    );
     const result = await enqueueArticleTask({
       title: typeof body.title === "string" ? body.title : "",
       keyword: typeof body.keyword === "string" ? body.keyword : "",
@@ -20,12 +24,13 @@ export async function POST(request: Request) {
           ? body.customInstructions
           : undefined,
       categories: normalizeCategories(body.categories),
+      voicePolicy,
     });
     return NextResponse.json(result);
   } catch (error) {
-    console.error("Erro ao gerar artigo", error);
+    console.error("Error generating article", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Falha ao gerar artigo." },
+      { error: error instanceof Error ? error.message : "Failed to generate article." },
       { status: 400 },
     );
   }
@@ -37,16 +42,16 @@ export async function GET(request: Request) {
   const taskId = Number(taskIdParam);
 
   if (!Number.isFinite(taskId)) {
-    return NextResponse.json({ error: "Task inválida." }, { status: 400 });
+    return NextResponse.json({ error: "Invalid task." }, { status: 400 });
   }
 
   try {
     const result = await fetchArticleTaskResult(taskId);
     return NextResponse.json(result);
   } catch (error) {
-    console.error("Erro ao consultar artigos", error);
+    console.error("Error fetching articles", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Falha ao consultar artigos." },
+      { error: error instanceof Error ? error.message : "Failed to fetch articles." },
       { status: 400 },
     );
   }

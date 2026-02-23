@@ -45,13 +45,13 @@ export async function createConversation(
     .from("conversations")
     .insert({
       user_email: data.user_email,
-      title: data.title ?? "Nova conversa",
+      title: data.title ?? "New conversation",
       messages: data.messages ?? [],
     })
     .select()
     .single();
 
-  if (error) throw new Error(`Erro ao criar conversa: ${error.message}`);
+  if (error) throw new Error(`Error creating conversation: ${error.message}`);
   return conv as Conversation;
 }
 
@@ -65,7 +65,7 @@ export async function listConversationsByEmail(
     .eq("user_email", email)
     .order("updated_at", { ascending: false });
 
-  if (error) throw new Error(`Erro ao listar conversas: ${error.message}`);
+  if (error) throw new Error(`Error while listar conversas: ${error.message}`);
   return (data ?? []) as ConversationSummary[];
 }
 
@@ -104,7 +104,7 @@ export async function updateConversationMessages(
     .eq("id", id)
     .eq("user_email", email);
 
-  if (error) throw new Error(`Erro ao atualizar conversa: ${error.message}`);
+  if (error) throw new Error(`Error updating conversation: ${error.message}`);
 }
 
 export async function deleteConversation(
@@ -118,5 +118,5 @@ export async function deleteConversation(
     .eq("id", id)
     .eq("user_email", email);
 
-  if (error) throw new Error(`Erro ao deletar conversa: ${error.message}`);
+  if (error) throw new Error(`Error deleting conversation: ${error.message}`);
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Controls,
@@ -21,6 +21,7 @@ import { TopicNode } from "@/components/canvas/topic-node";
 import { AngleNode } from "@/components/canvas/angle-node";
 import { IdeaNode } from "@/components/canvas/idea-node";
 import { IdeaDetailPanel } from "@/components/canvas/idea-detail-panel";
+import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -46,6 +47,28 @@ const nodeTypes = {
   angle: AngleNode,
   idea: IdeaNode,
 };
+
+function useAuthToken() {
+  const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const [token, setToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!supabase) return;
+    supabase.auth.getSession().then(({ data }) => {
+      setToken(data.session?.access_token ?? null);
+    });
+  }, [supabase]);
+
+  return token;
+}
+
+function jsonHeaders(token?: string | null) {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
 
 // ---------------------------------------------------------------------------
 // Layout helpers
@@ -89,6 +112,7 @@ function ideaPosition(parentX: number, parentY: number, index: number) {
 // ---------------------------------------------------------------------------
 
 export function IdeasCanvas() {
+  const token = useAuthToken();
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([] as Node[]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([] as Edge[]);
 
@@ -131,7 +155,7 @@ export function IdeasCanvas() {
       try {
         const res = await fetch("/api/canvas/explore", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: jsonHeaders(token),
           body: JSON.stringify({ action: "explore", topic }),
         });
         const data: SearchIdeasOutput = await res.json();
@@ -205,7 +229,7 @@ export function IdeasCanvas() {
         ]);
       }
     },
-    [setNodes, setEdges],
+    [setNodes, setEdges, token],
   );
 
   // -------------------------------------------------------------------------
@@ -277,7 +301,7 @@ export function IdeasCanvas() {
 
       setEdges((currentEdges) => {
         // Remove idea edges for this angle
-        let filtered = currentEdges.filter(
+        const filtered = currentEdges.filter(
           (e) => !e.id.startsWith(`edge-${angle}-idea-`),
         );
 
@@ -350,7 +374,7 @@ export function IdeasCanvas() {
               <span className="text-lg font-medium text-white">Ideas Canvas</span>
             </div>
             <p className="text-center text-sm text-neutral-500">
-              Explore ideias progressivamente: tema &rarr; angulos &rarr; ideias &rarr; keywords &rarr; titulos
+              Explore ideas progressively: topic &rarr; angles &rarr; ideas &rarr; keywords &rarr; titles
             </p>
             <div className="flex w-full items-center gap-2 rounded-xl border border-white/10 bg-neutral-900/80 px-4 py-3 backdrop-blur">
               <Search className="h-4 w-4 text-neutral-500" />
@@ -358,7 +382,7 @@ export function IdeasCanvas() {
                 type="text"
                 value={topicInput}
                 onChange={(e) => setTopicInput(e.target.value)}
-                placeholder="Qual tema quer explorar?"
+                placeholder="Which topic do you want to explore?"
                 className="flex-1 bg-transparent text-sm text-white outline-none placeholder:text-neutral-600"
                 autoFocus
               />
@@ -367,7 +391,7 @@ export function IdeasCanvas() {
                 disabled={!topicInput.trim()}
                 className="rounded-lg bg-violet-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-violet-500 disabled:opacity-40"
               >
-                Explorar
+                Explore
               </button>
             </div>
           </form>

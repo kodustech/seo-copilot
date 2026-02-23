@@ -53,12 +53,23 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
 type Banner =
   | { intent: "success" | "info"; message: string }
   | { intent: "error"; message: string };
 
-export function SeoWorkspace() {
+export type SeoWorkspaceTab = "complete" | "reverse" | "manual";
+
+type SeoWorkspaceProps = {
+  forcedTab?: SeoWorkspaceTab;
+  showTabs?: boolean;
+};
+
+export function SeoWorkspace({
+  forcedTab,
+  showTabs = true,
+}: SeoWorkspaceProps) {
   const [idea, setIdea] = useState("");
   const [customInstructions, setCustomInstructions] = useState("");
   const [keywords, setKeywords] = useState<KeywordSuggestion[]>([]);
@@ -115,9 +126,16 @@ export function SeoWorkspace() {
   const [manualKeyword, setManualKeyword] = useState("");
   const [manualTitle, setManualTitle] = useState("");
   const [reverseSearchTitle, setReverseSearchTitle] = useState("");
-  const [activeTab, setActiveTab] = useState<"complete" | "reverse" | "manual">(
-    "complete"
+  const [activeTab, setActiveTab] = useState<SeoWorkspaceTab>(
+    forcedTab ?? "complete"
   );
+  const token = useAuthToken();
+
+  useEffect(() => {
+    if (forcedTab) {
+      setActiveTab(forcedTab);
+    }
+  }, [forcedTab]);
 
   const selectedKeywords = useMemo(
     () => keywords.filter((keyword) => selectedKeywordIds.has(keyword.id)),
@@ -217,7 +235,7 @@ export function SeoWorkspace() {
         const data = await getJson<{
           ready: boolean;
           keywords?: KeywordSuggestion[];
-        }>(`/api/keywords?taskId=${keywordTaskId}`);
+        }>(`/api/keywords?taskId=${keywordTaskId}`, token);
 
         if (isCancelled) {
           return;
@@ -235,7 +253,7 @@ export function SeoWorkspace() {
           setLoading((state) => ({ ...state, keywords: false }));
           setBanner({
             intent: "error",
-            message: "Task concluída, mas não recebemos keywords.",
+            message: "Task completed, but we did not receive keywords.",
           });
           return;
         }
@@ -252,7 +270,7 @@ export function SeoWorkspace() {
         setKeywordTaskStatus(null);
         setBanner({
           intent: "success",
-          message: `Geramos ${data.keywords.length} keywords fresquinhas.`,
+          message: `Generated ${data.keywords.length} fresh keywords.`,
         });
       } catch (error) {
         if (isCancelled) {
@@ -267,7 +285,7 @@ export function SeoWorkspace() {
           message:
             error instanceof Error
               ? error.message
-              : "Erro ao consultar a task do copiloto.",
+              : "Error checking copilot task.",
         });
       }
     }
@@ -279,7 +297,7 @@ export function SeoWorkspace() {
       isCancelled = true;
       clearInterval(interval);
     };
-  }, [keywordTaskId, isPollingTask]);
+  }, [keywordTaskId, isPollingTask, token]);
 
   useEffect(() => {
     if (!articleTaskId || !isPollingArticle) {
@@ -293,7 +311,7 @@ export function SeoWorkspace() {
         const data = await getJson<{
           ready: boolean;
           articles?: { id: string; content?: string; url?: string }[];
-        }>(`/api/articles?taskId=${articleTaskId}`);
+        }>(`/api/articles?taskId=${articleTaskId}`, token);
 
         if (isCancelled) {
           return;
@@ -310,7 +328,7 @@ export function SeoWorkspace() {
           setArticleTaskId(null);
           setBanner({
             intent: "error",
-            message: "Task concluída, mas não recebemos o artigo.",
+            message: "Task completed, but we did not receive the article.",
           });
           return;
         }
@@ -323,7 +341,7 @@ export function SeoWorkspace() {
         setArticleTaskId(null);
         setBanner({
           intent: "info",
-          message: "Artigo pronto!",
+          message: "Article ready!",
         });
       } catch (error) {
         if (isCancelled) {
@@ -337,7 +355,7 @@ export function SeoWorkspace() {
           message:
             error instanceof Error
               ? error.message
-              : "Erro ao consultar o artigo.",
+              : "Error checking article.",
         });
       }
     }
@@ -349,7 +367,7 @@ export function SeoWorkspace() {
       isCancelled = true;
       clearInterval(interval);
     };
-  }, [articleTaskId, isPollingArticle]);
+  }, [articleTaskId, isPollingArticle, token]);
 
   useEffect(() => {
     if (!historyDialogOpen || historyLoaded) {
@@ -362,7 +380,8 @@ export function SeoWorkspace() {
       setHistoryError(null);
       try {
         const payload = await getJson<{ keywords: KeywordSuggestion[] }>(
-          "/api/keywords/history"
+          "/api/keywords/history",
+          token,
         );
         if (!cancelled) {
           setHistoryKeywords(payload.keywords ?? []);
@@ -373,7 +392,7 @@ export function SeoWorkspace() {
           setHistoryError(
             error instanceof Error
               ? error.message
-              : "Não conseguimos buscar o histórico agora."
+              : "We couldn't fetch history right now."
           );
           setHistoryLoaded(false);
         }
@@ -389,13 +408,13 @@ export function SeoWorkspace() {
     return () => {
       cancelled = true;
     };
-  }, [historyDialogOpen, historyLoaded]);
+  }, [historyDialogOpen, historyLoaded, token]);
 
   async function handleKeywordGeneration(mode: "idea" | "random") {
     if (mode === "idea" && !idea.trim()) {
       setBanner({
         intent: "error",
-        message: "Compartilhe a ideia principal antes de gerar keywords.",
+        message: "Share the main idea before generating keywords.",
       });
       return;
     }
@@ -412,10 +431,10 @@ export function SeoWorkspace() {
         limit: keywordLimit,
         locationCode,
         language: languageCode,
-      });
+      }, token);
 
       if (!ticket.taskId) {
-        throw new Error("Não recebemos o identificador da task.");
+        throw new Error("We did not receive the task identifier.");
       }
 
       setKeywordTaskId(ticket.taskId);
@@ -429,7 +448,7 @@ export function SeoWorkspace() {
       setArticleContent("");
       setBanner({
         intent: "info",
-        message: `Task #${ticket.taskId} enfileirada. Avisamos quando as keywords chegarem.`,
+        message: `Task #${ticket.taskId} queued. We'll notify you when keywords arrive.`,
       });
     } catch (error) {
       setLoading((state) => ({ ...state, keywords: false }));
@@ -441,7 +460,7 @@ export function SeoWorkspace() {
         message:
           error instanceof Error
             ? error.message
-            : "Não conseguimos falar com o copiloto agora.",
+            : "We couldn't reach the copilot right now.",
       });
     }
   }
@@ -450,7 +469,7 @@ export function SeoWorkspace() {
     if (!selectedKeywords.length) {
       setBanner({
         intent: "error",
-        message: "Selecione uma ou mais keywords para inspirar os títulos.",
+        message: "Select one or more keywords to inspire titles.",
       });
       return;
     }
@@ -463,15 +482,19 @@ export function SeoWorkspace() {
         instruction: keywordBriefings[keyword.id]?.trim() || undefined,
       }));
 
-      const payload = await postJson<{ titles: TitleIdea[] }>("/api/titles", {
-        keywords: keywordPayload,
-      });
+      const payload = await postJson<{ titles: TitleIdea[] }>(
+        "/api/titles",
+        {
+          keywords: keywordPayload,
+        },
+        token,
+      );
       setTitles(payload.titles);
       setSelectedTitleId(payload.titles[0]?.id ?? null);
       setArticleContent("");
       setBanner({
         intent: "success",
-        message: `Geramos ${payload.titles.length} opções de título.`,
+        message: `Generated ${payload.titles.length} title options.`,
       });
     } catch (error) {
       setBanner({
@@ -479,7 +502,7 @@ export function SeoWorkspace() {
         message:
           error instanceof Error
             ? error.message
-            : "Não conseguimos gerar títulos agora.",
+            : "We couldn't generate titles right now.",
       });
     } finally {
       setLoading((state) => ({ ...state, titles: false }));
@@ -490,7 +513,7 @@ export function SeoWorkspace() {
     if (!selectedTitle) {
       setBanner({
         intent: "error",
-        message: "Escolha um título antes de pedir o artigo.",
+        message: "Choose a title before requesting the article.",
       });
       return;
     }
@@ -498,7 +521,7 @@ export function SeoWorkspace() {
     if (!articleKeywordId) {
       setBanner({
         intent: "error",
-        message: "Escolha qual keyword deve guiar o artigo.",
+        message: "Choose which keyword should guide the article.",
       });
       return;
     }
@@ -507,7 +530,7 @@ export function SeoWorkspace() {
     if (!keywordEntry) {
       setBanner({
         intent: "error",
-        message: "Não encontramos a keyword selecionada.",
+        message: "We did not find the selected keyword.",
       });
       return;
     }
@@ -525,10 +548,11 @@ export function SeoWorkspace() {
           researchInstructions,
           customInstructions,
           categories: selectedCategories,
-        }
+        },
+        token,
       );
       if (!ticket.taskId) {
-        throw new Error("Não recebemos o identificador da task de artigo.");
+        throw new Error("We did not receive the article task identifier.");
       }
       setArticleContent("");
       setArticleTaskId(ticket.taskId);
@@ -536,7 +560,7 @@ export function SeoWorkspace() {
       setIsPollingArticle(true);
       setBanner({
         intent: "info",
-        message: `Task de artigo #${ticket.taskId} enfileirada. Avisamos quando ficar pronta.`,
+        message: `Article task #${ticket.taskId} queued. We'll notify you when it is ready.`,
       });
     } catch (error) {
       setBanner({
@@ -544,7 +568,7 @@ export function SeoWorkspace() {
         message:
           error instanceof Error
             ? error.message
-            : "Não conseguimos gerar o artigo agora.",
+            : "We couldn't generate the article right now.",
       });
     } finally {
       setLoading((state) => ({ ...state, content: false }));
@@ -555,7 +579,7 @@ export function SeoWorkspace() {
     if (!manualTitle.trim()) {
       setBanner({
         intent: "error",
-        message: "Digite um título para o artigo.",
+        message: "Type a title for the article.",
       });
       return;
     }
@@ -563,7 +587,7 @@ export function SeoWorkspace() {
     if (!manualKeyword.trim()) {
       setBanner({
         intent: "error",
-        message: "Digite a keyword principal.",
+        message: "Type the primary keyword.",
       });
       return;
     }
@@ -581,10 +605,11 @@ export function SeoWorkspace() {
           researchInstructions,
           customInstructions,
           categories: selectedCategories,
-        }
+        },
+        token,
       );
       if (!ticket.taskId) {
-        throw new Error("Não recebemos o identificador da task de artigo.");
+        throw new Error("We did not receive the article task identifier.");
       }
       setArticleContent("");
       setArticleTaskId(ticket.taskId);
@@ -592,7 +617,7 @@ export function SeoWorkspace() {
       setIsPollingArticle(true);
       setBanner({
         intent: "info",
-        message: `Task de artigo #${ticket.taskId} enfileirada. Avisamos quando ficar pronta.`,
+        message: `Article task #${ticket.taskId} queued. We'll notify you when it is ready.`,
       });
     } catch (error) {
       setBanner({
@@ -600,7 +625,7 @@ export function SeoWorkspace() {
         message:
           error instanceof Error
             ? error.message
-            : "Não conseguimos gerar o artigo agora.",
+            : "We couldn't generate the article right now.",
       });
     } finally {
       setLoading((state) => ({ ...state, content: false }));
@@ -611,7 +636,7 @@ export function SeoWorkspace() {
     if (!reverseSearchTitle.trim()) {
       setBanner({
         intent: "error",
-        message: "Digite um título para buscar keywords relacionadas.",
+        message: "Type a title to search related keywords.",
       });
       return;
     }
@@ -624,14 +649,14 @@ export function SeoWorkspace() {
         taskId: number;
         status?: string | null;
       }>("/api/keywords", {
-        idea: `Encontre keywords relacionadas ao seguinte título: "${reverseSearchTitle.trim()}"`,
+        idea: `Find keywords related to the following title: "${reverseSearchTitle.trim()}"`,
         limit: keywordLimit,
         locationCode,
         language: languageCode,
-      });
+      }, token);
 
       if (!ticket.taskId) {
-        throw new Error("Não recebemos o identificador da task.");
+        throw new Error("We did not receive the task identifier.");
       }
 
       setKeywordTaskId(ticket.taskId);
@@ -645,7 +670,7 @@ export function SeoWorkspace() {
       setArticleContent("");
       setBanner({
         intent: "info",
-        message: `Buscando keywords relacionadas ao título. Task #${ticket.taskId} enfileirada.`,
+        message: `Searching related keywords for the title. Task #${ticket.taskId} queued.`,
       });
     } catch (error) {
       setLoading((state) => ({ ...state, keywords: false }));
@@ -657,7 +682,7 @@ export function SeoWorkspace() {
         message:
           error instanceof Error
             ? error.message
-            : "Não conseguimos buscar keywords agora.",
+            : "We couldn't search related keywords right now.",
       });
     }
   }
@@ -715,7 +740,7 @@ export function SeoWorkspace() {
       historySelectedIds.has(keyword.id)
     );
     if (!selected.length) {
-      setHistoryError("Selecione ao menos uma keyword do histórico.");
+      setHistoryError("Select ao menos uma keyword do history.");
       return;
     }
 
@@ -731,7 +756,7 @@ export function SeoWorkspace() {
     setHistoryDialogOpen(false);
     setBanner({
       intent: "info",
-      message: `Adicionamos ${selected.length} keywords do histórico.`,
+      message: `Adicionamos ${selected.length} keywords do history.`,
     });
   }
 
@@ -769,7 +794,7 @@ export function SeoWorkspace() {
     setLoading((state) => ({ ...state, keywords: false }));
     setBanner({
       intent: "info",
-      message: "Workspace limpo. Bora criar outra estratégia?",
+      message: "Workspace cleared. Ready to create another strategy?",
     });
   }
 
@@ -779,7 +804,7 @@ export function SeoWorkspace() {
         <header className="space-y-4">
           <div className="flex flex-wrap items-center gap-3">
             <Badge variant="outline" className="rounded-full px-3 py-1 text-sm">
-              Copiloto de SEO
+              Copilot de SEO
             </Badge>
           </div>
         </header>
@@ -811,11 +836,11 @@ export function SeoWorkspace() {
               <Loader2 className="h-5 w-5 animate-spin text-neutral-900 dark:text-white" />
               <div>
                 <p className="font-semibold text-neutral-900 dark:text-white">
-                  Processando task #{keywordTaskId}
+                  Processing task #{keywordTaskId}
                 </p>
                 <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                  Status: {keywordTaskStatus ?? "in-progress"} • Assim que
-                  chegar, atualizamos a lista de keywords.
+                  Status: {keywordTaskStatus ?? "in-progress"} • As soon as
+                  it arrives, we update the keyword list.
                 </p>
               </div>
             </CardContent>
@@ -824,44 +849,46 @@ export function SeoWorkspace() {
 
         <Tabs
           value={activeTab}
-          onValueChange={(value) => setActiveTab(value as typeof activeTab)}
+          onValueChange={(value) => setActiveTab(value as SeoWorkspaceTab)}
           className="w-full"
         >
-          <TabsList className="grid w-full grid-cols-3 rounded-2xl bg-neutral-100/80 p-1 dark:bg-neutral-800">
-            <TabsTrigger
-              value="complete"
-              className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-neutral-900"
-            >
-              Fluxo Completo
-            </TabsTrigger>
-            <TabsTrigger
-              value="reverse"
-              className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-neutral-900"
-            >
-              Título → Keywords
-            </TabsTrigger>
-            <TabsTrigger
-              value="manual"
-              className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-neutral-900"
-            >
-              Manual Rápido
-            </TabsTrigger>
-          </TabsList>
+          {showTabs && (
+            <TabsList className="grid w-full grid-cols-3 rounded-2xl bg-neutral-100/80 p-1 dark:bg-neutral-800">
+              <TabsTrigger
+                value="complete"
+                className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-neutral-900"
+              >
+                Full Flow
+              </TabsTrigger>
+              <TabsTrigger
+                value="reverse"
+                className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-neutral-900"
+              >
+                Title → Keywords
+              </TabsTrigger>
+              <TabsTrigger
+                value="manual"
+                className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-neutral-900"
+              >
+                Quick Manual
+              </TabsTrigger>
+            </TabsList>
+          )}
 
           <TabsContent value="complete" className="mt-8 space-y-8">
             <Card className="border-0 bg-white/80 shadow-sm ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/5">
               <CardHeader className="gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <CardTitle className="text-2xl">Ponto de partida</CardTitle>
+                  <CardTitle className="text-2xl">Starting point</CardTitle>
                   <CardDescription className="text-base">
-                    Compartilhe o contexto ou deixe o copiloto surpreender com
-                    novas oportunidades.
+                    Share the context or let the copilot surprise you with
+                    new opportunities.
                   </CardDescription>
                 </div>
                 <div className="flex items-center gap-4 rounded-2xl border border-neutral-200/80 px-4 py-2 text-sm dark:border-white/10">
                   <div>
                     <p className="text-xs uppercase text-neutral-500">
-                      Keywords salvas
+                      Saved keywords
                     </p>
                     <p className="text-lg font-semibold text-neutral-900 dark:text-white">
                       {keywords.length}
@@ -870,7 +897,7 @@ export function SeoWorkspace() {
                   <Separator orientation="vertical" className="h-8" />
                   <div>
                     <p className="text-xs uppercase text-neutral-500">
-                      Seleções
+                      Selections
                     </p>
                     <p className="text-lg font-semibold text-neutral-900 dark:text-white">
                       {selectedKeywords.length}
@@ -882,17 +909,17 @@ export function SeoWorkspace() {
                 <Textarea
                   value={idea}
                   onChange={(event) => setIdea(event.target.value)}
-                  placeholder="Ex.: Quero falar sobre tendências de IA em e-commerce focadas em conversão..."
+                  placeholder="Ex: I want to talk about AI trends in e-commerce focused on conversion..."
                   className="min-h-[120px] resize-none bg-neutral-50/70 text-base dark:bg-neutral-800"
                 />
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-dashed border-neutral-200/80 bg-white/70 p-4 text-sm dark:border-white/10 dark:bg-neutral-900/50">
                     <div>
                       <p className="text-xs uppercase text-neutral-500">
-                        Quantidade desejada
+                        Desired amount
                       </p>
                       <p className="text-sm text-neutral-600 dark:text-neutral-300">
-                        Diga quantas ideias de keyword quer receber (5 a 50).
+                        Choose how many keyword ideas you want to receive (5 to 50).
                       </p>
                     </div>
                     <Input
@@ -916,9 +943,9 @@ export function SeoWorkspace() {
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-dashed border-neutral-200/80 bg-white/70 p-4 text-sm dark:border-white/10 dark:bg-neutral-900/50">
                     <div>
-                      <p className="text-xs uppercase text-neutral-500">País</p>
+                      <p className="text-xs uppercase text-neutral-500">Country</p>
                       <p className="text-sm text-neutral-600 dark:text-neutral-300">
-                        Escolha o mercado alvo para gerar as keywords.
+                        Choose the target market to generate keywords.
                       </p>
                     </div>
                     <Select
@@ -926,7 +953,7 @@ export function SeoWorkspace() {
                       onValueChange={setLocationCode}
                     >
                       <SelectTrigger className="w-40">
-                        <SelectValue placeholder="Selecione" />
+                        <SelectValue placeholder="Select" />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="2076">Brasil</SelectItem>
@@ -937,10 +964,10 @@ export function SeoWorkspace() {
                   <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-dashed border-neutral-200/80 bg-white/70 p-4 text-sm dark:border-white/10 dark:bg-neutral-900/50">
                     <div>
                       <p className="text-xs uppercase text-neutral-500">
-                        Idioma
+                        Language
                       </p>
                       <p className="text-sm text-neutral-600 dark:text-neutral-300">
-                        Defina em qual idioma o copiloto pesquisa.
+                        Set the language the copilot should use for research.
                       </p>
                     </div>
                     <Select
@@ -948,11 +975,11 @@ export function SeoWorkspace() {
                       onValueChange={setLanguageCode}
                     >
                       <SelectTrigger className="w-40">
-                        <SelectValue placeholder="Idioma" />
+                        <SelectValue placeholder="Language" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="pt">Português</SelectItem>
-                        <SelectItem value="en">Inglês</SelectItem>
+                        <SelectItem value="pt">Portuguese</SelectItem>
+                        <SelectItem value="en">English</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -970,7 +997,7 @@ export function SeoWorkspace() {
                       ) : (
                         <Sparkles className="h-5 w-5" />
                       )}
-                      <span>Gerar keywords da minha ideia</span>
+                      <span>Generate keywords from my idea</span>
                     </div>
                     <ArrowRight className="h-5 w-5" />
                   </Button>
@@ -986,7 +1013,7 @@ export function SeoWorkspace() {
                       ) : (
                         <Shuffle className="h-5 w-5" />
                       )}
-                      <span>Quero ideias totalmente novas</span>
+                      <span>I want completely new ideas</span>
                     </div>
                     <ArrowRight className="h-5 w-5" />
                   </Button>
@@ -997,7 +1024,7 @@ export function SeoWorkspace() {
                   >
                     <div className="flex items-center gap-3">
                       <Sparkles className="h-5 w-5" />
-                      <span>Explorar histórico salvo</span>
+                      <span>Explore saved history</span>
                     </div>
                     <ArrowRight className="h-5 w-5" />
                   </Button>
@@ -1007,7 +1034,7 @@ export function SeoWorkspace() {
                     onClick={resetWorkspace}
                     type="button"
                   >
-                    Limpar workspace
+                    Clear workspace
                   </Button>
                 </div>
               </CardContent>
@@ -1017,22 +1044,22 @@ export function SeoWorkspace() {
               <CardHeader className="gap-4 md:flex-row md:items-center md:justify-between">
                 <div>
                   <CardTitle className="text-2xl">
-                    Keywords priorizadas
+                    Prioritized keywords
                   </CardTitle>
                   <CardDescription className="text-base">
-                    Clique para selecionar e use o insight médio abaixo para
-                    guiar o próximo passo.
+                    Click to select and use the average insight below to
+                    guide the next step.
                   </CardDescription>
                 </div>
                 <div className="flex items-center gap-4 text-sm text-neutral-500 dark:text-neutral-400">
                   <div className="rounded-2xl bg-neutral-100 px-4 py-2 text-center dark:bg-neutral-800">
-                    <p className="text-xs uppercase">Volume médio</p>
+                    <p className="text-xs uppercase">Average volume</p>
                     <p className="text-lg font-semibold text-neutral-900 dark:text-white">
                       {keywordStats.avgVolume || "—"}
                     </p>
                   </div>
                   <div className="rounded-2xl bg-neutral-100 px-4 py-2 text-center dark:bg-neutral-800">
-                    <p className="text-xs uppercase">Dificuldade média</p>
+                    <p className="text-xs uppercase">Average difficulty</p>
                     <p className="text-lg font-semibold text-neutral-900 dark:text-white">
                       {keywordStats.avgDifficulty || "—"}
                     </p>
@@ -1044,11 +1071,11 @@ export function SeoWorkspace() {
                   <div className="flex flex-col items-center justify-center rounded-3xl border border-dashed border-neutral-300/70 p-12 text-center dark:border-neutral-700">
                     <Lightbulb className="mb-4 h-10 w-10 text-neutral-400" />
                     <p className="text-lg font-medium text-neutral-700 dark:text-neutral-200">
-                      Gere uma lista para começar a explorar oportunidades.
+                      Generate a list to start exploring opportunities.
                     </p>
                     <p className="text-sm text-neutral-500 dark:text-neutral-400">
-                      Assim que o copiloto retornar, você pode filtrar e
-                      selecionar o que faz sentido.
+                      As soon as the copilot responds, you can filter and
+                      select what makes sense.
                     </p>
                   </div>
                 ) : (
@@ -1061,11 +1088,11 @@ export function SeoWorkspace() {
                             keywords.length > 0
                           }
                           onCheckedChange={toggleAllKeywords}
-                          aria-label="Selecionar todas as keywords"
+                          aria-label="Select all keywords"
                         />
                         <span>
-                          {selectedKeywords.length} selecionadas /{" "}
-                          {keywords.length} resultados
+                          {selectedKeywords.length} selected /{" "}
+                          {keywords.length} results
                         </span>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
@@ -1077,7 +1104,7 @@ export function SeoWorkspace() {
                           onClick={toggleSortOrder}
                           disabled={keywords.length === 0}
                         >
-                          Ordenar por volume
+                          Sort by volume
                           <ArrowDownWideNarrow
                             className={`ml-2 h-4 w-4 transition ${
                               sortOrder === "asc" ? "rotate-180" : ""
@@ -1096,11 +1123,11 @@ export function SeoWorkspace() {
                           {loading.titles ? (
                             <>
                               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                              Gerando títulos...
+                              Generating titles...
                             </>
                           ) : (
                             <>
-                              Gerar títulos
+                              Generate titles
                               <NotebookPen className="ml-2 h-4 w-4" />
                             </>
                           )}
@@ -1116,7 +1143,7 @@ export function SeoWorkspace() {
                             <TableHead className="text-right">Volume</TableHead>
                             <TableHead className="text-right">CPC</TableHead>
                             <TableHead className="text-right">
-                              Dificuldade
+                              Difficulty
                             </TableHead>
                           </TableRow>
                         </TableHeader>
@@ -1133,7 +1160,7 @@ export function SeoWorkspace() {
                                   onCheckedChange={() =>
                                     toggleKeyword(keyword.id)
                                   }
-                                  aria-label={`Selecionar ${keyword.phrase}`}
+                                  aria-label={`Select ${keyword.phrase}`}
                                   onClick={(event) => event.stopPropagation()}
                                 />
                               </TableCell>
@@ -1149,7 +1176,7 @@ export function SeoWorkspace() {
                                           [keyword.id]: event.target.value,
                                         }))
                                       }
-                                      placeholder="Briefing opcional para este título (tom, CTA, público...)"
+                                      placeholder="Optional briefing for this title (tone, CTA, audience...)"
                                       className="min-h-[70px] bg-white/80 text-sm text-neutral-700 dark:bg-neutral-900/70 dark:text-neutral-200"
                                       onClick={(event) =>
                                         event.stopPropagation()
@@ -1159,7 +1186,7 @@ export function SeoWorkspace() {
                                 </div>
                               </TableCell>
                               <TableCell className="text-right">
-                                {keyword.volume.toLocaleString("pt-BR")}
+                                {keyword.volume.toLocaleString("en-US")}
                               </TableCell>
                               <TableCell className="text-right">
                                 R$ {keyword.cpc.toFixed(2)}
@@ -1170,7 +1197,7 @@ export function SeoWorkspace() {
                                     variant="outline"
                                     className="rounded-full px-2 py-0 text-[11px] font-medium uppercase tracking-wide"
                                   >
-                                    {keyword.difficultyLabel ?? "Sem dado"}
+                                    {keyword.difficultyLabel ?? "No data"}
                                   </Badge>
                                   {keyword.difficulty > 0 && (
                                     <span className="text-xs text-neutral-500 dark:text-neutral-400">
@@ -1193,11 +1220,11 @@ export function SeoWorkspace() {
               <CardHeader className="gap-4 md:flex-row md:items-center md:justify-between">
                 <div>
                   <CardTitle className="text-2xl">
-                    Propostas de título
+                    Title proposals
                   </CardTitle>
                   <CardDescription className="text-base">
-                    Clique para definir o título favorito e ir direto para o
-                    artigo.
+                    Click to set your favorite title and go directly to the
+                    article.
                   </CardDescription>
                 </div>
                 <Badge
@@ -1205,15 +1232,15 @@ export function SeoWorkspace() {
                   className="rounded-full px-4 py-1 text-sm"
                 >
                   {titles.length
-                    ? `${titles.length} sugestões`
-                    : "Aguardando keywords selecionadas"}
+                    ? `${titles.length} suggestions`
+                    : "Waiting for selected keywords"}
                 </Badge>
               </CardHeader>
               <CardContent>
                 {titles.length === 0 ? (
                   <div className="rounded-3xl border border-dashed border-neutral-300/70 p-10 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
-                    Selecione keywords e clique em “Gerar títulos” para ver
-                    ideias aqui.
+                    Select keywords and click &quot;Generate titles&quot; to see
+                    ideas here.
                   </div>
                 ) : (
                   <div className="grid gap-4 md:grid-cols-2">
@@ -1251,15 +1278,15 @@ export function SeoWorkspace() {
             <Card className="border-0 bg-white/90 shadow-sm ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/5">
               <CardHeader className="gap-4 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <CardTitle className="text-2xl">Redação assistida</CardTitle>
+                  <CardTitle className="text-2xl">Assisted writing</CardTitle>
                   <CardDescription className="text-base">
-                    Ajuste o briefing, escolha a keyword principal e deixe o
-                    copiloto gerar o artigo completo.
+                    Adjust the briefing, choose a primary keyword, and let the
+                    copilot generate the full article.
                   </CardDescription>
                 </div>
                 {selectedTitle && (
                   <Badge className="rounded-full px-4 py-1 text-sm">
-                    Baseado em “{selectedTitle.text.slice(0, 32)}
+                    Based on “{selectedTitle.text.slice(0, 32)}
                     {selectedTitle.text.length > 32 ? "..." : ""}”
                   </Badge>
                 )}
@@ -1269,11 +1296,11 @@ export function SeoWorkspace() {
                   <div className="space-y-4">
                     <div className="space-y-2">
                       <p className="text-xs uppercase text-neutral-500">
-                        Keyword principal do artigo
+                        Main article keyword
                       </p>
                       {selectedKeywords.length === 0 ? (
                         <p className="text-sm text-neutral-500">
-                          Selecione keywords acima para habilitar a redação.
+                          Select keywords above to enable writing.
                         </p>
                       ) : (
                         <Select
@@ -1281,7 +1308,7 @@ export function SeoWorkspace() {
                           onValueChange={(value) => setArticleKeywordId(value)}
                         >
                           <SelectTrigger>
-                            <SelectValue placeholder="Escolha a keyword" />
+                            <SelectValue placeholder="Choose a keyword" />
                           </SelectTrigger>
                           <SelectContent>
                             {selectedKeywords.map((item) => (
@@ -1297,7 +1324,7 @@ export function SeoWorkspace() {
                       )}
                     </div>
                     <div className="flex items-center justify-between rounded-2xl border border-dashed border-neutral-200/80 px-4 py-3 text-sm text-neutral-600 dark:border-white/10 dark:text-neutral-300">
-                      <span>Incluir pesquisa extra</span>
+                      <span>Include extra research</span>
                       <Switch
                         checked={useResearch}
                         onCheckedChange={(checked) =>
@@ -1311,13 +1338,13 @@ export function SeoWorkspace() {
                         onChange={(event) =>
                           setResearchInstructions(event.target.value)
                         }
-                        placeholder="Dê instruções sobre como usar a pesquisa. Ex.: foque em ROI, cite fontes específicas..."
+                        placeholder="Give instructions on how to use research. Ex: focus on ROI, cite specific sources..."
                         className="min-h-[120px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
                       />
                     )}
                     <div className="space-y-2">
                       <p className="text-xs uppercase text-neutral-500">
-                        Categorias (opcional)
+                        Categories (optional)
                       </p>
                       <div className="flex flex-wrap gap-2">
                         {ARTICLE_CATEGORIES.map((category) => (
@@ -1353,7 +1380,7 @@ export function SeoWorkspace() {
                       onChange={(event) =>
                         setCustomInstructions(event.target.value)
                       }
-                      placeholder="Adicione notas importantes, CTA, personas, tamanho ideal..."
+                      placeholder="Add important notes, CTA, personas, ideal length..."
                       className="min-h-[150px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
                     />
                     <Button
@@ -1369,12 +1396,12 @@ export function SeoWorkspace() {
                       {loading.content ? (
                         <>
                           <Loader2 className="mr-3 h-5 w-5 animate-spin" />
-                          Gerando artigo...
+                          Generating article...
                         </>
                       ) : (
                         <>
                           <Sparkles className="mr-3 h-5 w-5" />
-                          Gerar artigo completo
+                          Generate full article
                         </>
                       )}
                     </Button>
@@ -1382,12 +1409,12 @@ export function SeoWorkspace() {
                   <div className="rounded-3xl border border-neutral-200/80 bg-neutral-50/70 p-5 dark:border-white/10 dark:bg-neutral-950/40">
                     <div className="mb-4 flex items-center gap-2 text-sm font-medium text-neutral-500 dark:text-neutral-300">
                       <FileText className="h-4 w-4" />
-                      Prévia do artigo
+                      Article preview
                     </div>
                     {articleContent ? (
                       <div className="space-y-4 text-sm text-neutral-700 dark:text-neutral-300">
                         <p className="font-medium text-neutral-900 dark:text-white">
-                          Artigo pronto! publique no WordPress:
+                          Article ready! Publish in WordPress:
                         </p>
                         <a
                           href={articleContent}
@@ -1400,8 +1427,8 @@ export function SeoWorkspace() {
                       </div>
                     ) : (
                       <p className="text-sm text-neutral-500">
-                        Assim que o copiloto finalizar você verá o link para o
-                        WordPress aqui.
+                        As soon as the copilot finishes, you will see the link to the
+                        WordPress here.
                       </p>
                     )}
                   </div>
@@ -1418,22 +1445,22 @@ export function SeoWorkspace() {
                     variant="outline"
                     className="rounded-full px-3 py-1 text-xs border-indigo-300 text-indigo-700 dark:border-indigo-700 dark:text-indigo-300"
                   >
-                    Busca Reversa
+                    Reverse Search
                   </Badge>
                 </div>
                 <CardTitle className="text-2xl">
-                  Já tem um título? Vamos encontrar keywords
+                  Already have a title? Let&apos;s find keywords
                 </CardTitle>
                 <CardDescription className="text-base">
-                  Digite o título que você já tem em mente e deixe o copiloto
-                  buscar keywords relacionadas para otimizar seu conteúdo.
+                  Type the title you already have in mind and let the copilot
+                  search related keywords to optimize your content.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
                 <Textarea
                   value={reverseSearchTitle}
                   onChange={(e) => setReverseSearchTitle(e.target.value)}
-                  placeholder="Ex.: Como aumentar conversões em e-commerce com IA..."
+                  placeholder="Ex: How to increase e-commerce conversions with AI..."
                   className="min-h-[120px] resize-none bg-neutral-50/70 text-base dark:bg-neutral-800"
                 />
                 <Button
@@ -1445,12 +1472,12 @@ export function SeoWorkspace() {
                   {loading.keywords ? (
                     <>
                       <Loader2 className="mr-3 h-5 w-5 animate-spin" />
-                      Buscando keywords...
+                      Searching keywords...
                     </>
                   ) : (
                     <>
                       <Sparkles className="mr-3 h-5 w-5" />
-                      Buscar keywords relacionadas
+                      Search related keywords
                     </>
                   )}
                 </Button>
@@ -1463,22 +1490,22 @@ export function SeoWorkspace() {
                   <CardHeader className="gap-4 md:flex-row md:items-center md:justify-between">
                     <div>
                       <CardTitle className="text-2xl">
-                        Keywords encontradas
+                        Keywords found
                       </CardTitle>
                       <CardDescription className="text-base">
-                        Selecione as keywords que fazem sentido para o seu
-                        título.
+                        Select the keywords that make sense for your
+                        title.
                       </CardDescription>
                     </div>
                     <div className="flex items-center gap-4 text-sm text-neutral-500 dark:text-neutral-400">
                       <div className="rounded-2xl bg-neutral-100 px-4 py-2 text-center dark:bg-neutral-800">
-                        <p className="text-xs uppercase">Volume médio</p>
+                        <p className="text-xs uppercase">Average volume</p>
                         <p className="text-lg font-semibold text-neutral-900 dark:text-white">
                           {keywordStats.avgVolume || "—"}
                         </p>
                       </div>
                       <div className="rounded-2xl bg-neutral-100 px-4 py-2 text-center dark:bg-neutral-800">
-                        <p className="text-xs uppercase">Dificuldade média</p>
+                        <p className="text-xs uppercase">Average difficulty</p>
                         <p className="text-lg font-semibold text-neutral-900 dark:text-white">
                           {keywordStats.avgDifficulty || "—"}
                         </p>
@@ -1495,11 +1522,11 @@ export function SeoWorkspace() {
                               keywords.length > 0
                             }
                             onCheckedChange={toggleAllKeywords}
-                            aria-label="Selecionar todas as keywords"
+                            aria-label="Select all keywords"
                           />
                           <span>
-                            {selectedKeywords.length} selecionadas /{" "}
-                            {keywords.length} resultados
+                            {selectedKeywords.length} selected /{" "}
+                            {keywords.length} results
                           </span>
                         </div>
                         <Button
@@ -1510,7 +1537,7 @@ export function SeoWorkspace() {
                           onClick={toggleSortOrder}
                           disabled={keywords.length === 0}
                         >
-                          Ordenar por volume
+                          Sort by volume
                           <ArrowDownWideNarrow
                             className={`ml-2 h-4 w-4 transition ${
                               sortOrder === "asc" ? "rotate-180" : ""
@@ -1529,7 +1556,7 @@ export function SeoWorkspace() {
                               </TableHead>
                               <TableHead className="text-right">CPC</TableHead>
                               <TableHead className="text-right">
-                                Dificuldade
+                                Difficulty
                               </TableHead>
                             </TableRow>
                           </TableHeader>
@@ -1546,7 +1573,7 @@ export function SeoWorkspace() {
                                     onCheckedChange={() =>
                                       toggleKeyword(keyword.id)
                                     }
-                                    aria-label={`Selecionar ${keyword.phrase}`}
+                                    aria-label={`Select ${keyword.phrase}`}
                                     onClick={(event) => event.stopPropagation()}
                                   />
                                 </TableCell>
@@ -1554,7 +1581,7 @@ export function SeoWorkspace() {
                                   {keyword.phrase}
                                 </TableCell>
                                 <TableCell className="text-right">
-                                  {keyword.volume.toLocaleString("pt-BR")}
+                                  {keyword.volume.toLocaleString("en-US")}
                                 </TableCell>
                                 <TableCell className="text-right">
                                   R$ {keyword.cpc.toFixed(2)}
@@ -1564,7 +1591,7 @@ export function SeoWorkspace() {
                                     variant="outline"
                                     className="rounded-full px-2 py-0 text-[11px] font-medium uppercase tracking-wide"
                                   >
-                                    {keyword.difficultyLabel ?? "Sem dado"}
+                                    {keyword.difficultyLabel ?? "No data"}
                                   </Badge>
                                 </TableCell>
                               </TableRow>
@@ -1576,27 +1603,29 @@ export function SeoWorkspace() {
                   </CardContent>
                 </Card>
 
-                <Card className="border-0 bg-indigo-50/50 shadow-sm ring-1 ring-indigo-200/50 dark:bg-indigo-950/20 dark:ring-indigo-900/30">
-                  <CardHeader>
-                    <CardTitle className="text-2xl">Próximos passos</CardTitle>
-                    <CardDescription className="text-base">
-                      Agora você pode gerar títulos alternativos ou ir direto
-                      para o fluxo completo.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="flex flex-wrap gap-3">
-                      <Button
-                        variant="default"
-                        className="flex-1 min-w-[220px] rounded-2xl bg-indigo-700 px-6 py-6 text-base font-medium hover:bg-indigo-600 text-white"
-                        onClick={() => setActiveTab("complete")}
-                      >
-                        Ir para fluxo completo
-                        <ArrowRight className="ml-2 h-5 w-5" />
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
+                {showTabs && (
+                  <Card className="border-0 bg-indigo-50/50 shadow-sm ring-1 ring-indigo-200/50 dark:bg-indigo-950/20 dark:ring-indigo-900/30">
+                    <CardHeader>
+                      <CardTitle className="text-2xl">Next steps</CardTitle>
+                      <CardDescription className="text-base">
+                        Now you can generate alternative titles or go straight
+                        to the full flow.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="flex flex-wrap gap-3">
+                        <Button
+                          variant="default"
+                          className="flex-1 min-w-[220px] rounded-2xl bg-indigo-700 px-6 py-6 text-base font-medium hover:bg-indigo-600 text-white"
+                          onClick={() => setActiveTab("complete")}
+                        >
+                          Go to full flow
+                          <ArrowRight className="ml-2 h-5 w-5" />
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
               </>
             )}
           </TabsContent>
@@ -1609,40 +1638,40 @@ export function SeoWorkspace() {
                     variant="outline"
                     className="rounded-full px-3 py-1 text-xs border-emerald-300 text-emerald-700 dark:border-emerald-700 dark:text-emerald-300"
                   >
-                    Modo Rápido
+                    Quick Mode
                   </Badge>
                 </div>
                 <CardTitle className="text-2xl">
-                  Keyword + Título → Artigo direto
+                  Keyword + Title → Direct article
                 </CardTitle>
                 <CardDescription className="text-base">
-                  Já sabe exatamente a keyword e o título? Pule todas as etapas
-                  e vá direto para a geração do artigo.
+                  Already know the exact keyword and title? Skip all steps
+                  and go straight to article generation.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
                 <div className="space-y-4">
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-neutral-700 dark:text-neutral-200">
-                      Keyword Principal
+                      Primary Keyword
                     </label>
                     <Input
                       type="text"
                       value={manualKeyword}
                       onChange={(e) => setManualKeyword(e.target.value)}
-                      placeholder="Ex.: conversão e-commerce"
+                      placeholder="Ex: e-commerce conversion"
                       className="bg-neutral-50/70 text-base dark:bg-neutral-800"
                     />
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-neutral-700 dark:text-neutral-200">
-                      Título do Artigo
+                      Article Title
                     </label>
                     <Input
                       type="text"
                       value={manualTitle}
                       onChange={(e) => setManualTitle(e.target.value)}
-                      placeholder="Ex.: 10 Estratégias para Aumentar Conversão em E-commerce"
+                      placeholder="Ex: 10 Strategies to Increase E-commerce Conversion"
                       className="bg-neutral-50/70 text-base dark:bg-neutral-800"
                     />
                   </div>
@@ -1654,17 +1683,17 @@ export function SeoWorkspace() {
               <Card className="border-0 bg-white/90 shadow-sm ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/5">
                 <CardHeader>
                   <CardTitle className="text-2xl">
-                    Configurações do artigo
+                    Article settings
                   </CardTitle>
                   <CardDescription className="text-base">
-                    Personalize como o artigo será gerado
+                    Customize how the article will be generated
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   <div className="grid gap-6 lg:grid-cols-2">
                     <div className="space-y-4">
                       <div className="flex items-center justify-between rounded-2xl border border-dashed border-neutral-200/80 px-4 py-3 text-sm text-neutral-600 dark:border-white/10 dark:text-neutral-300">
-                        <span>Incluir pesquisa extra</span>
+                        <span>Include extra research</span>
                         <Switch
                           checked={useResearch}
                           onCheckedChange={(checked) =>
@@ -1678,13 +1707,13 @@ export function SeoWorkspace() {
                           onChange={(event) =>
                             setResearchInstructions(event.target.value)
                           }
-                          placeholder="Dê instruções sobre como usar a pesquisa. Ex.: foque em ROI, cite fontes específicas..."
+                          placeholder="Give instructions on how to use research. Ex: focus on ROI, cite specific sources..."
                           className="min-h-[120px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
                         />
                       )}
                       <div className="space-y-2">
                         <p className="text-xs uppercase text-neutral-500">
-                          Categorias (opcional)
+                          Categories (optional)
                         </p>
                         <div className="flex flex-wrap gap-2">
                           {ARTICLE_CATEGORIES.map((category) => (
@@ -1722,7 +1751,7 @@ export function SeoWorkspace() {
                         onChange={(event) =>
                           setCustomInstructions(event.target.value)
                         }
-                        placeholder="Adicione notas importantes, CTA, personas, tamanho ideal..."
+                        placeholder="Add important notes, CTA, personas, ideal length..."
                         className="min-h-[150px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
                       />
                       <Button
@@ -1733,12 +1762,12 @@ export function SeoWorkspace() {
                         {loading.content ? (
                           <>
                             <Loader2 className="mr-3 h-5 w-5 animate-spin" />
-                            Gerando artigo...
+                            Generating article...
                           </>
                         ) : (
                           <>
                             <Sparkles className="mr-3 h-5 w-5" />
-                            Gerar artigo completo
+                            Generate full article
                           </>
                         )}
                       </Button>
@@ -1746,12 +1775,12 @@ export function SeoWorkspace() {
                     <div className="rounded-3xl border border-neutral-200/80 bg-neutral-50/70 p-5 dark:border-white/10 dark:bg-neutral-950/40">
                       <div className="mb-4 flex items-center gap-2 text-sm font-medium text-neutral-500 dark:text-neutral-300">
                         <FileText className="h-4 w-4" />
-                        Prévia do artigo
+                        Article preview
                       </div>
                       {articleContent ? (
                         <div className="space-y-4 text-sm text-neutral-700 dark:text-neutral-300">
                           <p className="font-medium text-neutral-900 dark:text-white">
-                            Artigo pronto! publique no WordPress:
+                            Article ready! Publish in WordPress:
                           </p>
                           <a
                             href={articleContent}
@@ -1764,8 +1793,8 @@ export function SeoWorkspace() {
                         </div>
                       ) : (
                         <p className="text-sm text-neutral-500">
-                          Assim que o copiloto finalizar você verá o link para o
-                          WordPress aqui.
+                          As soon as the copilot finishes, you will see the link to the
+                          WordPress here.
                         </p>
                       )}
                     </div>
@@ -1782,11 +1811,11 @@ export function SeoWorkspace() {
               <Loader2 className="h-5 w-5 animate-spin text-neutral-900 dark:text-white" />
               <div>
                 <p className="font-semibold text-neutral-900 dark:text-white">
-                  Escrevendo artigo #{articleTaskId}
+                  Writing article #{articleTaskId}
                 </p>
                 <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                  Status: {articleTaskStatus ?? "in-progress"}. Assim que o
-                  texto estiver pronto, atualizamos a prévia.
+                  Status: {articleTaskStatus ?? "in-progress"}. As soon as the
+                  text is ready, we update the preview.
                 </p>
               </div>
             </CardContent>
@@ -1808,19 +1837,19 @@ export function SeoWorkspace() {
         <DialogContent className="w-[95vw] max-w-[90vw] sm:max-w-5xl lg:max-w-6xl border-0 bg-white/95 p-0 text-neutral-900 shadow-2xl dark:bg-neutral-900 overflow-hidden flex flex-col max-h-[90vh]">
           <DialogHeader className="space-y-3 border-b border-neutral-200/80 px-6 py-4 dark:border-white/10 flex-shrink-0">
             <DialogTitle className="text-2xl font-semibold">
-              Biblioteca de keywords antigas
+              Saved keyword library
             </DialogTitle>
             <DialogDescription className="text-neutral-500">
-              Selecione itens já salvos pelo time para gerar títulos
-              rapidamente. Usaremos exatamente as keywords escolhidas no passo
-              seguinte.
+              Select items already saved by the team to generate titles
+              quickly. We will use exactly the selected keywords in the next
+              step.
             </DialogDescription>
           </DialogHeader>
           <div className="px-6 py-4 flex-1 overflow-hidden flex flex-col min-h-0">
             {historyLoading && !historyLoaded ? (
               <div className="flex h-48 items-center justify-center text-neutral-500">
                 <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                Buscando histórico...
+                Loading history...
               </div>
             ) : historyError ? (
               <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
@@ -1828,14 +1857,14 @@ export function SeoWorkspace() {
               </div>
             ) : historyKeywords.length === 0 ? (
               <div className="rounded-xl border border-dashed border-neutral-300 px-4 py-6 text-center text-sm text-neutral-500">
-                Ainda não temos keywords salvas via Supabase.
+                We do not have saved keywords in Supabase yet.
               </div>
             ) : (
               <div className="flex flex-col gap-4 h-full min-h-0">
                 <div className="flex-shrink-0">
                   <Input
                     type="text"
-                    placeholder="Buscar por keyword, ideia ou idioma..."
+                    placeholder="Search by keyword, idea, or language..."
                     value={historySearchTerm}
                     onChange={(e) => setHistorySearchTerm(e.target.value)}
                     className="w-full"
@@ -1851,11 +1880,11 @@ export function SeoWorkspace() {
                           filteredAndOrderedHistoryKeywords.length > 0
                         }
                         onCheckedChange={toggleAllHistoryKeywords}
-                        aria-label="Selecionar tudo do histórico"
+                        aria-label="Select all from history"
                       />
                       <span>
-                        {historySelectedIds.size} selecionadas /{" "}
-                        {filteredAndOrderedHistoryKeywords.length} itens
+                        {historySelectedIds.size} selected /{" "}
+                        {filteredAndOrderedHistoryKeywords.length} items
                         {historySearchTerm &&
                           ` (${historyKeywords.length} total)`}
                       </span>
@@ -1866,14 +1895,14 @@ export function SeoWorkspace() {
                         className="rounded-full px-3 py-1"
                       >
                         {historyKeywords.filter((item) => item.idea).length}{" "}
-                        ideias com contexto
+                        ideas with context
                       </Badge>
                       <Badge
                         variant="outline"
                         className="rounded-full px-3 py-1"
                       >
                         {historyKeywords.filter((item) => item.language).length}{" "}
-                        idiomas salvos
+                        saved languages
                       </Badge>
                     </div>
                   </div>
@@ -1883,9 +1912,9 @@ export function SeoWorkspace() {
                         <TableRow className="text-xs uppercase tracking-wide text-neutral-500">
                           <TableHead className="w-10"></TableHead>
                           <TableHead>Keyword</TableHead>
-                          <TableHead>Ideia</TableHead>
-                          <TableHead>Idioma</TableHead>
-                          <TableHead>País</TableHead>
+                          <TableHead>Idea</TableHead>
+                          <TableHead>Language</TableHead>
+                          <TableHead>Country</TableHead>
                           <TableHead className="text-right">
                             <button
                               type="button"
@@ -1928,7 +1957,7 @@ export function SeoWorkspace() {
                               onClick={() => toggleHistorySort("difficulty")}
                               className="flex items-center gap-1 hover:text-neutral-900 dark:hover:text-white transition w-full justify-end"
                             >
-                              Dificuldade
+                              Difficulty
                               {historySortField === "difficulty" && (
                                 <ArrowDownWideNarrow
                                   className={`h-3 w-3 transition ${
@@ -1949,7 +1978,7 @@ export function SeoWorkspace() {
                               colSpan={8}
                               className="text-center py-8 text-neutral-500"
                             >
-                              Nenhuma keyword encontrada com esse filtro.
+                              No keyword found with this filter.
                             </TableCell>
                           </TableRow>
                         ) : (
@@ -1966,7 +1995,7 @@ export function SeoWorkspace() {
                                     toggleHistoryKeyword(keyword.id)
                                   }
                                   onClick={(event) => event.stopPropagation()}
-                                  aria-label={`Selecionar ${keyword.phrase}`}
+                                  aria-label={`Select ${keyword.phrase}`}
                                 />
                               </TableCell>
                               <TableCell className="font-medium">
@@ -1983,7 +2012,7 @@ export function SeoWorkspace() {
                               </TableCell>
                               <TableCell className="text-right">
                                 {keyword.volume
-                                  ? keyword.volume.toLocaleString("pt-BR")
+                                  ? keyword.volume.toLocaleString("en-US")
                                   : "—"}
                               </TableCell>
                               <TableCell className="text-right">
@@ -1992,7 +2021,7 @@ export function SeoWorkspace() {
                                   : "—"}
                               </TableCell>
                               <TableCell className="text-right">
-                                {keyword.difficultyLabel ?? "Sem dado"}
+                                {keyword.difficultyLabel ?? "No data"}
                               </TableCell>
                             </TableRow>
                           ))
@@ -2018,7 +2047,7 @@ export function SeoWorkspace() {
                   setHistorySearchTerm("");
                 }}
               >
-                Cancelar
+                Cancel
               </Button>
               <Button
                 type="button"
@@ -2027,7 +2056,7 @@ export function SeoWorkspace() {
                 onClick={handleApplyHistorySelection}
                 disabled={historySelectedIds.size === 0}
               >
-                Usar selecionadas
+                Usar selected
               </Button>
             </div>
           </DialogFooter>
@@ -2037,10 +2066,36 @@ export function SeoWorkspace() {
   );
 }
 
-async function postJson<T>(url: string, payload: unknown): Promise<T> {
+function useAuthToken() {
+  const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const [token, setToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!supabase) return;
+    supabase.auth.getSession().then(({ data }) => {
+      setToken(data.session?.access_token ?? null);
+    });
+  }, [supabase]);
+
+  return token;
+}
+
+function jsonHeaders(token?: string | null) {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+async function postJson<T>(
+  url: string,
+  payload: unknown,
+  token?: string | null,
+): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: jsonHeaders(token),
     body: JSON.stringify(payload),
     cache: "no-store",
   });
@@ -2056,16 +2111,17 @@ async function postJson<T>(url: string, payload: unknown): Promise<T> {
     const message =
       data && typeof data === "object" && data !== null && "error" in data
         ? String((data as Record<string, unknown>).error)
-        : "O copiloto não respondeu como esperado.";
+        : "The copilot did not respond as expected.";
     throw new Error(message);
   }
 
   return (data as T) ?? ({} as T);
 }
 
-async function getJson<T>(url: string): Promise<T> {
+async function getJson<T>(url: string, token?: string | null): Promise<T> {
   const response = await fetch(url, {
     method: "GET",
+    headers: token ? jsonHeaders(token) : undefined,
     cache: "no-store",
   });
 
@@ -2080,7 +2136,7 @@ async function getJson<T>(url: string): Promise<T> {
     const message =
       data && typeof data === "object" && data !== null && "error" in data
         ? String((data as Record<string, unknown>).error)
-        : "O copiloto não respondeu como esperado.";
+        : "The copilot did not respond as expected.";
     throw new Error(message);
   }
 
@@ -2097,8 +2153,8 @@ const ARTICLE_CATEGORIES = [
   { id: "374", label: "DevEx" },
   { id: "366", label: "DORA metrics (EN)" },
   { id: "378", label: "DORA metrics (PT)" },
-  { id: "362", label: "Liderança" },
-  { id: "305", label: "Métricas" },
+  { id: "362", label: "Leadership" },
+  { id: "305", label: "Metrics" },
   { id: "364", label: "Produtividade" },
   { id: "14", label: "Tecnologia" },
   { id: "368", label: "Engineering analytics (EN)" },
@@ -2106,5 +2162,5 @@ const ARTICLE_CATEGORIES = [
   { id: "370", label: "Productivity (EN)" },
   { id: "321", label: "Technology (EN)" },
   { id: "419", label: "Glossary" },
-  { id: "417", label: "Glossário" },
+  { id: "417", label: "Glossary" },
 ];

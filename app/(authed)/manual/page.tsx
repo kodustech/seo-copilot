@@ -1,24 +1,40 @@
-"use client";
-
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { SeoWorkspace } from "@/components/seo-workspace";
+import { SeoWorkspace, type SeoWorkspaceTab } from "@/components/seo-workspace";
 import { SocialGenerator } from "@/components/social-generator";
 
-export default function ManualPage() {
+type ManualTool = "all" | "complete" | "reverse" | "quick" | "social";
+
+type ManualPageProps = {
+  searchParams: Promise<{ tool?: string | string[] }>;
+};
+
+function normalizeTool(value: string | undefined): ManualTool {
+  if (value === "complete") return "complete";
+  if (value === "reverse") return "reverse";
+  if (value === "quick") return "quick";
+  if (value === "social") return "social";
+  return "all";
+}
+
+function toolToWorkspaceTab(tool: ManualTool): SeoWorkspaceTab | undefined {
+  if (tool === "complete") return "complete";
+  if (tool === "reverse") return "reverse";
+  if (tool === "quick") return "manual";
+  return undefined;
+}
+
+export default async function ManualPage({ searchParams }: ManualPageProps) {
+  const params = await searchParams;
+  const toolParam = Array.isArray(params.tool) ? params.tool[0] : params.tool;
+  const tool = normalizeTool(toolParam);
+
+  if (tool === "social") {
+    return <SocialGenerator />;
+  }
+
   return (
-    <div className="mx-auto max-w-6xl px-6 py-6">
-      <Tabs defaultValue="articles">
-        <TabsList>
-          <TabsTrigger value="articles">Articles</TabsTrigger>
-          <TabsTrigger value="social">Social Posts</TabsTrigger>
-        </TabsList>
-        <TabsContent value="articles">
-          <SeoWorkspace />
-        </TabsContent>
-        <TabsContent value="social">
-          <SocialGenerator />
-        </TabsContent>
-      </Tabs>
-    </div>
+    <SeoWorkspace
+      forcedTab={toolToWorkspaceTab(tool)}
+      showTabs={tool === "all"}
+    />
   );
 }

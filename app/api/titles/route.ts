@@ -1,20 +1,25 @@
 import { NextResponse } from "next/server";
 
 import { fetchTitlesFromCopilot } from "@/lib/copilot";
+import { resolveVoicePolicyForRequest } from "@/lib/voice-policy";
 
 export async function POST(request: Request) {
   const body = await readBody(request);
 
   try {
     const keywords = normalizeKeywordPayload(body.keywords);
+    const voicePolicy = await resolveVoicePolicyForRequest(
+      request.headers.get("authorization"),
+    );
     const result = await fetchTitlesFromCopilot({
       keywords,
+      voicePolicy,
     });
     return NextResponse.json(result);
   } catch (error) {
-    console.error("Erro ao gerar títulos", error);
+    console.error("Error generating titles", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Falha ao gerar títulos." },
+      { error: error instanceof Error ? error.message : "Failed to generate titles." },
       { status: 400 },
     );
   }

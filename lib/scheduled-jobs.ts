@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { generateText, stepCountIs } from "ai";
 import { getModel } from "@/lib/ai/provider";
 import { GROWTH_AGENT_SYSTEM_PROMPT } from "@/lib/ai/system-prompt";
-import { agentTools } from "@/lib/ai/tools";
+import { createAgentTools } from "@/lib/ai/tools";
 import { CronExpressionParser } from "cron-parser";
 
 // ---------------------------------------------------------------------------
@@ -47,9 +47,9 @@ export const SCHEDULE_PRESETS: Record<
   SchedulePreset,
   { cron: string; label: string }
 > = {
-  daily_9am: { cron: "0 9 * * *", label: "Diariamente às 9h" },
-  weekly_monday: { cron: "0 9 * * 1", label: "Toda segunda às 9h" },
-  weekly_friday: { cron: "0 9 * * 5", label: "Toda sexta às 9h" },
+  daily_9am: { cron: "0 9 * * *", label: "Daily at 9am" },
+  weekly_monday: { cron: "0 9 * * 1", label: "Every Monday at 9am" },
+  weekly_friday: { cron: "0 9 * * 5", label: "Every Friday at 9am" },
   biweekly: { cron: "0 9 1,15 * *", label: "Quinzenalmente" },
   monthly_first: { cron: "0 9 1 * *", label: "Mensalmente" },
 };
@@ -74,7 +74,7 @@ export async function createJob(
     .select()
     .single();
 
-  if (error) throw new Error(`Erro ao criar job: ${error.message}`);
+  if (error) throw new Error(`Error while criar job: ${error.message}`);
   return job as ScheduledJob;
 }
 
@@ -88,7 +88,7 @@ export async function listJobsByEmail(
     .eq("user_email", email)
     .order("created_at", { ascending: false });
 
-  if (error) throw new Error(`Erro ao listar jobs: ${error.message}`);
+  if (error) throw new Error(`Error while listar jobs: ${error.message}`);
   return (data ?? []) as ScheduledJob[];
 }
 
@@ -117,7 +117,7 @@ export async function deleteJob(
     .eq("id", id)
     .eq("user_email", email);
 
-  if (error) throw new Error(`Erro ao deletar job: ${error.message}`);
+  if (error) throw new Error(`Error while deletar job: ${error.message}`);
   return true;
 }
 
@@ -135,7 +135,7 @@ export async function toggleJob(
     .select()
     .single();
 
-  if (error) throw new Error(`Erro ao atualizar job: ${error.message}`);
+  if (error) throw new Error(`Error while atualizar job: ${error.message}`);
   return data as ScheduledJob;
 }
 
@@ -151,7 +151,7 @@ export async function listJobRuns(
     .order("started_at", { ascending: false })
     .limit(limit);
 
-  if (error) throw new Error(`Erro ao listar runs: ${error.message}`);
+  if (error) throw new Error(`Error while listar runs: ${error.message}`);
   return (data ?? []) as JobRun[];
 }
 
@@ -194,7 +194,7 @@ export async function executeJob(
     .select()
     .single();
 
-  if (runError) throw new Error(`Erro ao criar run: ${runError.message}`);
+  if (runError) throw new Error(`Error while criar run: ${runError.message}`);
   const runId = (run as JobRun).id;
 
   try {
@@ -203,7 +203,7 @@ export async function executeJob(
       model: getModel(),
       system: GROWTH_AGENT_SYSTEM_PROMPT,
       prompt: job.prompt,
-      tools: agentTools,
+      tools: createAgentTools(job.user_email),
       stopWhen: stepCountIs(10),
     });
 

@@ -7,9 +7,9 @@ export async function GET() {
     const keywords = await fetchKeywordsHistory();
     return NextResponse.json({ keywords });
   } catch (error) {
-    console.error("Erro ao buscar histórico", error);
+    console.error("Error fetching history", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Falha ao buscar histórico." },
+      { error: error instanceof Error ? error.message : "Failed to fetch history." },
       { status: 400 },
     );
   }
