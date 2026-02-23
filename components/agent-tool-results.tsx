@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2, Search, FileText, Newspaper, Share2, Rss, History, Lightbulb, BarChart3, Globe, TrendingUp, Target, GitCompare, TrendingDown, Smartphone, Calendar, List, Trash2, LayoutList } from "lucide-react";
+import { Loader2, Search, FileText, Newspaper, Share2, Rss, History, Lightbulb, BarChart3, Globe, TrendingUp, Target, GitCompare, TrendingDown, Smartphone, Calendar, List, Trash2, LayoutList, Link2, Eye } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
 type ToolInvocationState =
@@ -32,6 +32,8 @@ const TOOL_META: Record<string, { label: string; loadingMsg: string; icon: React
   comparePerformance: { label: "Comparação de Períodos", loadingMsg: "Comparando períodos...", icon: GitCompare },
   getContentDecay: { label: "Content Decay", loadingMsg: "Analisando content decay...", icon: TrendingDown },
   getSearchBySegment: { label: "Análise por Segmento", loadingMsg: "Analisando segmentos...", icon: Smartphone },
+  getPageKeywords: { label: "Keywords da Página", loadingMsg: "Buscando keywords que trazem tráfego...", icon: Link2 },
+  analyzeCompetitor: { label: "Análise de Concorrentes", loadingMsg: "Analisando conteúdo concorrente...", icon: Eye },
   scheduleJob: { label: "Agendar Tarefa", loadingMsg: "Criando job agendado...", icon: Calendar },
   listScheduledJobs: { label: "Jobs Agendados", loadingMsg: "Buscando jobs agendados...", icon: List },
   deleteScheduledJob: { label: "Remover Job", loadingMsg: "Removendo job...", icon: Trash2 },
@@ -988,6 +990,127 @@ function SearchBySegmentView({ data }: { data: SearchBySegmentData }) {
 }
 
 // ---------------------------------------------------------------------------
+// Page Keywords
+// ---------------------------------------------------------------------------
+
+type PageKeywordsData = {
+  page: string;
+  keywords: { query: string; clicks: number; impressions: number; ctr: number; position: number }[];
+};
+
+function PageKeywordsView({ data }: { data: PageKeywordsData }) {
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-neutral-500">
+        Keywords que trazem tráfego para <span className="font-mono text-neutral-400">{data.page}</span>
+      </p>
+      {data.keywords.length === 0 ? (
+        <p className="text-xs text-neutral-500">Nenhuma keyword encontrada para esta página.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-white/[0.06] text-left">
+                <th className="pb-2 pr-4 text-xs font-medium text-neutral-400">Keyword</th>
+                <th className="pb-2 pr-4 text-right text-xs font-medium text-neutral-400">Clicks</th>
+                <th className="pb-2 pr-4 text-right text-xs font-medium text-neutral-400">Impr.</th>
+                <th className="pb-2 pr-4 text-right text-xs font-medium text-neutral-400">CTR</th>
+                <th className="pb-2 text-right text-xs font-medium text-neutral-400">Pos.</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.keywords.map((kw, i) => (
+                <tr key={i} className="border-b border-white/[0.04] last:border-0">
+                  <td className="py-1.5 pr-4 font-medium text-neutral-200">{kw.query}</td>
+                  <td className="py-1.5 pr-4 text-right tabular-nums text-neutral-400">{formatNum(kw.clicks)}</td>
+                  <td className="py-1.5 pr-4 text-right tabular-nums text-neutral-400">{formatNum(kw.impressions)}</td>
+                  <td className="py-1.5 pr-4 text-right tabular-nums text-neutral-400">{formatPct(kw.ctr)}</td>
+                  <td className="py-1.5 text-right tabular-nums text-neutral-400">{formatPos(kw.position)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Competitor Analysis
+// ---------------------------------------------------------------------------
+
+type CompetitorResultItem = {
+  id: string;
+  title: string;
+  url: string;
+  source: string;
+  publishedDate: string | null;
+  summary: string | null;
+  highlights: string[];
+};
+
+function CompetitorAnalysisView({ results, topic }: { results: CompetitorResultItem[]; topic: string }) {
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-neutral-500">
+        {results.length} artigos encontrados sobre <span className="font-medium text-neutral-400">&ldquo;{topic}&rdquo;</span>
+      </p>
+      <div className="space-y-2">
+        {results.map((r) => (
+          <div
+            key={r.id}
+            className="rounded-lg border border-white/[0.06] bg-white/[0.03] p-3"
+          >
+            <div className="flex items-start gap-2">
+              <span className="mt-0.5 inline-block shrink-0 rounded-full border border-white/10 bg-white/[0.06] px-1.5 py-0.5 text-[9px] font-medium text-neutral-400">
+                {r.source}
+              </span>
+              <div className="min-w-0 flex-1">
+                <a
+                  href={r.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm font-medium text-neutral-200 hover:text-violet-400 hover:underline"
+                >
+                  {r.title}
+                </a>
+                {r.publishedDate && (
+                  <span className="ml-2 text-[10px] text-neutral-500">
+                    {new Date(r.publishedDate).toLocaleDateString("pt-BR", {
+                      day: "2-digit",
+                      month: "short",
+                      year: "numeric",
+                    })}
+                  </span>
+                )}
+              </div>
+            </div>
+            {r.summary && (
+              <p className="mt-1.5 text-xs leading-relaxed text-neutral-400 line-clamp-3">
+                {r.summary}
+              </p>
+            )}
+            {r.highlights.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {r.highlights.slice(0, 2).map((h, i) => (
+                  <blockquote
+                    key={i}
+                    className="border-l-2 border-violet-500/30 pl-2 text-[11px] italic text-neutral-500 line-clamp-2"
+                  >
+                    {h}
+                  </blockquote>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Scheduled Jobs sub-components
 // ---------------------------------------------------------------------------
 
@@ -1190,6 +1313,17 @@ function renderContent(toolName: string, output: Record<string, unknown>) {
     case "getSearchBySegment": {
       const data = output as unknown as SearchBySegmentData;
       return <SearchBySegmentView data={data} />;
+    }
+    case "getPageKeywords": {
+      const data = output as unknown as PageKeywordsData;
+      if (!data.page) return <p className="text-xs text-neutral-500">Sem dados de keywords.</p>;
+      return <PageKeywordsView data={data} />;
+    }
+    case "analyzeCompetitor": {
+      const results = output.results as CompetitorResultItem[] | undefined;
+      const topic = (output.topic as string) ?? "";
+      if (!results?.length) return <p className="text-xs text-neutral-500">Nenhum conteúdo concorrente encontrado.</p>;
+      return <CompetitorAnalysisView results={results} topic={topic} />;
     }
     case "scheduleJob": {
       const job = output.job as ScheduledJobResult | undefined;

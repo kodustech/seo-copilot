@@ -639,7 +639,69 @@ export async function queryContentDecay({
 }
 
 // ---------------------------------------------------------------------------
-// 7. Search by Segment (Search Console)
+// 7. Page Keywords (Search Console — keyword-to-page mapping)
+// ---------------------------------------------------------------------------
+
+export type PageKeywordsResult = {
+  page: string;
+  keywords: {
+    query: string;
+    clicks: number;
+    impressions: number;
+    ctr: number;
+    position: number;
+  }[];
+};
+
+export async function queryPageKeywords({
+  page,
+  startDate,
+  endDate,
+  limit = 30,
+}: {
+  page: string;
+  startDate?: string;
+  endDate?: string;
+  limit?: number;
+}): Promise<PageKeywordsResult> {
+  const { start, end } = resolveDateRange(startDate, endDate);
+
+  const rows = await runQuery<{
+    query: string;
+    clicks: number;
+    impressions: number;
+    ctr: number;
+    position: number;
+  }>(
+    `SELECT
+       query,
+       SUM(clicks) AS clicks,
+       SUM(impressions) AS impressions,
+       SAFE_DIVIDE(SUM(clicks), SUM(impressions)) AS ctr,
+       AVG(position) AS position
+     FROM \`kody-408918.kodus_search_console.search_analytics_all_fields\`
+     WHERE date BETWEEN @start AND @end
+       AND page LIKE @pageFilter
+     GROUP BY query
+     ORDER BY clicks DESC
+     LIMIT @limit`,
+    { start, end, pageFilter: `%${page}%`, limit },
+  );
+
+  return {
+    page,
+    keywords: rows.map((r) => ({
+      query: r.query,
+      clicks: Number(r.clicks),
+      impressions: Number(r.impressions),
+      ctr: Number(r.ctr),
+      position: Number(r.position),
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 8. Search by Segment (Search Console)
 // ---------------------------------------------------------------------------
 
 export type SearchBySegmentResult = {

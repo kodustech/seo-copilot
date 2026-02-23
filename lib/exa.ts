@@ -138,7 +138,94 @@ function isQualityResult(r: {
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// Competitor Analysis
+// ---------------------------------------------------------------------------
+
+export type CompetitorResult = {
+  id: string;
+  title: string;
+  url: string;
+  source: string;
+  publishedDate: string | null;
+  summary: string | null;
+  highlights: string[];
+};
+
+export type CompetitorAnalysisOutput = {
+  topic: string;
+  results: CompetitorResult[];
+};
+
+const COMPETITOR_SUMMARY_PROMPT =
+  "What is this article about? What angle, structure, and unique value does it provide? Summarize in 2-3 actionable sentences for someone who wants to write a better competing article.";
+
+const COMPETITOR_HIGHLIGHTS_PROMPT =
+  "Extract the most important data points, claims, frameworks, or unique insights that make this content stand out.";
+
+export async function searchCompetitorContent({
+  topic,
+  excludeDomains = ["kodus.io"],
+  targetDomains,
+  numResults = 10,
+  daysBack = 180,
+}: {
+  topic: string;
+  excludeDomains?: string[];
+  targetDomains?: string[];
+  numResults?: number;
+  daysBack?: number;
+}): Promise<CompetitorAnalysisOutput> {
+  const apiKey = process.env.EXA_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error(
+      "EXA_API_KEY nao configurada. Adicione a variavel de ambiente para usar a analise de concorrentes.",
+    );
+  }
+
+  const exa = new Exa(apiKey);
+  const startPublishedDate = makeStartDate(daysBack);
+
+  const response = await exa.searchAndContents(
+    `best article about ${topic}, comprehensive guide, in-depth analysis`,
+    {
+      type: "auto",
+      numResults,
+      startPublishedDate,
+      useAutoprompt: true,
+      ...(targetDomains?.length ? { includeDomains: targetDomains } : {}),
+      ...(excludeDomains?.length ? { excludeDomains: excludeDomains } : {}),
+      highlights: {
+        query: COMPETITOR_HIGHLIGHTS_PROMPT,
+        maxCharacters: 300,
+      },
+      summary: {
+        query: COMPETITOR_SUMMARY_PROMPT,
+      },
+    },
+  );
+
+  const results: CompetitorResult[] = (response.results ?? []).map(
+    (r): CompetitorResult => ({
+      id: r.id ?? r.url,
+      title: r.title ?? "Sem titulo",
+      url: r.url,
+      source: extractSource(r.url),
+      publishedDate: r.publishedDate ?? null,
+      summary: r.summary ?? null,
+      highlights: r.highlights ?? [],
+    }),
+  );
+
+  // Filter low quality
+  const quality = results.filter(
+    (r) => r.title.length >= 10 && r.summary && r.summary.length >= 30,
+  );
+
+  return { topic, results: quality };
+}
+
+// ---------------------------------------------------------------------------
+// Ideas Search
 // ---------------------------------------------------------------------------
 
 export async function searchIdeas({
