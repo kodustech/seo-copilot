@@ -15,6 +15,7 @@ export async function POST(request: Request) {
       keyword: typeof body.keyword === "string" ? body.keyword : "",
       keywordId: typeof body.keywordId === "string" ? body.keywordId : undefined,
       useResearch: Boolean(body.useResearch),
+      publishMode: normalizePublishMode(body.publishMode),
       researchInstructions:
         typeof body.researchInstructions === "string"
           ? body.researchInstructions
@@ -79,4 +80,12 @@ function normalizeCategories(raw: unknown): number[] | undefined {
 
   const single = Number(raw);
   return Number.isFinite(single) ? [single] : undefined;
+}
+
+function normalizePublishMode(
+  value: unknown,
+): "draft" | "publish" | undefined {
+  if (value === "publish") return "publish";
+  if (value === "draft") return "draft";
+  return undefined;
 }

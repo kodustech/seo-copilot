@@ -75,6 +75,12 @@ export function SeoWorkspace({
   const [keywords, setKeywords] = useState<KeywordSuggestion[]>([]);
   const [titles, setTitles] = useState<TitleIdea[]>([]);
   const [articleContent, setArticleContent] = useState("");
+  const [articleDraftTitle, setArticleDraftTitle] = useState("");
+  const [articleDraftBody, setArticleDraftBody] = useState("");
+  const [articlePublishMode, setArticlePublishMode] = useState<
+    "draft" | "publish"
+  >("draft");
+  const [articleCopied, setArticleCopied] = useState(false);
   const [keywordLimit, setKeywordLimit] = useState(12);
   const [locationCode, setLocationCode] = useState("2076");
   const [languageCode, setLanguageCode] = useState("pt");
@@ -146,6 +152,7 @@ export function SeoWorkspace({
     () => titles.find((title) => title.id === selectedTitleId) ?? null,
     [titles, selectedTitleId]
   );
+  const hasArticleDraft = articleDraftBody.trim().length > 0;
 
   const keywordStats = useMemo(() => {
     if (!keywords.length) {
@@ -263,7 +270,7 @@ export function SeoWorkspace({
         setSelectedKeywordIds(new Set());
         setTitles([]);
         setSelectedTitleId(null);
-        setArticleContent("");
+        clearArticleResult();
         setLoading((state) => ({ ...state, keywords: false }));
         setIsPollingTask(false);
         setKeywordTaskId(null);
@@ -310,7 +317,12 @@ export function SeoWorkspace({
       try {
         const data = await getJson<{
           ready: boolean;
-          articles?: { id: string; content?: string; url?: string }[];
+          articles?: {
+            id: string;
+            title?: string;
+            content?: string;
+            url?: string;
+          }[];
         }>(`/api/articles?taskId=${articleTaskId}`, token);
 
         if (isCancelled) {
@@ -334,14 +346,20 @@ export function SeoWorkspace({
         }
 
         const first = data.articles[0];
-        const link = first.url ?? first.content ?? "";
-        setArticleContent(link);
+        const fallbackTitle =
+          selectedTitle?.text?.trim() || manualTitle.trim() || "Untitled article";
+        hydrateArticleResult(first, fallbackTitle);
         setIsPollingArticle(false);
         setArticleTaskStatus(null);
         setArticleTaskId(null);
         setBanner({
           intent: "info",
-          message: "Article ready!",
+          message:
+            first.url && !first.content
+              ? "Article returned with published URL only. Use draft mode for editable content."
+              : first.url
+                ? "Article ready! You can edit and still keep the published URL."
+                : "Article draft ready! Review and refine before publishing.",
         });
       } catch (error) {
         if (isCancelled) {
@@ -367,7 +385,127 @@ export function SeoWorkspace({
       isCancelled = true;
       clearInterval(interval);
     };
-  }, [articleTaskId, isPollingArticle, token]);
+  }, [articleTaskId, isPollingArticle, token, selectedTitle, manualTitle]);
+
+  function clearArticleResult() {
+    setArticleContent("");
+    setArticleDraftTitle("");
+    setArticleDraftBody("");
+    setArticleCopied(false);
+  }
+
+  function handlePublishModeChange(value: string) {
+    setArticlePublishMode(value === "publish" ? "publish" : "draft");
+  }
+
+  function hydrateArticleResult(
+    article: { title?: string; content?: string; url?: string },
+    fallbackTitle: string,
+  ) {
+    const draftTitle = article.title?.trim() || fallbackTitle.trim() || "Untitled article";
+    const draftBody = typeof article.content === "string" ? article.content : "";
+    const publishedUrl = article.url?.trim() || "";
+
+    setArticleDraftTitle(draftTitle);
+    setArticleDraftBody(draftBody);
+    setArticleContent(publishedUrl);
+    setArticleCopied(false);
+  }
+
+  async function handleCopyArticleDraft() {
+    const title = articleDraftTitle.trim();
+    const body = articleDraftBody.trim();
+    if (!title && !body) {
+      return;
+    }
+
+    const payload = [title, body].filter(Boolean).join("\n\n");
+    try {
+      await navigator.clipboard.writeText(payload);
+      setArticleCopied(true);
+      setTimeout(() => setArticleCopied(false), 1400);
+    } catch {
+      setBanner({
+        intent: "error",
+        message: "Could not copy the article draft right now.",
+      });
+    }
+  }
+
+  function renderArticleEditor() {
+    if (hasArticleDraft) {
+      return (
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <p className="text-xs uppercase text-neutral-500">Draft title</p>
+            <Input
+              value={articleDraftTitle}
+              onChange={(event) => setArticleDraftTitle(event.target.value)}
+              placeholder="Type a title for your article draft"
+              className="bg-neutral-50/70 dark:bg-neutral-900"
+            />
+          </div>
+          <div className="space-y-2">
+            <p className="text-xs uppercase text-neutral-500">Draft content</p>
+            <Textarea
+              value={articleDraftBody}
+              onChange={(event) => setArticleDraftBody(event.target.value)}
+              placeholder="Your generated draft will show up here."
+              className="min-h-[360px] resize-y whitespace-pre-wrap bg-neutral-50/70 text-sm leading-relaxed dark:bg-neutral-900"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              variant="outline"
+              className="rounded-xl"
+              onClick={handleCopyArticleDraft}
+            >
+              {articleCopied ? "Copied draft" : "Copy draft"}
+            </Button>
+            {articleContent ? (
+              <a
+                href={articleContent}
+                target="_blank"
+                rel="noreferrer"
+                className="text-sm font-medium text-neutral-900 underline dark:text-white"
+              >
+                Open published article
+              </a>
+            ) : (
+              <p className="text-xs text-neutral-500">
+                This draft is not published yet.
+              </p>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    if (articleContent) {
+      return (
+        <div className="space-y-4 text-sm text-neutral-700 dark:text-neutral-300">
+          <p className="font-medium text-neutral-900 dark:text-white">
+            Article was published. Open it in WordPress:
+          </p>
+          <a
+            href={articleContent}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center text-neutral-900 underline dark:text-white"
+          >
+            {articleContent}
+          </a>
+        </div>
+      );
+    }
+
+    return (
+      <p className="text-sm text-neutral-500">
+        Generate an article in draft mode to edit title and content before
+        publishing.
+      </p>
+    );
+  }
 
   useEffect(() => {
     if (!historyDialogOpen || historyLoaded) {
@@ -445,7 +583,7 @@ export function SeoWorkspace({
       setSelectedKeywordIds(new Set());
       setTitles([]);
       setSelectedTitleId(null);
-      setArticleContent("");
+      clearArticleResult();
       setBanner({
         intent: "info",
         message: `Task #${ticket.taskId} queued. We'll notify you when keywords arrive.`,
@@ -491,7 +629,7 @@ export function SeoWorkspace({
       );
       setTitles(payload.titles);
       setSelectedTitleId(payload.titles[0]?.id ?? null);
-      setArticleContent("");
+      clearArticleResult();
       setBanner({
         intent: "success",
         message: `Generated ${payload.titles.length} title options.`,
@@ -545,6 +683,7 @@ export function SeoWorkspace({
           keyword: keywordEntry.phrase,
           keywordId: keywordEntry.id,
           useResearch,
+          publishMode: articlePublishMode,
           researchInstructions,
           customInstructions,
           categories: selectedCategories,
@@ -554,7 +693,7 @@ export function SeoWorkspace({
       if (!ticket.taskId) {
         throw new Error("We did not receive the article task identifier.");
       }
-      setArticleContent("");
+      clearArticleResult();
       setArticleTaskId(ticket.taskId);
       setArticleTaskStatus(ticket.status ?? "in-progress");
       setIsPollingArticle(true);
@@ -602,6 +741,7 @@ export function SeoWorkspace({
           keyword: manualKeyword.trim(),
           keywordId: `manual-${Date.now()}`,
           useResearch,
+          publishMode: articlePublishMode,
           researchInstructions,
           customInstructions,
           categories: selectedCategories,
@@ -611,7 +751,7 @@ export function SeoWorkspace({
       if (!ticket.taskId) {
         throw new Error("We did not receive the article task identifier.");
       }
-      setArticleContent("");
+      clearArticleResult();
       setArticleTaskId(ticket.taskId);
       setArticleTaskStatus(ticket.status ?? "in-progress");
       setIsPollingArticle(true);
@@ -667,7 +807,7 @@ export function SeoWorkspace({
       setSelectedKeywordIds(new Set());
       setTitles([]);
       setSelectedTitleId(null);
-      setArticleContent("");
+      clearArticleResult();
       setBanner({
         intent: "info",
         message: `Searching related keywords for the title. Task #${ticket.taskId} queued.`,
@@ -775,7 +915,7 @@ export function SeoWorkspace({
     setKeywords([]);
     setSortOrder("desc");
     setTitles([]);
-    setArticleContent("");
+    clearArticleResult();
     setSelectedKeywordIds(new Set());
     setSelectedTitleId(null);
     setKeywordBriefings({});
@@ -1323,6 +1463,27 @@ export function SeoWorkspace({
                         </Select>
                       )}
                     </div>
+                    <div className="space-y-2">
+                      <p className="text-xs uppercase text-neutral-500">
+                        Publishing mode
+                      </p>
+                      <Select
+                        value={articlePublishMode}
+                        onValueChange={handlePublishModeChange}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Choose mode" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="draft">
+                            Draft (edit before publishing)
+                          </SelectItem>
+                          <SelectItem value="publish">
+                            Auto publish to WordPress
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                     <div className="flex items-center justify-between rounded-2xl border border-dashed border-neutral-200/80 px-4 py-3 text-sm text-neutral-600 dark:border-white/10 dark:text-neutral-300">
                       <span>Include extra research</span>
                       <Switch
@@ -1409,28 +1570,9 @@ export function SeoWorkspace({
                   <div className="rounded-3xl border border-neutral-200/80 bg-neutral-50/70 p-5 dark:border-white/10 dark:bg-neutral-950/40">
                     <div className="mb-4 flex items-center gap-2 text-sm font-medium text-neutral-500 dark:text-neutral-300">
                       <FileText className="h-4 w-4" />
-                      Article preview
+                      Article editor
                     </div>
-                    {articleContent ? (
-                      <div className="space-y-4 text-sm text-neutral-700 dark:text-neutral-300">
-                        <p className="font-medium text-neutral-900 dark:text-white">
-                          Article ready! Publish in WordPress:
-                        </p>
-                        <a
-                          href={articleContent}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center text-neutral-900 underline dark:text-white"
-                        >
-                          {articleContent}
-                        </a>
-                      </div>
-                    ) : (
-                      <p className="text-sm text-neutral-500">
-                        As soon as the copilot finishes, you will see the link to the
-                        WordPress here.
-                      </p>
-                    )}
+                    {renderArticleEditor()}
                   </div>
                 </div>
               </CardContent>
@@ -1692,6 +1834,27 @@ export function SeoWorkspace({
                 <CardContent className="space-y-6">
                   <div className="grid gap-6 lg:grid-cols-2">
                     <div className="space-y-4">
+                      <div className="space-y-2">
+                        <p className="text-xs uppercase text-neutral-500">
+                          Publishing mode
+                        </p>
+                        <Select
+                          value={articlePublishMode}
+                          onValueChange={handlePublishModeChange}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Choose mode" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="draft">
+                              Draft (edit before publishing)
+                            </SelectItem>
+                            <SelectItem value="publish">
+                              Auto publish to WordPress
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
                       <div className="flex items-center justify-between rounded-2xl border border-dashed border-neutral-200/80 px-4 py-3 text-sm text-neutral-600 dark:border-white/10 dark:text-neutral-300">
                         <span>Include extra research</span>
                         <Switch
@@ -1775,28 +1938,9 @@ export function SeoWorkspace({
                     <div className="rounded-3xl border border-neutral-200/80 bg-neutral-50/70 p-5 dark:border-white/10 dark:bg-neutral-950/40">
                       <div className="mb-4 flex items-center gap-2 text-sm font-medium text-neutral-500 dark:text-neutral-300">
                         <FileText className="h-4 w-4" />
-                        Article preview
+                        Article editor
                       </div>
-                      {articleContent ? (
-                        <div className="space-y-4 text-sm text-neutral-700 dark:text-neutral-300">
-                          <p className="font-medium text-neutral-900 dark:text-white">
-                            Article ready! Publish in WordPress:
-                          </p>
-                          <a
-                            href={articleContent}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center text-neutral-900 underline dark:text-white"
-                          >
-                            {articleContent}
-                          </a>
-                        </div>
-                      ) : (
-                        <p className="text-sm text-neutral-500">
-                          As soon as the copilot finishes, you will see the link to the
-                          WordPress here.
-                        </p>
-                      )}
+                      {renderArticleEditor()}
                     </div>
                   </div>
                 </CardContent>

@@ -158,6 +158,7 @@ You can create, list, and remove scheduled jobs for the user. Jobs run prompts a
 ### Rules
 - ALWAYS fill user_email with the logged-in user email from context.
 - Before creating a job, confirm name, prompt, schedule, and webhook.
+- If the user specifies a time, pass \`time\` in HH:mm (24-hour), for example \`14:30\`.
 - Before deleting a job, confirm the job name.
 - If webhook_url is missing, ask for it.
 
@@ -166,6 +167,7 @@ Use **scheduleArticlePublication** when the user asks to schedule article public
 
 Examples:
 - "Publish this article Monday at 9" -> scheduleArticlePublication with weekly_monday
+- "Publish this article Monday at 14:30" -> scheduleArticlePublication with weekly_monday and time 14:30
 - "Schedule this article for tomorrow" -> scheduleArticlePublication with daily_9am
 - "Generate and publish an article about X every week" -> scheduleArticlePublication with weekly_monday
 

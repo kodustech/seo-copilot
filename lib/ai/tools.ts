@@ -16,10 +16,13 @@ import { resolveVoicePolicyForUser } from "@/lib/voice-policy";
 import { searchIdeas, searchCompetitorContent } from "@/lib/exa";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 import {
+  DEFAULT_SCHEDULE_TIME,
+  buildCronExpressionForSchedule,
   createJob,
-  listJobsByEmail,
   deleteJob,
-  SCHEDULE_PRESETS,
+  describeCronExpression,
+  listJobsByEmail,
+  normalizeScheduleTime,
   type SchedulePreset,
 } from "@/lib/scheduled-jobs";
 import {
@@ -1181,17 +1184,39 @@ export const scheduleJob = tool({
     schedule: z
       .enum(["daily_9am", "weekly_monday", "weekly_friday", "biweekly", "monthly_first"])
       .describe("Schedule frequency"),
+    time: z
+      .string()
+      .optional()
+      .describe("Optional time in HH:mm (24-hour format). Defaults to 09:00."),
     webhook_url: z.string().url().describe("Webhook URL that receives the result via POST"),
   }),
-  execute: async ({ user_email, name, prompt, schedule, webhook_url }) => {
+  execute: async ({ user_email, name, prompt, schedule, time, webhook_url }) => {
     try {
       const client = getSupabaseServiceClient();
-      const preset = SCHEDULE_PRESETS[schedule as SchedulePreset];
+      const selectedTime = time ? normalizeScheduleTime(time) : DEFAULT_SCHEDULE_TIME;
+      if (!selectedTime) {
+        return {
+          success: false as const,
+          message: "Invalid time format. Use HH:mm, for example 14:30.",
+        };
+      }
+
+      const cronExpression = buildCronExpressionForSchedule(
+        schedule as SchedulePreset,
+        selectedTime,
+      );
+      if (!cronExpression) {
+        return {
+          success: false as const,
+          message: "Could not build cron expression for this schedule.",
+        };
+      }
+
       const job = await createJob(client, {
         user_email,
         name,
         prompt,
-        cron_expression: preset.cron,
+        cron_expression: cronExpression,
         webhook_url,
       });
       return {
@@ -1199,8 +1224,8 @@ export const scheduleJob = tool({
         job: {
           id: job.id,
           name: job.name,
-          schedule: preset.label,
-          cron: preset.cron,
+          schedule: describeCronExpression(cronExpression),
+          cron: cronExpression,
           webhook_url: job.webhook_url,
           enabled: job.enabled,
         },
@@ -1230,9 +1255,7 @@ export const listScheduledJobs = tool({
           name: j.name,
           prompt: j.prompt.slice(0, 100) + (j.prompt.length > 100 ? "..." : ""),
           cron_expression: j.cron_expression,
-          schedule_label:
-            Object.values(SCHEDULE_PRESETS).find((p) => p.cron === j.cron_expression)?.label ??
-            j.cron_expression,
+          schedule_label: describeCronExpression(j.cron_expression),
           webhook_url: j.webhook_url,
           enabled: j.enabled,
           last_run_at: j.last_run_at,
@@ -1280,6 +1303,10 @@ export const scheduleArticlePublication = tool({
     schedule: z
       .enum(["daily_9am", "weekly_monday", "weekly_friday", "biweekly", "monthly_first"])
       .describe("Quando publicar o article"),
+    time: z
+      .string()
+      .optional()
+      .describe("Horário opcional em HH:mm (24h). Padrão: 09:00"),
     useResearch: z
       .boolean()
       .optional()
@@ -1290,10 +1317,35 @@ export const scheduleArticlePublication = tool({
       .optional()
       .describe("Instructions customizadas para o article"),
   }),
-  execute: async ({ user_email, title, keyword, schedule, useResearch, customInstructions }) => {
+  execute: async ({
+    user_email,
+    title,
+    keyword,
+    schedule,
+    time,
+    useResearch,
+    customInstructions,
+  }) => {
     try {
       const client = getSupabaseServiceClient();
-      const preset = SCHEDULE_PRESETS[schedule as SchedulePreset];
+      const selectedTime = time ? normalizeScheduleTime(time) : DEFAULT_SCHEDULE_TIME;
+      if (!selectedTime) {
+        return {
+          success: false as const,
+          message: "Invalid time format. Use HH:mm, for example 14:30.",
+        };
+      }
+
+      const cronExpression = buildCronExpressionForSchedule(
+        schedule as SchedulePreset,
+        selectedTime,
+      );
+      if (!cronExpression) {
+        return {
+          success: false as const,
+          message: "Could not build cron expression for this schedule.",
+        };
+      }
 
       // Build a self-contained prompt that the job executor will run
       const articlePrompt = [
@@ -1314,9 +1366,11 @@ export const scheduleArticlePublication = tool({
         user_email,
         name: `Publicar: ${title.slice(0, 60)}`,
         prompt: articlePrompt,
-        cron_expression: preset.cron,
+        cron_expression: cronExpression,
         webhook_url: `${appUrl}/api/canvas/explore`,
       });
+
+      const scheduleLabel = describeCronExpression(cronExpression);
 
       return {
         success: true as const,
@@ -1325,11 +1379,11 @@ export const scheduleArticlePublication = tool({
           name: job.name,
           title,
           keyword,
-          schedule: preset.label,
-          cron: preset.cron,
+          schedule: scheduleLabel,
+          cron: cronExpression,
           enabled: job.enabled,
         },
-        message: `Article "${title}" scheduled for ${preset.label}. The article will be generated and published automatically.`,
+        message: `Article "${title}" scheduled for ${scheduleLabel}. The article will be generated and published automatically.`,
       };
     } catch (error) {
       return {

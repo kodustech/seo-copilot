@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 
-import { fetchSocialAccounts, scheduleSocialPost } from "@/lib/copilot";
+import {
+  fetchScheduledSocialPosts,
+  fetchSocialAccounts,
+  scheduleSocialPost,
+} from "@/lib/copilot";
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 
 function unauthorized(message = "Unauthorized") {
@@ -75,6 +79,21 @@ export async function POST(req: Request) {
       },
       { status: 201 },
     );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Internal error";
+    if (message.toLowerCase().includes("token") || message === "Unauthorized") {
+      return unauthorized(message);
+    }
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+export async function GET(req: Request) {
+  try {
+    await getSupabaseUserClient(req.headers.get("authorization"));
+
+    const posts = await fetchScheduledSocialPosts();
+    return NextResponse.json({ posts });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal error";
     if (message.toLowerCase().includes("token") || message === "Unauthorized") {

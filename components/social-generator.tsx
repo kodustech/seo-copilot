@@ -45,8 +45,6 @@ type PostIdea = {
   variant: string;
   hook: string;
   content: string;
-  cta: string;
-  hashtags: string[];
   platform: string;
 };
 
@@ -55,8 +53,6 @@ type PlatformConfigForm = {
   platform: string;
   maxLength: string;
   linksPolicy: string;
-  ctaStyle: string;
-  hashtagsPolicy: string;
   numVariations: number;
 };
 
@@ -128,8 +124,6 @@ function createPlatformConfig(
     maxLength: overrides.maxLength ?? "900",
     linksPolicy:
       overrides.linksPolicy ?? "No in-body links; encourage comments",
-    ctaStyle: overrides.ctaStyle ?? "Soft CTA, convidando para comentar ou salvar",
-    hashtagsPolicy: overrides.hashtagsPolicy ?? "Up to 3 relevant hashtags",
     numVariations: overrides.numVariations ?? 3,
   };
 }
@@ -140,13 +134,11 @@ function getDefaultPlatformConfigs() {
       platform: "LinkedIn",
       maxLength: "900",
       linksPolicy: "No links; ask for comments",
-      ctaStyle: "Soft CTA",
     }),
     createPlatformConfig({
       platform: "Twitter",
       maxLength: "500",
       linksPolicy: "Sem link",
-      ctaStyle: "Soft CTA",
     }),
   ];
 }
@@ -179,6 +171,10 @@ function scheduleDateToIso(dateValue: string, timeValue: string): string | null 
   return localDate.toISOString();
 }
 
+function normalizeMultilineForCopy(value: string): string {
+  return value.replace(/\r\n?/g, "\n");
+}
+
 function useAuthToken() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const [token, setToken] = useState<string | null>(null);
@@ -208,7 +204,7 @@ export function SocialGenerator() {
   const [voiceMode, setVoiceMode] = useState<VoiceMode>("auto");
   const [customTone, setCustomTone] = useState("Conversational and direct");
   const [variationStrategy, setVariationStrategy] = useState(
-    "Vary hook, format (carousel/thread/short post), and CTA across variations."
+    "Vary hook and format (carousel/thread/short post) across variations."
   );
   const [language, setLanguage] = useState("pt-BR");
   const [platformConfigs, setPlatformConfigs] = useState<PlatformConfigForm[]>(
@@ -261,8 +257,6 @@ export function SocialGenerator() {
             platform: config.platform.trim(),
             maxLength: Number.isFinite(parsedMaxLength) ? parsedMaxLength : undefined,
             linksPolicy: config.linksPolicy.trim(),
-            ctaStyle: config.ctaStyle.trim(),
-            hashtagsPolicy: config.hashtagsPolicy.trim(),
             numVariations: config.numVariations,
           };
         })
@@ -332,10 +326,6 @@ export function SocialGenerator() {
             variant: variantLabel,
             hook: item.hook || "",
             content: item.post || "",
-            cta: item.cta || "",
-            hashtags: Array.isArray(item.hashtags)
-              ? item.hashtags.map((value) => String(value)).filter(Boolean)
-              : [],
             platform: resolvedPlatform,
           };
         })
@@ -490,28 +480,13 @@ export function SocialGenerator() {
 
   function formatPostForCopy(post: PostIdea) {
     const sections: string[] = [];
-    if (post.hook.trim()) {
-      sections.push(post.hook.trim());
+    const hook = normalizeMultilineForCopy(post.hook);
+    if (hook.trim()) {
+      sections.push(hook);
     }
-    if (post.content.trim()) {
-      sections.push(post.content.trim());
-    }
-    if (post.cta.trim()) {
-      sections.push(post.cta.trim());
-    }
-    if (post.hashtags.length) {
-      const normalized = post.hashtags
-        .map((tag) => {
-          const clean = tag.trim();
-          if (!clean) return "";
-          const withoutHash = clean.replace(/^#+/, "");
-          return `#${withoutHash}`;
-        })
-        .filter(Boolean)
-        .join(" ");
-      if (normalized) {
-        sections.push(normalized);
-      }
+    const content = normalizeMultilineForCopy(post.content);
+    if (content.trim()) {
+      sections.push(content);
     }
     return sections.join("\n\n");
   }
@@ -716,7 +691,7 @@ export function SocialGenerator() {
                 <Textarea
                   value={instructions}
                   onChange={(event) => setInstructions(event.target.value)}
-                  placeholder="Tone, audience, hashtags, short/long format, allowed emojis..."
+                  placeholder="Tone, audience, short/long format, allowed emojis..."
                   className="min-h-[120px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
                 />
               </div>
@@ -727,7 +702,7 @@ export function SocialGenerator() {
                 <Textarea
                   value={variationStrategy}
                   onChange={(event) => setVariationStrategy(event.target.value)}
-                  placeholder="Ex.: variar ganchos, alternar CTA direta x soft, mudar estrutura (bullet x thread x carrossel)..."
+                  placeholder="Ex.: variar ganchos e estrutura (bullet x thread x carrossel)..."
                   className="min-h-[120px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
                 />
               </div>
@@ -885,21 +860,6 @@ export function SocialGenerator() {
                       </div>
                       <div className="space-y-2">
                         <p className="text-xs uppercase text-neutral-500">
-                          Hashtags
-                        </p>
-                        <Input
-                          value={config.hashtagsPolicy}
-                          onChange={(event) =>
-                            handleConfigChange(config.id, {
-                              hashtagsPolicy: event.target.value,
-                            })
-                          }
-                          placeholder="Ex: up to 3 specific hashtags"
-                          className="bg-neutral-50/70 dark:bg-neutral-800"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <p className="text-xs uppercase text-neutral-500">
                           Links
                         </p>
                         <Input
@@ -910,21 +870,6 @@ export function SocialGenerator() {
                             })
                           }
                           placeholder="Ex.: sem links no corpo"
-                          className="bg-neutral-50/70 dark:bg-neutral-800"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <p className="text-xs uppercase text-neutral-500">
-                          Estilo de CTA
-                        </p>
-                        <Input
-                          value={config.ctaStyle}
-                          onChange={(event) =>
-                            handleConfigChange(config.id, {
-                              ctaStyle: event.target.value,
-                            })
-                          }
-                          placeholder="Ex.: soft CTA convidando a comentar"
                           className="bg-neutral-50/70 dark:bg-neutral-800"
                         />
                       </div>
@@ -965,7 +910,7 @@ export function SocialGenerator() {
                   setVoiceMode("auto");
                   setCustomTone("Conversational and direct");
                   setVariationStrategy(
-                    "Vary hook, format (carousel/thread/short post), and CTA across variations."
+                    "Vary hook and format (carousel/thread/short post) across variations."
                   );
                   setLanguage("pt-BR");
                   setPlatformConfigs(getDefaultPlatformConfigs());
@@ -1025,34 +970,13 @@ export function SocialGenerator() {
                       ) : null}
                     </div>
                     {post.hook && (
-                      <p className="text-sm font-semibold text-neutral-900 dark:text-white">
+                      <p className="whitespace-pre-wrap text-sm font-semibold text-neutral-900 dark:text-white">
                         {post.hook}
                       </p>
                     )}
-                    <p className="whitespace-pre-line text-sm leading-relaxed text-neutral-800 dark:text-neutral-200">
+                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-neutral-800 dark:text-neutral-200">
                       {post.content}
                     </p>
-                    {post.cta && (
-                      <p className="text-sm text-neutral-700 dark:text-neutral-300">
-                        <span className="text-xs font-semibold uppercase text-neutral-500 dark:text-neutral-400">
-                          CTA:&nbsp;
-                        </span>
-                        {post.cta}
-                      </p>
-                    )}
-                    {post.hashtags.length > 0 && (
-                      <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                        {post.hashtags
-                          .map((tag) => {
-                            const clean = tag.trim();
-                            if (!clean) return "";
-                            const withoutHash = clean.replace(/^#+/, "");
-                            return `#${withoutHash}`;
-                          })
-                          .filter(Boolean)
-                          .join(" ")}
-                      </p>
-                    )}
                     <Separator />
                     <div className="flex items-center gap-2 text-xs text-neutral-500">
                       <Button
@@ -1108,7 +1032,7 @@ export function SocialGenerator() {
                     <p className="font-medium text-neutral-100">
                       {scheduleTarget.platform} • Var #{scheduleTarget.variant}
                     </p>
-                    <p className="mt-1 max-h-24 overflow-hidden whitespace-pre-line">
+                    <p className="mt-1 max-h-24 overflow-hidden whitespace-pre-wrap">
                       {scheduleTarget.content}
                     </p>
                   </>

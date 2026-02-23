@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 import {
+  DEFAULT_SCHEDULE_TIME,
+  SCHEDULE_PRESET_VALUES,
+  buildCronExpressionForSchedule,
   createJob,
   listJobsByEmail,
-  SCHEDULE_PRESETS,
-  type SchedulePreset,
+  normalizeSchedulePreset,
+  normalizeScheduleTime,
 } from "@/lib/scheduled-jobs";
 
 export async function GET(req: Request) {
@@ -29,10 +32,11 @@ export async function POST(req: Request) {
     );
 
     const body = await req.json();
-    const { name, prompt, schedule, webhook_url } = body as {
+    const { name, prompt, schedule, time, webhook_url } = body as {
       name?: string;
       prompt?: string;
       schedule?: string;
+      time?: string;
       webhook_url?: string;
     };
 
@@ -43,10 +47,29 @@ export async function POST(req: Request) {
       );
     }
 
-    const preset = SCHEDULE_PRESETS[schedule as SchedulePreset];
+    const preset = normalizeSchedulePreset(schedule);
     if (!preset) {
       return NextResponse.json(
-        { error: `Invalid schedule preset. Valid: ${Object.keys(SCHEDULE_PRESETS).join(", ")}` },
+        { error: `Invalid schedule preset. Valid: ${SCHEDULE_PRESET_VALUES.join(", ")}` },
+        { status: 400 },
+      );
+    }
+
+    const selectedTime = typeof time === "string" && time.trim()
+      ? normalizeScheduleTime(time)
+      : DEFAULT_SCHEDULE_TIME;
+
+    if (!selectedTime) {
+      return NextResponse.json(
+        { error: "Invalid time. Use HH:mm (24-hour format)." },
+        { status: 400 },
+      );
+    }
+
+    const cronExpression = buildCronExpressionForSchedule(preset, selectedTime);
+    if (!cronExpression) {
+      return NextResponse.json(
+        { error: "Could not build cron expression from provided schedule/time." },
         { status: 400 },
       );
     }
@@ -55,7 +78,7 @@ export async function POST(req: Request) {
       user_email: userEmail,
       name,
       prompt,
-      cron_expression: preset.cron,
+      cron_expression: cronExpression,
       webhook_url,
     });
 

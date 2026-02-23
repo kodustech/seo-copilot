@@ -31,11 +31,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { describeCronExpression } from "@/lib/schedule-presets";
 
 const PRESETS = [
-  { value: "daily_9am", label: "Daily at 9am" },
-  { value: "weekly_monday", label: "Every Monday at 9am" },
-  { value: "weekly_friday", label: "Every Friday at 9am" },
+  { value: "daily_9am", label: "Daily" },
+  { value: "weekly_monday", label: "Every Monday" },
+  { value: "weekly_friday", label: "Every Friday" },
   { value: "biweekly", label: "Every two weeks" },
   { value: "monthly_first", label: "Monthly" },
 ];
@@ -79,17 +80,6 @@ function authHeaders(token: string) {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 }
 
-function presetLabel(cron: string): string {
-  const map: Record<string, string> = {
-    "0 9 * * *": "Daily at 9am",
-    "0 9 * * 1": "Every Monday at 9am",
-    "0 9 * * 5": "Every Friday at 9am",
-    "0 9 1,15 * *": "Every two weeks",
-    "0 9 1 * *": "Monthly",
-  };
-  return map[cron] ?? cron;
-}
-
 export function JobsPage() {
   const token = useAuthToken();
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -103,6 +93,7 @@ export function JobsPage() {
   const [formName, setFormName] = useState("");
   const [formPrompt, setFormPrompt] = useState("");
   const [formSchedule, setFormSchedule] = useState("weekly_monday");
+  const [formTime, setFormTime] = useState("09:00");
   const [formWebhook, setFormWebhook] = useState("");
   const [formSubmitting, setFormSubmitting] = useState(false);
 
@@ -135,6 +126,7 @@ export function JobsPage() {
           name: formName,
           prompt: formPrompt,
           schedule: formSchedule,
+          time: formTime,
           webhook_url: formWebhook,
         }),
       });
@@ -142,6 +134,7 @@ export function JobsPage() {
       setFormName("");
       setFormPrompt("");
       setFormSchedule("weekly_monday");
+      setFormTime("09:00");
       setFormWebhook("");
       fetchJobs();
     } finally {
@@ -259,6 +252,17 @@ export function JobsPage() {
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-neutral-400">
+                  Time
+                </label>
+                <Input
+                  type="time"
+                  value={formTime}
+                  onChange={(e) => setFormTime(e.target.value)}
+                  className="border-white/10 bg-neutral-900 text-white"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-neutral-400">
                   Webhook URL
                 </label>
                 <Input
@@ -272,7 +276,13 @@ export function JobsPage() {
             <DialogFooter>
               <Button
                 onClick={handleCreate}
-                disabled={formSubmitting || !formName || !formPrompt || !formWebhook}
+                disabled={
+                  formSubmitting ||
+                  !formName ||
+                  !formPrompt ||
+                  !formTime ||
+                  !formWebhook
+                }
                 className="rounded-lg bg-violet-600 text-white hover:bg-violet-500"
               >
                 {formSubmitting ? (
@@ -320,7 +330,7 @@ export function JobsPage() {
                     {job.name}
                   </p>
                   <p className="text-[11px] text-neutral-500">
-                    {presetLabel(job.cron_expression)}
+                    {describeCronExpression(job.cron_expression)}
                     {job.last_run_at && (
                       <>
                         {" "}· Last run:{" "}

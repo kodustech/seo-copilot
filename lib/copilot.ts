@@ -32,6 +32,15 @@ const POST_BRIDGE_API_URL =
   process.env.POST_BRIDGE_API_URL?.replace(/\/$/, "") ??
   "https://api.post-bridge.com";
 const POST_BRIDGE_API_KEY = process.env.POST_BRIDGE_API_KEY?.trim();
+const GOOGLE_GENERATIVE_AI_API_KEY =
+  process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim();
+const GEMINI_IMAGE_MODEL =
+  process.env.GEMINI_IMAGE_MODEL?.trim() ?? "gemini-2.5-flash-image-preview";
+const GOOGLE_CSE_API_KEY = process.env.GOOGLE_CSE_API_KEY?.trim();
+const GOOGLE_CSE_CX = process.env.GOOGLE_CSE_CX?.trim();
+const IMGFLIP_API_URL = "https://api.imgflip.com";
+const IMGFLIP_USERNAME = process.env.IMGFLIP_USERNAME?.trim();
+const IMGFLIP_PASSWORD = process.env.IMGFLIP_PASSWORD?.trim();
 
 const n8nBearerToken = process.env.N8N_BEARER_TOKEN?.trim();
 const jsonHeaders: Record<string, string> = {
@@ -208,6 +217,7 @@ type ArticleTaskPayload = {
   keyword: string;
   keywordId?: string;
   useResearch: boolean;
+  publishMode?: "draft" | "publish";
   researchInstructions?: string;
   customInstructions?: string;
   categories?: number[];
@@ -232,6 +242,8 @@ export async function enqueueArticleTask(
       keyword: payload.keyword,
       keyword_id: payload.keywordId,
       useResearch: payload.useResearch,
+      publishMode: payload.publishMode,
+      autoPublish: payload.publishMode === "publish",
       researchInstructions: payload.researchInstructions?.trim() || undefined,
       customInstructions: payload.customInstructions?.trim() || undefined,
       categories:
@@ -321,6 +333,21 @@ export type SocialAccount = {
   id: number;
   platform: string;
   username: string;
+};
+
+export type SocialImageSearchResult = {
+  id: string;
+  url: string;
+  thumbnailUrl: string;
+  title: string;
+  source: string;
+};
+
+export type MemeGenerationResult = {
+  imageUrl: string;
+  pageUrl: string;
+  templateId: string;
+  templateName: string;
 };
 
 export type ScheduledSocialPost = {
@@ -434,6 +461,317 @@ export async function fetchSocialAccounts({
 
   const body = await safeReadJson(response);
   return normalizeSocialAccounts(body);
+}
+
+type ImgflipTemplate = {
+  id: string;
+  name: string;
+  url: string;
+};
+
+export async function generateImgflipMeme({
+  templateQuery,
+  topText,
+  bottomText,
+}: {
+  templateQuery?: string;
+  topText?: string;
+  bottomText?: string;
+}): Promise<MemeGenerationResult> {
+  const textTop = (topText || "").trim();
+  const textBottom = (bottomText || "").trim();
+  if (!textTop && !textBottom) {
+    throw new Error("Provide at least one text line for the meme.");
+  }
+
+  if (!IMGFLIP_USERNAME || !IMGFLIP_PASSWORD) {
+    throw new Error(
+      "Missing IMGFLIP_USERNAME or IMGFLIP_PASSWORD. Configure both to enable Meme mode.",
+    );
+  }
+
+  const templatesResponse = await fetch(`${IMGFLIP_API_URL}/get_memes`, {
+    method: "GET",
+    cache: "no-store",
+  });
+  if (!templatesResponse.ok) {
+    const text = await safeReadText(templatesResponse);
+    throw new Error(
+      `Error loading meme templates (${templatesResponse.status}). ${
+        text || "Try again."
+      }`,
+    );
+  }
+
+  const templatesPayload = await safeReadJson(templatesResponse);
+  const templates = normalizeImgflipTemplates(templatesPayload);
+  if (!templates.length) {
+    throw new Error("Imgflip returned no meme templates.");
+  }
+
+  const selectedTemplate = pickImgflipTemplate(templates, templateQuery);
+  if (!selectedTemplate) {
+    throw new Error("Could not match any meme template.");
+  }
+
+  const body = new URLSearchParams();
+  body.set("username", IMGFLIP_USERNAME);
+  body.set("password", IMGFLIP_PASSWORD);
+  body.set("template_id", selectedTemplate.id);
+  body.set("text0", textTop || " ");
+  body.set("text1", textBottom || " ");
+
+  const captionResponse = await fetch(`${IMGFLIP_API_URL}/caption_image`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    cache: "no-store",
+    body: body.toString(),
+  });
+
+  if (!captionResponse.ok) {
+    const text = await safeReadText(captionResponse);
+    throw new Error(
+      `Error generating meme (${captionResponse.status}). ${text || "Try again."}`,
+    );
+  }
+
+  const captionPayload = await safeReadJson(captionResponse);
+  const root = asRecord(captionPayload);
+  const success = root?.success === true;
+  if (!success) {
+    const errorMessage =
+      typeof root?.error_message === "string" && root.error_message.trim().length > 0
+        ? root.error_message.trim()
+        : "Imgflip rejected meme generation.";
+    throw new Error(errorMessage);
+  }
+
+  const data = asRecord(root?.data);
+  const imageUrl =
+    typeof data?.url === "string" && data.url.trim().length > 0
+      ? data.url.trim()
+      : "";
+  const pageUrl =
+    typeof data?.page_url === "string" && data.page_url.trim().length > 0
+      ? data.page_url.trim()
+      : "";
+
+  if (!imageUrl) {
+    throw new Error("Imgflip did not return a generated image URL.");
+  }
+
+  return {
+    imageUrl,
+    pageUrl,
+    templateId: selectedTemplate.id,
+    templateName: selectedTemplate.name,
+  };
+}
+
+function normalizeImgflipTemplates(payload: unknown): ImgflipTemplate[] {
+  const root = asRecord(payload);
+  const data = asRecord(root?.data);
+  const memes = Array.isArray(data?.memes) ? data?.memes : [];
+
+  return memes
+    .map((item) => {
+      const record = asRecord(item);
+      if (!record) return null;
+
+      const id = typeof record.id === "string" ? record.id.trim() : "";
+      const name = typeof record.name === "string" ? record.name.trim() : "";
+      const url =
+        typeof record.url === "string" && /^https?:\/\//i.test(record.url)
+          ? record.url.trim()
+          : "";
+
+      if (!id || !name || !url) {
+        return null;
+      }
+
+      return { id, name, url } as ImgflipTemplate;
+    })
+    .filter((item): item is ImgflipTemplate => Boolean(item));
+}
+
+function pickImgflipTemplate(
+  templates: ImgflipTemplate[],
+  query?: string,
+): ImgflipTemplate | null {
+  if (!templates.length) return null;
+  const cleaned = (query || "").trim().toLowerCase();
+
+  if (!cleaned) {
+    return templates[0];
+  }
+
+  const tokens = cleaned.split(/\s+/g).filter(Boolean);
+  const scored = templates
+    .map((template) => {
+      const name = template.name.toLowerCase();
+      let score = 0;
+      if (name.includes(cleaned)) {
+        score += cleaned.length + 20;
+      }
+      for (const token of tokens) {
+        if (name.includes(token)) {
+          score += token.length + 2;
+        }
+      }
+      return { template, score };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  if (scored[0] && scored[0].score > 0) {
+    return scored[0].template;
+  }
+
+  return templates[0];
+}
+
+export async function searchGoogleImages({
+  query,
+  limit = 8,
+}: {
+  query: string;
+  limit?: number;
+}): Promise<SocialImageSearchResult[]> {
+  const cleanedQuery = query.trim();
+  if (!cleanedQuery) {
+    throw new Error("Provide a query to search images.");
+  }
+
+  if (!GOOGLE_CSE_API_KEY || !GOOGLE_CSE_CX) {
+    throw new Error(
+      "Missing GOOGLE_CSE_API_KEY or GOOGLE_CSE_CX. Configure both to enable Google image search.",
+    );
+  }
+
+  const url = new URL("https://www.googleapis.com/customsearch/v1");
+  url.searchParams.set("key", GOOGLE_CSE_API_KEY);
+  url.searchParams.set("cx", GOOGLE_CSE_CX);
+  url.searchParams.set("q", cleanedQuery);
+  url.searchParams.set("searchType", "image");
+  url.searchParams.set("safe", "active");
+  url.searchParams.set("num", String(Math.max(1, Math.min(10, Math.round(limit)))));
+
+  const response = await fetch(url.toString(), {
+    method: "GET",
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    const text = await safeReadText(response);
+    throw new Error(
+      `Error searching images (${response.status}). ${text || "Try again."}`,
+    );
+  }
+
+  const body = await safeReadJson(response);
+  const root = asRecord(body);
+  const items = Array.isArray(root?.items) ? root.items : [];
+
+  const results = items
+    .map((item) => {
+      const record = asRecord(item);
+      if (!record) return null;
+
+      const url =
+        typeof record.link === "string" && /^https?:\/\//i.test(record.link)
+          ? record.link.trim()
+          : "";
+      if (!url) return null;
+
+      const image = asRecord(record.image);
+      const thumbnail =
+        typeof image?.thumbnailLink === "string" && image.thumbnailLink.trim().length > 0
+          ? image.thumbnailLink.trim()
+          : url;
+      const title =
+        typeof record.title === "string" && record.title.trim().length > 0
+          ? record.title.trim()
+          : "Google image result";
+      const source =
+        typeof record.displayLink === "string" && record.displayLink.trim().length > 0
+          ? record.displayLink.trim()
+          : "google.com";
+
+      return {
+        id: typeof record.cacheId === "string" ? record.cacheId : crypto.randomUUID(),
+        url,
+        thumbnailUrl: thumbnail,
+        title,
+        source,
+      } satisfies SocialImageSearchResult;
+    })
+    .filter((item): item is SocialImageSearchResult => Boolean(item));
+
+  return results;
+}
+
+export async function generateGeminiImage({
+  prompt,
+}: {
+  prompt: string;
+}): Promise<{ dataUri: string; mimeType: string }> {
+  const cleanedPrompt = prompt.trim();
+  if (!cleanedPrompt) {
+    throw new Error("Provide a prompt to generate an image.");
+  }
+
+  if (!GOOGLE_GENERATIVE_AI_API_KEY) {
+    throw new Error(
+      "Missing GOOGLE_GENERATIVE_AI_API_KEY. Configure it to enable Gemini image generation.",
+    );
+  }
+
+  const endpoint = new URL(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      GEMINI_IMAGE_MODEL,
+    )}:generateContent`,
+  );
+  endpoint.searchParams.set("key", GOOGLE_GENERATIVE_AI_API_KEY);
+
+  const response = await fetch(endpoint.toString(), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    cache: "no-store",
+    body: JSON.stringify({
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: cleanedPrompt }],
+        },
+      ],
+      generationConfig: {
+        responseModalities: ["TEXT", "IMAGE"],
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await safeReadText(response);
+    throw new Error(
+      `Error generating image (${response.status}). ${text || "Try again."}`,
+    );
+  }
+
+  const body = await safeReadJson(response);
+  const inline = findInlineImagePart(body);
+  if (!inline) {
+    throw new Error(
+      "Gemini returned no image bytes. Check model/permissions for image generation.",
+    );
+  }
+
+  return {
+    dataUri: `data:${inline.mimeType};base64,${inline.data}`,
+    mimeType: inline.mimeType,
+  };
 }
 
 export async function scheduleSocialPost({
@@ -558,6 +896,168 @@ export async function fetchScheduledSocialPosts(): Promise<
   }
 
   return Array.from(unique.values());
+}
+
+type InlineImagePart = {
+  data: string;
+  mimeType: string;
+};
+
+function findInlineImagePart(payload: unknown): InlineImagePart | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  if (Array.isArray(payload)) {
+    for (const entry of payload) {
+      const found = findInlineImagePart(entry);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  const record = payload as Record<string, unknown>;
+  const inlineData = asRecord(record.inlineData ?? record.inline_data);
+  if (inlineData) {
+    const data =
+      typeof inlineData.data === "string" ? inlineData.data.trim() : "";
+    const mimeTypeCandidate = inlineData.mimeType ?? inlineData.mime_type;
+    const mimeType =
+      typeof mimeTypeCandidate === "string"
+        ? mimeTypeCandidate.trim()
+        : "";
+
+    if (data && mimeType.startsWith("image/")) {
+      return { data, mimeType };
+    }
+  }
+
+  for (const value of Object.values(record)) {
+    const found = findInlineImagePart(value);
+    if (found) return found;
+  }
+
+  return null;
+}
+
+function normalizePublicUrl(value: string | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return /^https?:\/\//i.test(trimmed) ? trimmed : null;
+}
+
+type NormalizedDataUri = {
+  dataUri: string;
+  mimeType: string;
+  base64: string;
+  bytes: ArrayBuffer;
+  sizeBytes: number;
+};
+
+function normalizeDataUri(value: string | undefined): NormalizedDataUri | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const match = trimmed.match(/^data:([a-zA-Z0-9/+.-]+);base64,([A-Za-z0-9+/=\n\r]+)$/);
+  if (!match) return null;
+
+  const mimeType = match[1].toLowerCase();
+  if (!mimeType.startsWith("image/")) return null;
+
+  const base64 = match[2].replace(/\s+/g, "");
+  if (!base64) return null;
+
+  const buffer = Buffer.from(base64, "base64");
+  if (!buffer.length) return null;
+  const bytes = buffer.buffer.slice(
+    buffer.byteOffset,
+    buffer.byteOffset + buffer.byteLength,
+  );
+
+  return {
+    dataUri: trimmed,
+    mimeType,
+    base64,
+    bytes,
+    sizeBytes: buffer.byteLength,
+  };
+}
+
+function fileExtensionForMimeType(mimeType: string): string {
+  if (mimeType === "image/png") return "png";
+  if (mimeType === "image/jpeg" || mimeType === "image/jpg") return "jpg";
+  if (mimeType === "image/webp") return "webp";
+  if (mimeType === "image/gif") return "gif";
+  return "png";
+}
+
+async function uploadGeneratedImageToPostBridge(
+  image: NormalizedDataUri,
+): Promise<string> {
+  const extension = fileExtensionForMimeType(image.mimeType);
+  const fileName = `social-image-${Date.now()}.${extension}`;
+
+  const createUploadResponse = await fetch(
+    `${POST_BRIDGE_API_URL}/v1/media/create-upload-url`,
+    {
+      method: "POST",
+      headers: postBridgeHeaders(),
+      cache: "no-store",
+      body: JSON.stringify({
+        name: fileName,
+        mime_type: image.mimeType,
+        size_bytes: image.sizeBytes,
+      }),
+    },
+  );
+
+  if (!createUploadResponse.ok) {
+    const text = await safeReadText(createUploadResponse);
+    throw new Error(
+      `Error preparing media upload (${createUploadResponse.status}). ${
+        text || "Try again."
+      }`,
+    );
+  }
+
+  const uploadPayload = await safeReadJson(createUploadResponse);
+  const uploadRecord = asRecord(uploadPayload);
+  const mediaId =
+    typeof uploadRecord?.media_id === "string" && uploadRecord.media_id.trim().length > 0
+      ? uploadRecord.media_id.trim()
+      : "";
+  const uploadUrl =
+    typeof uploadRecord?.upload_url === "string" && uploadRecord.upload_url.trim().length > 0
+      ? uploadRecord.upload_url.trim()
+      : "";
+
+  if (!mediaId || !uploadUrl) {
+    throw new Error("Invalid media upload payload from Post-Bridge.");
+  }
+
+  const uploadResponse = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: {
+      "Content-Type": image.mimeType,
+    },
+    cache: "no-store",
+    body: image.bytes,
+  });
+
+  if (!uploadResponse.ok) {
+    const text = await safeReadText(uploadResponse);
+    throw new Error(
+      `Error uploading media bytes (${uploadResponse.status}). ${
+        text || "Try again."
+      }`,
+    );
+  }
+
+  return mediaId;
 }
 
 function postBridgeHeaders(): Record<string, string> {
