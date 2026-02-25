@@ -36,6 +36,57 @@ export type SearchIdeasOutput = {
   topic: string;
 };
 
+export type WebSearchResult = {
+  id: string;
+  title: string;
+  url: string;
+  source: string;
+  publishedDate: string | null;
+  summary: string | null;
+  highlights: string[];
+  text: string | null;
+  score: number | null;
+};
+
+export type SearchWebInput = {
+  query: string;
+  domains?: string[];
+  excludeDomains?: string[];
+  numResults?: number;
+  daysBack?: number;
+  textMaxCharacters?: number;
+};
+
+export type SearchWebOutput = {
+  query: string;
+  results: WebSearchResult[];
+};
+
+export type LivecrawlMode =
+  | "never"
+  | "fallback"
+  | "always"
+  | "auto"
+  | "preferred";
+
+export type ScrapePageInput = {
+  url: string;
+  maxCharacters?: number;
+  includeSummary?: boolean;
+  includeHighlights?: boolean;
+  livecrawl?: LivecrawlMode;
+};
+
+export type ScrapePageOutput = {
+  url: string;
+  title: string | null;
+  source: string;
+  publishedDate: string | null;
+  summary: string | null;
+  highlights: string[];
+  text: string | null;
+};
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -88,6 +139,12 @@ const SUMMARY_PROMPT =
 const HIGHLIGHTS_PROMPT =
   "Extract the most interesting quotes, data points, or specific claims that could inspire a blog article.";
 
+const GENERIC_SUMMARY_PROMPT =
+  "Summarize the key points of this page in 2-3 concise sentences, preserving concrete details.";
+
+const GENERIC_HIGHLIGHTS_PROMPT =
+  "Extract the most important facts, claims, and actionable takeaways from this page.";
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -137,6 +194,16 @@ function isQualityResult(r: {
   return true;
 }
 
+function createExaClient(featureName: string): Exa {
+  const apiKey = process.env.EXA_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error(
+      `EXA_API_KEY is not configured. Add the environment variable to use ${featureName}.`,
+    );
+  }
+  return new Exa(apiKey);
+}
+
 // ---------------------------------------------------------------------------
 // Competitor Analysis
 // ---------------------------------------------------------------------------
@@ -175,14 +242,7 @@ export async function searchCompetitorContent({
   numResults?: number;
   daysBack?: number;
 }): Promise<CompetitorAnalysisOutput> {
-  const apiKey = process.env.EXA_API_KEY?.trim();
-  if (!apiKey) {
-    throw new Error(
-      "EXA_API_KEY is not configured. Add the environment variable to use competitor analysis.",
-    );
-  }
-
-  const exa = new Exa(apiKey);
+  const exa = createExaClient("competitor analysis");
   const startPublishedDate = makeStartDate(daysBack);
 
   const response = await exa.searchAndContents(
@@ -234,14 +294,7 @@ export async function searchIdeas({
   numResultsPerAngle = 8,
   daysBack = 90,
 }: SearchIdeasInput): Promise<SearchIdeasOutput> {
-  const apiKey = process.env.EXA_API_KEY?.trim();
-  if (!apiKey) {
-    throw new Error(
-      "EXA_API_KEY is not configured. Add the environment variable to use idea research.",
-    );
-  }
-
-  const exa = new Exa(apiKey);
+  const exa = createExaClient("idea research");
   const includeDomains = domains?.length ? domains : DEFAULT_DOMAINS;
   const startPublishedDate = makeStartDate(daysBack);
 
@@ -307,4 +360,112 @@ export async function searchIdeas({
   quality.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
 
   return { results: quality, topic };
+}
+
+// ---------------------------------------------------------------------------
+// Generic Search + Page Scraping
+// ---------------------------------------------------------------------------
+
+export async function searchWebContent({
+  query,
+  domains,
+  excludeDomains,
+  numResults = 10,
+  daysBack = 365,
+  textMaxCharacters = 4000,
+}: SearchWebInput): Promise<SearchWebOutput> {
+  const exa = createExaClient("generic web search");
+
+  const response = await exa.searchAndContents(query, {
+    type: "auto",
+    numResults,
+    ...(domains?.length ? { includeDomains: domains } : {}),
+    ...(excludeDomains?.length ? { excludeDomains } : {}),
+    ...(typeof daysBack === "number" ? { startPublishedDate: makeStartDate(daysBack) } : {}),
+    useAutoprompt: true,
+    text: { maxCharacters: textMaxCharacters },
+    highlights: {
+      query: GENERIC_HIGHLIGHTS_PROMPT,
+      maxCharacters: 320,
+    },
+    summary: {
+      query: GENERIC_SUMMARY_PROMPT,
+    },
+  });
+
+  const mapped = (response.results ?? []).reduce<WebSearchResult[]>((acc, r) => {
+    if (!r.url) return acc;
+    acc.push({
+      id: r.id ?? r.url,
+      title: r.title ?? "Untitled",
+      url: r.url,
+      source: extractSource(r.url),
+      publishedDate: r.publishedDate ?? null,
+      summary: typeof r.summary === "string" ? r.summary : null,
+      highlights: Array.isArray(r.highlights) ? r.highlights : [],
+      text: typeof r.text === "string" ? r.text : null,
+      score: r.score ?? null,
+    });
+    return acc;
+  }, []);
+
+  const seen = new Set<string>();
+  const deduped = mapped.filter((r) => {
+    if (seen.has(r.url)) return false;
+    seen.add(r.url);
+    return true;
+  });
+
+  deduped.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+
+  return { query, results: deduped };
+}
+
+export async function scrapePageContent({
+  url,
+  maxCharacters = 8000,
+  includeSummary = true,
+  includeHighlights = true,
+  livecrawl = "fallback",
+}: ScrapePageInput): Promise<ScrapePageOutput> {
+  const exa = createExaClient("page scraping");
+
+  const response = await exa.getContents([url], {
+    text: { maxCharacters },
+    ...(includeHighlights
+      ? {
+          highlights: {
+            query: GENERIC_HIGHLIGHTS_PROMPT,
+            maxCharacters: 320,
+          },
+        }
+      : {}),
+    ...(includeSummary
+      ? {
+          summary: {
+            query: GENERIC_SUMMARY_PROMPT,
+          },
+        }
+      : {}),
+    livecrawl,
+  });
+
+  const page = response.results?.find((r) => r.url === url) ?? response.results?.[0];
+  if (!page || !page.url) {
+    throw new Error("Could not scrape content for this URL.");
+  }
+
+  const pageRecord = page as Record<string, unknown>;
+  const summaryValue = pageRecord.summary;
+  const highlightsValue = pageRecord.highlights;
+
+  return {
+    url: page.url,
+    title: page.title ?? null,
+    source: extractSource(page.url),
+    publishedDate: page.publishedDate ?? null,
+    summary: typeof summaryValue === "string" ? summaryValue : null,
+    highlights: Array.isArray(highlightsValue) ? (highlightsValue as string[]) : [],
+    text: typeof page.text === "string" ? page.text : null,
+  };
 }

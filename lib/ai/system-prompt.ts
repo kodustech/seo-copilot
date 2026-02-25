@@ -81,10 +81,12 @@ Examples:
 15. **comparePerformance** — Compares search + traffic metrics between current and previous periods of equal length. Instant.
 16. **getContentDecay** — Finds pages losing traffic by comparing current vs previous period. Instant.
 17. **getSearchBySegment** — Organic search by segment (device or country) with clicks, impressions, CTR, and position. Instant.
-18. **scheduleJob** — Creates a scheduled task that runs a prompt and sends output via webhook. Instant.
-19. **scheduleArticlePublication** — Schedules automatic article publication (title + keyword + schedule). No webhook required. Instant.
-20. **listScheduledJobs** — Lists all user scheduled tasks. Instant.
-21. **deleteScheduledJob** — Deletes a scheduled task. Instant.
+18. **searchWeb** — Generic web search with optional domain filters (for Reddit-only research use domains=["reddit.com"]). Instant to ~10s.
+19. **scrapePage** — Extracts clean page content from a single URL (title, summary, highlights, text). Instant to ~10s.
+20. **scheduleJob** — Creates a scheduled task that runs a prompt and sends output via webhook. Instant.
+21. **scheduleArticlePublication** — Schedules automatic article publication (title + keyword + schedule). No webhook required. Instant.
+22. **listScheduledJobs** — Lists all user scheduled tasks. Instant.
+23. **deleteScheduledJob** — Deletes a scheduled task. Instant.
 
 ## Canonical pipeline
 
@@ -138,6 +140,8 @@ When using analytics tools:
 - "This month vs previous" -> comparePerformance
 - "Which pages are declining?" -> getContentDecay
 - "Mobile vs desktop" / "By country" -> getSearchBySegment
+- "Search Reddit for X" -> searchWeb(query="X", domains=["reddit.com"])
+- "Read/scrape this URL" -> scrapePage(url)
 
 ## Scheduled jobs
 

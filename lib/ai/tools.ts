@@ -13,7 +13,12 @@ import {
   fetchBlogPosts,
 } from "@/lib/copilot";
 import { resolveVoicePolicyForUser } from "@/lib/voice-policy";
-import { searchIdeas, searchCompetitorContent } from "@/lib/exa";
+import {
+  searchIdeas,
+  searchCompetitorContent,
+  searchWebContent,
+  scrapePageContent,
+} from "@/lib/exa";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 import {
   DEFAULT_SCHEDULE_TIME,
@@ -71,6 +76,12 @@ async function pollUntilReady<T>(
     delay = Math.min(delay * 1.5, maxDelay);
   }
   return { ready: false } as { ready: boolean } & T;
+}
+
+function asSnippet(text: string | null, maxChars = 900): string | null {
+  if (!text) return null;
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}...`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1171,6 +1182,157 @@ export const analyzeCompetitor = tool({
 });
 
 // ---------------------------------------------------------------------------
+// Generic Web Research + Scraping
+// ---------------------------------------------------------------------------
+
+export const searchWeb = tool({
+  description:
+    "Runs a generic web search and returns ranked results with summaries/highlights. Supports domain filters (example: domains=['reddit.com'] for Reddit-only research).",
+  inputSchema: z.object({
+    query: z
+      .string()
+      .describe("Search query (example: 'code review bottlenecks in startup teams')"),
+    domains: z
+      .array(z.string())
+      .optional()
+      .describe("Optional allowlist of domains (example: ['reddit.com', 'news.ycombinator.com'])"),
+    excludeDomains: z
+      .array(z.string())
+      .optional()
+      .describe("Optional blocklist of domains to exclude"),
+    numResults: z
+      .number()
+      .min(1)
+      .max(20)
+      .optional()
+      .default(10)
+      .describe("Number of results (1-20, default 10)"),
+    daysBack: z
+      .number()
+      .min(7)
+      .max(730)
+      .optional()
+      .default(365)
+      .describe("Only search pages published in the last N days (7-730, default 365)"),
+    textMaxCharacters: z
+      .number()
+      .min(1000)
+      .max(12000)
+      .optional()
+      .default(4000)
+      .describe("Maximum extracted text per result (1000-12000, default 4000)"),
+  }),
+  execute: async ({
+    query,
+    domains,
+    excludeDomains,
+    numResults,
+    daysBack,
+    textMaxCharacters,
+  }) => {
+    try {
+      const data = await searchWebContent({
+        query,
+        domains,
+        excludeDomains,
+        numResults,
+        daysBack,
+        textMaxCharacters,
+      });
+      return {
+        success: true as const,
+        query: data.query,
+        totalResults: data.results.length,
+        results: data.results.map((r) => ({
+          id: r.id,
+          title: r.title,
+          url: r.url,
+          source: r.source,
+          publishedDate: r.publishedDate,
+          summary: r.summary,
+          highlights: r.highlights,
+          textSnippet: asSnippet(r.text),
+          score: r.score,
+        })),
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Error while running generic web search.",
+      };
+    }
+  },
+});
+
+export const scrapePage = tool({
+  description:
+    "Extracts clean content from a specific URL (title, summary, highlights, and text). Use when the user shares a direct link.",
+  inputSchema: z.object({
+    url: z
+      .string()
+      .url()
+      .describe("The page URL to extract content from"),
+    maxCharacters: z
+      .number()
+      .min(1000)
+      .max(20000)
+      .optional()
+      .default(8000)
+      .describe("Maximum text characters to extract (1000-20000, default 8000)"),
+    includeSummary: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe("Whether to include an AI summary"),
+    includeHighlights: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe("Whether to include key highlights"),
+    livecrawl: z
+      .enum(["never", "fallback", "always", "auto", "preferred"])
+      .optional()
+      .default("fallback")
+      .describe("Live crawl mode"),
+  }),
+  execute: async ({
+    url,
+    maxCharacters,
+    includeSummary,
+    includeHighlights,
+    livecrawl,
+  }) => {
+    try {
+      const page = await scrapePageContent({
+        url,
+        maxCharacters,
+        includeSummary,
+        includeHighlights,
+        livecrawl,
+      });
+      return {
+        success: true as const,
+        page: {
+          ...page,
+          textLength: page.text?.length ?? 0,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Error while scraping page content.",
+      };
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Scheduled Jobs Tools
 // ---------------------------------------------------------------------------
 
@@ -1415,6 +1577,8 @@ export function createAgentTools(userEmail?: string) {
     getSearchBySegment,
     getPageKeywords,
     analyzeCompetitor,
+    searchWeb,
+    scrapePage,
     scheduleJob,
     scheduleArticlePublication,
     listScheduledJobs,
