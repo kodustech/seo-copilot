@@ -439,6 +439,31 @@ function createGenerateSocialPostsTool(userEmail?: string) {
 
 export const generateSocialPosts = createGenerateSocialPostsTool();
 
+function createVoicePolicyTool(userEmail?: string) {
+  return tool({
+    description:
+      "Fetches the merged voice policy (tone, persona, instructions) for the logged user.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      try {
+        const voicePolicy = await resolveVoicePolicyForUser(userEmail);
+        return {
+          success: true as const,
+          voicePolicy,
+        };
+      } catch (error) {
+        return {
+          success: false as const,
+          message:
+            error instanceof Error
+              ? error.message
+              : "Error resolving voice policy.",
+        };
+      }
+    },
+  });
+}
+
 function createListSocialAccountsTool(userEmail?: string) {
   return tool({
     description:
@@ -1583,6 +1608,7 @@ export function createAgentTools(userEmail?: string) {
     scheduleArticlePublication,
     listScheduledJobs,
     deleteScheduledJob,
+    getVoicePolicy: createVoicePolicyTool(userEmail),
   };
 }
 
