@@ -51,6 +51,35 @@ if (n8nBearerToken) {
   jsonHeaders.Authorization = `Bearer ${n8nBearerToken}`;
 }
 
+type StreamingJsonRequestInit = RequestInit & { duplex: "half" };
+
+function buildStreamingJsonBody(payload: unknown): ReadableStream<Uint8Array> {
+  const encodedPayload = new TextEncoder().encode(JSON.stringify(payload));
+  let sent = false;
+
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent) {
+        controller.close();
+        return;
+      }
+
+      controller.enqueue(encodedPayload);
+      sent = true;
+    },
+  });
+}
+
+function n8nPostInit(payload: unknown): StreamingJsonRequestInit {
+  return {
+    method: "POST",
+    headers: jsonHeaders,
+    body: buildStreamingJsonBody(payload),
+    cache: "no-store",
+    duplex: "half",
+  };
+}
+
 export async function enqueueKeywordTask({
   idea,
   limit,
@@ -80,12 +109,7 @@ export async function enqueueKeywordTask({
   if (voicePolicy) {
     payload.voicePolicy = voicePolicy;
   }
-  const response = await fetch(KEYWORDS_ENDPOINT, {
-    method: "POST",
-    headers: jsonHeaders,
-    body: JSON.stringify(payload),
-    cache: "no-store",
-  });
+  const response = await fetch(KEYWORDS_ENDPOINT, n8nPostInit(payload));
 
   if (!response.ok) {
     const text = await safeReadText(response);
@@ -185,12 +209,7 @@ export async function fetchTitlesFromCopilot({
     payload.voicePolicy = voicePolicy;
   }
 
-  const response = await fetch(TITLES_ENDPOINT, {
-    method: "POST",
-    headers: jsonHeaders,
-    body: JSON.stringify(payload),
-    cache: "no-store",
-  });
+  const response = await fetch(TITLES_ENDPOINT, n8nPostInit(payload));
 
   if (!response.ok) {
     const text = await safeReadText(response);
@@ -234,10 +253,9 @@ export async function enqueueArticleTask(
     throw new Error("Choose a main keyword for the article.");
   }
 
-  const response = await fetch(POSTS_ENDPOINT, {
-    method: "POST",
-    headers: jsonHeaders,
-    body: JSON.stringify({
+  const response = await fetch(
+    POSTS_ENDPOINT,
+    n8nPostInit({
       title: payload.title,
       keyword: payload.keyword,
       keyword_id: payload.keywordId,
@@ -252,8 +270,7 @@ export async function enqueueArticleTask(
           : undefined,
       voicePolicy: payload.voicePolicy ?? undefined,
     }),
-    cache: "no-store",
-  });
+  );
 
   if (!response.ok) {
     const text = await safeReadText(response);
@@ -414,12 +431,7 @@ export async function generateSocialContent({
   if (contentSource) payload.contentSource = contentSource;
   if (voicePolicy) payload.voicePolicy = voicePolicy;
 
-  const response = await fetch(SOCIAL_ENDPOINT, {
-    method: "POST",
-    headers: jsonHeaders,
-    body: JSON.stringify(payload),
-    cache: "no-store",
-  });
+  const response = await fetch(SOCIAL_ENDPOINT, n8nPostInit(payload));
 
   if (!response.ok) {
     const text = await safeReadText(response);
