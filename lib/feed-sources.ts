@@ -1,3 +1,5 @@
+import { searchResearchPapers } from "@/lib/exa";
+
 const WORDPRESS_API_BASE =
   process.env.WORDPRESS_API_BASE?.replace(/\/$/, "") ||
   "https://kodus.io/wp-json/wp/v2";
@@ -12,7 +14,7 @@ const CHANGELOG_LOOKBACK_DAYS = parseLookbackDays(
 );
 const CHANGELOG_GITHUB_TOKEN = process.env.CHANGELOG_GITHUB_TOKEN?.trim();
 
-export type FeedSource = "blog" | "changelog" | "all";
+export type FeedSource = "blog" | "changelog" | "hackernews" | "research" | "all";
 
 export type FeedItem = {
   id: string;
@@ -21,12 +23,18 @@ export type FeedItem = {
   excerpt: string;
   content: string;
   publishedAt?: string;
-  source: "blog" | "changelog";
+  source: "blog" | "changelog" | "hackernews" | "research";
 };
 
 export function parseFeedSource(value: string | null): FeedSource {
   if (value === "changelog") {
     return "changelog";
+  }
+  if (value === "hackernews") {
+    return "hackernews";
+  }
+  if (value === "research") {
+    return "research";
   }
   if (value === "all") {
     return "all";
@@ -41,27 +49,197 @@ export async function fetchFeedPosts(source: FeedSource): Promise<FeedItem[]> {
   if (source === "changelog") {
     return fetchChangelogPosts();
   }
+  if (source === "hackernews") {
+    return fetchHackerNewsPosts();
+  }
+  if (source === "research") {
+    return fetchResearchPapers();
+  }
 
-  const [blogResult, changelogResult] = await Promise.allSettled([
+  const [blogResult, changelogResult, hnResult, researchResult] = await Promise.allSettled([
     fetchWordPressPosts(),
     fetchChangelogPosts(),
+    fetchHackerNewsPosts(),
+    fetchResearchPapers(),
   ]);
 
   if (
     blogResult.status === "rejected" &&
-    changelogResult.status === "rejected"
+    changelogResult.status === "rejected" &&
+    hnResult.status === "rejected" &&
+    researchResult.status === "rejected"
   ) {
     throw blogResult.reason instanceof Error
       ? blogResult.reason
-      : new Error("Could not fetch blog and changelog sources.");
+      : new Error("Could not fetch any feed sources.");
   }
 
   const merged = [
     ...(blogResult.status === "fulfilled" ? blogResult.value : []),
     ...(changelogResult.status === "fulfilled" ? changelogResult.value : []),
+    ...(hnResult.status === "fulfilled" ? hnResult.value : []),
+    ...(researchResult.status === "fulfilled" ? researchResult.value : []),
   ];
 
   return sortByPublishedAtDesc(merged);
+}
+
+const HN_API_BASE = "https://hacker-news.firebaseio.com/v0";
+const HN_AI_KEYWORDS = [
+  "ai coding",
+  "copilot",
+  "llm",
+  "ai agent",
+  "code generation",
+  "ai programming",
+  "cursor",
+  "claude",
+  "gpt",
+  "ai-assisted",
+  "vibe coding",
+  "agentic",
+];
+const HN_MAX_RESULTS = 15;
+const HN_FETCH_BATCH = 30;
+
+async function fetchHackerNewsPosts(): Promise<FeedItem[]> {
+  const topStoriesResponse = await fetch(`${HN_API_BASE}/topstories.json`, {
+    cache: "no-store",
+    next: { revalidate: 0 },
+  });
+
+  if (!topStoriesResponse.ok) {
+    throw new Error(
+      `Failed to fetch Hacker News top stories (${topStoriesResponse.status}).`,
+    );
+  }
+
+  const topStoryIds: unknown = await topStoriesResponse.json();
+  if (!Array.isArray(topStoryIds)) {
+    return [];
+  }
+
+  const storyIds = topStoryIds.slice(0, 100) as number[];
+  const items: FeedItem[] = [];
+
+  for (let offset = 0; offset < storyIds.length; offset += HN_FETCH_BATCH) {
+    if (items.length >= HN_MAX_RESULTS) break;
+
+    const batch = storyIds.slice(offset, offset + HN_FETCH_BATCH);
+    const results = await Promise.allSettled(
+      batch.map((id) =>
+        fetch(`${HN_API_BASE}/item/${id}.json`, {
+          cache: "no-store",
+          next: { revalidate: 0 },
+        }).then((res) => (res.ok ? res.json() : null)),
+      ),
+    );
+
+    for (const result of results) {
+      if (items.length >= HN_MAX_RESULTS) break;
+      if (result.status !== "fulfilled" || !result.value) continue;
+
+      const item = normalizeHackerNewsItem(result.value);
+      if (item) {
+        items.push(item);
+      }
+    }
+  }
+
+  return items;
+}
+
+function normalizeHackerNewsItem(item: unknown): FeedItem | null {
+  if (!item || typeof item !== "object") return null;
+
+  const record = item as Record<string, unknown>;
+  const title = typeof record.title === "string" ? record.title.trim() : "";
+  if (!title) return null;
+
+  const titleLower = title.toLowerCase();
+  const matchesAiCoding = HN_AI_KEYWORDS.some((keyword) =>
+    titleLower.includes(keyword),
+  );
+  if (!matchesAiCoding) return null;
+
+  const id =
+    typeof record.id === "number"
+      ? String(record.id)
+      : typeof record.id === "string"
+        ? record.id
+        : null;
+  if (!id) return null;
+
+  const url =
+    typeof record.url === "string" && record.url.trim().length > 0
+      ? record.url.trim()
+      : `https://news.ycombinator.com/item?id=${id}`;
+
+  const text = typeof record.text === "string" ? stripHtml(record.text) : "";
+  const score =
+    typeof record.score === "number" ? `${record.score} points` : "";
+  const descendants =
+    typeof record.descendants === "number"
+      ? `${record.descendants} comments`
+      : "";
+
+  const contentParts = [
+    `Hacker News discussion: ${title}`,
+    score && descendants ? `${score}, ${descendants}` : score || descendants,
+    text,
+  ].filter(Boolean);
+
+  const content = contentParts.join("\n\n");
+  const publishedAt =
+    typeof record.time === "number"
+      ? new Date(record.time * 1000).toISOString()
+      : undefined;
+
+  return {
+    id: `hn-${id}`,
+    title,
+    link: url,
+    excerpt: buildExcerpt(content),
+    content,
+    publishedAt,
+    source: "hackernews",
+  };
+}
+
+const RESEARCH_TOPICS = [
+  "AI coding assistants and code generation tools",
+  "LLM agents for software engineering",
+  "developer productivity and developer experience",
+  "automated code review and pull request analysis",
+  "AI-assisted debugging and testing",
+];
+const RESEARCH_MAX_RESULTS = 10;
+
+async function fetchResearchPapers(): Promise<FeedItem[]> {
+  const { results } = await searchResearchPapers({
+    topics: RESEARCH_TOPICS,
+    numResultsPerTopic: 3,
+    daysBack: 90,
+  });
+
+  return results.slice(0, RESEARCH_MAX_RESULTS).map((paper, index) => {
+    const contentParts = [
+      paper.summary,
+      paper.highlights.length
+        ? `Key findings: ${paper.highlights.join(" | ")}`
+        : "",
+    ].filter(Boolean);
+
+    return {
+      id: `research-${index}-${paper.id}`,
+      title: paper.title,
+      link: paper.url,
+      excerpt: paper.summary || paper.title,
+      content: contentParts.join("\n\n") || paper.title,
+      publishedAt: paper.publishedDate ?? undefined,
+      source: "research" as const,
+    };
+  });
 }
 
 async function fetchWordPressPosts(): Promise<FeedItem[]> {

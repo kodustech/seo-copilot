@@ -4,7 +4,7 @@ create table if not exists public.social_yolo_posts (
   user_email text not null,
   batch_date date not null,
   position integer not null,
-  lane text not null check (lane in ('blog', 'changelog', 'mixed')),
+  lane text not null check (lane in ('blog', 'changelog', 'mixed', 'hackernews', 'research')),
   theme text not null,
   platform text not null,
   hook text not null default '',
@@ -17,7 +17,7 @@ create table if not exists public.social_yolo_posts (
 );
 
 alter table public.social_yolo_posts
-  add column if not exists lane text not null default 'mixed' check (lane in ('blog', 'changelog', 'mixed')),
+  add column if not exists lane text not null default 'mixed' check (lane in ('blog', 'changelog', 'mixed', 'hackernews', 'research')),
   add column if not exists theme text not null default '',
   add column if not exists platform text not null default 'Social',
   add column if not exists hook text not null default '',
@@ -114,3 +114,8 @@ begin
       using (user_email = auth.jwt() ->> 'email');
   end if;
 end $$;
+
+-- Migration: add 'hackernews' to lane constraint (safe to re-run)
+alter table public.social_yolo_posts drop constraint if exists social_yolo_posts_lane_check;
+alter table public.social_yolo_posts add constraint social_yolo_posts_lane_check
+  check (lane in ('blog', 'changelog', 'mixed', 'hackernews', 'research'));

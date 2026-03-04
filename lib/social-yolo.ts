@@ -5,14 +5,37 @@ import { fetchFeedPosts, type FeedItem } from "@/lib/feed-sources";
 import { resolveVoicePolicyForUser } from "@/lib/voice-policy";
 
 const YOLO_TIMEZONE = "America/Sao_Paulo";
-const YOLO_TARGET_POSTS = 30;
+const YOLO_TARGET_POSTS = 50;
 const YOLO_DEFAULT_USERS = ["gabriel@kodus.io", "edvaldo.freitas@kodus.io"];
 const YOLO_LANGUAGE = process.env.SOCIAL_YOLO_LANGUAGE?.trim() || "en-US";
 const SOCIAL_FORMATTING_HINT =
   "Separate paragraphs with one blank line and keep blocks short (max 2 sentences each) for social readability.";
 
+const EDITORIAL_ANGLES = [
+  {
+    label: "pragmatic builder",
+    hint: "Write from the perspective of a hands-on engineer who values simplicity and shipping. Prefer concrete examples over theory. Tone: direct, no-nonsense, slightly informal.",
+  },
+  {
+    label: "strategic thinker",
+    hint: "Write from the perspective of a technical leader who connects engineering decisions to business outcomes. Highlight trade-offs and long-term thinking. Tone: thoughtful, measured, authoritative.",
+  },
+  {
+    label: "curious explorer",
+    hint: "Write from the perspective of someone who loves digging into new tools and patterns. Ask provocative questions and challenge assumptions. Tone: curious, energetic, conversational.",
+  },
+  {
+    label: "battle-tested veteran",
+    hint: "Write from the perspective of someone who has seen patterns repeat across projects. Share hard-won lessons and war stories. Tone: confident, slightly opinionated, grounded in experience.",
+  },
+  {
+    label: "community connector",
+    hint: "Write from the perspective of someone who bridges teams and communities. Highlight collaboration, shared learnings, and ecosystem trends. Tone: warm, inclusive, forward-looking.",
+  },
+];
+
 export type SocialYoloStatus = "draft" | "selected" | "discarded";
-export type SocialYoloLane = "blog" | "changelog" | "mixed";
+export type SocialYoloLane = "blog" | "changelog" | "mixed" | "hackernews" | "research";
 
 export type SocialYoloPost = {
   id: string;
@@ -197,16 +220,21 @@ export async function regenerateYoloBatchForUser({
     }
   }
 
-  const [blogResult, changelogResult, voicePolicyResult] =
+  const [blogResult, changelogResult, hnResult, researchResult, voicePolicyResult] =
     await Promise.allSettled([
       fetchFeedPosts("blog"),
       fetchFeedPosts("changelog"),
+      fetchFeedPosts("hackernews"),
+      fetchFeedPosts("research"),
       resolveVoicePolicyForUser(normalizedEmail),
     ]);
 
   const blogPosts = blogResult.status === "fulfilled" ? blogResult.value : [];
   const changelogPosts =
     changelogResult.status === "fulfilled" ? changelogResult.value : [];
+  const hnPosts = hnResult.status === "fulfilled" ? hnResult.value : [];
+  const researchPosts =
+    researchResult.status === "fulfilled" ? researchResult.value : [];
   const voicePolicy =
     voicePolicyResult.status === "fulfilled"
       ? voicePolicyResult.value
@@ -218,14 +246,21 @@ export async function regenerateYoloBatchForUser({
   if (changelogResult.status === "rejected") {
     console.warn("[social-yolo] Changelog source failed:", changelogResult.reason);
   }
+  if (hnResult.status === "rejected") {
+    console.warn("[social-yolo] Hacker News source failed:", hnResult.reason);
+  }
+  if (researchResult.status === "rejected") {
+    console.warn("[social-yolo] Research papers source failed:", researchResult.reason);
+  }
 
-  if (!blogPosts.length && !changelogPosts.length) {
+  if (!blogPosts.length && !changelogPosts.length && !hnPosts.length && !researchPosts.length) {
     throw new Error(
-      "Could not fetch blog/changelog sources for YOLO generation.",
+      "Could not fetch any content sources for YOLO generation.",
     );
   }
 
-  const lanePlans = buildLanePlans(blogPosts, changelogPosts);
+  const editorialAngle = pickEditorialAngle(normalizedEmail);
+  const lanePlans = buildLanePlans(blogPosts, changelogPosts, hnPosts, researchPosts, editorialAngle);
   const activeLanePlans = lanePlans.filter((plan) => plan.feedItems.length > 0);
   if (!activeLanePlans.length) {
     throw new Error("No source content available to generate YOLO posts.");
@@ -334,10 +369,22 @@ async function countPostsForBatch(
   return { count: count ?? 0 };
 }
 
-function buildLanePlans(blog: FeedItem[], changelog: FeedItem[]): LanePlan[] {
+function buildLanePlans(
+  blog: FeedItem[],
+  changelog: FeedItem[],
+  hackernews: FeedItem[] = [],
+  research: FeedItem[] = [],
+  editorialAngle?: (typeof EDITORIAL_ANGLES)[number],
+): LanePlan[] {
   const recentBlog = blog.slice(0, 10);
   const recentChangelog = changelog.slice(0, 14);
+  const recentHn = hackernews.slice(0, 15);
+  const recentResearch = research.slice(0, 10);
   const mixed = interleaveFeed(recentBlog.slice(0, 6), recentChangelog.slice(0, 6));
+
+  const angleDirective = editorialAngle
+    ? `\nEditorial angle: ${editorialAngle.label}. ${editorialAngle.hint}`
+    : "";
 
   return [
     {
@@ -346,7 +393,7 @@ function buildLanePlans(blog: FeedItem[], changelog: FeedItem[]): LanePlan[] {
       generationMode: "content_marketing",
       contentSource: "blog",
       instructions:
-        `Create practical social posts for senior engineers using insights from recent blog entries. Each variation must focus on a different technical decision, trade-off, failure pattern, or implementation lesson. ${SOCIAL_FORMATTING_HINT}`,
+        `Create practical social posts for senior engineers using insights from recent blog entries. Each variation must focus on a different technical decision, trade-off, failure pattern, or implementation lesson. ${SOCIAL_FORMATTING_HINT}${angleDirective}`,
       variationStrategy:
         "Keep each variation independent and concrete. Use a different angle per variation: architecture, code review, reliability, delivery process, or team practices.",
       fallbackThemes: [
@@ -365,7 +412,7 @@ function buildLanePlans(blog: FeedItem[], changelog: FeedItem[]): LanePlan[] {
       generationMode: "build_in_public",
       contentSource: "changelog",
       instructions:
-        `Create build-in-public posts showing real product progress, decisions, and implementation details from changelog updates. Keep the tone transparent and hands-on. ${SOCIAL_FORMATTING_HINT}`,
+        `Create build-in-public posts showing real product progress, decisions, and implementation details from changelog updates. Keep the tone transparent and hands-on. ${SOCIAL_FORMATTING_HINT}${angleDirective}`,
       variationStrategy:
         "Each variation must highlight a different shipped change, engineering choice, learning, or follow-up plan.",
       fallbackThemes: [
@@ -384,7 +431,7 @@ function buildLanePlans(blog: FeedItem[], changelog: FeedItem[]): LanePlan[] {
       generationMode: "content_marketing",
       contentSource: "manual",
       instructions:
-        `Blend ideas from blog and changelog sources to create posts that connect shipped work with repeatable engineering lessons. Keep each variation concise and useful. ${SOCIAL_FORMATTING_HINT}`,
+        `Blend ideas from blog and changelog sources to create posts that connect shipped work with repeatable engineering lessons. Keep each variation concise and useful. ${SOCIAL_FORMATTING_HINT}${angleDirective}`,
       variationStrategy:
         "Use a different pattern per variation: lesson learned, decision rationale, cautionary mistake, process improvement, or measurable outcome.",
       fallbackThemes: [
@@ -396,6 +443,44 @@ function buildLanePlans(blog: FeedItem[], changelog: FeedItem[]): LanePlan[] {
         "Scaling practices",
       ],
       feedItems: mixed,
+    },
+    {
+      lane: "hackernews",
+      title: "AI Coding industry trends from Hacker News",
+      generationMode: "content_marketing",
+      contentSource: "manual",
+      instructions:
+        `Create posts that comment on AI Coding trends from the market, with the practical perspective of someone who builds developer tools (Kodus). Reference real discussions and take a clear stance. Format for social readability. ${SOCIAL_FORMATTING_HINT}${angleDirective}`,
+      variationStrategy:
+        "Each variation must cover a different trending topic or discussion. Use angles like: industry hot take, builder perspective, practical implications, contrarian view, or lessons from the trenches.",
+      fallbackThemes: [
+        "AI Coding trends",
+        "Developer tooling evolution",
+        "LLM in production",
+        "Code generation reality",
+        "Agentic development",
+        "AI-assisted workflows",
+      ],
+      feedItems: recentHn,
+    },
+    {
+      lane: "research",
+      title: "Research-backed insights on AI coding and developer productivity",
+      generationMode: "content_marketing",
+      contentSource: "manual",
+      instructions:
+        `Create posts that translate recent academic research into practical insights for engineering teams. Reference specific findings and connect them to real-world developer workflows. Make research accessible without dumbing it down. ${SOCIAL_FORMATTING_HINT}${angleDirective}`,
+      variationStrategy:
+        "Each variation must cover a different paper or finding. Use angles like: surprising result, practical implication, myth-busting, data point worth knowing, or connection to industry trends.",
+      fallbackThemes: [
+        "Research on developer productivity",
+        "AI coding effectiveness studies",
+        "DevEx research findings",
+        "Code quality metrics",
+        "Engineering team performance",
+        "Automated code review research",
+      ],
+      feedItems: recentResearch,
     },
   ];
 }
@@ -602,7 +687,7 @@ function normalizeYoloRow(item: unknown): SocialYoloPost | null {
 }
 
 function normalizeLane(value: unknown): SocialYoloLane | null {
-  if (value === "blog" || value === "changelog" || value === "mixed") {
+  if (value === "blog" || value === "changelog" || value === "mixed" || value === "hackernews" || value === "research") {
     return value;
   }
   return null;
@@ -637,6 +722,15 @@ function deriveThemeFromVariation(hook: string, post: string): string {
   const postText = normalizeText(post).replace(/\s+/g, " ");
   if (!postText) return "";
   return postText.slice(0, 80);
+}
+
+function pickEditorialAngle(email: string): (typeof EDITORIAL_ANGLES)[number] {
+  let hash = 0;
+  for (let i = 0; i < email.length; i += 1) {
+    hash = (hash * 31 + email.charCodeAt(i)) | 0;
+  }
+  const index = Math.abs(hash) % EDITORIAL_ANGLES.length;
+  return EDITORIAL_ANGLES[index];
 }
 
 function formatDateInTimezone(date: Date, timeZone: string): string {

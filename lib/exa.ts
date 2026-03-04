@@ -469,3 +469,104 @@ export async function scrapePageContent({
     text: typeof page.text === "string" ? page.text : null,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Research Papers Search
+// ---------------------------------------------------------------------------
+
+export type ResearchPaperResult = {
+  id: string;
+  title: string;
+  url: string;
+  source: string;
+  publishedDate: string | null;
+  summary: string | null;
+  highlights: string[];
+  score: number | null;
+};
+
+export type SearchResearchPapersInput = {
+  topics: string[];
+  numResultsPerTopic?: number;
+  daysBack?: number;
+};
+
+export type SearchResearchPapersOutput = {
+  results: ResearchPaperResult[];
+};
+
+const RESEARCH_DOMAINS = [
+  "arxiv.org",
+  "semanticscholar.org",
+  "dl.acm.org",
+  "research.google",
+  "openreview.net",
+];
+
+const RESEARCH_SUMMARY_PROMPT =
+  "Summarize the paper's key finding and practical implications for software engineering teams in 2-3 sentences. Focus on what practitioners can learn or apply.";
+
+const RESEARCH_HIGHLIGHTS_PROMPT =
+  "Extract the most important results, metrics, or claims that would interest developers and engineering leaders.";
+
+export async function searchResearchPapers({
+  topics,
+  numResultsPerTopic = 5,
+  daysBack = 90,
+}: SearchResearchPapersInput): Promise<SearchResearchPapersOutput> {
+  const exa = createExaClient("research paper search");
+  const startPublishedDate = makeStartDate(daysBack);
+
+  const searches = topics.map(async (topic) => {
+    try {
+      const response = await exa.searchAndContents(topic, {
+        type: "auto",
+        category: "research paper",
+        numResults: numResultsPerTopic,
+        startPublishedDate,
+        useAutoprompt: true,
+        includeDomains: RESEARCH_DOMAINS,
+        highlights: {
+          query: RESEARCH_HIGHLIGHTS_PROMPT,
+          maxCharacters: 300,
+        },
+        summary: {
+          query: RESEARCH_SUMMARY_PROMPT,
+        },
+      });
+
+      return (response.results ?? []).map(
+        (r): ResearchPaperResult => ({
+          id: r.id ?? r.url,
+          title: r.title ?? "Untitled",
+          url: r.url,
+          source: extractSource(r.url),
+          publishedDate: r.publishedDate ?? null,
+          summary: r.summary ?? null,
+          highlights: r.highlights ?? [],
+          score: r.score ?? null,
+        }),
+      );
+    } catch {
+      return [] as ResearchPaperResult[];
+    }
+  });
+
+  const perTopic = await Promise.all(searches);
+  const all = perTopic.flat();
+
+  const seen = new Set<string>();
+  const deduped = all.filter((r) => {
+    if (seen.has(r.url)) return false;
+    seen.add(r.url);
+    return true;
+  });
+
+  const quality = deduped.filter(
+    (r) => r.title.length >= 10 && r.summary && r.summary.length >= 30,
+  );
+
+  quality.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+
+  return { results: quality };
+}
