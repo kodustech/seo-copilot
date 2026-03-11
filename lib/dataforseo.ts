@@ -6,7 +6,8 @@ import { getSupabaseServiceClient } from "@/lib/supabase-server";
 
 const DATAFORSEO_LOGIN = process.env.DATAFORSEO_LOGIN?.trim();
 const DATAFORSEO_PASSWORD = process.env.DATAFORSEO_PASSWORD?.trim();
-const BASE_URL = "https://api.dataforseo.com/v3/ai_optimization/llm_mentions";
+const API_BASE = "https://api.dataforseo.com/v3";
+const LLM_MENTIONS_BASE = `${API_BASE}/ai_optimization/llm_mentions`;
 const TARGET_DOMAIN = "kodus.io";
 const TARGET_KEYWORD = "kodus";
 
@@ -17,8 +18,8 @@ function getAuthHeader(): string {
   return `Basic ${Buffer.from(`${DATAFORSEO_LOGIN}:${DATAFORSEO_PASSWORD}`).toString("base64")}`;
 }
 
-async function dfsPost<T>(endpoint: string, body: unknown[]): Promise<T> {
-  const res = await fetch(`${BASE_URL}${endpoint}`, {
+async function dfsPostRaw<T>(url: string, body: unknown[]): Promise<T> {
+  const res = await fetch(url, {
     method: "POST",
     headers: {
       Authorization: getAuthHeader(),
@@ -34,6 +35,10 @@ async function dfsPost<T>(endpoint: string, body: unknown[]): Promise<T> {
   }
 
   return res.json() as Promise<T>;
+}
+
+function dfsPost<T>(llmMentionsPath: string, body: unknown[]): Promise<T> {
+  return dfsPostRaw<T>(`${LLM_MENTIONS_BASE}${llmMentionsPath}`, body);
 }
 
 // ---------------------------------------------------------------------------
@@ -225,4 +230,108 @@ export async function getLatestLLMMentions(): Promise<LLMMentionsSnapshot[]> {
   }
 
   return (data ?? []) as LLMMentionsSnapshot[];
+}
+
+// ---------------------------------------------------------------------------
+// Keywords Data API (Google Ads Search Volume)
+// ---------------------------------------------------------------------------
+
+export type KeywordVolumeResult = {
+  keyword: string;
+  search_volume: number | null;
+  competition: string | null;
+  competition_index: number | null;
+  cpc: number | null;
+  monthly_searches: { year: number; month: number; search_volume: number }[] | null;
+};
+
+export async function fetchKeywordVolumes(
+  keywords: string[],
+  locationCode = 2840,
+  languageCode = "en",
+): Promise<KeywordVolumeResult[]> {
+  if (!keywords.length) return [];
+  // API limit: 1000 keywords per request
+  const batch = keywords.slice(0, 1000);
+
+  const data = await dfsPostRaw<
+    DfsResponse<KeywordVolumeResult>
+  >(`${API_BASE}/keywords_data/google_ads/search_volume/live`, [
+    {
+      keywords: batch,
+      location_code: locationCode,
+      language_code: languageCode,
+    },
+  ]);
+
+  const task = data.tasks?.[0];
+  if (!task || task.status_code !== 20000) return [];
+  return task.result ?? [];
+}
+
+// ---------------------------------------------------------------------------
+// SERP API (Google Organic Live)
+// ---------------------------------------------------------------------------
+
+export type SerpOrganicItem = {
+  type: string;
+  rank_group: number;
+  rank_absolute: number;
+  domain: string;
+  title: string;
+  description: string;
+  url: string;
+};
+
+export type SerpResult = {
+  keyword: string;
+  se_results_count: number;
+  items_count: number;
+  items: SerpOrganicItem[];
+};
+
+export async function fetchSerpResults(
+  keyword: string,
+  locationCode = 2840,
+  languageCode = "en",
+  depth = 10,
+): Promise<SerpResult | null> {
+  const data = await dfsPostRaw<
+    DfsResponse<{
+      keyword: string;
+      se_results_count: number;
+      items_count: number;
+      items: SerpOrganicItem[];
+    }>
+  >(`${API_BASE}/serp/google/organic/live/regular`, [
+    {
+      keyword,
+      location_code: locationCode,
+      language_code: languageCode,
+      depth: Math.min(depth, 100),
+      device: "desktop",
+    },
+  ]);
+
+  const task = data.tasks?.[0];
+  if (!task || task.status_code !== 20000) return null;
+  const result = task.result?.[0];
+  if (!result) return null;
+
+  return {
+    keyword: result.keyword,
+    se_results_count: result.se_results_count,
+    items_count: result.items_count,
+    items: (result.items ?? [])
+      .filter((item) => item.type === "organic" || item.type === "featured_snippet")
+      .map((item) => ({
+        type: item.type,
+        rank_group: item.rank_group,
+        rank_absolute: item.rank_absolute,
+        domain: item.domain,
+        title: item.title,
+        description: item.description,
+        url: item.url,
+      })),
+  };
 }

@@ -39,6 +39,8 @@ const TOOL_META: Record<string, { label: string; loadingMsg: string; icon: React
   scheduleJob: { label: "Schedule Task", loadingMsg: "Creating scheduled job...", icon: Calendar },
   listScheduledJobs: { label: "Scheduled Jobs", loadingMsg: "Fetching scheduled jobs...", icon: List },
   deleteScheduledJob: { label: "Remove Job", loadingMsg: "Removing job...", icon: Trash2 },
+  getKeywordVolume: { label: "Keyword Volume", loadingMsg: "Fetching search volumes...", icon: BarChart3 },
+  analyzeSERP: { label: "SERP Analysis", loadingMsg: "Analyzing Google results...", icon: Search },
 };
 
 function difficultyColor(score: number): string {

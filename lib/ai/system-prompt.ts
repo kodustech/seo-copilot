@@ -88,6 +88,9 @@ Examples:
 22. **listScheduledJobs** — Lists all user scheduled tasks. Instant.
 23. **deleteScheduledJob** — Deletes a scheduled task. Instant.
 
+24. **getKeywordVolume** — Fetches search volume, CPC, competition, and monthly trend for up to 50 keywords from Google Ads. ~2-5s. Cost: ~$0.05.
+25. **analyzeSERP** — Live Google organic results for a keyword: who ranks, position, titles. Also checks if kodus.io appears. ~5-15s. Cost: ~$0.003.
+
 ## Canonical pipeline
 
 **Content Plan** -> **Keywords** -> **Titles** -> **Article** -> **Social Posts**
@@ -142,6 +145,8 @@ When using analytics tools:
 - "Mobile vs desktop" / "By country" -> getSearchBySegment
 - "Search Reddit for X" -> searchWeb(query="X", domains=["reddit.com"])
 - "Read/scrape this URL" -> scrapePage(url)
+- "What's the volume for X?" / "Check volume" -> getKeywordVolume
+- "Who ranks for X?" / "Analyze SERP for X" / "Do we rank for X?" -> analyzeSERP
 
 ## Scheduled jobs
 

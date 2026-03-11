@@ -42,6 +42,7 @@ import {
 } from "@/lib/bigquery";
 import { getModel } from "@/lib/ai/provider";
 import { CONTENT_PLAN_SYNTHESIS_PROMPT } from "@/lib/ai/system-prompt";
+import { fetchKeywordVolumes, fetchSerpResults } from "@/lib/dataforseo";
 
 const INTERNAL_APP_URL = resolveInternalAppUrl();
 
@@ -1581,6 +1582,117 @@ export const scheduleArticlePublication = tool({
   },
 });
 
+// ---------------------------------------------------------------------------
+// DataForSEO: Keyword Volume
+// ---------------------------------------------------------------------------
+
+const getKeywordVolume = tool({
+  description:
+    "Fetches search volume, CPC, competition, and monthly trend for up to 50 keywords from Google Ads data. Cost: ~$0.05 per call. Use this for quick volume checks on specific keywords.",
+  inputSchema: z.object({
+    keywords: z
+      .array(z.string())
+      .min(1)
+      .max(50)
+      .describe("Keywords to check volume for (max 50)"),
+    locationCode: z
+      .number()
+      .optional()
+      .default(2840)
+      .describe("Google Ads location code (default: 2840 = United States)"),
+    languageCode: z
+      .string()
+      .optional()
+      .default("en")
+      .describe("Language code (default: en)"),
+  }),
+  execute: async ({ keywords, locationCode, languageCode }) => {
+    try {
+      const results = await fetchKeywordVolumes(keywords, locationCode, languageCode);
+      return {
+        success: true as const,
+        count: results.length,
+        keywords: results.map((r) => ({
+          keyword: r.keyword,
+          searchVolume: r.search_volume,
+          cpc: r.cpc,
+          competition: r.competition,
+          competitionIndex: r.competition_index,
+          monthlyTrend: r.monthly_searches?.slice(-6) ?? [],
+        })),
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Error fetching keyword volumes.",
+      };
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// DataForSEO: SERP Analysis
+// ---------------------------------------------------------------------------
+
+const analyzeSERP = tool({
+  description:
+    "Fetches live Google organic search results for a keyword — shows who ranks, in what position, with titles and descriptions. Cost: ~$0.003 per call. Use this to analyze competition for a keyword or check if kodus.io ranks.",
+  inputSchema: z.object({
+    keyword: z.string().describe("Search query to analyze"),
+    depth: z
+      .number()
+      .min(10)
+      .max(50)
+      .optional()
+      .default(10)
+      .describe("Number of results to fetch (default: 10, max: 50)"),
+    locationCode: z
+      .number()
+      .optional()
+      .default(2840)
+      .describe("Google location code (default: 2840 = United States)"),
+    languageCode: z
+      .string()
+      .optional()
+      .default("en")
+      .describe("Language code (default: en)"),
+  }),
+  execute: async ({ keyword, depth, locationCode, languageCode }) => {
+    try {
+      const result = await fetchSerpResults(keyword, locationCode, languageCode, depth);
+      if (!result) {
+        return { success: false as const, message: "No SERP results returned." };
+      }
+
+      const kodusPosition = result.items.find(
+        (item) => item.domain.includes("kodus.io") || item.url.includes("kodus.io"),
+      );
+
+      return {
+        success: true as const,
+        keyword: result.keyword,
+        totalResults: result.se_results_count,
+        kodusRanking: kodusPosition
+          ? { position: kodusPosition.rank_absolute, url: kodusPosition.url, title: kodusPosition.title }
+          : null,
+        results: result.items.map((item) => ({
+          position: item.rank_absolute,
+          type: item.type,
+          domain: item.domain,
+          title: item.title,
+          url: item.url,
+          description: item.description,
+        })),
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Error fetching SERP results.",
+      };
+    }
+  },
+});
+
 export function createAgentTools(userEmail?: string) {
   return {
     generateIdeas,
@@ -1609,6 +1721,8 @@ export function createAgentTools(userEmail?: string) {
     listScheduledJobs,
     deleteScheduledJob,
     getVoicePolicy: createVoicePolicyTool(userEmail),
+    getKeywordVolume,
+    analyzeSERP,
   };
 }
 
