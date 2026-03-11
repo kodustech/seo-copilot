@@ -1219,6 +1219,22 @@ export function ToolResultRenderer({ toolName, state, input: _input, output }: T
   const meta = TOOL_META[toolName] ?? { label: toolName, loadingMsg: `Executando ${toolName}...`, icon: Search };
   const Icon = meta.icon;
 
+  // Error state (tool threw or returned output-error)
+  if (state === "output-error") {
+    const errMsg =
+      typeof output === "string"
+        ? output
+        : (output as Record<string, unknown>)?.message ??
+          (output as Record<string, unknown>)?.error ??
+          "Unknown error.";
+    return (
+      <div className="my-1.5 rounded-lg border border-red-500/20 bg-red-500/10 px-3.5 py-2.5 text-sm">
+        <p className="text-xs font-medium text-red-400">{meta.label} — Error</p>
+        <p className="mt-0.5 text-xs text-red-400/80">{String(errMsg)}</p>
+      </div>
+    );
+  }
+
   // Loading state
   if (state !== "output-available" || !output) {
     return (
@@ -1232,7 +1248,7 @@ export function ToolResultRenderer({ toolName, state, input: _input, output }: T
     );
   }
 
-  // Errorr state
+  // Tool returned success:false in output
   if (output.success === false) {
     return (
       <div className="my-1.5 rounded-lg border border-red-500/20 bg-red-500/10 px-3.5 py-2.5 text-sm">
