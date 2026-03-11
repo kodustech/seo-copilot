@@ -8,6 +8,7 @@ const DATAFORSEO_LOGIN = process.env.DATAFORSEO_LOGIN?.trim();
 const DATAFORSEO_PASSWORD = process.env.DATAFORSEO_PASSWORD?.trim();
 const BASE_URL = "https://api.dataforseo.com/v3/ai_optimization/llm_mentions";
 const TARGET_DOMAIN = "kodus.io";
+const TARGET_KEYWORD = "kodus";
 
 function getAuthHeader(): string {
   if (!DATAFORSEO_LOGIN || !DATAFORSEO_PASSWORD) {
@@ -85,6 +86,7 @@ export async function fetchLLMAggregatedMetrics(
       {
         target: [
           { domain: TARGET_DOMAIN, search_scope: ["any"], include_subdomains: true },
+          { keyword: TARGET_KEYWORD, search_scope: ["answer", "brand_entities"], match_type: "partial_match" },
         ],
         platform,
         location_code: 2840,
@@ -108,6 +110,7 @@ export async function fetchLLMMentionsSearch(
     {
       target: [
         { domain: TARGET_DOMAIN, search_scope: ["sources"], include_subdomains: true },
+        { keyword: TARGET_KEYWORD, search_scope: ["answer", "brand_entities"], match_type: "partial_match" },
       ],
       platform,
       location_code: 2840,
