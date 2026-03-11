@@ -24,6 +24,7 @@ async function dfsPost<T>(endpoint: string, body: unknown[]): Promise<T> {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {
