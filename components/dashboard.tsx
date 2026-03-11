@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { TrendingDown, TrendingUp, ArrowRight } from "lucide-react";
+import { TrendingDown, TrendingUp, ArrowRight, Bot, Sparkles } from "lucide-react";
 import {
   LineChart,
   Line,
@@ -40,6 +40,7 @@ import type {
   ContentOpportunitiesResult,
 } from "@/lib/bigquery";
 import type { BlogPost } from "@/lib/copilot";
+import type { LLMMentionsSnapshot } from "@/lib/dataforseo";
 
 type DashboardData = {
   period: string;
@@ -52,6 +53,7 @@ type DashboardData = {
   decay: ContentDecayResult;
   opportunities: ContentOpportunitiesResult;
   blogPosts: BlogPost[];
+  llmMentions: LLMMentionsSnapshot[];
 };
 
 function formatGaDate(raw: string): string {
@@ -176,6 +178,11 @@ export function Dashboard() {
           loading={loading}
         />
       </div>
+
+      {/* AI Visibility (LLM Mentions) */}
+      {!loading && data && data.llmMentions.length > 0 && (
+        <AIVisibilitySection snapshots={data.llmMentions} />
+      )}
 
       {/* Daily Trend Chart */}
       <Card className="border-white/10 bg-neutral-900">
@@ -505,6 +512,194 @@ export function Dashboard() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function formatCompact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
+function AIVisibilitySection({ snapshots }: { snapshots: LLMMentionsSnapshot[] }) {
+  const google = snapshots.find((s) => s.platform === "google");
+  const chatgpt = snapshots.find((s) => s.platform === "chat_gpt");
+
+  const allQuestions = [
+    ...(google?.top_questions ?? []),
+    ...(chatgpt?.top_questions ?? []),
+  ].sort((a, b) => b.ai_search_volume - a.ai_search_volume);
+
+  const allSources = [
+    ...(google?.top_sources ?? []),
+    ...(chatgpt?.top_sources ?? []),
+  ];
+
+  // Deduplicate and sum sources by domain
+  const sourceMap = new Map<string, { domain: string; mentions: number; ai_search_volume: number }>();
+  for (const s of allSources) {
+    const existing = sourceMap.get(s.domain);
+    if (existing) {
+      existing.mentions += s.mentions;
+      existing.ai_search_volume += s.ai_search_volume;
+    } else {
+      sourceMap.set(s.domain, { ...s });
+    }
+  }
+  const topSources = [...sourceMap.values()]
+    .sort((a, b) => b.mentions - a.mentions)
+    .slice(0, 8);
+
+  const snapshotDate = google?.snapshot_date ?? chatgpt?.snapshot_date;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <Sparkles className="h-4 w-4 text-violet-400" />
+        <h2 className="text-sm font-semibold text-white">AI Visibility</h2>
+        {snapshotDate && (
+          <span className="text-[10px] text-neutral-600">
+            Last sync: {snapshotDate}
+          </span>
+        )}
+      </div>
+
+      {/* AI KPI Cards */}
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+        <AiKpiCard
+          title="Google AI Mentions"
+          value={google?.mentions ?? 0}
+          icon={<Bot className="h-3.5 w-3.5 text-blue-400" />}
+        />
+        <AiKpiCard
+          title="ChatGPT Mentions"
+          value={chatgpt?.mentions ?? 0}
+          icon={<Bot className="h-3.5 w-3.5 text-emerald-400" />}
+        />
+        <AiKpiCard
+          title="AI Search Volume"
+          value={(google?.ai_search_volume ?? 0) + (chatgpt?.ai_search_volume ?? 0)}
+          icon={<Sparkles className="h-3.5 w-3.5 text-violet-400" />}
+          compact
+        />
+      </div>
+
+      {/* Tables */}
+      <div className="grid gap-6 lg:grid-cols-2">
+        {/* Top AI Questions */}
+        {allQuestions.length > 0 && (
+          <Card className="border-violet-500/20 bg-neutral-900">
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <CardTitle className="text-sm font-medium text-violet-400">
+                  Top AI Questions
+                </CardTitle>
+                <Badge variant="outline" className="border-violet-500/30 text-violet-400 text-[10px]">
+                  {allQuestions.length} queries
+                </Badge>
+              </div>
+              <p className="text-xs text-neutral-500">
+                Questions where kodus.io appears in LLM responses
+              </p>
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-white/10">
+                      <TableHead className="text-neutral-400">Question</TableHead>
+                      <TableHead className="text-right text-neutral-400">AI Volume</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {allQuestions.slice(0, 10).map((q, i) => (
+                      <TableRow key={`${q.question}-${i}`} className="border-white/5">
+                        <TableCell className="max-w-[300px] truncate text-neutral-200" title={q.question}>
+                          {q.question}
+                        </TableCell>
+                        <TableCell className="text-right text-neutral-300">
+                          {formatCompact(q.ai_search_volume)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Top Co-Mentioned Sources */}
+        {topSources.length > 0 && (
+          <Card className="border-white/10 bg-neutral-900">
+            <CardHeader>
+              <CardTitle className="text-sm font-medium text-neutral-300">
+                Co-Mentioned Sources
+              </CardTitle>
+              <p className="text-xs text-neutral-500">
+                Domains cited alongside kodus.io in AI responses
+              </p>
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-white/10">
+                      <TableHead className="text-neutral-400">Domain</TableHead>
+                      <TableHead className="text-right text-neutral-400">Mentions</TableHead>
+                      <TableHead className="text-right text-neutral-400">AI Volume</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {topSources.map((s) => (
+                      <TableRow key={s.domain} className="border-white/5">
+                        <TableCell className="text-neutral-200">{s.domain}</TableCell>
+                        <TableCell className="text-right text-neutral-300">
+                          {formatNumber(s.mentions)}
+                        </TableCell>
+                        <TableCell className="text-right text-neutral-300">
+                          {formatCompact(s.ai_search_volume)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AiKpiCard({
+  title,
+  value,
+  icon,
+  compact,
+}: {
+  title: string;
+  value: number;
+  icon: React.ReactNode;
+  compact?: boolean;
+}) {
+  return (
+    <Card className="border-white/10 bg-neutral-900">
+      <CardHeader className="pb-2">
+        <div className="flex items-center gap-1.5">
+          {icon}
+          <CardTitle className="text-xs font-medium text-neutral-400">
+            {title}
+          </CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <p className="text-2xl font-semibold text-white">
+          {compact ? formatCompact(value) : formatNumber(value)}
+        </p>
+      </CardContent>
+    </Card>
   );
 }
 

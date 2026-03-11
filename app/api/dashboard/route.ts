@@ -9,6 +9,7 @@ import {
   queryContentOpportunities,
 } from "@/lib/bigquery";
 import { fetchBlogPosts } from "@/lib/copilot";
+import { getLatestLLMMentions } from "@/lib/dataforseo";
 
 function periodToDates(period: string): { startDate: string; endDate: string } {
   const days = period === "7d" ? 7 : period === "90d" ? 90 : 30;
@@ -26,7 +27,7 @@ export async function GET(request: Request) {
     const period = searchParams.get("period") || "30d";
     const { startDate, endDate } = periodToDates(period);
 
-    const [traffic, search, topContent, compare, decay, opportunities, blogPosts] =
+    const [traffic, search, topContent, compare, decay, opportunities, blogPosts, llmMentions] =
       await Promise.all([
         queryTrafficOverview({ startDate, endDate }),
         querySearchPerformance({ startDate, endDate }),
@@ -35,6 +36,7 @@ export async function GET(request: Request) {
         queryContentDecay({ startDate, endDate }),
         queryContentOpportunities({ startDate, endDate }),
         fetchBlogPosts(100),
+        getLatestLLMMentions().catch(() => []),
       ]);
 
     return NextResponse.json({
@@ -48,6 +50,7 @@ export async function GET(request: Request) {
       decay,
       opportunities,
       blogPosts,
+      llmMentions,
     });
   } catch (error) {
     console.error("Dashboard API error:", error);

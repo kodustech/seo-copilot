@@ -6,6 +6,7 @@ import {
   getDefaultYoloUsers,
   socialYoloTableMissingMessage,
 } from "@/lib/social-yolo";
+import { syncLLMMentionsSnapshot } from "@/lib/dataforseo";
 
 export const maxDuration = 300;
 
@@ -85,6 +86,17 @@ export async function GET(req: Request) {
     }
   }
 
+  // Sync LLM mentions from DataForSEO (daily cache)
+  let llmMentionsSynced = 0;
+  let llmMentionsError: string | undefined;
+  try {
+    const snapshots = await syncLLMMentionsSnapshot();
+    llmMentionsSynced = snapshots.length;
+  } catch (err) {
+    llmMentionsError = err instanceof Error ? err.message : "Unknown error";
+    console.error("[cron] LLM mentions sync error:", err);
+  }
+
   return NextResponse.json({
     checked: allJobs.length,
     executed: dueJobs.length,
@@ -92,6 +104,10 @@ export async function GET(req: Request) {
     yolo: {
       users: yoloUsers.length,
       results: yoloResults,
+    },
+    llmMentions: {
+      synced: llmMentionsSynced,
+      error: llmMentionsError,
     },
   });
 }
