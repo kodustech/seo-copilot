@@ -20,18 +20,26 @@ export async function POST(req: Request) {
     });
   }
 
-  const { messages: uiMessages } = await req.json();
-  const messages = await convertToModelMessages(uiMessages);
+  try {
+    const { messages: uiMessages } = await req.json();
+    const messages = await convertToModelMessages(uiMessages);
 
-  const systemWithUser = `${GROWTH_AGENT_SYSTEM_PROMPT}\n\n## User Context\nLogged-in user email: ${userEmail}\nUse this email context for user-scoped tools (scheduled jobs and social scheduling integrations).`;
+    const systemWithUser = `${GROWTH_AGENT_SYSTEM_PROMPT}\n\n## User Context\nLogged-in user email: ${userEmail}\nUse this email context for user-scoped tools (scheduled jobs and social scheduling integrations).`;
 
-  const result = streamText({
-    model: getModel(),
-    system: systemWithUser,
-    messages,
-    tools: createAgentTools(userEmail),
-    stopWhen: stepCountIs(10),
-  });
+    const result = streamText({
+      model: getModel(),
+      system: systemWithUser,
+      messages,
+      tools: createAgentTools(userEmail),
+      stopWhen: stepCountIs(10),
+    });
 
-  return result.toUIMessageStreamResponse();
+    return result.toUIMessageStreamResponse();
+  } catch (err) {
+    console.error("[agent/chat] Error:", err);
+    return new Response(
+      JSON.stringify({ error: err instanceof Error ? err.message : "Internal server error" }),
+      { status: 500, headers: { "Content-Type": "application/json" } },
+    );
+  }
 }

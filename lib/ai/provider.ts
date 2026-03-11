@@ -6,7 +6,7 @@ import type { LanguageModel } from "ai";
 type Provider = "google" | "openai" | "anthropic";
 
 const DEFAULT_MODELS: Record<Provider, string> = {
-  google: "gemini-2.0-flash",
+  google: "gemini-3.0-flash-lite",
   openai: "gpt-4o",
   anthropic: "claude-sonnet-4-20250514",
 };
