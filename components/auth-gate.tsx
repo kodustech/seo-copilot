@@ -42,6 +42,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       { href: "/dashboard", label: "Dashboard" },
       { href: "/calendario", label: "Calendar" },
       { href: "/jobs", label: "Scheduled Jobs" },
+      { href: "/social-monitoring", label: "Social Monitor" },
     ],
     [],
   );
