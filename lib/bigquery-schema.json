@@ -1,0 +1,2041 @@
+{
+  "description": "Schema do BigQuery para o sistema de code review Kody.",
+  "tables": {
+    "organization_licenses": {
+      "name": "kody-408918.kodus_billing.organization_licenses",
+      "description": "Licenças de assinatura das organizações. Controla status da assinatura, trial, integração Stripe e alocação de licenças por time.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "STRING",
+          "description": "Identificador único da licença (UUID)"
+        },
+        {
+          "name": "organizationId",
+          "type": "STRING",
+          "description": "ID da organização à qual a licença pertence"
+        },
+        {
+          "name": "teamId",
+          "type": "STRING",
+          "description": "ID do time associado à licença"
+        },
+        {
+          "name": "subscriptionStatus",
+          "type": "STRING",
+          "description": "Status da assinatura (trial, active, expired)"
+        },
+        {
+          "name": "trialEnd",
+          "type": "DATETIME",
+          "description": "Data/hora de término do período de trial"
+        },
+        {
+          "name": "stripeCustomerId",
+          "type": "STRING",
+          "description": "ID do cliente no Stripe"
+        },
+        {
+          "name": "stripeSubscriptionId",
+          "type": "STRING",
+          "description": "ID da assinatura no Stripe"
+        },
+        {
+          "name": "totalLicenses",
+          "type": "INTEGER",
+          "description": "Quantidade total de licenças contratadas"
+        },
+        {
+          "name": "assignedLicenses",
+          "type": "INTEGER",
+          "description": "Quantidade de licenças já atribuídas"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação do registro"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização do registro"
+        },
+        {
+          "name": "planType",
+          "type": "STRING",
+          "description": "Tipo do plano contratado"
+        }
+      ],
+      "enums": {
+        "planType": [
+          "free_byok",
+          "teams_byok",
+          "teams_managed_legacy",
+          "teams_managed",
+          "enterprise_byok",
+          "enterprise_managed",
+          "teams_byok_annual",
+          "teams_managed_annual",
+          "enterprise_byok_annual",
+          "enterprise_managed_annual"
+        ],
+        "subscriptionStatus": [
+          "trial",
+          "active",
+          "expired"
+        ]
+      },
+      "relations": [
+        "organization_licenses.organizationId = organizations.uuid",
+        "organization_licenses.teamId = teams.uuid"
+      ]
+    },
+    "ga_daily_active_users": {
+      "name": "kody-408918.kodus_ga.daily_active_users",
+      "description": "Usuários ativos diários do Google Analytics. Métricas de DAU (Daily Active Users).",
+      "columns": [
+        {
+          "name": "date",
+          "type": "STRING",
+          "description": "Data do registro"
+        },
+        {
+          "name": "startDate",
+          "type": "STRING",
+          "description": "Data inicial do período"
+        },
+        {
+          "name": "endDate",
+          "type": "STRING",
+          "description": "Data final do período"
+        },
+        {
+          "name": "property_id",
+          "type": "STRING",
+          "description": "ID da propriedade do GA"
+        },
+        {
+          "name": "active1DayUsers",
+          "type": "INT64",
+          "description": "Quantidade de usuários ativos no dia"
+        }
+      ]
+    },
+    "ga_devices": {
+      "name": "kody-408918.kodus_ga.devices",
+      "description": "Métricas de dispositivos do Google Analytics. Navegadores, sistemas operacionais e categorias de dispositivos.",
+      "columns": [
+        {
+          "name": "date",
+          "type": "STRING",
+          "description": "Data do registro"
+        },
+        {
+          "name": "startDate",
+          "type": "STRING",
+          "description": "Data inicial do período"
+        },
+        {
+          "name": "endDate",
+          "type": "STRING",
+          "description": "Data final do período"
+        },
+        {
+          "name": "property_id",
+          "type": "STRING",
+          "description": "ID da propriedade do GA"
+        },
+        {
+          "name": "browser",
+          "type": "STRING",
+          "description": "Navegador utilizado"
+        },
+        {
+          "name": "deviceCategory",
+          "type": "STRING",
+          "description": "Categoria do dispositivo (desktop, mobile, tablet)"
+        },
+        {
+          "name": "operatingSystem",
+          "type": "STRING",
+          "description": "Sistema operacional"
+        },
+        {
+          "name": "totalUsers",
+          "type": "INT64",
+          "description": "Total de usuários"
+        },
+        {
+          "name": "newUsers",
+          "type": "INT64",
+          "description": "Novos usuários"
+        },
+        {
+          "name": "sessions",
+          "type": "INT64",
+          "description": "Número de sessões"
+        },
+        {
+          "name": "sessionsPerUser",
+          "type": "NUMERIC",
+          "description": "Sessões por usuário"
+        },
+        {
+          "name": "bounceRate",
+          "type": "NUMERIC",
+          "description": "Taxa de rejeição"
+        },
+        {
+          "name": "screenPageViews",
+          "type": "INT64",
+          "description": "Visualizações de página"
+        },
+        {
+          "name": "screenPageViewsPerSession",
+          "type": "NUMERIC",
+          "description": "Visualizações por sessão"
+        },
+        {
+          "name": "averageSessionDuration",
+          "type": "NUMERIC",
+          "description": "Duração média da sessão (segundos)"
+        }
+      ]
+    },
+    "ga_four_weekly_active_users": {
+      "name": "kody-408918.kodus_ga.four_weekly_active_users",
+      "description": "Usuários ativos em 4 semanas (28 dias) do Google Analytics. Métricas de MAU.",
+      "columns": [
+        {
+          "name": "date",
+          "type": "STRING",
+          "description": "Data do registro"
+        },
+        {
+          "name": "startDate",
+          "type": "STRING",
+          "description": "Data inicial do período"
+        },
+        {
+          "name": "endDate",
+          "type": "STRING",
+          "description": "Data final do período"
+        },
+        {
+          "name": "property_id",
+          "type": "STRING",
+          "description": "ID da propriedade do GA"
+        },
+        {
+          "name": "active28DayUsers",
+          "type": "INT64",
+          "description": "Usuários ativos nos últimos 28 dias"
+        }
+      ]
+    },
+    "ga_locations": {
+      "name": "kody-408918.kodus_ga.locations",
+      "description": "Métricas de localização do Google Analytics. País, região e cidade dos usuários.",
+      "columns": [
+        {
+          "name": "date",
+          "type": "STRING",
+          "description": "Data do registro"
+        },
+        {
+          "name": "startDate",
+          "type": "STRING",
+          "description": "Data inicial do período"
+        },
+        {
+          "name": "endDate",
+          "type": "STRING",
+          "description": "Data final do período"
+        },
+        {
+          "name": "property_id",
+          "type": "STRING",
+          "description": "ID da propriedade do GA"
+        },
+        {
+          "name": "country",
+          "type": "STRING",
+          "description": "País"
+        },
+        {
+          "name": "region",
+          "type": "STRING",
+          "description": "Região/Estado"
+        },
+        {
+          "name": "city",
+          "type": "STRING",
+          "description": "Cidade"
+        },
+        {
+          "name": "totalUsers",
+          "type": "INT64",
+          "description": "Total de usuários"
+        },
+        {
+          "name": "newUsers",
+          "type": "INT64",
+          "description": "Novos usuários"
+        },
+        {
+          "name": "sessions",
+          "type": "INT64",
+          "description": "Número de sessões"
+        },
+        {
+          "name": "sessionsPerUser",
+          "type": "NUMERIC",
+          "description": "Sessões por usuário"
+        },
+        {
+          "name": "bounceRate",
+          "type": "NUMERIC",
+          "description": "Taxa de rejeição"
+        },
+        {
+          "name": "screenPageViews",
+          "type": "INT64",
+          "description": "Visualizações de página"
+        },
+        {
+          "name": "screenPageViewsPerSession",
+          "type": "NUMERIC",
+          "description": "Visualizações por sessão"
+        },
+        {
+          "name": "averageSessionDuration",
+          "type": "NUMERIC",
+          "description": "Duração média da sessão (segundos)"
+        }
+      ]
+    },
+    "ga_pages": {
+      "name": "kody-408918.kodus_ga.pages",
+      "description": "Métricas de páginas do Google Analytics. Performance por URL/página.",
+      "columns": [
+        {
+          "name": "date",
+          "type": "STRING",
+          "description": "Data do registro"
+        },
+        {
+          "name": "startDate",
+          "type": "STRING",
+          "description": "Data inicial do período"
+        },
+        {
+          "name": "endDate",
+          "type": "STRING",
+          "description": "Data final do período"
+        },
+        {
+          "name": "property_id",
+          "type": "STRING",
+          "description": "ID da propriedade do GA"
+        },
+        {
+          "name": "hostName",
+          "type": "STRING",
+          "description": "Nome do host/domínio"
+        },
+        {
+          "name": "pagePathPlusQueryString",
+          "type": "STRING",
+          "description": "Caminho da página com query string"
+        },
+        {
+          "name": "screenPageViews",
+          "type": "INT64",
+          "description": "Visualizações de página"
+        },
+        {
+          "name": "bounceRate",
+          "type": "NUMERIC",
+          "description": "Taxa de rejeição"
+        }
+      ]
+    },
+    "ga_traffic_sources": {
+      "name": "kody-408918.kodus_ga.traffic_sources",
+      "description": "Fontes de tráfego do Google Analytics. De onde vêm os usuários (origem/mídia).",
+      "columns": [
+        {
+          "name": "date",
+          "type": "STRING",
+          "description": "Data do registro"
+        },
+        {
+          "name": "startDate",
+          "type": "STRING",
+          "description": "Data inicial do período"
+        },
+        {
+          "name": "endDate",
+          "type": "STRING",
+          "description": "Data final do período"
+        },
+        {
+          "name": "property_id",
+          "type": "STRING",
+          "description": "ID da propriedade do GA"
+        },
+        {
+          "name": "sessionSource",
+          "type": "STRING",
+          "description": "Origem da sessão (google, direct, etc.)"
+        },
+        {
+          "name": "sessionMedium",
+          "type": "STRING",
+          "description": "Mídia da sessão (organic, cpc, referral, etc.)"
+        },
+        {
+          "name": "totalUsers",
+          "type": "INT64",
+          "description": "Total de usuários"
+        },
+        {
+          "name": "newUsers",
+          "type": "INT64",
+          "description": "Novos usuários"
+        },
+        {
+          "name": "sessions",
+          "type": "INT64",
+          "description": "Número de sessões"
+        },
+        {
+          "name": "sessionsPerUser",
+          "type": "NUMERIC",
+          "description": "Sessões por usuário"
+        },
+        {
+          "name": "bounceRate",
+          "type": "NUMERIC",
+          "description": "Taxa de rejeição"
+        },
+        {
+          "name": "screenPageViews",
+          "type": "INT64",
+          "description": "Visualizações de página"
+        },
+        {
+          "name": "screenPageViewsPerSession",
+          "type": "NUMERIC",
+          "description": "Visualizações por sessão"
+        },
+        {
+          "name": "averageSessionDuration",
+          "type": "NUMERIC",
+          "description": "Duração média da sessão (segundos)"
+        }
+      ]
+    },
+    "ga_website_overview": {
+      "name": "kody-408918.kodus_ga.website_overview",
+      "description": "Visão geral do website do Google Analytics. Métricas agregadas diárias.",
+      "columns": [
+        {
+          "name": "date",
+          "type": "STRING",
+          "description": "Data do registro"
+        },
+        {
+          "name": "startDate",
+          "type": "STRING",
+          "description": "Data inicial do período"
+        },
+        {
+          "name": "endDate",
+          "type": "STRING",
+          "description": "Data final do período"
+        },
+        {
+          "name": "property_id",
+          "type": "STRING",
+          "description": "ID da propriedade do GA"
+        },
+        {
+          "name": "totalUsers",
+          "type": "INT64",
+          "description": "Total de usuários"
+        },
+        {
+          "name": "newUsers",
+          "type": "INT64",
+          "description": "Novos usuários"
+        },
+        {
+          "name": "sessions",
+          "type": "INT64",
+          "description": "Número de sessões"
+        },
+        {
+          "name": "sessionsPerUser",
+          "type": "NUMERIC",
+          "description": "Sessões por usuário"
+        },
+        {
+          "name": "bounceRate",
+          "type": "NUMERIC",
+          "description": "Taxa de rejeição"
+        },
+        {
+          "name": "screenPageViews",
+          "type": "INT64",
+          "description": "Visualizações de página"
+        },
+        {
+          "name": "screenPageViewsPerSession",
+          "type": "NUMERIC",
+          "description": "Visualizações por sessão"
+        },
+        {
+          "name": "averageSessionDuration",
+          "type": "NUMERIC",
+          "description": "Duração média da sessão (segundos)"
+        }
+      ]
+    },
+    "ga_weekly_active_users": {
+      "name": "kody-408918.kodus_ga.weekly_active_users",
+      "description": "Usuários ativos semanais (7 dias) do Google Analytics. Métricas de WAU.",
+      "columns": [
+        {
+          "name": "date",
+          "type": "STRING",
+          "description": "Data do registro"
+        },
+        {
+          "name": "startDate",
+          "type": "STRING",
+          "description": "Data inicial do período"
+        },
+        {
+          "name": "endDate",
+          "type": "STRING",
+          "description": "Data final do período"
+        },
+        {
+          "name": "property_id",
+          "type": "STRING",
+          "description": "ID da propriedade do GA"
+        },
+        {
+          "name": "active7DayUsers",
+          "type": "INT64",
+          "description": "Usuários ativos nos últimos 7 dias"
+        }
+      ]
+    },
+    "ga_weekly_events_report": {
+      "name": "kody-408918.kodus_ga.weekly_events_report",
+      "description": "Relatório semanal de eventos do Google Analytics. Contagem de eventos por tipo.",
+      "columns": [
+        {
+          "name": "startDate",
+          "type": "STRING",
+          "description": "Data inicial do período"
+        },
+        {
+          "name": "endDate",
+          "type": "STRING",
+          "description": "Data final do período"
+        },
+        {
+          "name": "yearWeek",
+          "type": "STRING",
+          "description": "Ano e semana (ex: 202401)"
+        },
+        {
+          "name": "property_id",
+          "type": "STRING",
+          "description": "ID da propriedade do GA"
+        },
+        {
+          "name": "eventName",
+          "type": "STRING",
+          "description": "Nome do evento"
+        },
+        {
+          "name": "eventCount",
+          "type": "INT64",
+          "description": "Quantidade de vezes que o evento ocorreu"
+        },
+        {
+          "name": "eventCountPerUser",
+          "type": "NUMERIC",
+          "description": "Eventos por usuário"
+        },
+        {
+          "name": "totalUsers",
+          "type": "INT64",
+          "description": "Total de usuários que dispararam o evento"
+        },
+        {
+          "name": "totalRevenue",
+          "type": "NUMERIC",
+          "description": "Receita total associada ao evento"
+        }
+      ]
+    },
+    "codeReviewFeedback": {
+      "name": "kody-408918.kodus_mongo.codeReviewFeedback",
+      "description": "Feedback de code review. Reações e comentários dos usuários sobre as sugestões da Kody.",
+      "columns": [
+        { "name": "_id", "type": "STRING", "description": "Identificador único do feedback" },
+        { "name": "organizationId", "type": "STRING", "description": "ID da organização" },
+        { "name": "suggestionId", "type": "STRING", "description": "ID da sugestão que recebeu feedback" },
+        { "name": "prNumber", "type": "NUMERIC", "description": "Número do PR" },
+        { "name": "pullRequest", "type": "JSON", "description": "Dados do PR relacionado" },
+        { "name": "reactions", "type": "JSON", "description": "Reações dos usuários (like, dislike, etc.)" },
+        { "name": "comment", "type": "JSON", "description": "Comentários sobre a sugestão" },
+        { "name": "syncedEmbeddedSuggestions", "type": "STRING", "description": "Se sugestões embedded foram sincronizadas" },
+        { "name": "createdAt", "type": "STRING", "description": "Data de criação" },
+        { "name": "updatedAt", "type": "STRING", "description": "Data da última atualização" }
+      ],
+      "relations": [
+        "codeReviewFeedback.organizationId = organizations.uuid"
+      ],
+      "notes": ["Datas são STRING em formato ISO 8601."]
+    },
+    "codeReviewSettingsLog": {
+      "name": "kody-408918.kodus_mongo.codeReviewSettingsLog",
+      "description": "Log de alterações nas configurações de code review. Histórico de quem alterou o quê.",
+      "columns": [
+        { "name": "_id", "type": "STRING", "description": "Identificador único do log" },
+        { "name": "organizationId", "type": "STRING", "description": "ID da organização" },
+        { "name": "teamId", "type": "STRING", "description": "ID do time" },
+        { "name": "action", "type": "STRING", "description": "Ação realizada (create, update, delete)" },
+        { "name": "configLevel", "type": "STRING", "description": "Nível da configuração (team, repository, directory)" },
+        { "name": "userInfo", "type": "JSON", "description": "Informações do usuário que fez a alteração" },
+        { "name": "changedData", "type": "JSON", "description": "Dados que foram alterados" },
+        { "name": "repository", "type": "JSON", "description": "Dados do repositório afetado" },
+        { "name": "directory", "type": "JSON", "description": "Dados do diretório afetado" },
+        { "name": "createdAt", "type": "STRING", "description": "Data de criação" },
+        { "name": "updatedAt", "type": "STRING", "description": "Data da última atualização" }
+      ],
+      "relations": [
+        "codeReviewSettingsLog.organizationId = organizations.uuid",
+        "codeReviewSettingsLog.teamId = teams.uuid"
+      ],
+      "notes": ["Datas são STRING em formato ISO 8601."]
+    },
+    "dryRun": {
+      "name": "kody-408918.kodus_mongo.dryRun",
+      "description": "Execuções de dry run (teste). Simula code review sem publicar os resultados.",
+      "columns": [
+        { "name": "_id", "type": "STRING", "description": "Identificador único do dry run" },
+        { "name": "organizationId", "type": "STRING", "description": "ID da organização" },
+        { "name": "teamId", "type": "STRING", "description": "ID do time" },
+        { "name": "runs", "type": "JSON", "description": "Dados das execuções de teste" },
+        { "name": "createdAt", "type": "STRING", "description": "Data de criação" },
+        { "name": "updatedAt", "type": "STRING", "description": "Data da última atualização" }
+      ],
+      "relations": [
+        "dryRun.organizationId = organizations.uuid",
+        "dryRun.teamId = teams.uuid"
+      ],
+      "notes": ["Datas são STRING em formato ISO 8601."]
+    },
+    "interaction": {
+      "name": "kody-408918.kodus_mongo.interaction",
+      "description": "Interações dos usuários com a Kody. Cliques em botões, comandos e ações.",
+      "columns": [
+        { "name": "_id", "type": "STRING", "description": "Identificador único da interação" },
+        { "name": "organizationId", "type": "STRING", "description": "ID da organização" },
+        { "name": "teamId", "type": "STRING", "description": "ID do time" },
+        { "name": "platformUserId", "type": "STRING", "description": "ID do usuário na plataforma" },
+        { "name": "interactionType", "type": "STRING", "description": "Tipo de interação" },
+        { "name": "interactionCommand", "type": "JSON", "description": "Comando executado" },
+        { "name": "buttonLabel", "type": "STRING", "description": "Label do botão clicado" },
+        { "name": "interactionDate", "type": "STRING", "description": "Data da interação" },
+        { "name": "createdAt", "type": "STRING", "description": "Data de criação" },
+        { "name": "updatedAt", "type": "STRING", "description": "Data da última atualização" }
+      ],
+      "relations": [
+        "interaction.organizationId = organizations.uuid",
+        "interaction.teamId = teams.uuid"
+      ],
+      "notes": ["Datas são STRING em formato ISO 8601."]
+    },
+    "issues": {
+      "name": "kody-408918.kodus_mongo.issues",
+      "description": "Issues identificadas pela Kody. Problemas recorrentes encontrados no código.",
+      "columns": [
+        { "name": "_id", "type": "STRING", "description": "Identificador único da issue" },
+        { "name": "organizationId", "type": "STRING", "description": "ID da organização" },
+        { "name": "title", "type": "STRING", "description": "Título da issue" },
+        { "name": "description", "type": "STRING", "description": "Descrição da issue" },
+        { "name": "status", "type": "STRING", "description": "Status da issue" },
+        { "name": "label", "type": "STRING", "description": "Categoria (bug, performance, security, etc.)" },
+        { "name": "severity", "type": "STRING", "description": "Severidade (low, medium, high, critical)" },
+        { "name": "language", "type": "STRING", "description": "Linguagem de programação" },
+        { "name": "filePath", "type": "STRING", "description": "Caminho do arquivo" },
+        { "name": "repository", "type": "JSON", "description": "Dados do repositório" },
+        { "name": "owner", "type": "JSON", "description": "Responsável pela issue" },
+        { "name": "reporter", "type": "JSON", "description": "Quem reportou" },
+        { "name": "contributingSuggestions", "type": "JSON", "description": "Sugestões que contribuíram para a issue" },
+        { "name": "createdAt", "type": "STRING", "description": "Data de criação" },
+        { "name": "updatedAt", "type": "STRING", "description": "Data da última atualização" }
+      ],
+      "relations": [
+        "issues.organizationId = organizations.uuid"
+      ],
+      "notes": ["Datas são STRING em formato ISO 8601."]
+    },
+    "kodyRules": {
+      "name": "kody-408918.kodus_mongo.kodyRules",
+      "description": "Regras customizadas da Kody. Regras de code review definidas por organização.",
+      "columns": [
+        { "name": "_id", "type": "STRING", "description": "Identificador único" },
+        { "name": "organizationId", "type": "STRING", "description": "ID da organização" },
+        { "name": "rules", "type": "JSON", "description": "Lista de regras customizadas" },
+        { "name": "createdAt", "type": "STRING", "description": "Data de criação" },
+        { "name": "updatedAt", "type": "STRING", "description": "Data da última atualização" }
+      ],
+      "relations": [
+        "kodyRules.organizationId = organizations.uuid"
+      ],
+      "notes": ["Datas são STRING em formato ISO 8601."]
+    },
+    "memory": {
+      "name": "kody-408918.kodus_mongo.memory",
+      "description": "Memória de conversas. Histórico de mensagens por sessão.",
+      "columns": [
+        { "name": "_id", "type": "STRING", "description": "Identificador único" },
+        { "name": "sessionId", "type": "STRING", "description": "ID da sessão de conversa" },
+        { "name": "messages", "type": "JSON", "description": "Lista de mensagens da conversa" }
+      ]
+    },
+    "promptExternalReferences": {
+      "name": "kody-408918.kodus_mongo.promptExternalReferences",
+      "description": "Referências externas para prompts. Documentação e contexto externo sincronizado.",
+      "columns": [
+        { "name": "_id", "type": "STRING", "description": "Identificador único" },
+        { "name": "organizationId", "type": "STRING", "description": "ID da organização" },
+        { "name": "repositoryId", "type": "STRING", "description": "ID do repositório" },
+        { "name": "repositoryName", "type": "STRING", "description": "Nome do repositório" },
+        { "name": "configKey", "type": "STRING", "description": "Chave de configuração" },
+        { "name": "sourceType", "type": "STRING", "description": "Tipo de fonte (docs, wiki, etc.)" },
+        { "name": "references", "type": "JSON", "description": "Lista de referências" },
+        { "name": "promptHash", "type": "STRING", "description": "Hash do prompt" },
+        { "name": "processingStatus", "type": "STRING", "description": "Status do processamento" },
+        { "name": "lastProcessedAt", "type": "STRING", "description": "Última vez processado" },
+        { "name": "syncErrors", "type": "JSON", "description": "Erros de sincronização" },
+        { "name": "createdAt", "type": "STRING", "description": "Data de criação" },
+        { "name": "updatedAt", "type": "STRING", "description": "Data da última atualização" }
+      ],
+      "relations": [
+        "promptExternalReferences.organizationId = organizations.uuid"
+      ],
+      "notes": ["Datas são STRING em formato ISO 8601."]
+    },
+    "pullRequestMessages": {
+      "name": "kody-408918.kodus_mongo.pullRequestMessages",
+      "description": "Mensagens de PR. Templates de mensagens de início e fim de review.",
+      "columns": [
+        { "name": "_id", "type": "STRING", "description": "Identificador único" },
+        { "name": "organizationId", "type": "STRING", "description": "ID da organização" },
+        { "name": "repositoryId", "type": "STRING", "description": "ID do repositório" },
+        { "name": "directoryId", "type": "STRING", "description": "ID do diretório" },
+        { "name": "configLevel", "type": "STRING", "description": "Nível da configuração" },
+        { "name": "globalSettings", "type": "JSON", "description": "Configurações globais" },
+        { "name": "startReviewMessage", "type": "JSON", "description": "Mensagem de início de review" },
+        { "name": "endReviewMessage", "type": "JSON", "description": "Mensagem de fim de review" },
+        { "name": "createdAt", "type": "STRING", "description": "Data de criação" },
+        { "name": "updatedAt", "type": "STRING", "description": "Data da última atualização" }
+      ],
+      "relations": [
+        "pullRequestMessages.organizationId = organizations.uuid"
+      ],
+      "notes": ["Datas são STRING em formato ISO 8601."]
+    },
+    "pullRequests": {
+      "name": "kody-408918.kodus_mongo.pullRequests",
+      "description": "Pull requests sincronizados do MongoDB. Contém metadados do PR, arquivos, commits, revisores, status e métricas de mudança.",
+      "columns": [
+        {
+          "name": "_id",
+          "type": "STRING",
+          "description": "Identificador único do PR no MongoDB"
+        },
+        {
+          "name": "url",
+          "type": "STRING",
+          "description": "URL do pull request no provedor (GitHub/GitLab/Bitbucket/Azure Repos)"
+        },
+        {
+          "name": "user",
+          "type": "STRING",
+          "description": "Dados do autor do PR (JSON)"
+        },
+        {
+          "name": "files",
+          "type": "STRING",
+          "description": "Lista de arquivos alterados (JSON). Contém array de sugestões de code review para cada arquivo"
+        },
+        {
+          "name": "title",
+          "type": "STRING",
+          "description": "Título do pull request"
+        },
+        {
+          "name": "merged",
+          "type": "STRING",
+          "description": "Indica se o PR foi mergeado"
+        },
+        {
+          "name": "number",
+          "type": "FLOAT",
+          "description": "Número do PR no repositório"
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "description": "Status do PR (open, closed, merged, etc.)"
+        },
+        {
+          "name": "commits",
+          "type": "STRING",
+          "description": "Lista de commits do PR (JSON)"
+        },
+        {
+          "name": "isDraft",
+          "type": "STRING",
+          "description": "Indica se o PR é rascunho"
+        },
+        {
+          "name": "closedAt",
+          "type": "STRING",
+          "description": "Data/hora de fechamento do PR"
+        },
+        {
+          "name": "openedAt",
+          "type": "STRING",
+          "description": "Data/hora de abertura do PR"
+        },
+        {
+          "name": "provider",
+          "type": "STRING",
+          "description": "Provedor do repositório (github, gitlab, etc.)"
+        },
+        {
+          "name": "assignees",
+          "type": "STRING",
+          "description": "Lista de responsáveis atribuídos (JSON)"
+        },
+        {
+          "name": "createdAt",
+          "type": "STRING",
+          "description": "Data de criação/abertura do PR"
+        },
+        {
+          "name": "reviewers",
+          "type": "STRING",
+          "description": "Lista de revisores (JSON)"
+        },
+        {
+          "name": "updatedAt",
+          "type": "STRING",
+          "description": "Data da última atualização do PR"
+        },
+        {
+          "name": "repository",
+          "type": "STRING",
+          "description": "Dados do repositório (JSON). Id, name, fullName"
+        },
+        {
+          "name": "totalAdded",
+          "type": "FLOAT",
+          "description": "Total de linhas adicionadas"
+        },
+        {
+          "name": "totalChanges",
+          "type": "FLOAT",
+          "description": "Total de mudanças (linhas)"
+        },
+        {
+          "name": "totalDeleted",
+          "type": "FLOAT",
+          "description": "Total de linhas removidas"
+        },
+        {
+          "name": "baseBranchRef",
+          "type": "STRING",
+          "description": "Referência do branch base"
+        },
+        {
+          "name": "headBranchRef",
+          "type": "STRING",
+          "description": "Referência do branch de origem"
+        },
+        {
+          "name": "organizationId",
+          "type": "STRING",
+          "description": "ID da organização à qual o PR pertence"
+        },
+        {
+          "name": "syncedWithIssues",
+          "type": "STRING",
+          "description": "Indica se está sincronizado com issues"
+        },
+        {
+          "name": "prLevelSuggestions",
+          "type": "STRING",
+          "description": "Sugestões em nível de PR (JSON)"
+        },
+        {
+          "name": "syncedEmbeddedSuggestions",
+          "type": "STRING",
+          "description": "Indica se sugestões embutidas foram sincronizadas"
+        }
+      ],
+      "jsonExamples": {
+        "files": [
+          {
+            "path": "src/app/components/Button.tsx",
+            "suggestions": [
+              {
+                "suggestionContent": "Conteudo da sugestão de code review",
+                "oneSentenceSummary": "Resumo da sugestão em uma frase",
+                "label": "bug | performance | security | cross-file | kody rules",
+                "severity": "low | medium | high | critical",
+                "priorityStatus": "prioritized | discarded-by-*",
+                "deliveryStatus": "sent | not-sent | failed"
+              }
+            ]
+          }
+        ]
+      },
+      "enums": {
+        "suggestions.label": [
+          "bug",
+          "performance",
+          "security",
+          "cross-file",
+          "kody rules"
+        ],
+        "suggestions.severity": [
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ],
+        "suggestions.priorityStatus": [
+          "prioritized",
+          "prioritized-by-clustering",
+          "discarded-by-code-diff",
+          "discarded-by-severity",
+          "discarded-by-safeguard",
+          "discarded-by-quantity",
+          "discarded-by-kody-fine-tuning",
+          "discarded-by-clustering"
+        ],
+        "suggestions.deliveryStatus": [
+          "sent",
+          "not-sent",
+          "failed",
+          "failed-lines-mismatch"
+        ]
+      },
+      "relations": [
+        "pullRequests.organizationId = organizations.uuid"
+      ],
+      "notes": [
+        "Datas são STRING em formato ISO 8601. Para parsear, use PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E*S%Ez', coluna). Nunca use PARSE_DATETIME com %Ez."
+      ]
+    },
+    "session": {
+      "name": "kody-408918.kodus_mongo.session",
+      "description": "Sessões de usuário. Registra acessos e navegação na plataforma.",
+      "columns": [
+        { "name": "_id", "type": "STRING", "description": "Identificador único da sessão" },
+        { "name": "organizationId", "type": "STRING", "description": "ID da organização" },
+        { "name": "userId", "type": "STRING", "description": "ID do usuário" },
+        { "name": "teamId", "type": "JSON", "description": "ID(s) do time" },
+        { "name": "platformUserId", "type": "STRING", "description": "ID do usuário na plataforma" },
+        { "name": "platformName", "type": "STRING", "description": "Nome da plataforma (web, slack, etc.)" },
+        { "name": "route", "type": "STRING", "description": "Rota/página acessada" },
+        { "name": "date", "type": "NUMERIC", "description": "Data da sessão (timestamp)" },
+        { "name": "createdAt", "type": "STRING", "description": "Data de criação" },
+        { "name": "updatedAt", "type": "STRING", "description": "Data da última atualização" }
+      ],
+      "relations": [
+        "session.organizationId = organizations.uuid"
+      ],
+      "notes": ["Datas são STRING em formato ISO 8601."]
+    },
+    "webhook_logs": {
+      "name": "kody-408918.kodus_mongo.webhook_logs",
+      "description": "Logs de webhooks recebidos. Registra eventos de GitHub, GitLab, etc.",
+      "columns": [
+        { "name": "_id", "type": "STRING", "description": "Identificador único do log" },
+        { "name": "platform", "type": "STRING", "description": "Plataforma de origem (github, gitlab, etc.)" },
+        { "name": "event", "type": "STRING", "description": "Tipo do evento (push, pull_request, etc.)" },
+        { "name": "payload", "type": "JSON", "description": "Payload completo do webhook" },
+        { "name": "createdAt", "type": "STRING", "description": "Data de criação" },
+        { "name": "updatedAt", "type": "STRING", "description": "Data da última atualização" }
+      ],
+      "notes": ["Datas são STRING em formato ISO 8601."]
+    },
+    "auth_integrations": {
+      "name": "kody-408918.kodus_postgres.auth_integrations",
+      "description": "Armazena as credenciais e configurações de autenticação para conectar nas ferramentas Git (GitHub, GitLab, Bitbucket, Azure Repos).",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único da autenticação"
+        },
+        {
+          "name": "team_id",
+          "type": "STRING",
+          "description": "ID do time ao qual a autenticação pertence"
+        },
+        {
+          "name": "organization_id",
+          "type": "STRING",
+          "description": "ID da organização à qual a autenticação pertence"
+        },
+        {
+          "name": "authDetails",
+          "type": "STRING",
+          "description": "JSON contendo os detalhes de autenticação (tokens, credenciais)"
+        },
+        {
+          "name": "status",
+          "type": "BOOLEAN",
+          "description": "Status da autenticação (ativa/inativa)"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação da autenticação"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização da autenticação"
+        }
+      ],
+      "relations": [
+        "auth_integrations.team_id = teams.uuid",
+        "auth_integrations.organization_id = organizations.uuid"
+      ]
+    },
+    "automation": {
+      "name": "kody-408918.kodus_postgres.automation",
+      "description": "Definições de automações disponíveis no sistema. Contém templates de automação com nome, tipo, nível e anti-patterns.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único da automação"
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Nome da automação"
+        },
+        {
+          "name": "description",
+          "type": "STRING",
+          "description": "Descrição da automação"
+        },
+        {
+          "name": "automationType",
+          "type": "STRING",
+          "description": "Tipo da automação"
+        },
+        {
+          "name": "level",
+          "type": "STRING",
+          "description": "Nível da automação"
+        },
+        {
+          "name": "status",
+          "type": "BOOLEAN",
+          "description": "Se a automação está ativa"
+        },
+        {
+          "name": "tags",
+          "type": "STRING",
+          "description": "Tags associadas (JSON)"
+        },
+        {
+          "name": "antiPatterns",
+          "type": "STRING",
+          "description": "Anti-patterns detectados pela automação (JSON)"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização"
+        }
+      ]
+    },
+    "automation_execution": {
+      "name": "kody-408918.kodus_postgres.automation_execution",
+      "description": "Execuções de automações. Registra cada vez que uma automação foi executada em um PR, com status e dados da execução.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único da execução"
+        },
+        {
+          "name": "team_automation_id",
+          "type": "STRING",
+          "description": "ID da automação do time que foi executada"
+        },
+        {
+          "name": "repositoryId",
+          "type": "STRING",
+          "description": "ID do repositório onde a automação foi executada"
+        },
+        {
+          "name": "pullRequestNumber",
+          "type": "INT64",
+          "description": "Número do PR onde a automação foi executada"
+        },
+        {
+          "name": "origin",
+          "type": "STRING",
+          "description": "Origem da execução"
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "description": "Status da execução (success, failed, etc.)"
+        },
+        {
+          "name": "errorMessage",
+          "type": "STRING",
+          "description": "Mensagem de erro, se houver"
+        },
+        {
+          "name": "dataExecution",
+          "type": "STRING",
+          "description": "Dados da execução (JSON)"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização"
+        }
+      ],
+      "relations": [
+        "automation_execution.team_automation_id = team_automations.uuid"
+      ]
+    },
+    "code_review_execution": {
+      "name": "kody-408918.kodus_postgres.code_review_execution",
+      "description": "Execuções de code review. Registra cada etapa do processo de code review com status, estágio e metadados.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único da execução"
+        },
+        {
+          "name": "automation_execution_id",
+          "type": "STRING",
+          "description": "ID da execução de automação relacionada"
+        },
+        {
+          "name": "stage_name",
+          "type": "STRING",
+          "description": "Nome do estágio do code review"
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "description": "Status da execução"
+        },
+        {
+          "name": "message",
+          "type": "STRING",
+          "description": "Mensagem de status ou erro"
+        },
+        {
+          "name": "metadata",
+          "type": "STRING",
+          "description": "Metadados da execução (JSON)"
+        },
+        {
+          "name": "finishedAt",
+          "type": "DATETIME",
+          "description": "Data/hora de conclusão"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização"
+        }
+      ],
+      "relations": [
+        "code_review_execution.automation_execution_id = automation_execution.uuid"
+      ]
+    },
+    "integration_configs": {
+      "name": "kody-408918.kodus_postgres.integration_configs",
+      "description": "Armazena configurações específicas de cada integração. A chave 'repositories' contém todos os repositórios configurados.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único da configuração"
+        },
+        {
+          "name": "team_id",
+          "type": "STRING",
+          "description": "ID do time ao qual a configuração pertence"
+        },
+        {
+          "name": "integration_id",
+          "type": "STRING",
+          "description": "ID da integração à qual esta configuração pertence"
+        },
+        {
+          "name": "configKey",
+          "type": "STRING",
+          "description": "Chave do tipo de configuração (ex: 'repositories', 'webhooks')"
+        },
+        {
+          "name": "configValue",
+          "type": "STRING",
+          "description": "JSON contendo os valores da configuração"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação da configuração"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização da configuração"
+        }
+      ],
+      "relations": [
+        "integration_configs.team_id = teams.uuid",
+        "integration_configs.integration_id = integrations.uuid"
+      ]
+    },
+    "integrations": {
+      "name": "kody-408918.kodus_postgres.integrations",
+      "description": "Define qual plataforma Git está sendo utilizada (GitHub, GitLab, Bitbucket ou Azure Repos).",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único da integração"
+        },
+        {
+          "name": "team_id",
+          "type": "STRING",
+          "description": "ID do time ao qual a integração pertence"
+        },
+        {
+          "name": "organization_id",
+          "type": "STRING",
+          "description": "ID da organização à qual a integração pertence"
+        },
+        {
+          "name": "auth_integration_id",
+          "type": "STRING",
+          "description": "ID da autenticação utilizada por esta integração"
+        },
+        {
+          "name": "platform",
+          "type": "STRING",
+          "description": "Plataforma Git utilizada (github, gitlab, bitbucket, azure_repos)"
+        },
+        {
+          "name": "integrationCategory",
+          "type": "STRING",
+          "description": "Categoria da integração (ex: git_provider)"
+        },
+        {
+          "name": "status",
+          "type": "BOOLEAN",
+          "description": "Status da integração (ativa/inativa)"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação da integração"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização da integração"
+        }
+      ],
+      "enums": {
+        "platform": [
+          "github",
+          "gitlab",
+          "bitbucket",
+          "azure_repos"
+        ]
+      },
+      "relations": [
+        "integrations.team_id = teams.uuid",
+        "integrations.organization_id = organizations.uuid",
+        "integrations.auth_integration_id = auth_integrations.uuid"
+      ]
+    },
+    "organization_parameters": {
+      "name": "kody-408918.kodus_postgres.organization_parameters",
+      "description": "Parâmetros de configuração em nível de organização. Configurações globais que se aplicam a toda a organização.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único do parâmetro"
+        },
+        {
+          "name": "organization_id",
+          "type": "STRING",
+          "description": "ID da organização à qual o parâmetro pertence"
+        },
+        {
+          "name": "configKey",
+          "type": "STRING",
+          "description": "Chave do tipo de parâmetro"
+        },
+        {
+          "name": "configValue",
+          "type": "STRING",
+          "description": "JSON contendo os valores do parâmetro"
+        },
+        {
+          "name": "description",
+          "type": "STRING",
+          "description": "Descrição do parâmetro"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação do parâmetro"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização do parâmetro"
+        }
+      ],
+      "relations": [
+        "organization_parameters.organization_id = organizations.uuid"
+      ]
+    },
+    "organizations": {
+      "name": "kody-408918.kodus_postgres.organizations",
+      "description": "Contém os dados das organizações, representa o cliente/empresa que utiliza a Kody.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único da organização"
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Nome da organização"
+        },
+        {
+          "name": "tenantName",
+          "type": "STRING",
+          "description": "Nome do tenant relacionado à organização"
+        },
+        {
+          "name": "status",
+          "type": "BOOLEAN",
+          "description": "Status da organização (ativo/inativo)"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação da organização"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização da organização"
+        }
+      ]
+    },
+    "parameters": {
+      "name": "kody-408918.kodus_postgres.parameters",
+      "description": "Configurações em nível de time, principalmente 'code_review_config' que define como o code review funciona.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único do parâmetro"
+        },
+        {
+          "name": "team_id",
+          "type": "STRING",
+          "description": "ID do time ao qual o parâmetro pertence"
+        },
+        {
+          "name": "configKey",
+          "type": "STRING",
+          "description": "Chave do tipo de parâmetro (ex: 'code_review_config')"
+        },
+        {
+          "name": "configValue",
+          "type": "STRING",
+          "description": "JSON contendo os valores do parâmetro"
+        },
+        {
+          "name": "description",
+          "type": "STRING",
+          "description": "Descrição do parâmetro"
+        },
+        {
+          "name": "version",
+          "type": "INT64",
+          "description": "Versão do parâmetro"
+        },
+        {
+          "name": "active",
+          "type": "BOOLEAN",
+          "description": "Se o parâmetro está ativo"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação do parâmetro"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização do parâmetro"
+        }
+      ],
+      "relations": [
+        "parameters.team_id = teams.uuid"
+      ]
+    },
+    "permissions": {
+      "name": "kody-408918.kodus_postgres.permissions",
+      "description": "Permissões de usuários. Define o que cada usuário pode acessar/fazer no sistema.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único da permissão"
+        },
+        {
+          "name": "user_id",
+          "type": "STRING",
+          "description": "ID do usuário ao qual as permissões pertencem"
+        },
+        {
+          "name": "permissions",
+          "type": "STRING",
+          "description": "JSON contendo as permissões do usuário"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização"
+        }
+      ],
+      "relations": [
+        "permissions.user_id = users.uuid"
+      ]
+    },
+    "profile_configs": {
+      "name": "kody-408918.kodus_postgres.profile_configs",
+      "description": "Configurações específicas de cada perfil de usuário.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único da configuração"
+        },
+        {
+          "name": "profile_id",
+          "type": "STRING",
+          "description": "ID do perfil ao qual a configuração pertence"
+        },
+        {
+          "name": "configKey",
+          "type": "STRING",
+          "description": "Chave da configuração"
+        },
+        {
+          "name": "configValue",
+          "type": "STRING",
+          "description": "Valor da configuração"
+        },
+        {
+          "name": "status",
+          "type": "BOOLEAN",
+          "description": "Se a configuração está ativa"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização"
+        }
+      ],
+      "relations": [
+        "profile_configs.profile_id = profiles.uuid"
+      ]
+    },
+    "profiles": {
+      "name": "kody-408918.kodus_postgres.profiles",
+      "description": "Perfis de usuários. Contém dados pessoais como nome, foto, telefone e cargo.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único do perfil"
+        },
+        {
+          "name": "user_id",
+          "type": "STRING",
+          "description": "ID do usuário ao qual o perfil pertence"
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Nome do usuário"
+        },
+        {
+          "name": "img",
+          "type": "STRING",
+          "description": "URL da imagem/avatar do usuário"
+        },
+        {
+          "name": "phone",
+          "type": "STRING",
+          "description": "Telefone do usuário"
+        },
+        {
+          "name": "position",
+          "type": "STRING",
+          "description": "Cargo/posição do usuário"
+        },
+        {
+          "name": "status",
+          "type": "BOOLEAN",
+          "description": "Status do perfil (ativo/inativo)"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização"
+        }
+      ],
+      "relations": [
+        "profiles.user_id = users.uuid"
+      ]
+    },
+    "sso_config": {
+      "name": "kody-408918.kodus_postgres.sso_config",
+      "description": "Configuração de Single Sign-On (SSO) das organizações. Define protocolo, domínios permitidos e configurações do provedor.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único da configuração SSO"
+        },
+        {
+          "name": "organization_id",
+          "type": "STRING",
+          "description": "ID da organização à qual a configuração pertence"
+        },
+        {
+          "name": "protocol",
+          "type": "STRING",
+          "description": "Protocolo SSO utilizado (ex: SAML, OIDC)"
+        },
+        {
+          "name": "domains",
+          "type": "JSON",
+          "description": "Domínios de email permitidos para SSO"
+        },
+        {
+          "name": "provider_config",
+          "type": "STRING",
+          "description": "Configurações específicas do provedor SSO"
+        },
+        {
+          "name": "active",
+          "type": "BOOLEAN",
+          "description": "Se o SSO está ativo"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização"
+        }
+      ],
+      "relations": [
+        "sso_config.organization_id = organizations.uuid"
+      ]
+    },
+    "suggestion_embedded": {
+      "name": "kody-408918.kodus_postgres.suggestion_embedded",
+      "description": "Sugestões de code review com embeddings para busca semântica. Contém o conteúdo da sugestão, código melhorado e feedback.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único da sugestão"
+        },
+        {
+          "name": "organization_id",
+          "type": "STRING",
+          "description": "ID da organização"
+        },
+        {
+          "name": "repositoryId",
+          "type": "STRING",
+          "description": "ID do repositório"
+        },
+        {
+          "name": "repositoryFullName",
+          "type": "STRING",
+          "description": "Nome completo do repositório (owner/repo)"
+        },
+        {
+          "name": "pullRequestNumber",
+          "type": "INT64",
+          "description": "Número do PR onde a sugestão foi feita"
+        },
+        {
+          "name": "suggestionId",
+          "type": "STRING",
+          "description": "ID original da sugestão"
+        },
+        {
+          "name": "suggestionContent",
+          "type": "STRING",
+          "description": "Conteúdo textual da sugestão"
+        },
+        {
+          "name": "improvedCode",
+          "type": "STRING",
+          "description": "Código sugerido como melhoria"
+        },
+        {
+          "name": "label",
+          "type": "STRING",
+          "description": "Categoria da sugestão (bug, performance, security, etc.)"
+        },
+        {
+          "name": "severity",
+          "type": "STRING",
+          "description": "Severidade da sugestão (low, medium, high, critical)"
+        },
+        {
+          "name": "language",
+          "type": "STRING",
+          "description": "Linguagem de programação do código"
+        },
+        {
+          "name": "feedbackType",
+          "type": "STRING",
+          "description": "Tipo de feedback recebido do usuário"
+        },
+        {
+          "name": "suggestionEmbed",
+          "type": "STRING",
+          "description": "Embedding vetorial da sugestão para busca semântica"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização"
+        }
+      ],
+      "relations": [
+        "suggestion_embedded.organization_id = organizations.uuid"
+      ]
+    },
+    "team_automations": {
+      "name": "kody-408918.kodus_postgres.team_automations",
+      "description": "Relaciona automações com times. Define quais automações estão habilitadas para cada time.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único"
+        },
+        {
+          "name": "teamUuid",
+          "type": "STRING",
+          "description": "ID do time"
+        },
+        {
+          "name": "automationUuid",
+          "type": "STRING",
+          "description": "ID da automação"
+        },
+        {
+          "name": "status",
+          "type": "BOOLEAN",
+          "description": "Se a automação está ativa para o time"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização"
+        }
+      ],
+      "relations": [
+        "team_automations.teamUuid = teams.uuid",
+        "team_automations.automationUuid = automation.uuid"
+      ]
+    },
+    "team_cli_key": {
+      "name": "kody-408918.kodus_postgres.team_cli_key",
+      "description": "Chaves de API para acesso via CLI. Cada time pode ter múltiplas chaves para integração.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único da chave"
+        },
+        {
+          "name": "team_id",
+          "type": "STRING",
+          "description": "ID do time ao qual a chave pertence"
+        },
+        {
+          "name": "created_by_user_id",
+          "type": "STRING",
+          "description": "ID do usuário que criou a chave"
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Nome/descrição da chave"
+        },
+        {
+          "name": "keyPrefix",
+          "type": "STRING",
+          "description": "Prefixo da chave (para identificação)"
+        },
+        {
+          "name": "keyHash",
+          "type": "STRING",
+          "description": "Hash da chave (a chave original não é armazenada)"
+        },
+        {
+          "name": "active",
+          "type": "BOOLEAN",
+          "description": "Se a chave está ativa"
+        },
+        {
+          "name": "lastUsedAt",
+          "type": "DATETIME",
+          "description": "Data/hora do último uso da chave"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização"
+        }
+      ],
+      "relations": [
+        "team_cli_key.team_id = teams.uuid",
+        "team_cli_key.created_by_user_id = users.uuid"
+      ]
+    },
+    "team_member": {
+      "name": "kody-408918.kodus_postgres.team_member",
+      "description": "Membros de cada time. Relaciona usuários com times e define seu papel no time.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único do membro"
+        },
+        {
+          "name": "team_id",
+          "type": "STRING",
+          "description": "ID do time"
+        },
+        {
+          "name": "user_id",
+          "type": "STRING",
+          "description": "ID do usuário"
+        },
+        {
+          "name": "organization_id",
+          "type": "STRING",
+          "description": "ID da organização"
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Nome do membro"
+        },
+        {
+          "name": "avatar",
+          "type": "STRING",
+          "description": "URL do avatar"
+        },
+        {
+          "name": "teamRole",
+          "type": "STRING",
+          "description": "Papel do membro no time"
+        },
+        {
+          "name": "status",
+          "type": "BOOLEAN",
+          "description": "Se o membro está ativo no time"
+        },
+        {
+          "name": "communication",
+          "type": "STRING",
+          "description": "Configuração de comunicação"
+        },
+        {
+          "name": "communicationId",
+          "type": "STRING",
+          "description": "ID na ferramenta de comunicação"
+        },
+        {
+          "name": "codeManagement",
+          "type": "STRING",
+          "description": "Configuração de gerenciamento de código"
+        },
+        {
+          "name": "projectManagement",
+          "type": "STRING",
+          "description": "Configuração de gerenciamento de projeto"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização"
+        }
+      ],
+      "relations": [
+        "team_member.team_id = teams.uuid",
+        "team_member.user_id = users.uuid",
+        "team_member.organization_id = organizations.uuid"
+      ]
+    },
+    "team_profiles": {
+      "name": "kody-408918.kodus_postgres.team_profiles",
+      "description": "Relaciona perfis com times. Define quais perfis têm acesso a quais times.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único"
+        },
+        {
+          "name": "team_id",
+          "type": "STRING",
+          "description": "ID do time"
+        },
+        {
+          "name": "profile_id",
+          "type": "STRING",
+          "description": "ID do perfil"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização"
+        }
+      ],
+      "relations": [
+        "team_profiles.team_id = teams.uuid",
+        "team_profiles.profile_id = profiles.uuid"
+      ]
+    },
+    "teams": {
+      "name": "kody-408918.kodus_postgres.teams",
+      "description": "Contém os times/equipes dentro de cada organização. Um time agrupa repositórios, integrações e configurações específicas.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único do time"
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Nome do time"
+        },
+        {
+          "name": "organization_id",
+          "type": "STRING",
+          "description": "ID da organização à qual o time pertence"
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "description": "Status do time (ativo/inativo)"
+        },
+        {
+          "name": "cliConfig",
+          "type": "STRING",
+          "description": "Configurações da CLI do time"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação do time"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização do time"
+        }
+      ],
+      "relations": [
+        "teams.organization_id = organizations.uuid"
+      ]
+    },
+    "users": {
+      "name": "kody-408918.kodus_postgres.users",
+      "description": "Contém os usuários do sistema. Cada usuário pertence a uma organização e possui permissões específicas.",
+      "columns": [
+        {
+          "name": "uuid",
+          "type": "STRING",
+          "description": "Identificador único do usuário"
+        },
+        {
+          "name": "email",
+          "type": "STRING",
+          "description": "Email do usuário"
+        },
+        {
+          "name": "role",
+          "type": "STRING",
+          "description": "Função/papel do usuário no sistema (ex: admin, developer)"
+        },
+        {
+          "name": "organization_id",
+          "type": "STRING",
+          "description": "ID da organização à qual o usuário pertence"
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "description": "Status do usuário (ativo/inativo)"
+        },
+        {
+          "name": "password",
+          "type": "STRING",
+          "description": "Senha criptografada do usuário"
+        },
+        {
+          "name": "createdAt",
+          "type": "DATETIME",
+          "description": "Data de criação do usuário"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DATETIME",
+          "description": "Data da última atualização do usuário"
+        }
+      ],
+      "relations": [
+        "users.organization_id = organizations.uuid"
+      ]
+    },
+    "posthog_events": {
+      "name": "kody-408918.kodus_posthog.events",
+      "description": "Eventos do PostHog. Analytics de produto com ações dos usuários na plataforma.",
+      "columns": [
+        { "name": "uuid", "type": "STRING", "description": "Identificador único do evento" },
+        { "name": "team_id", "type": "INT64", "description": "ID do time no PostHog" },
+        { "name": "timestamp", "type": "TIMESTAMP", "description": "Data/hora do evento" },
+        { "name": "event", "type": "STRING", "description": "Nome do evento (ex: pageview, click, etc.)" },
+        { "name": "distinct_id", "type": "STRING", "description": "ID único do usuário no PostHog" },
+        { "name": "properties", "type": "STRING", "description": "Propriedades do evento (JSON)" },
+        { "name": "set", "type": "STRING", "description": "Propriedades a serem definidas no usuário (JSON)" },
+        { "name": "set_once", "type": "STRING", "description": "Propriedades a definir apenas uma vez (JSON)" },
+        { "name": "ip", "type": "STRING", "description": "Endereço IP do usuário" },
+        { "name": "elements", "type": "STRING", "description": "Elementos da página interagidos (JSON)" },
+        { "name": "site_url", "type": "STRING", "description": "URL do site" },
+        { "name": "bq_ingested_timestamp", "type": "TIMESTAMP", "description": "Data/hora de ingestão no BigQuery" }
+      ]
+    }
+  },
+  "globalNotes": [
+    "Dados do kodus_mongo: datas são STRING em formato ISO 8601 (YYYY-MM-DDTHH:MM:SS.SSSZ). Para parsear, use PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E*S%Ez', coluna). Nunca use PARSE_DATETIME com %Ez.",
+    "Dados do kodus_postgres: datas são DATETIME nativas do BigQuery."
+  ]
+}
