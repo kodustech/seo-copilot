@@ -263,11 +263,13 @@ function SortableCard({
   overlay,
   onUpdatePayload,
   onAction,
+  onDelete,
 }: {
   item: GrowthWorkItem;
   overlay?: boolean;
   onUpdatePayload?: (payload: Record<string, unknown>) => void;
   onAction?: (actionId: string) => void;
+  onDelete?: () => void;
 }) {
   const {
     attributes,
@@ -309,12 +311,12 @@ function SortableCard({
           {item.title}
         </p>
 
-        {/* Pipeline shortcuts */}
-        {onAction && (
+        {/* Card actions: pipeline shortcuts + delete */}
+        {(onAction || onDelete) && (
           <Popover>
             <PopoverTrigger asChild>
-              <button className="shrink-0 rounded p-0.5 text-neutral-600 opacity-0 transition group-hover:opacity-100 hover:bg-white/10 hover:text-amber-400">
-                <Zap className="size-3.5" />
+              <button className="shrink-0 rounded p-0.5 text-neutral-600 opacity-0 transition group-hover:opacity-100 hover:bg-white/10 hover:text-neutral-300">
+                <MoreHorizontal className="size-3.5" />
               </button>
             </PopoverTrigger>
             <PopoverContent
@@ -322,24 +324,42 @@ function SortableCard({
               side="bottom"
               className="w-48 border-white/10 bg-neutral-950 p-1 text-neutral-100"
             >
-              <p className="px-2 py-1.5 text-[10px] font-medium uppercase tracking-wider text-neutral-500">
-                Pipeline actions
-              </p>
-              {PIPELINE_ACTIONS.map((action) => {
-                const Icon = action.icon;
-                return (
+              {onAction && (
+                <>
+                  <p className="px-2 py-1.5 text-[10px] font-medium uppercase tracking-wider text-neutral-500">
+                    Pipeline
+                  </p>
+                  {PIPELINE_ACTIONS.map((action) => {
+                    const Icon = action.icon;
+                    return (
+                      <Button
+                        key={action.id}
+                        variant="ghost"
+                        size="sm"
+                        className="w-full justify-start text-xs text-neutral-300 hover:bg-white/10 hover:text-white"
+                        onClick={() => onAction(action.id)}
+                      >
+                        <Icon className="mr-2 size-3.5" />
+                        {action.label}
+                      </Button>
+                    );
+                  })}
+                </>
+              )}
+              {onDelete && (
+                <>
+                  <div className={cn("my-1 h-px", "bg-white/10")} />
                   <Button
-                    key={action.id}
                     variant="ghost"
                     size="sm"
-                    className="w-full justify-start text-xs text-neutral-300 hover:bg-white/10 hover:text-white"
-                    onClick={() => onAction(action.id)}
+                    className="w-full justify-start text-xs text-red-400 hover:bg-red-500/10 hover:text-red-300"
+                    onClick={onDelete}
                   >
-                    <Icon className="mr-2 size-3.5" />
-                    {action.label}
+                    <Trash2 className="mr-2 size-3.5" />
+                    Delete card
                   </Button>
-                );
-              })}
+                </>
+              )}
             </PopoverContent>
           </Popover>
         )}
@@ -767,6 +787,15 @@ export function KanbanPage() {
     });
   }
 
+  async function handleDeleteCard(itemId: string) {
+    if (!token) return;
+    setItems((prev) => prev.filter((i) => i.id !== itemId));
+    await fetch(`/api/kanban/items/${itemId}`, {
+      method: "DELETE",
+      headers: authHeaders(token),
+    });
+  }
+
   // ---- Pipeline shortcuts ----
 
   function handlePipelineAction(item: GrowthWorkItem, actionId: string) {
@@ -930,6 +959,7 @@ export function KanbanPage() {
                           onAction={(actionId) =>
                             handlePipelineAction(item, actionId)
                           }
+                          onDelete={() => handleDeleteCard(item.id)}
                         />
                       ))}
                     </div>

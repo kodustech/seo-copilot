@@ -460,6 +460,23 @@ export async function updateWorkItem(
   return rowToWorkItem(data as GrowthWorkItemRow);
 }
 
+/**
+ * Delete a work item by id (shared board — any authenticated user can delete).
+ */
+export async function deleteWorkItem(
+  client: SupabaseClient,
+  itemId: string,
+): Promise<void> {
+  const { error } = await client
+    .from("growth_work_items")
+    .delete()
+    .eq("id", itemId);
+
+  if (error) {
+    throw new Error(`Error deleting kanban item: ${error.message}`);
+  }
+}
+
 export async function listExistingSourceRefs(
   client: SupabaseClient,
   userEmail: string,

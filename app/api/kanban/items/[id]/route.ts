@@ -7,6 +7,7 @@ import {
   normalizeWorkItemStage,
   normalizeWorkItemType,
   updateWorkItem,
+  deleteWorkItem,
   type UpdateWorkItemInput,
 } from "@/lib/kanban";
 
@@ -104,5 +105,26 @@ export async function PATCH(req: Request, { params }: Params) {
     const status =
       message.includes("valid updates") || message.includes("empty") ? 400 : 500;
     return NextResponse.json({ error: message }, { status });
+  }
+}
+
+export async function DELETE(req: Request, { params }: Params) {
+  const { id } = await params;
+  if (!id) {
+    return NextResponse.json({ error: "Missing item id." }, { status: 400 });
+  }
+
+  try {
+    const { client } = await getSupabaseUserClient(
+      req.headers.get("authorization"),
+    );
+    await deleteWorkItem(client, id);
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Internal error";
+    if (message.toLowerCase().includes("token") || message === "Unauthorized") {
+      return unauthorized(message);
+    }
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
