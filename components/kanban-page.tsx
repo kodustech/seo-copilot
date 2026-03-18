@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   DndContext,
   DragOverlay,
@@ -19,14 +20,21 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  FileText,
   GripVertical,
+  Hash,
   Loader2,
+  MessageSquare,
   MoreHorizontal,
   Pencil,
   Plus,
   RefreshCcw,
+  Search,
+  Share2,
+  Tag,
   Trash2,
   X,
+  Zap,
 } from "lucide-react";
 
 import type {
@@ -108,15 +116,158 @@ function creatorInitials(email: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Pipeline shortcuts — actions available from each card
+// ---------------------------------------------------------------------------
+
+type PipelineAction = {
+  id: string;
+  label: string;
+  icon: React.ElementType;
+  prompt: (title: string) => string;
+};
+
+const PIPELINE_ACTIONS: PipelineAction[] = [
+  {
+    id: "keywords",
+    label: "Research Keywords",
+    icon: Search,
+    prompt: (t) => `Research SEO keywords for the topic: "${t}"`,
+  },
+  {
+    id: "titles",
+    label: "Generate Titles",
+    icon: Hash,
+    prompt: (t) => `Generate article title options for: "${t}"`,
+  },
+  {
+    id: "article",
+    label: "Write Article",
+    icon: FileText,
+    prompt: (t) => `Write a full blog article about: "${t}"`,
+  },
+  {
+    id: "social",
+    label: "Create Social Posts",
+    icon: Share2,
+    prompt: (t) => `Generate social media posts (LinkedIn + Twitter) about: "${t}"`,
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Custom fields display & edit
+// ---------------------------------------------------------------------------
+
+function CustomFields({
+  payload,
+  onUpdate,
+}: {
+  payload: Record<string, unknown>;
+  onUpdate: (payload: Record<string, unknown>) => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [newKey, setNewKey] = useState("");
+  const [newValue, setNewValue] = useState("");
+
+  // Filter out internal keys
+  const fields = Object.entries(payload).filter(
+    ([k]) => !k.startsWith("_"),
+  );
+
+  function handleAdd() {
+    const key = newKey.trim();
+    const value = newValue.trim();
+    if (!key) return;
+    onUpdate({ ...payload, [key]: value });
+    setNewKey("");
+    setNewValue("");
+    setAdding(false);
+  }
+
+  function handleRemove(key: string) {
+    const next = { ...payload };
+    delete next[key];
+    onUpdate(next);
+  }
+
+  return (
+    <div className="space-y-1 pl-6">
+      {fields.map(([key, value]) => (
+        <div key={key} className="flex items-center gap-1.5 text-[10px]">
+          <Tag className="size-2.5 shrink-0 text-neutral-600" />
+          <span className="font-medium text-neutral-400">{key}:</span>
+          <span className="min-w-0 truncate text-neutral-300">{String(value)}</span>
+          <button
+            className="ml-auto shrink-0 text-neutral-600 hover:text-red-400"
+            onClick={() => handleRemove(key)}
+          >
+            <X className="size-2.5" />
+          </button>
+        </div>
+      ))}
+
+      {adding ? (
+        <form
+          className="flex items-center gap-1"
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleAdd();
+          }}
+        >
+          <Input
+            autoFocus
+            value={newKey}
+            onChange={(e) => setNewKey(e.target.value)}
+            placeholder="Field"
+            className="h-5 w-16 border-none bg-transparent px-1 text-[10px] text-neutral-300 focus-visible:ring-0"
+          />
+          <Input
+            value={newValue}
+            onChange={(e) => setNewValue(e.target.value)}
+            placeholder="Value"
+            className="h-5 min-w-0 flex-1 border-none bg-transparent px-1 text-[10px] text-neutral-300 focus-visible:ring-0"
+          />
+          <button type="submit" className="text-emerald-400 hover:text-emerald-300">
+            <Plus className="size-3" />
+          </button>
+          <button
+            type="button"
+            className="text-neutral-600 hover:text-neutral-400"
+            onClick={() => {
+              setAdding(false);
+              setNewKey("");
+              setNewValue("");
+            }}
+          >
+            <X className="size-3" />
+          </button>
+        </form>
+      ) : (
+        <button
+          className="flex items-center gap-1 text-[10px] text-neutral-600 transition hover:text-neutral-400"
+          onClick={() => setAdding(true)}
+        >
+          <Plus className="size-2.5" />
+          Add field
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Sortable Card
 // ---------------------------------------------------------------------------
 
 function SortableCard({
   item,
   overlay,
+  onUpdatePayload,
+  onAction,
 }: {
   item: GrowthWorkItem;
   overlay?: boolean;
+  onUpdatePayload?: (payload: Record<string, unknown>) => void;
+  onAction?: (actionId: string) => void;
 }) {
   const {
     attributes,
@@ -133,6 +284,8 @@ function SortableCard({
         transform: CSS.Transform.toString(transform),
         transition,
       };
+
+  const hasCustomFields = Object.keys(item.payload).some((k) => !k.startsWith("_"));
 
   return (
     <div
@@ -155,6 +308,41 @@ function SortableCard({
         <p className="line-clamp-2 min-w-0 flex-1 text-pretty text-sm font-medium text-neutral-100">
           {item.title}
         </p>
+
+        {/* Pipeline shortcuts */}
+        {onAction && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <button className="shrink-0 rounded p-0.5 text-neutral-600 opacity-0 transition group-hover:opacity-100 hover:bg-white/10 hover:text-amber-400">
+                <Zap className="size-3.5" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              side="bottom"
+              className="w-48 border-white/10 bg-neutral-950 p-1 text-neutral-100"
+            >
+              <p className="px-2 py-1.5 text-[10px] font-medium uppercase tracking-wider text-neutral-500">
+                Pipeline actions
+              </p>
+              {PIPELINE_ACTIONS.map((action) => {
+                const Icon = action.icon;
+                return (
+                  <Button
+                    key={action.id}
+                    variant="ghost"
+                    size="sm"
+                    className="w-full justify-start text-xs text-neutral-300 hover:bg-white/10 hover:text-white"
+                    onClick={() => onAction(action.id)}
+                  >
+                    <Icon className="mr-2 size-3.5" />
+                    {action.label}
+                  </Button>
+                );
+              })}
+            </PopoverContent>
+          </Popover>
+        )}
       </div>
 
       {item.description && (
@@ -176,6 +364,11 @@ function SortableCard({
           </span>
         </span>
       </div>
+
+      {/* Custom fields */}
+      {(hasCustomFields || !overlay) && onUpdatePayload && (
+        <CustomFields payload={item.payload} onUpdate={onUpdatePayload} />
+      )}
     </div>
   );
 }
@@ -343,7 +536,7 @@ function AddColumnForm({ onAdd }: { onAdd: (name: string) => void }) {
 }
 
 // ---------------------------------------------------------------------------
-// Quick add card
+// Quick add card (inline at top of column)
 // ---------------------------------------------------------------------------
 
 function QuickAddCard({
@@ -359,7 +552,7 @@ function QuickAddCard({
   if (!open) {
     return (
       <button
-        className="flex w-full items-center gap-1.5 rounded-lg border border-dashed border-white/10 px-3 py-2 text-xs text-neutral-500 transition hover:border-white/20 hover:text-neutral-300"
+        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-neutral-500 transition hover:bg-white/5 hover:text-neutral-300"
         onClick={() => setOpen(true)}
       >
         <Plus className="size-3.5" />
@@ -370,7 +563,7 @@ function QuickAddCard({
 
   return (
     <form
-      className="space-y-2"
+      className="space-y-2 rounded-lg border border-white/10 bg-neutral-950 p-2"
       onSubmit={(e) => {
         e.preventDefault();
         const trimmed = title.trim();
@@ -385,23 +578,29 @@ function QuickAddCard({
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         placeholder="Card title..."
-        className="h-8 bg-neutral-900 text-sm"
+        className="h-7 border-none bg-transparent px-1 text-sm text-neutral-100 placeholder:text-neutral-600 focus-visible:ring-0"
         disabled={loading}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            setOpen(false);
+            setTitle("");
+          }
+        }}
       />
       <div className="flex gap-2">
         <Button
           type="submit"
           size="sm"
-          className="bg-white text-neutral-900 hover:bg-neutral-200"
+          className="h-6 bg-white px-3 text-xs text-neutral-900 hover:bg-neutral-200"
           disabled={loading}
         >
-          {loading ? <Loader2 className="size-4 animate-spin" /> : "Add"}
+          {loading ? <Loader2 className="size-3 animate-spin" /> : "Add"}
         </Button>
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="text-neutral-400"
+          className="h-6 px-2 text-xs text-neutral-500"
           onClick={() => {
             setOpen(false);
             setTitle("");
@@ -420,6 +619,7 @@ function QuickAddCard({
 
 export function KanbanPage() {
   const token = useAuthToken();
+  const router = useRouter();
   const [columns, setColumns] = useState<KanbanColumn[]>([]);
   const [items, setItems] = useState<GrowthWorkItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -467,12 +667,10 @@ export function KanbanPage() {
       if (colId && map.has(colId)) {
         map.get(colId)!.push(item);
       } else if (columns.length > 0) {
-        // Fallback: put in first column
         map.get(columns[0].id)!.push(item);
       }
     }
 
-    // Sort by position within each column
     for (const [, list] of map) {
       list.sort((a, b) => a.position - b.position);
     }
@@ -517,7 +715,6 @@ export function KanbanPage() {
     if (!window.confirm(`Delete column "${col.name}"? Cards will move to the first column.`)) return;
 
     setColumns((prev) => prev.filter((c) => c.id !== colId));
-    // Move items locally to first column
     const fallback = columns.find((c) => c.id !== colId);
     if (fallback) {
       setItems((prev) =>
@@ -557,6 +754,28 @@ export function KanbanPage() {
     }
   }
 
+  async function handleUpdatePayload(itemId: string, payload: Record<string, unknown>) {
+    if (!token) return;
+    // Optimistic update
+    setItems((prev) =>
+      prev.map((i) => (i.id === itemId ? { ...i, payload } : i)),
+    );
+    await fetch(`/api/kanban/items/${itemId}`, {
+      method: "PATCH",
+      headers: authHeaders(token),
+      body: JSON.stringify({ payload }),
+    });
+  }
+
+  // ---- Pipeline shortcuts ----
+
+  function handlePipelineAction(item: GrowthWorkItem, actionId: string) {
+    const action = PIPELINE_ACTIONS.find((a) => a.id === actionId);
+    if (!action) return;
+    const prompt = action.prompt(item.title);
+    router.push(`/?prompt=${encodeURIComponent(prompt)}`);
+  }
+
   // ---- Drag and Drop ----
 
   function handleDragStart(event: DragStartEvent) {
@@ -571,13 +790,10 @@ export function KanbanPage() {
     const activeId = active.id as string;
     const overId = over.id as string;
 
-    // Find source and destination columns
     const activeItem = items.find((i) => i.id === activeId);
     if (!activeItem) return;
 
     const sourceColId = activeItem.columnId;
-
-    // Is the over target a column or a card?
     const isOverColumn = columns.some((c) => c.id === overId);
     const destColId = isOverColumn
       ? overId
@@ -585,7 +801,6 @@ export function KanbanPage() {
 
     if (!destColId || sourceColId === destColId) return;
 
-    // Move to new column optimistically
     setItems((prev) =>
       prev.map((i) =>
         i.id === activeId ? { ...i, columnId: destColId } : i,
@@ -610,10 +825,8 @@ export function KanbanPage() {
 
     if (!destColId || !token) return;
 
-    // Find column slug for stage sync
     const destCol = columns.find((c) => c.id === destColId);
 
-    // Persist
     await fetch(`/api/kanban/items/${activeId}`, {
       method: "PATCH",
       headers: authHeaders(token),
@@ -693,24 +906,34 @@ export function KanbanPage() {
                     onDelete={() => handleDeleteColumn(col.id)}
                   />
 
-                  <SortableContext
-                    id={col.id}
-                    items={colItems.map((i) => i.id)}
-                    strategy={verticalListSortingStrategy}
-                  >
-                    <div className="flex min-h-[80px] flex-col gap-2">
-                      {colItems.map((item) => (
-                        <SortableCard key={item.id} item={item} />
-                      ))}
-                    </div>
-                  </SortableContext>
-
-                  <div className="mt-3">
+                  {/* Add card — ALWAYS at the top */}
+                  <div className="mb-2">
                     <QuickAddCard
                       onAdd={(title) => handleAddCard(col.id, title)}
                       loading={addingCardCol === col.id}
                     />
                   </div>
+
+                  <SortableContext
+                    id={col.id}
+                    items={colItems.map((i) => i.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    <div className="flex min-h-[60px] flex-col gap-2">
+                      {colItems.map((item) => (
+                        <SortableCard
+                          key={item.id}
+                          item={item}
+                          onUpdatePayload={(payload) =>
+                            handleUpdatePayload(item.id, payload)
+                          }
+                          onAction={(actionId) =>
+                            handlePipelineAction(item, actionId)
+                          }
+                        />
+                      ))}
+                    </div>
+                  </SortableContext>
                 </div>
               );
             })}

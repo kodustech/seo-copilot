@@ -4,6 +4,7 @@ import { useChat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
 import { DefaultChatTransport } from "ai";
 import { useState, useRef, useMemo, useEffect, useCallback } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { Loader2, AlertCircle, RotateCcw, User, Search, FileText, Share2, ArrowUp, BarChart3, PanelLeft, SquarePen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -274,6 +275,19 @@ export function AgentChat() {
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  // Pre-fill input from ?prompt= query param (e.g. from Kanban pipeline shortcuts)
+  useEffect(() => {
+    const prompt = searchParams.get("prompt");
+    if (prompt) {
+      setInput(prompt);
+      // Clean URL without reload
+      router.replace("/", { scroll: false });
+      setTimeout(() => inputRef.current?.focus(), 100);
+    }
+  }, [searchParams, router]);
 
   const isLoading = status === "submitted" || status === "streaming";
 
