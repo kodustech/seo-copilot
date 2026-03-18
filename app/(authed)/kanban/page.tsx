@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import { KanbanPage } from "@/components/kanban-page";
 
 export default function Page() {
-  redirect("/dashboard");
+  return <KanbanPage />;
 }

@@ -7,6 +7,7 @@ import {
   normalizeWorkItemStage,
   normalizeWorkItemType,
   updateWorkItem,
+  type UpdateWorkItemInput,
 } from "@/lib/kanban";
 
 function unauthorized(message = "Unauthorized") {
@@ -39,7 +40,7 @@ export async function PATCH(req: Request, { params }: Params) {
     );
     const body = await safeReadJson(req);
 
-    const updates: Record<string, unknown> = {};
+    const updates: UpdateWorkItemInput = {};
     if (Object.prototype.hasOwnProperty.call(body, "title")) {
       updates.title = typeof body.title === "string" ? body.title : "";
     }
@@ -52,6 +53,9 @@ export async function PATCH(req: Request, { params }: Params) {
     }
     if (Object.prototype.hasOwnProperty.call(body, "stage")) {
       updates.stage = normalizeWorkItemStage(body.stage);
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "columnId")) {
+      updates.columnId = typeof body.columnId === "string" ? body.columnId : null;
     }
     if (Object.prototype.hasOwnProperty.call(body, "source")) {
       updates.source = normalizeWorkItemSource(body.source);
@@ -74,7 +78,7 @@ export async function PATCH(req: Request, { params }: Params) {
         body.payload &&
         typeof body.payload === "object" &&
         !Array.isArray(body.payload)
-          ? body.payload
+          ? (body.payload as Record<string, unknown>)
           : {};
     }
 

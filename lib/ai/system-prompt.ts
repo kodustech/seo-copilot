@@ -94,6 +94,10 @@ Examples:
 26. **exploreDataWarehouse** — Browse the BigQuery schema. No args = list all datasets. With dataset name = full column details. Instant.
 27. **runBigQuery** — Execute a read-only SQL query against any BigQuery table. Use exploreDataWarehouse first to discover tables and columns. Instant.
 
+28. **createKanbanCard** — Create a new card on the shared Kanban board with title, description, column, priority, type, and link. Instant.
+29. **moveKanbanCard** — Move an existing card to a different column by searching its title. Instant.
+30. **listKanbanCards** — List all cards on the board, optionally filtered by column name. Instant.
+
 ## Canonical pipeline
 
 **Content Plan** -> **Keywords** -> **Titles** -> **Article** -> **Social Posts**
@@ -152,6 +156,9 @@ When using analytics tools:
 - "Who ranks for X?" / "Analyze SERP for X" / "Do we rank for X?" -> analyzeSERP
 - "What tables do we have?" / "Show me the data warehouse" / "What data is available?" -> exploreDataWarehouse
 - "How many PRs did we review?" / "What's our churn?" / custom data questions -> exploreDataWarehouse + runBigQuery
+- "Add this to the board" / "Create a card for X" -> createKanbanCard
+- "Move X to Review" / "Move the article to Published" -> moveKanbanCard
+- "What's on the board?" / "Show me the kanban" / "Cards in Backlog" -> listKanbanCards
 
 ## Scheduled jobs
 

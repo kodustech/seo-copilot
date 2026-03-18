@@ -1,5 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
 export type WorkItemType = "idea" | "keyword" | "title" | "article" | "social";
 export type WorkItemSource = "manual" | "blog" | "changelog" | "agent" | "n8n";
 export type WorkItemPriority = "low" | "medium" | "high";
@@ -46,6 +50,165 @@ export const WORK_ITEM_SOURCES: WorkItemSource[] = [
 
 export const WORK_ITEM_PRIORITIES: WorkItemPriority[] = ["low", "medium", "high"];
 
+// ---------------------------------------------------------------------------
+// Kanban Column
+// ---------------------------------------------------------------------------
+
+export type KanbanColumn = {
+  id: string;
+  name: string;
+  slug: string;
+  position: number;
+  createdAt: string;
+};
+
+type KanbanColumnRow = {
+  id: string;
+  name: string;
+  slug: string;
+  position: number;
+  created_at: string;
+};
+
+function rowToColumn(row: KanbanColumnRow): KanbanColumn {
+  return {
+    id: row.id,
+    name: row.name,
+    slug: row.slug,
+    position: row.position,
+    createdAt: row.created_at,
+  };
+}
+
+export async function listColumns(
+  client: SupabaseClient,
+): Promise<KanbanColumn[]> {
+  const { data, error } = await client
+    .from("kanban_columns")
+    .select("*")
+    .order("position", { ascending: true });
+
+  if (error) throw new Error(`Error loading columns: ${error.message}`);
+  return ((data ?? []) as KanbanColumnRow[]).map(rowToColumn);
+}
+
+export async function createColumn(
+  client: SupabaseClient,
+  input: { name: string; position?: number },
+): Promise<KanbanColumn> {
+  const name = input.name.trim();
+  if (!name) throw new Error("Column name is required.");
+
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "");
+
+  // If no position, put at end
+  let position = input.position;
+  if (position === undefined) {
+    const { data } = await client
+      .from("kanban_columns")
+      .select("position")
+      .order("position", { ascending: false })
+      .limit(1);
+    position = ((data?.[0] as KanbanColumnRow | undefined)?.position ?? -1) + 1;
+  }
+
+  const { data, error } = await client
+    .from("kanban_columns")
+    .insert({ name, slug, position })
+    .select("*")
+    .single();
+
+  if (error) throw new Error(`Error creating column: ${error.message}`);
+  return rowToColumn(data as KanbanColumnRow);
+}
+
+export async function updateColumn(
+  client: SupabaseClient,
+  columnId: string,
+  updates: { name?: string; position?: number },
+): Promise<KanbanColumn> {
+  const patch: Record<string, unknown> = {};
+  if (updates.name !== undefined) {
+    const name = updates.name.trim();
+    if (!name) throw new Error("Column name cannot be empty.");
+    patch.name = name;
+    patch.slug = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_|_$/g, "");
+  }
+  if (updates.position !== undefined) {
+    patch.position = updates.position;
+  }
+
+  if (!Object.keys(patch).length) throw new Error("No valid updates.");
+
+  const { data, error } = await client
+    .from("kanban_columns")
+    .update(patch)
+    .eq("id", columnId)
+    .select("*")
+    .single();
+
+  if (error) throw new Error(`Error updating column: ${error.message}`);
+  return rowToColumn(data as KanbanColumnRow);
+}
+
+export async function deleteColumn(
+  client: SupabaseClient,
+  columnId: string,
+  fallbackColumnId?: string,
+): Promise<void> {
+  // Move cards to fallback column (first column by default)
+  if (fallbackColumnId) {
+    await client
+      .from("growth_work_items")
+      .update({ column_id: fallbackColumnId })
+      .eq("column_id", columnId);
+  } else {
+    const { data: cols } = await client
+      .from("kanban_columns")
+      .select("id")
+      .neq("id", columnId)
+      .order("position", { ascending: true })
+      .limit(1);
+    const fallback = (cols?.[0] as { id: string } | undefined)?.id;
+    if (fallback) {
+      await client
+        .from("growth_work_items")
+        .update({ column_id: fallback })
+        .eq("column_id", columnId);
+    }
+  }
+
+  const { error } = await client
+    .from("kanban_columns")
+    .delete()
+    .eq("id", columnId);
+
+  if (error) throw new Error(`Error deleting column: ${error.message}`);
+}
+
+export async function reorderColumns(
+  client: SupabaseClient,
+  orderedIds: string[],
+): Promise<void> {
+  const updates = orderedIds.map((id, index) => ({ id, position: index }));
+  for (const u of updates) {
+    await client
+      .from("kanban_columns")
+      .update({ position: u.position })
+      .eq("id", u.id);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Work Item
+// ---------------------------------------------------------------------------
+
 export type GrowthWorkItem = {
   id: string;
   userEmail: string;
@@ -53,6 +216,8 @@ export type GrowthWorkItem = {
   description: string | null;
   itemType: WorkItemType;
   stage: WorkItemStage;
+  columnId: string | null;
+  position: number;
   source: WorkItemSource;
   sourceRef: string | null;
   priority: WorkItemPriority;
@@ -70,6 +235,8 @@ type GrowthWorkItemRow = {
   description: string | null;
   item_type: string;
   stage: string;
+  column_id: string | null;
+  position: number;
   source: string;
   source_ref: string | null;
   priority: string;
@@ -85,6 +252,7 @@ export type CreateWorkItemInput = {
   description?: string | null;
   itemType?: WorkItemType;
   stage?: WorkItemStage;
+  columnId?: string | null;
   source?: WorkItemSource;
   sourceRef?: string | null;
   priority?: WorkItemPriority;
@@ -150,6 +318,8 @@ function rowToWorkItem(row: GrowthWorkItemRow): GrowthWorkItem {
     description: row.description,
     itemType: normalizeWorkItemType(row.item_type),
     stage: normalizeWorkItemStage(row.stage),
+    columnId: row.column_id,
+    position: row.position ?? 0,
     source: normalizeWorkItemSource(row.source),
     sourceRef: row.source_ref,
     priority: normalizeWorkItemPriority(row.priority),
@@ -161,14 +331,17 @@ function rowToWorkItem(row: GrowthWorkItemRow): GrowthWorkItem {
   };
 }
 
+/**
+ * List all work items (shared board — no user_email filter).
+ */
 export async function listWorkItems(
   client: SupabaseClient,
-  userEmail: string,
+  _userEmail?: string,
 ): Promise<GrowthWorkItem[]> {
   const { data, error } = await client
     .from("growth_work_items")
     .select("*")
-    .eq("user_email", userEmail)
+    .order("position", { ascending: true })
     .order("updated_at", { ascending: false });
 
   if (error) {
@@ -188,7 +361,7 @@ export async function createWorkItem(
     throw new Error("Title is required.");
   }
 
-  const row = {
+  const row: Record<string, unknown> = {
     user_email: userEmail,
     title,
     description: sanitizeText(input.description),
@@ -201,6 +374,10 @@ export async function createWorkItem(
     due_at: normalizeDate(input.dueAt),
     payload: normalizePayload(input.payload),
   };
+
+  if (input.columnId) {
+    row.column_id = input.columnId;
+  }
 
   const { data, error } = await client
     .from("growth_work_items")
@@ -215,9 +392,12 @@ export async function createWorkItem(
   return rowToWorkItem(data as GrowthWorkItemRow);
 }
 
+/**
+ * Update a work item. Any authenticated user can update any card (shared board).
+ */
 export async function updateWorkItem(
   client: SupabaseClient,
-  userEmail: string,
+  _userEmail: string,
   itemId: string,
   updates: UpdateWorkItemInput,
 ): Promise<GrowthWorkItem> {
@@ -239,6 +419,9 @@ export async function updateWorkItem(
   }
   if (typeof updates.stage !== "undefined") {
     patch.stage = normalizeWorkItemStage(updates.stage);
+  }
+  if (typeof updates.columnId !== "undefined") {
+    patch.column_id = updates.columnId;
   }
   if (typeof updates.source !== "undefined") {
     patch.source = normalizeWorkItemSource(updates.source);
@@ -267,7 +450,6 @@ export async function updateWorkItem(
     .from("growth_work_items")
     .update(patch)
     .eq("id", itemId)
-    .eq("user_email", userEmail)
     .select("*")
     .single();
 

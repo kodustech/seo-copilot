@@ -42,6 +42,12 @@ import {
   describeDataset,
   queryBigQuery,
 } from "@/lib/bigquery";
+import {
+  listColumns,
+  listWorkItems,
+  createWorkItem,
+  updateWorkItem,
+} from "@/lib/kanban";
 import { getModel } from "@/lib/ai/provider";
 import { CONTENT_PLAN_SYNTHESIS_PROMPT } from "@/lib/ai/system-prompt";
 import { fetchKeywordVolumes, fetchSerpResults } from "@/lib/dataforseo";
@@ -1747,6 +1753,215 @@ export const runBigQuery = tool({
   },
 });
 
+// ---------------------------------------------------------------------------
+// Kanban tools (agent-driven card management)
+// ---------------------------------------------------------------------------
+
+function createKanbanCardTool(userEmail?: string) {
+  return tool({
+    description:
+      "Create a new card on the shared Kanban board. Use when the user wants to track an idea, task, or content piece.",
+    inputSchema: z.object({
+      title: z.string().describe("Card title"),
+      description: z.string().optional().describe("Card description"),
+      columnName: z
+        .string()
+        .optional()
+        .describe("Column name to place the card in (e.g. 'Backlog', 'Research'). Defaults to first column."),
+      priority: z.enum(["low", "medium", "high"]).optional().describe("Priority level"),
+      itemType: z
+        .enum(["idea", "keyword", "title", "article", "social"])
+        .optional()
+        .describe("Type of work item"),
+      link: z.string().optional().describe("Reference URL"),
+    }),
+    execute: async ({
+      title,
+      description,
+      columnName,
+      priority,
+      itemType,
+      link,
+    }: {
+      title: string;
+      description?: string;
+      columnName?: string;
+      priority?: "low" | "medium" | "high";
+      itemType?: "idea" | "keyword" | "title" | "article" | "social";
+      link?: string;
+    }) => {
+      try {
+        const client = getSupabaseServiceClient();
+        const columns = await listColumns(client);
+        if (!columns.length) {
+          return { success: false as const, message: "No columns found. Create columns first." };
+        }
+
+        let targetCol = columns[0];
+        if (columnName) {
+          const match = columns.find(
+            (c) => c.name.toLowerCase() === columnName.toLowerCase(),
+          );
+          if (match) targetCol = match;
+        }
+
+        const item = await createWorkItem(client, userEmail ?? "agent@kodus.io", {
+          title,
+          description,
+          columnId: targetCol.id,
+          stage: (targetCol.slug as "backlog") ?? "backlog",
+          priority: priority ?? "medium",
+          itemType: itemType ?? "idea",
+          source: "agent",
+          link,
+        });
+
+        return {
+          success: true as const,
+          card: { id: item.id, title: item.title, column: targetCol.name, priority: item.priority },
+        };
+      } catch (error) {
+        return {
+          success: false as const,
+          message: error instanceof Error ? error.message : "Error creating card.",
+        };
+      }
+    },
+  });
+}
+
+function createMoveKanbanCardTool(userEmail?: string) {
+  return tool({
+    description:
+      "Move an existing Kanban card to a different column. Searches by title (partial match).",
+    inputSchema: z.object({
+      cardTitle: z.string().describe("Title or partial title of the card to move"),
+      targetColumn: z.string().describe("Name of the destination column"),
+    }),
+    execute: async ({
+      cardTitle,
+      targetColumn,
+    }: {
+      cardTitle: string;
+      targetColumn: string;
+    }) => {
+      try {
+        const client = getSupabaseServiceClient();
+        const [allItems, columns] = await Promise.all([
+          listWorkItems(client),
+          listColumns(client),
+        ]);
+
+        const needle = cardTitle.toLowerCase();
+        const matches = allItems.filter((i) =>
+          i.title.toLowerCase().includes(needle),
+        );
+
+        if (matches.length === 0) {
+          return { success: false as const, message: `No card found matching "${cardTitle}".` };
+        }
+        if (matches.length > 3) {
+          return {
+            success: false as const,
+            message: `Too many matches (${matches.length}). Be more specific. Top matches: ${matches
+              .slice(0, 5)
+              .map((m) => `"${m.title}"`)
+              .join(", ")}`,
+          };
+        }
+
+        const destCol = columns.find(
+          (c) => c.name.toLowerCase() === targetColumn.toLowerCase(),
+        );
+        if (!destCol) {
+          return {
+            success: false as const,
+            message: `Column "${targetColumn}" not found. Available: ${columns.map((c) => c.name).join(", ")}`,
+          };
+        }
+
+        const card = matches[0];
+        await updateWorkItem(client, userEmail ?? "agent@kodus.io", card.id, {
+          columnId: destCol.id,
+          stage: (destCol.slug as "backlog") ?? undefined,
+        });
+
+        return {
+          success: true as const,
+          moved: { title: card.title, from: card.columnId, to: destCol.name },
+          ...(matches.length > 1
+            ? { note: `Moved first match. Other matches: ${matches.slice(1).map((m) => `"${m.title}"`).join(", ")}` }
+            : {}),
+        };
+      } catch (error) {
+        return {
+          success: false as const,
+          message: error instanceof Error ? error.message : "Error moving card.",
+        };
+      }
+    },
+  });
+}
+
+const listKanbanCards = tool({
+  description:
+    "List cards on the shared Kanban board, optionally filtered by column name.",
+  inputSchema: z.object({
+    columnName: z.string().optional().describe("Filter by column name"),
+    limit: z.number().optional().default(30).describe("Max cards to return"),
+  }),
+  execute: async ({ columnName, limit }: { columnName?: string; limit?: number }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const [allItems, columns] = await Promise.all([
+        listWorkItems(client),
+        listColumns(client),
+      ]);
+
+      let filtered = allItems;
+      if (columnName) {
+        const col = columns.find(
+          (c) => c.name.toLowerCase() === columnName.toLowerCase(),
+        );
+        if (!col) {
+          return {
+            success: false as const,
+            message: `Column "${columnName}" not found. Available: ${columns.map((c) => c.name).join(", ")}`,
+          };
+        }
+        filtered = allItems.filter((i) => i.columnId === col.id);
+      }
+
+      const capped = filtered.slice(0, limit ?? 30);
+      const colMap = new Map(columns.map((c) => [c.id, c.name]));
+
+      return {
+        success: true as const,
+        totalCards: filtered.length,
+        columns: columns.map((c) => ({
+          name: c.name,
+          count: allItems.filter((i) => i.columnId === c.id).length,
+        })),
+        cards: capped.map((i) => ({
+          id: i.id,
+          title: i.title,
+          description: i.description,
+          column: colMap.get(i.columnId ?? "") ?? "Unknown",
+          priority: i.priority,
+          type: i.itemType,
+          createdBy: i.userEmail,
+          createdAt: i.createdAt,
+        })),
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Error listing cards.",
+      };
+    }
+  },
+});
+
 export function createAgentTools(userEmail?: string) {
   return {
     generateIdeas,
@@ -1779,6 +1994,9 @@ export function createAgentTools(userEmail?: string) {
     analyzeSERP,
     exploreDataWarehouse,
     runBigQuery,
+    createKanbanCard: createKanbanCardTool(userEmail),
+    moveKanbanCard: createMoveKanbanCardTool(userEmail),
+    listKanbanCards,
   };
 }
 

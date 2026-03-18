@@ -1,77 +1,54 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Plus, RefreshCcw } from "lucide-react";
-
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  KANBAN_STAGES,
-  type GrowthWorkItem,
-  type WorkItemPriority,
-  type WorkItemSource,
-  type WorkItemStage,
-  type WorkItemType,
-  WORK_ITEM_PRIORITIES,
-  WORK_ITEM_SOURCES,
-  WORK_ITEM_TYPES,
+  DndContext,
+  DragOverlay,
+  closestCorners,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragStartEvent,
+  type DragEndEvent,
+  type DragOverEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
+  GripVertical,
+  Loader2,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  RefreshCcw,
+  Trash2,
+  X,
+} from "lucide-react";
+
+import type {
+  GrowthWorkItem,
+  KanbanColumn,
+  WorkItemPriority,
+  WorkItemType,
 } from "@/lib/kanban";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Textarea } from "@/components/ui/textarea";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 
-type CreateFormState = {
-  title: string;
-  description: string;
-  itemType: WorkItemType;
-  stage: WorkItemStage;
-  source: WorkItemSource;
-  priority: WorkItemPriority;
-  link: string;
-  dueAt: string;
-};
-
-type BoardResponse = {
-  items?: GrowthWorkItem[];
-};
-
-type ImportResponse = {
-  inserted?: number;
-  skipped?: number;
-};
-
-type ItemsResponse = {
-  item?: GrowthWorkItem;
-};
-
-type FeedImportSource = "blog" | "changelog" | "all";
-
-const PRIORITY_RANK: Record<WorkItemPriority, number> = {
-  high: 0,
-  medium: 1,
-  low: 2,
-};
-
-const DEFAULT_CREATE_FORM: CreateFormState = {
-  title: "",
-  description: "",
-  itemType: "idea",
-  stage: "backlog",
-  source: "manual",
-  priority: "medium",
-  link: "",
-  dueAt: "",
-};
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function useAuthToken() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
@@ -88,709 +65,663 @@ function useAuthToken() {
 }
 
 function authHeaders(token?: string | null) {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+  const h: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) h.Authorization = `Bearer ${token}`;
+  return h;
+}
+
+function typeLabel(t: WorkItemType) {
+  const m: Record<WorkItemType, string> = {
+    idea: "Idea",
+    keyword: "Keyword",
+    title: "Title",
+    article: "Article",
+    social: "Social",
   };
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-  return headers;
+  return m[t] ?? t;
 }
 
-function stageLabel(stage: WorkItemStage) {
-  return KANBAN_STAGES.find((entry) => entry.id === stage)?.label ?? stage;
+function priorityLabel(p: WorkItemPriority) {
+  const m: Record<WorkItemPriority, string> = { high: "High", medium: "Medium", low: "Low" };
+  return m[p] ?? p;
 }
 
-function typeLabel(type: WorkItemType) {
-  if (type === "idea") return "Idea";
-  if (type === "keyword") return "Keyword";
-  if (type === "title") return "Title";
-  if (type === "article") return "Article";
-  return "Social";
-}
-
-function sourceLabel(source: WorkItemSource) {
-  if (source === "manual") return "Manual";
-  if (source === "blog") return "Blog";
-  if (source === "changelog") return "Changelog";
-  if (source === "agent") return "Agent";
-  return "n8n";
-}
-
-function priorityLabel(priority: WorkItemPriority) {
-  if (priority === "high") return "High";
-  if (priority === "low") return "Low";
-  return "Medium";
-}
-
-function priorityBadgeClass(priority: WorkItemPriority) {
-  if (priority === "high") {
-    return "border-red-500/40 bg-red-500/10 text-red-200";
-  }
-  if (priority === "low") {
-    return "border-neutral-600 bg-neutral-800 text-neutral-300";
-  }
+function priorityBadgeClass(p: WorkItemPriority) {
+  if (p === "high") return "border-red-500/40 bg-red-500/10 text-red-200";
+  if (p === "low") return "border-neutral-600 bg-neutral-800 text-neutral-300";
   return "border-sky-500/40 bg-sky-500/10 text-sky-200";
 }
 
-function typeBadgeClass(type: WorkItemType) {
-  if (type === "article") return "border-blue-500/40 bg-blue-500/10 text-blue-200";
-  if (type === "social") return "border-cyan-500/40 bg-cyan-500/10 text-cyan-200";
-  if (type === "title") return "border-emerald-500/40 bg-emerald-500/10 text-emerald-200";
-  if (type === "keyword") return "border-amber-500/40 bg-amber-500/10 text-amber-200";
+function typeBadgeClass(t: WorkItemType) {
+  if (t === "article") return "border-blue-500/40 bg-blue-500/10 text-blue-200";
+  if (t === "social") return "border-cyan-500/40 bg-cyan-500/10 text-cyan-200";
+  if (t === "title") return "border-emerald-500/40 bg-emerald-500/10 text-emerald-200";
+  if (t === "keyword") return "border-amber-500/40 bg-amber-500/10 text-amber-200";
   return "border-neutral-500/40 bg-neutral-500/10 text-neutral-200";
 }
 
-function formatDueDate(value: string | null) {
-  if (!value) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  return date.toLocaleDateString("en-US", {
-    month: "short",
-    day: "2-digit",
-    year: "numeric",
-  });
+function creatorInitials(email: string) {
+  const name = email.split("@")[0];
+  const parts = name.split(/[._-]/);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return name.slice(0, 2).toUpperCase();
 }
+
+// ---------------------------------------------------------------------------
+// Sortable Card
+// ---------------------------------------------------------------------------
+
+function SortableCard({
+  item,
+  overlay,
+}: {
+  item: GrowthWorkItem;
+  overlay?: boolean;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: item.id, data: { type: "card", item } });
+
+  const style = overlay
+    ? undefined
+    : {
+        transform: CSS.Transform.toString(transform),
+        transition,
+      };
+
+  return (
+    <div
+      ref={overlay ? undefined : setNodeRef}
+      style={style}
+      className={cn(
+        "group space-y-2 rounded-lg border border-white/10 bg-neutral-950 p-3",
+        isDragging && "opacity-40",
+        overlay && "rotate-2 shadow-2xl ring-2 ring-sky-500/50",
+      )}
+    >
+      <div className="flex items-start gap-2">
+        <button
+          className="mt-0.5 shrink-0 cursor-grab text-neutral-600 hover:text-neutral-300 active:cursor-grabbing"
+          {...attributes}
+          {...listeners}
+        >
+          <GripVertical className="size-4" />
+        </button>
+        <p className="line-clamp-2 min-w-0 flex-1 text-pretty text-sm font-medium text-neutral-100">
+          {item.title}
+        </p>
+      </div>
+
+      {item.description && (
+        <p className="line-clamp-2 pl-6 text-pretty text-xs text-neutral-400">
+          {item.description}
+        </p>
+      )}
+
+      <div className="flex flex-wrap items-center gap-1.5 pl-6">
+        <Badge variant="outline" className={cn("text-[10px]", typeBadgeClass(item.itemType))}>
+          {typeLabel(item.itemType)}
+        </Badge>
+        <Badge variant="outline" className={cn("text-[10px]", priorityBadgeClass(item.priority))}>
+          {priorityLabel(item.priority)}
+        </Badge>
+        <span className="ml-auto flex items-center gap-1 text-[10px] text-neutral-500" title={item.userEmail}>
+          <span className="flex size-5 items-center justify-center rounded-full bg-white/10 text-[9px] font-semibold text-neutral-300">
+            {creatorInitials(item.userEmail)}
+          </span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Column header
+// ---------------------------------------------------------------------------
+
+function ColumnHeader({
+  column,
+  count,
+  onRename,
+  onDelete,
+}: {
+  column: KanbanColumn;
+  count: number;
+  onRename: (name: string) => void;
+  onDelete: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(column.name);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
+
+  function commitRename() {
+    const trimmed = name.trim();
+    if (trimmed && trimmed !== column.name) onRename(trimmed);
+    else setName(column.name);
+    setEditing(false);
+  }
+
+  return (
+    <div className="flex items-center gap-2 px-1 pb-3">
+      {editing ? (
+        <form
+          className="flex min-w-0 flex-1 items-center gap-1"
+          onSubmit={(e) => {
+            e.preventDefault();
+            commitRename();
+          }}
+        >
+          <Input
+            ref={inputRef}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={commitRename}
+            className="h-7 bg-neutral-900 text-sm"
+          />
+        </form>
+      ) : (
+        <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-neutral-200">
+          {column.name}
+        </h3>
+      )}
+      <Badge
+        variant="outline"
+        className="tabular-nums border-white/15 bg-white/5 text-neutral-400"
+      >
+        {count}
+      </Badge>
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button variant="ghost" size="sm" className="size-7 p-0 text-neutral-500 hover:text-neutral-200">
+            <MoreHorizontal className="size-4" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="end"
+          className="w-36 border-white/10 bg-neutral-950 p-1 text-neutral-100"
+        >
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start text-xs text-neutral-300 hover:bg-white/10 hover:text-white"
+            onClick={() => setEditing(true)}
+          >
+            <Pencil className="mr-2 size-3" />
+            Rename
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start text-xs text-red-400 hover:bg-red-500/10 hover:text-red-300"
+            onClick={onDelete}
+          >
+            <Trash2 className="mr-2 size-3" />
+            Delete
+          </Button>
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Add column form
+// ---------------------------------------------------------------------------
+
+function AddColumnForm({ onAdd }: { onAdd: (name: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+
+  function submit() {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    onAdd(trimmed);
+    setName("");
+    setOpen(false);
+  }
+
+  if (!open) {
+    return (
+      <div className="flex w-[300px] shrink-0 items-start pt-1">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-neutral-500 hover:text-neutral-200"
+          onClick={() => setOpen(true)}
+        >
+          <Plus className="mr-1.5 size-4" />
+          Add column
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-[300px] shrink-0 space-y-2 rounded-lg border border-white/10 bg-neutral-900/50 p-3">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit();
+        }}
+      >
+        <Input
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Column name..."
+          className="h-8 bg-neutral-950 text-sm"
+        />
+        <div className="mt-2 flex gap-2">
+          <Button type="submit" size="sm" className="bg-white text-neutral-900 hover:bg-neutral-200">
+            Add
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="text-neutral-400"
+            onClick={() => {
+              setOpen(false);
+              setName("");
+            }}
+          >
+            <X className="size-4" />
+          </Button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Quick add card
+// ---------------------------------------------------------------------------
+
+function QuickAddCard({
+  onAdd,
+  loading,
+}: {
+  onAdd: (title: string) => void;
+  loading: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+
+  if (!open) {
+    return (
+      <button
+        className="flex w-full items-center gap-1.5 rounded-lg border border-dashed border-white/10 px-3 py-2 text-xs text-neutral-500 transition hover:border-white/20 hover:text-neutral-300"
+        onClick={() => setOpen(true)}
+      >
+        <Plus className="size-3.5" />
+        Add card
+      </button>
+    );
+  }
+
+  return (
+    <form
+      className="space-y-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const trimmed = title.trim();
+        if (!trimmed) return;
+        onAdd(trimmed);
+        setTitle("");
+        setOpen(false);
+      }}
+    >
+      <Input
+        autoFocus
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        placeholder="Card title..."
+        className="h-8 bg-neutral-900 text-sm"
+        disabled={loading}
+      />
+      <div className="flex gap-2">
+        <Button
+          type="submit"
+          size="sm"
+          className="bg-white text-neutral-900 hover:bg-neutral-200"
+          disabled={loading}
+        >
+          {loading ? <Loader2 className="size-4 animate-spin" /> : "Add"}
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="text-neutral-400"
+          onClick={() => {
+            setOpen(false);
+            setTitle("");
+          }}
+        >
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main Kanban Page
+// ---------------------------------------------------------------------------
 
 export function KanbanPage() {
   const token = useAuthToken();
+  const [columns, setColumns] = useState<KanbanColumn[]>([]);
   const [items, setItems] = useState<GrowthWorkItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [addingCardCol, setAddingCardCol] = useState<string | null>(null);
+  const [activeItem, setActiveItem] = useState<GrowthWorkItem | null>(null);
 
-  const [createForm, setCreateForm] = useState<CreateFormState>(DEFAULT_CREATE_FORM);
-  const [createLoading, setCreateLoading] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
-  const [createNotice, setCreateNotice] = useState<string | null>(null);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  );
 
-  const [importSource, setImportSource] = useState<FeedImportSource>("changelog");
-  const [importLimit, setImportLimit] = useState("8");
-  const [importLoading, setImportLoading] = useState(false);
-  const [importError, setImportError] = useState<string | null>(null);
-  const [importNotice, setImportNotice] = useState<string | null>(null);
+  // ---- Data fetching ----
 
-  const [movingId, setMovingId] = useState<string | null>(null);
-  const [moveErrors, setMoveErrors] = useState<Record<string, string>>({});
-
-  const titleInputRef = useRef<HTMLInputElement>(null);
-
-  async function loadBoard() {
-    if (!token) {
-      return;
-    }
-
+  const loadBoard = useCallback(async () => {
+    if (!token) return;
     try {
       setLoading(true);
-      setLoadError(null);
-      const response = await fetch("/api/kanban/items", {
-        method: "GET",
+      setError(null);
+      const res = await fetch("/api/kanban/items", {
         headers: authHeaders(token),
       });
-      const data = (await response.json()) as BoardResponse & { error?: string };
-      if (!response.ok) {
-        throw new Error(data.error || "Could not load kanban board.");
-      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not load board.");
       setItems(Array.isArray(data.items) ? data.items : []);
-    } catch (error) {
-      setLoadError(
-        error instanceof Error ? error.message : "Could not load kanban board.",
-      );
+      setColumns(Array.isArray(data.columns) ? data.columns : []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load board.");
     } finally {
       setLoading(false);
     }
-  }
+  }, [token]);
 
   useEffect(() => {
     void loadBoard();
-  }, [token]);
+  }, [loadBoard]);
 
-  const groupedItems = useMemo(() => {
-    const grouped = new Map<WorkItemStage, GrowthWorkItem[]>();
-    for (const stage of KANBAN_STAGES) {
-      grouped.set(stage.id, []);
-    }
+  // ---- Group items by column ----
+
+  const itemsByColumn = useMemo(() => {
+    const map = new Map<string, GrowthWorkItem[]>();
+    for (const col of columns) map.set(col.id, []);
 
     for (const item of items) {
-      const list = grouped.get(item.stage);
-      if (list) {
-        list.push(item);
+      const colId = item.columnId;
+      if (colId && map.has(colId)) {
+        map.get(colId)!.push(item);
+      } else if (columns.length > 0) {
+        // Fallback: put in first column
+        map.get(columns[0].id)!.push(item);
       }
     }
 
-    for (const [stage, list] of grouped.entries()) {
-      grouped.set(
-        stage,
-        [...list].sort((a, b) => {
-          const rankDiff = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
-          if (rankDiff !== 0) return rankDiff;
-          return (
-            new Date(b.updatedAt).getTime() -
-            new Date(a.updatedAt).getTime()
-          );
-        }),
+    // Sort by position within each column
+    for (const [, list] of map) {
+      list.sort((a, b) => a.position - b.position);
+    }
+
+    return map;
+  }, [columns, items]);
+
+  // ---- Column CRUD ----
+
+  async function handleAddColumn(name: string) {
+    if (!token) return;
+    try {
+      const res = await fetch("/api/kanban/columns", {
+        method: "POST",
+        headers: authHeaders(token),
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setColumns((prev) => [...prev, data.column]);
+    } catch {
+      // Silently fail — user can retry
+    }
+  }
+
+  async function handleRenameColumn(colId: string, name: string) {
+    if (!token) return;
+    setColumns((prev) =>
+      prev.map((c) => (c.id === colId ? { ...c, name } : c)),
+    );
+    await fetch(`/api/kanban/columns/${colId}`, {
+      method: "PATCH",
+      headers: authHeaders(token),
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  async function handleDeleteColumn(colId: string) {
+    if (!token) return;
+    const col = columns.find((c) => c.id === colId);
+    if (!col) return;
+    if (!window.confirm(`Delete column "${col.name}"? Cards will move to the first column.`)) return;
+
+    setColumns((prev) => prev.filter((c) => c.id !== colId));
+    // Move items locally to first column
+    const fallback = columns.find((c) => c.id !== colId);
+    if (fallback) {
+      setItems((prev) =>
+        prev.map((i) => (i.columnId === colId ? { ...i, columnId: fallback.id } : i)),
       );
     }
 
-    return grouped;
-  }, [items]);
+    await fetch(`/api/kanban/columns/${colId}`, {
+      method: "DELETE",
+      headers: authHeaders(token),
+    });
+  }
 
-  async function handleCreateItem(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  // ---- Card CRUD ----
+
+  async function handleAddCard(columnId: string, title: string) {
     if (!token) return;
-
-    const title = createForm.title.trim();
-    if (!title) {
-      setCreateError("Title is required.");
-      return;
-    }
-
+    setAddingCardCol(columnId);
     try {
-      setCreateLoading(true);
-      setCreateError(null);
-      setCreateNotice(null);
-
-      const response = await fetch("/api/kanban/items", {
+      const col = columns.find((c) => c.id === columnId);
+      const res = await fetch("/api/kanban/items", {
         method: "POST",
         headers: authHeaders(token),
         body: JSON.stringify({
           title,
-          description: createForm.description,
-          itemType: createForm.itemType,
-          stage: createForm.stage,
-          source: createForm.source,
-          priority: createForm.priority,
-          link: createForm.link,
-          dueAt: createForm.dueAt ? new Date(createForm.dueAt).toISOString() : null,
+          columnId,
+          stage: col?.slug ?? "backlog",
         }),
       });
-      const data = (await response.json()) as ItemsResponse & { error?: string };
-      if (!response.ok || !data.item) {
-        throw new Error(data.error || "Could not create item.");
-      }
-
-      setItems((prev) => [data.item as GrowthWorkItem, ...prev]);
-      setCreateForm(DEFAULT_CREATE_FORM);
-      setCreateNotice("Item created.");
-    } catch (error) {
-      setCreateError(
-        error instanceof Error ? error.message : "Could not create item.",
-      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setItems((prev) => [data.item, ...prev]);
+    } catch {
+      // Silently fail
     } finally {
-      setCreateLoading(false);
+      setAddingCardCol(null);
     }
   }
 
-  async function handleImport() {
-    if (!token) return;
-    const parsedLimit = Number(importLimit);
-    const limit = Number.isFinite(parsedLimit)
-      ? Math.max(1, Math.min(30, Math.round(parsedLimit)))
-      : 8;
+  // ---- Drag and Drop ----
 
-    try {
-      setImportLoading(true);
-      setImportError(null);
-      setImportNotice(null);
-      const response = await fetch("/api/kanban/import", {
-        method: "POST",
-        headers: authHeaders(token),
-        body: JSON.stringify({
-          source: importSource,
-          limit,
-        }),
-      });
-      const data = (await response.json()) as ImportResponse & { error?: string };
-      if (!response.ok) {
-        throw new Error(data.error || "Could not import feed ideas.");
-      }
-
-      setImportNotice(
-        `Imported ${data.inserted ?? 0} item(s). Skipped ${data.skipped ?? 0} duplicate(s).`,
-      );
-      await loadBoard();
-    } catch (error) {
-      setImportError(
-        error instanceof Error ? error.message : "Could not import feed ideas.",
-      );
-    } finally {
-      setImportLoading(false);
-    }
+  function handleDragStart(event: DragStartEvent) {
+    const item = items.find((i) => i.id === event.active.id);
+    setActiveItem(item ?? null);
   }
 
-  async function handleMoveItem(itemId: string, stage: WorkItemStage) {
-    if (!token) return;
+  function handleDragOver(event: DragOverEvent) {
+    const { active, over } = event;
+    if (!over) return;
 
-    try {
-      setMovingId(itemId);
-      setMoveErrors((prev) => ({ ...prev, [itemId]: "" }));
+    const activeId = active.id as string;
+    const overId = over.id as string;
 
-      const response = await fetch(`/api/kanban/items/${itemId}`, {
-        method: "PATCH",
-        headers: authHeaders(token),
-        body: JSON.stringify({ stage }),
-      });
-      const data = (await response.json()) as ItemsResponse & { error?: string };
-      if (!response.ok || !data.item) {
-        throw new Error(data.error || "Could not move item.");
-      }
+    // Find source and destination columns
+    const activeItem = items.find((i) => i.id === activeId);
+    if (!activeItem) return;
 
-      setItems((prev) =>
-        prev.map((item) => (item.id === itemId ? (data.item as GrowthWorkItem) : item)),
-      );
-    } catch (error) {
-      setMoveErrors((prev) => ({
-        ...prev,
-        [itemId]:
-          error instanceof Error ? error.message : "Could not move item.",
-      }));
-    } finally {
-      setMovingId(null);
-    }
+    const sourceColId = activeItem.columnId;
+
+    // Is the over target a column or a card?
+    const isOverColumn = columns.some((c) => c.id === overId);
+    const destColId = isOverColumn
+      ? overId
+      : items.find((i) => i.id === overId)?.columnId;
+
+    if (!destColId || sourceColId === destColId) return;
+
+    // Move to new column optimistically
+    setItems((prev) =>
+      prev.map((i) =>
+        i.id === activeId ? { ...i, columnId: destColId } : i,
+      ),
+    );
+  }
+
+  async function handleDragEnd(event: DragEndEvent) {
+    setActiveItem(null);
+    const { active, over } = event;
+    if (!over) return;
+
+    const activeId = active.id as string;
+    const item = items.find((i) => i.id === activeId);
+    if (!item) return;
+
+    const overId = over.id as string;
+    const isOverColumn = columns.some((c) => c.id === overId);
+    const destColId = isOverColumn
+      ? overId
+      : items.find((i) => i.id === overId)?.columnId ?? item.columnId;
+
+    if (!destColId || !token) return;
+
+    // Find column slug for stage sync
+    const destCol = columns.find((c) => c.id === destColId);
+
+    // Persist
+    await fetch(`/api/kanban/items/${activeId}`, {
+      method: "PATCH",
+      headers: authHeaders(token),
+      body: JSON.stringify({
+        columnId: destColId,
+        stage: destCol?.slug ?? undefined,
+      }),
+    });
+  }
+
+  // ---- Render ----
+
+  if (loading) {
+    return (
+      <div className="flex min-h-[60vh] items-center justify-center">
+        <Loader2 className="size-8 animate-spin text-neutral-400" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex min-h-[60vh] flex-col items-center justify-center gap-4 text-neutral-400">
+        <p className="text-sm">{error}</p>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void loadBoard()}
+          className="border-white/10 text-neutral-300"
+        >
+          Retry
+        </Button>
+      </div>
+    );
   }
 
   return (
-    <div className="min-h-screen bg-neutral-950 px-4 py-8 text-neutral-100 sm:px-6">
-      <div className="mx-auto max-w-[1440px] space-y-6">
-        <header className="space-y-2">
-          <h1 className="text-balance text-3xl font-semibold">Growth Kanban</h1>
-          <p className="max-w-4xl text-pretty text-sm text-neutral-400">
-            Track ideas, SEO workflow, article execution, and social follow-ups in
-            a single board.
-          </p>
+    <div className="min-h-screen bg-neutral-950 px-4 py-6 text-neutral-100 sm:px-6">
+      <div className="mx-auto max-w-[1800px] space-y-5">
+        <header className="flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-semibold">Kanban</h1>
+            <p className="mt-0.5 text-sm text-neutral-500">
+              Shared board — all team members see every card.
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-white/15 bg-transparent text-neutral-300 hover:bg-white/10"
+            onClick={() => void loadBoard()}
+          >
+            <RefreshCcw className="mr-1.5 size-4" />
+            Refresh
+          </Button>
         </header>
 
-        <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
-          <aside className="space-y-4">
-            <Card className="border-white/10 bg-neutral-900">
-              <CardHeader className="space-y-1">
-                <CardTitle className="text-lg">Import Feed Ideas</CardTitle>
-                <p className="text-pretty text-xs text-neutral-400">
-                  Pull ideas from blog or changelog and drop them into backlog.
-                </p>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="space-y-1.5">
-                  <p className="text-xs uppercase text-neutral-500">Source</p>
-                  <Select
-                    value={importSource}
-                    onValueChange={(value) => setImportSource(value as FeedImportSource)}
-                    disabled={importLoading}
-                  >
-                    <SelectTrigger className="bg-neutral-950">
-                      <SelectValue placeholder="Select source" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="changelog">Changelog</SelectItem>
-                      <SelectItem value="blog">Blog</SelectItem>
-                      <SelectItem value="all">All</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-1.5">
-                  <p className="text-xs uppercase text-neutral-500">Limit</p>
-                  <Input
-                    value={importLimit}
-                    onChange={(event) => setImportLimit(event.target.value)}
-                    placeholder="8"
-                    inputMode="numeric"
-                    className="bg-neutral-950"
-                  />
-                </div>
-
-                {importError ? (
-                  <p className="text-xs text-red-400">{importError}</p>
-                ) : null}
-                {importNotice ? (
-                  <p className="text-xs text-emerald-400">{importNotice}</p>
-                ) : null}
-
-                <Button
-                  type="button"
-                  className="w-full bg-sky-600 text-white hover:bg-sky-500"
-                  onClick={handleImport}
-                  disabled={importLoading}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCorners}
+          onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
+          onDragEnd={handleDragEnd}
+        >
+          <div className="flex gap-4 overflow-x-auto pb-4">
+            {columns.map((col) => {
+              const colItems = itemsByColumn.get(col.id) ?? [];
+              return (
+                <div
+                  key={col.id}
+                  className="w-[300px] shrink-0 rounded-lg border border-white/10 bg-neutral-900/50 p-3"
                 >
-                  {importLoading ? (
-                    <>
-                      <Loader2 className="mr-2 size-4 animate-spin" />
-                      Importing
-                    </>
-                  ) : (
-                    <>
-                      <RefreshCcw className="mr-2 size-4" />
-                      Import Ideas
-                    </>
-                  )}
-                </Button>
-              </CardContent>
-            </Card>
+                  <ColumnHeader
+                    column={col}
+                    count={colItems.length}
+                    onRename={(name) => handleRenameColumn(col.id, name)}
+                    onDelete={() => handleDeleteColumn(col.id)}
+                  />
 
-            <Card className="border-white/10 bg-neutral-900">
-              <CardHeader className="space-y-1">
-                <CardTitle className="text-lg">Create Item</CardTitle>
-                <p className="text-pretty text-xs text-neutral-400">
-                  Add any work item manually and place it directly in the right
-                  stage.
-                </p>
-              </CardHeader>
-              <CardContent>
-                <form className="space-y-3" onSubmit={handleCreateItem}>
-                  <div className="space-y-1.5">
-                    <p className="text-xs uppercase text-neutral-500">Title</p>
-                    <Input
-                      ref={titleInputRef}
-                      value={createForm.title}
-                      onChange={(event) =>
-                        setCreateForm((prev) => ({ ...prev, title: event.target.value }))
-                      }
-                      placeholder="Ex: PR review latency playbook"
-                      className="bg-neutral-950"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <p className="text-xs uppercase text-neutral-500">Description</p>
-                    <Textarea
-                      value={createForm.description}
-                      onChange={(event) =>
-                        setCreateForm((prev) => ({
-                          ...prev,
-                          description: event.target.value,
-                        }))
-                      }
-                      placeholder="Short context for this card..."
-                      className="min-h-20 bg-neutral-950"
-                    />
-                  </div>
-
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <div className="space-y-1.5">
-                      <p className="text-xs uppercase text-neutral-500">Type</p>
-                      <Select
-                        value={createForm.itemType}
-                        onValueChange={(value) =>
-                          setCreateForm((prev) => ({
-                            ...prev,
-                            itemType: value as WorkItemType,
-                          }))
-                        }
-                      >
-                        <SelectTrigger className="bg-neutral-950">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {WORK_ITEM_TYPES.map((itemType) => (
-                            <SelectItem key={itemType} value={itemType}>
-                              {typeLabel(itemType)}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <p className="text-xs uppercase text-neutral-500">Priority</p>
-                      <Select
-                        value={createForm.priority}
-                        onValueChange={(value) =>
-                          setCreateForm((prev) => ({
-                            ...prev,
-                            priority: value as WorkItemPriority,
-                          }))
-                        }
-                      >
-                        <SelectTrigger className="bg-neutral-950">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {WORK_ITEM_PRIORITIES.map((priority) => (
-                            <SelectItem key={priority} value={priority}>
-                              {priorityLabel(priority)}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <p className="text-xs uppercase text-neutral-500">Source</p>
-                      <Select
-                        value={createForm.source}
-                        onValueChange={(value) =>
-                          setCreateForm((prev) => ({
-                            ...prev,
-                            source: value as WorkItemSource,
-                          }))
-                        }
-                      >
-                        <SelectTrigger className="bg-neutral-950">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {WORK_ITEM_SOURCES.map((source) => (
-                            <SelectItem key={source} value={source}>
-                              {sourceLabel(source)}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <p className="text-xs uppercase text-neutral-500">Stage</p>
-                      <Select
-                        value={createForm.stage}
-                        onValueChange={(value) =>
-                          setCreateForm((prev) => ({
-                            ...prev,
-                            stage: value as WorkItemStage,
-                          }))
-                        }
-                      >
-                        <SelectTrigger className="bg-neutral-950">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {KANBAN_STAGES.map((stage) => (
-                            <SelectItem key={stage.id} value={stage.id}>
-                              {stage.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <p className="text-xs uppercase text-neutral-500">Reference URL</p>
-                    <Input
-                      value={createForm.link}
-                      onChange={(event) =>
-                        setCreateForm((prev) => ({ ...prev, link: event.target.value }))
-                      }
-                      placeholder="https://..."
-                      className="bg-neutral-950"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <p className="text-xs uppercase text-neutral-500">Due date</p>
-                    <Input
-                      type="date"
-                      value={createForm.dueAt}
-                      onChange={(event) =>
-                        setCreateForm((prev) => ({ ...prev, dueAt: event.target.value }))
-                      }
-                      className="bg-neutral-950"
-                    />
-                  </div>
-
-                  {createError ? (
-                    <p className="text-xs text-red-400">{createError}</p>
-                  ) : null}
-                  {createNotice ? (
-                    <p className="text-xs text-emerald-400">{createNotice}</p>
-                  ) : null}
-
-                  <Button
-                    type="submit"
-                    className="w-full bg-white text-neutral-900 hover:bg-neutral-200"
-                    disabled={createLoading}
+                  <SortableContext
+                    id={col.id}
+                    items={colItems.map((i) => i.id)}
+                    strategy={verticalListSortingStrategy}
                   >
-                    {createLoading ? (
-                      <>
-                        <Loader2 className="mr-2 size-4 animate-spin" />
-                        Creating
-                      </>
-                    ) : (
-                      <>
-                        <Plus className="mr-2 size-4" />
-                        Add Item
-                      </>
-                    )}
-                  </Button>
-                </form>
-              </CardContent>
-            </Card>
-          </aside>
+                    <div className="flex min-h-[80px] flex-col gap-2">
+                      {colItems.map((item) => (
+                        <SortableCard key={item.id} item={item} />
+                      ))}
+                    </div>
+                  </SortableContext>
 
-          <section className="space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-balance text-xl font-semibold">Pipeline</h2>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="border-white/15 bg-transparent text-neutral-200 hover:bg-white/10"
-                onClick={() => void loadBoard()}
-                disabled={loading}
-              >
-                {loading ? (
-                  <>
-                    <Loader2 className="mr-2 size-4 animate-spin" />
-                    Refreshing
-                  </>
-                ) : (
-                  <>
-                    <RefreshCcw className="mr-2 size-4" />
-                    Refresh
-                  </>
-                )}
-              </Button>
-            </div>
+                  <div className="mt-3">
+                    <QuickAddCard
+                      onAdd={(title) => handleAddCard(col.id, title)}
+                      loading={addingCardCol === col.id}
+                    />
+                  </div>
+                </div>
+              );
+            })}
 
-            {loadError ? (
-              <Card className="border-red-500/40 bg-red-500/10">
-                <CardContent className="py-4">
-                  <p className="text-sm text-red-100">{loadError}</p>
-                </CardContent>
-              </Card>
-            ) : null}
+            <AddColumnForm onAdd={handleAddColumn} />
+          </div>
 
-            <div className="overflow-x-auto pb-2">
-              <div className="flex min-w-max gap-4">
-                {KANBAN_STAGES.map((stage) => {
-                  const stageItems = groupedItems.get(stage.id) ?? [];
-                  return (
-                    <Card
-                      key={stage.id}
-                      className="w-[320px] border-white/10 bg-neutral-900"
-                    >
-                      <CardHeader className="space-y-1 pb-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <CardTitle className="text-base">{stage.label}</CardTitle>
-                          <Badge
-                            variant="outline"
-                            className="tabular-nums border-white/15 bg-white/5 text-neutral-300"
-                          >
-                            {stageItems.length}
-                          </Badge>
-                        </div>
-                        <p className="text-pretty text-xs text-neutral-500">{stage.help}</p>
-                      </CardHeader>
-                      <CardContent className="space-y-3">
-                        {loading ? (
-                          <>
-                            <Skeleton className="h-24 w-full bg-neutral-800" />
-                            <Skeleton className="h-20 w-full bg-neutral-800" />
-                          </>
-                        ) : stageItems.length === 0 ? (
-                          <div className="rounded-lg border border-dashed border-white/10 bg-neutral-950 p-4">
-                            <p className="text-pretty text-xs text-neutral-500">
-                              No items here yet.
-                            </p>
-                            <Button
-                              type="button"
-                              variant="link"
-                              className="mt-1 h-auto p-0 text-xs text-sky-300"
-                              onClick={() => titleInputRef.current?.focus()}
-                            >
-                              Add one from the form
-                            </Button>
-                          </div>
-                        ) : (
-                          stageItems.map((item) => {
-                            const dueDate = formatDueDate(item.dueAt);
-                            const cardMoving = movingId === item.id;
-                            return (
-                              <div
-                                key={item.id}
-                                className={cn(
-                                  "space-y-3 rounded-lg border border-white/10 bg-neutral-950 p-3",
-                                  cardMoving && "opacity-70",
-                                )}
-                              >
-                                <div className="space-y-2">
-                                  <p className="line-clamp-2 text-pretty text-sm font-medium text-neutral-100">
-                                    {item.title}
-                                  </p>
-                                  {item.description ? (
-                                    <p className="line-clamp-3 text-pretty text-xs text-neutral-400">
-                                      {item.description}
-                                    </p>
-                                  ) : null}
-                                </div>
-
-                                <div className="flex flex-wrap gap-1.5">
-                                  <Badge
-                                    variant="outline"
-                                    className={cn("text-[10px]", typeBadgeClass(item.itemType))}
-                                  >
-                                    {typeLabel(item.itemType)}
-                                  </Badge>
-                                  <Badge
-                                    variant="outline"
-                                    className="text-[10px] border-white/10 bg-white/5 text-neutral-300"
-                                  >
-                                    {sourceLabel(item.source)}
-                                  </Badge>
-                                  <Badge
-                                    variant="outline"
-                                    className={cn(
-                                      "text-[10px]",
-                                      priorityBadgeClass(item.priority),
-                                    )}
-                                  >
-                                    {priorityLabel(item.priority)}
-                                  </Badge>
-                                </div>
-
-                                {item.link ? (
-                                  <a
-                                    href={item.link}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="line-clamp-1 text-xs text-sky-300 underline-offset-4 hover:underline"
-                                  >
-                                    {item.link}
-                                  </a>
-                                ) : null}
-
-                                <div className="space-y-1.5">
-                                  <p className="text-[11px] uppercase text-neutral-500">
-                                    Move to stage
-                                  </p>
-                                  <Select
-                                    value={item.stage}
-                                    onValueChange={(value) =>
-                                      void handleMoveItem(item.id, value as WorkItemStage)
-                                    }
-                                    disabled={cardMoving}
-                                  >
-                                    <SelectTrigger className="h-8 bg-neutral-900 text-xs">
-                                      <SelectValue placeholder="Select stage" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      {KANBAN_STAGES.map((entry) => (
-                                        <SelectItem key={entry.id} value={entry.id}>
-                                          {entry.label}
-                                        </SelectItem>
-                                      ))}
-                                    </SelectContent>
-                                  </Select>
-                                </div>
-
-                                <div className="flex items-center justify-between text-[11px] text-neutral-500">
-                                  <span>{stageLabel(item.stage)}</span>
-                                  {dueDate ? <span className="tabular-nums">Due {dueDate}</span> : null}
-                                </div>
-
-                                {moveErrors[item.id] ? (
-                                  <p className="text-xs text-red-400">{moveErrors[item.id]}</p>
-                                ) : null}
-                              </div>
-                            );
-                          })
-                        )}
-                      </CardContent>
-                    </Card>
-                  );
-                })}
-              </div>
-            </div>
-          </section>
-        </div>
+          <DragOverlay>
+            {activeItem ? <SortableCard item={activeItem} overlay /> : null}
+          </DragOverlay>
+        </DndContext>
       </div>
     </div>
   );

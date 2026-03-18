@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 import {
   createWorkItem,
-  KANBAN_STAGES,
+  listColumns,
   listWorkItems,
   normalizeWorkItemPriority,
   normalizeWorkItemSource,
@@ -29,25 +29,15 @@ async function safeReadJson(req: Request): Promise<Record<string, unknown>> {
 
 export async function GET(req: Request) {
   try {
-    const { client, userEmail } = await getSupabaseUserClient(
+    const { client } = await getSupabaseUserClient(
       req.headers.get("authorization"),
     );
-    const items = await listWorkItems(client, userEmail);
+    const [items, columns] = await Promise.all([
+      listWorkItems(client),
+      listColumns(client),
+    ]);
 
-    const counts = KANBAN_STAGES.reduce<Record<string, number>>((acc, stage) => {
-      acc[stage.id] = 0;
-      return acc;
-    }, {});
-
-    for (const item of items) {
-      counts[item.stage] = (counts[item.stage] ?? 0) + 1;
-    }
-
-    return NextResponse.json({
-      items,
-      counts,
-      stages: KANBAN_STAGES,
-    });
+    return NextResponse.json({ items, columns });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unauthorized";
     if (message.toLowerCase().includes("token") || message === "Unauthorized") {
@@ -71,6 +61,8 @@ export async function POST(req: Request) {
       typeof body.sourceRef === "string" ? body.sourceRef : undefined;
     const link = typeof body.link === "string" ? body.link : undefined;
     const dueAt = typeof body.dueAt === "string" ? body.dueAt : undefined;
+    const columnId =
+      typeof body.columnId === "string" ? body.columnId : undefined;
     const payload =
       body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)
         ? (body.payload as Record<string, unknown>)
@@ -81,6 +73,7 @@ export async function POST(req: Request) {
       description,
       itemType: normalizeWorkItemType(body.itemType),
       stage: normalizeWorkItemStage(body.stage),
+      columnId,
       source: normalizeWorkItemSource(body.source),
       sourceRef,
       priority: normalizeWorkItemPriority(body.priority),
