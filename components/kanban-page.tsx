@@ -9,6 +9,7 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
+  useDroppable,
   type DragStartEvent,
   type DragEndEvent,
   type DragOverEvent,
@@ -556,6 +557,32 @@ function AddColumnForm({ onAdd }: { onAdd: (name: string) => void }) {
 }
 
 // ---------------------------------------------------------------------------
+// Droppable column wrapper
+// ---------------------------------------------------------------------------
+
+function DroppableColumn({
+  id,
+  children,
+}: {
+  id: string;
+  children: React.ReactNode;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id });
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn(
+        "flex min-h-[60px] flex-col gap-2 rounded-md transition-colors",
+        isOver && "bg-white/[0.03] ring-1 ring-sky-500/30",
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Quick add card (inline at top of column)
 // ---------------------------------------------------------------------------
 
@@ -948,7 +975,7 @@ export function KanbanPage() {
                     items={colItems.map((i) => i.id)}
                     strategy={verticalListSortingStrategy}
                   >
-                    <div className="flex min-h-[60px] flex-col gap-2">
+                    <DroppableColumn id={col.id}>
                       {colItems.map((item) => (
                         <SortableCard
                           key={item.id}
@@ -962,7 +989,7 @@ export function KanbanPage() {
                           onDelete={() => handleDeleteCard(item.id)}
                         />
                       ))}
-                    </div>
+                    </DroppableColumn>
                   </SortableContext>
                 </div>
               );
