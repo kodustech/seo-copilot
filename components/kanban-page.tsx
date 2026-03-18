@@ -43,17 +43,34 @@ import type {
   KanbanColumn,
   WorkItemPriority,
   WorkItemType,
+  WorkItemSource,
+} from "@/lib/kanban";
+import {
+  WORK_ITEM_TYPES,
+  WORK_ITEM_PRIORITIES,
 } from "@/lib/kanban";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -265,12 +282,14 @@ function SortableCard({
   onUpdatePayload,
   onAction,
   onDelete,
+  onOpen,
 }: {
   item: GrowthWorkItem;
   overlay?: boolean;
   onUpdatePayload?: (payload: Record<string, unknown>) => void;
   onAction?: (actionId: string) => void;
   onDelete?: () => void;
+  onOpen?: () => void;
 }) {
   const {
     attributes,
@@ -308,9 +327,12 @@ function SortableCard({
         >
           <GripVertical className="size-4" />
         </button>
-        <p className="line-clamp-2 min-w-0 flex-1 text-pretty text-sm font-medium text-neutral-100">
+        <button
+          className="line-clamp-2 min-w-0 flex-1 text-left text-pretty text-sm font-medium text-neutral-100 hover:text-white"
+          onClick={onOpen}
+        >
           {item.title}
-        </p>
+        </button>
 
         {/* Card actions: pipeline shortcuts + delete */}
         {(onAction || onDelete) && (
@@ -557,6 +579,349 @@ function AddColumnForm({ onAdd }: { onAdd: (name: string) => void }) {
 }
 
 // ---------------------------------------------------------------------------
+// Card Detail Modal (Notion-style)
+// ---------------------------------------------------------------------------
+
+function CardDetailModal({
+  item,
+  columns,
+  open,
+  onClose,
+  onUpdate,
+  onDelete,
+  onAction,
+}: {
+  item: GrowthWorkItem;
+  columns: KanbanColumn[];
+  open: boolean;
+  onClose: () => void;
+  onUpdate: (updates: Record<string, unknown>) => void;
+  onDelete: () => void;
+  onAction: (actionId: string) => void;
+}) {
+  const [title, setTitle] = useState(item.title);
+  const [description, setDescription] = useState(item.description ?? "");
+  const titleRef = useRef<HTMLTextAreaElement>(null);
+
+  // Sync when item changes
+  useEffect(() => {
+    setTitle(item.title);
+    setDescription(item.description ?? "");
+  }, [item.id, item.title, item.description]);
+
+  // Auto-resize title textarea
+  useEffect(() => {
+    if (titleRef.current) {
+      titleRef.current.style.height = "auto";
+      titleRef.current.style.height = titleRef.current.scrollHeight + "px";
+    }
+  }, [title]);
+
+  function commitTitle() {
+    const trimmed = title.trim();
+    if (trimmed && trimmed !== item.title) onUpdate({ title: trimmed });
+  }
+
+  function commitDescription() {
+    const val = description.trim();
+    if (val !== (item.description ?? "")) onUpdate({ description: val || null });
+  }
+
+  const currentCol = columns.find((c) => c.id === item.columnId);
+  const customFields = Object.entries(item.payload).filter(([k]) => !k.startsWith("_"));
+
+  // Custom field management
+  const [addingField, setAddingField] = useState(false);
+  const [newFieldKey, setNewFieldKey] = useState("");
+  const [newFieldValue, setNewFieldValue] = useState("");
+
+  function handleAddField() {
+    const key = newFieldKey.trim();
+    if (!key) return;
+    onUpdate({ payload: { ...item.payload, [key]: newFieldValue.trim() } });
+    setNewFieldKey("");
+    setNewFieldValue("");
+    setAddingField(false);
+  }
+
+  function handleRemoveField(key: string) {
+    const next = { ...item.payload };
+    delete next[key];
+    onUpdate({ payload: next });
+  }
+
+  function handleFieldValueChange(key: string, value: string) {
+    onUpdate({ payload: { ...item.payload, [key]: value } });
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent
+        showCloseButton={false}
+        className="max-h-[85vh] overflow-y-auto border-white/10 bg-neutral-950 p-0 text-neutral-100 sm:max-w-2xl"
+      >
+        {/* Top bar */}
+        <div className="flex items-center gap-2 border-b border-white/10 px-5 py-3">
+          <Badge variant="outline" className={cn("text-[10px]", typeBadgeClass(item.itemType))}>
+            {typeLabel(item.itemType)}
+          </Badge>
+          <Badge variant="outline" className={cn("text-[10px]", priorityBadgeClass(item.priority))}>
+            {priorityLabel(item.priority)}
+          </Badge>
+          <span className="ml-auto text-[11px] text-neutral-500">
+            by {item.userEmail.split("@")[0]}
+          </span>
+          <button
+            className="rounded p-1 text-neutral-500 hover:bg-white/10 hover:text-neutral-200"
+            onClick={onClose}
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+
+        {/* Title — editable, Notion-style */}
+        <div className="px-5 pt-4">
+          <textarea
+            ref={titleRef}
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onBlur={commitTitle}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                (e.target as HTMLTextAreaElement).blur();
+              }
+            }}
+            rows={1}
+            className="w-full resize-none border-none bg-transparent text-xl font-semibold text-neutral-100 placeholder:text-neutral-600 focus:outline-none"
+            placeholder="Untitled"
+          />
+        </div>
+
+        {/* Properties grid — Notion-style */}
+        <div className="space-y-1 px-5 pb-2">
+          {/* Column */}
+          <div className="flex items-center gap-3 rounded py-1.5">
+            <span className="w-24 shrink-0 text-xs text-neutral-500">Column</span>
+            <Select
+              value={item.columnId ?? ""}
+              onValueChange={(v) => {
+                const col = columns.find((c) => c.id === v);
+                onUpdate({ columnId: v, stage: col?.slug });
+              }}
+            >
+              <SelectTrigger className="h-7 border-none bg-transparent px-2 text-xs text-neutral-200 hover:bg-white/5 focus:ring-0">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+                {columns.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Priority */}
+          <div className="flex items-center gap-3 rounded py-1.5">
+            <span className="w-24 shrink-0 text-xs text-neutral-500">Priority</span>
+            <Select
+              value={item.priority}
+              onValueChange={(v) => onUpdate({ priority: v })}
+            >
+              <SelectTrigger className="h-7 border-none bg-transparent px-2 text-xs text-neutral-200 hover:bg-white/5 focus:ring-0">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+                {WORK_ITEM_PRIORITIES.map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {priorityLabel(p)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Type */}
+          <div className="flex items-center gap-3 rounded py-1.5">
+            <span className="w-24 shrink-0 text-xs text-neutral-500">Type</span>
+            <Select
+              value={item.itemType}
+              onValueChange={(v) => onUpdate({ itemType: v })}
+            >
+              <SelectTrigger className="h-7 border-none bg-transparent px-2 text-xs text-neutral-200 hover:bg-white/5 focus:ring-0">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+                {WORK_ITEM_TYPES.map((t) => (
+                  <SelectItem key={t} value={t}>
+                    {typeLabel(t)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Creator (read-only) */}
+          <div className="flex items-center gap-3 rounded py-1.5">
+            <span className="w-24 shrink-0 text-xs text-neutral-500">Created by</span>
+            <div className="flex items-center gap-1.5 px-2 text-xs text-neutral-300">
+              <span className="flex size-5 items-center justify-center rounded-full bg-white/10 text-[9px] font-semibold">
+                {creatorInitials(item.userEmail)}
+              </span>
+              {item.userEmail.split("@")[0]}
+            </div>
+          </div>
+
+          {/* Created at */}
+          <div className="flex items-center gap-3 rounded py-1.5">
+            <span className="w-24 shrink-0 text-xs text-neutral-500">Created</span>
+            <span className="px-2 text-xs text-neutral-400">
+              {new Date(item.createdAt).toLocaleDateString("en-US", {
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+              })}
+            </span>
+          </div>
+
+          {/* Custom fields */}
+          {customFields.map(([key, value]) => (
+            <div key={key} className="group flex items-center gap-3 rounded py-1.5">
+              <span className="w-24 shrink-0 truncate text-xs text-neutral-500" title={key}>
+                {key}
+              </span>
+              <input
+                className="min-w-0 flex-1 border-none bg-transparent px-2 text-xs text-neutral-300 placeholder:text-neutral-600 focus:outline-none focus:ring-0"
+                defaultValue={String(value)}
+                onBlur={(e) => handleFieldValueChange(key, e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                }}
+              />
+              <button
+                className="shrink-0 text-neutral-700 opacity-0 transition group-hover:opacity-100 hover:text-red-400"
+                onClick={() => handleRemoveField(key)}
+              >
+                <X className="size-3" />
+              </button>
+            </div>
+          ))}
+
+          {/* Add field */}
+          {addingField ? (
+            <form
+              className="flex items-center gap-2 py-1.5"
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleAddField();
+              }}
+            >
+              <input
+                autoFocus
+                value={newFieldKey}
+                onChange={(e) => setNewFieldKey(e.target.value)}
+                placeholder="Property name"
+                className="w-24 shrink-0 border-none bg-transparent text-xs text-neutral-400 placeholder:text-neutral-600 focus:outline-none"
+              />
+              <input
+                value={newFieldValue}
+                onChange={(e) => setNewFieldValue(e.target.value)}
+                placeholder="Value"
+                className="min-w-0 flex-1 border-none bg-transparent px-2 text-xs text-neutral-300 placeholder:text-neutral-600 focus:outline-none"
+              />
+              <button type="submit" className="text-emerald-400 hover:text-emerald-300">
+                <Plus className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                className="text-neutral-600 hover:text-neutral-400"
+                onClick={() => {
+                  setAddingField(false);
+                  setNewFieldKey("");
+                  setNewFieldValue("");
+                }}
+              >
+                <X className="size-3.5" />
+              </button>
+            </form>
+          ) : (
+            <button
+              className="flex items-center gap-1.5 py-1.5 text-[11px] text-neutral-600 transition hover:text-neutral-400"
+              onClick={() => setAddingField(true)}
+            >
+              <Plus className="size-3" />
+              Add property
+            </button>
+          )}
+        </div>
+
+        {/* Divider */}
+        <div className="mx-5 h-px bg-white/10" />
+
+        {/* Description — editable */}
+        <div className="px-5 py-3">
+          <p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">
+            Description
+          </p>
+          <Textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            onBlur={commitDescription}
+            placeholder="Add a description..."
+            className="min-h-[100px] resize-none border-none bg-transparent px-0 text-sm text-neutral-200 placeholder:text-neutral-600 focus-visible:ring-0"
+          />
+        </div>
+
+        {/* Divider */}
+        <div className="mx-5 h-px bg-white/10" />
+
+        {/* Actions footer */}
+        <div className="flex flex-wrap items-center gap-2 px-5 py-4">
+          <p className="text-[10px] font-medium uppercase tracking-wider text-neutral-600">
+            Pipeline
+          </p>
+          {PIPELINE_ACTIONS.map((action) => {
+            const Icon = action.icon;
+            return (
+              <Button
+                key={action.id}
+                variant="outline"
+                size="sm"
+                className="h-7 border-white/10 bg-transparent text-xs text-neutral-400 hover:bg-white/5 hover:text-neutral-200"
+                onClick={() => {
+                  onClose();
+                  onAction(action.id);
+                }}
+              >
+                <Icon className="mr-1.5 size-3" />
+                {action.label}
+              </Button>
+            );
+          })}
+
+          <div className="ml-auto">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs text-red-500/70 hover:bg-red-500/10 hover:text-red-400"
+              onClick={() => {
+                onClose();
+                onDelete();
+              }}
+            >
+              <Trash2 className="mr-1.5 size-3" />
+              Delete
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Droppable column wrapper
 // ---------------------------------------------------------------------------
 
@@ -673,6 +1038,7 @@ export function KanbanPage() {
   const [error, setError] = useState<string | null>(null);
   const [addingCardCol, setAddingCardCol] = useState<string | null>(null);
   const [activeItem, setActiveItem] = useState<GrowthWorkItem | null>(null);
+  const [selectedCard, setSelectedCard] = useState<GrowthWorkItem | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -811,6 +1177,25 @@ export function KanbanPage() {
       method: "PATCH",
       headers: authHeaders(token),
       body: JSON.stringify({ payload }),
+    });
+  }
+
+  async function handleUpdateCard(itemId: string, updates: Record<string, unknown>) {
+    if (!token) return;
+    // Optimistic update
+    setItems((prev) =>
+      prev.map((i) =>
+        i.id === itemId ? { ...i, ...updates } : i,
+      ),
+    );
+    // Also update selectedCard if it's the one being edited
+    setSelectedCard((prev) =>
+      prev?.id === itemId ? { ...prev, ...updates } as GrowthWorkItem : prev,
+    );
+    await fetch(`/api/kanban/items/${itemId}`, {
+      method: "PATCH",
+      headers: authHeaders(token),
+      body: JSON.stringify(updates),
     });
   }
 
@@ -987,6 +1372,7 @@ export function KanbanPage() {
                             handlePipelineAction(item, actionId)
                           }
                           onDelete={() => handleDeleteCard(item.id)}
+                          onOpen={() => setSelectedCard(item)}
                         />
                       ))}
                     </DroppableColumn>
@@ -1002,6 +1388,25 @@ export function KanbanPage() {
             {activeItem ? <SortableCard item={activeItem} overlay /> : null}
           </DragOverlay>
         </DndContext>
+
+        {/* Card detail modal */}
+        {selectedCard && (
+          <CardDetailModal
+            item={selectedCard}
+            columns={columns}
+            open
+            onClose={() => setSelectedCard(null)}
+            onUpdate={(updates) => handleUpdateCard(selectedCard.id, updates)}
+            onDelete={() => {
+              handleDeleteCard(selectedCard.id);
+              setSelectedCard(null);
+            }}
+            onAction={(actionId) => {
+              handlePipelineAction(selectedCard, actionId);
+              setSelectedCard(null);
+            }}
+          />
+        )}
       </div>
     </div>
   );
