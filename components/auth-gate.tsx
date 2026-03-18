@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { Session } from "@supabase/supabase-js";
-import { ChevronDown, Loader2, LogOut, Settings } from "lucide-react";
+import { Calendar, ChevronDown, Clock, Loader2, LogOut, Settings, Star } from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
@@ -38,11 +38,16 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     () => [
       { href: "/", label: "Growth Agent" },
       { href: "/ideias", label: "Ideas Canvas" },
-      { href: "/favoritos", label: "Favorites" },
       { href: "/dashboard", label: "Dashboard" },
-      { href: "/calendario", label: "Calendar" },
-      { href: "/jobs", label: "Scheduled Jobs" },
       { href: "/social-monitoring", label: "Social Monitor" },
+    ],
+    [],
+  );
+  const userMenuLinks = useMemo(
+    () => [
+      { href: "/favoritos", label: "Favorites", icon: Star },
+      { href: "/calendario", label: "Calendar", icon: Calendar },
+      { href: "/jobs", label: "Scheduled Jobs", icon: Clock },
     ],
     [],
   );
@@ -401,6 +406,41 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
                   >
                     {session.user.email}
                   </Badge>
+
+                  {userMenuLinks.map((item) => {
+                    const Icon = item.icon;
+                    const active = pathname === item.href;
+                    return (
+                      <Button
+                        key={item.href}
+                        variant="ghost"
+                        size="sm"
+                        className={cn(
+                          "w-full justify-start",
+                          active
+                            ? isDarkPage
+                              ? "bg-white/10 text-white"
+                              : "bg-neutral-100 text-neutral-900"
+                            : isDarkPage
+                              ? "text-neutral-300 hover:bg-white/10 hover:text-white"
+                              : "text-neutral-700 hover:bg-neutral-100 hover:text-neutral-900",
+                        )}
+                        asChild
+                      >
+                        <Link href={item.href}>
+                          <Icon className="mr-2 h-4 w-4" />
+                          {item.label}
+                        </Link>
+                      </Button>
+                    );
+                  })}
+
+                  <div
+                    className={cn(
+                      "my-1 h-px",
+                      isDarkPage ? "bg-white/10" : "bg-neutral-200",
+                    )}
+                  />
 
                   <Button
                     variant="ghost"
