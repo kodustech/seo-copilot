@@ -39,6 +39,8 @@ import {
   queryContentDecay,
   querySearchBySegment,
   queryPageKeywords,
+  describeDataset,
+  queryBigQuery,
 } from "@/lib/bigquery";
 import { getModel } from "@/lib/ai/provider";
 import { CONTENT_PLAN_SYNTHESIS_PROMPT } from "@/lib/ai/system-prompt";
@@ -1693,6 +1695,58 @@ const analyzeSERP = tool({
   },
 });
 
+// ---------------------------------------------------------------------------
+// BigQuery: schema discovery + free-form query
+// ---------------------------------------------------------------------------
+
+export const exploreDataWarehouse = tool({
+  description:
+    "Explore the BigQuery data warehouse schema. Without a dataset parameter, returns a summary of all datasets and their tables. With a dataset name (e.g. 'kodus_mongo'), returns full column details, types, enums, and relations for every table in that dataset.",
+  inputSchema: z.object({
+    dataset: z
+      .string()
+      .optional()
+      .describe(
+        "Dataset name to inspect (e.g. 'kodus_billing', 'kodus_ga', 'kodus_search_console', 'kodus_mongo', 'kodus_postgres', 'kodus_posthog'). Omit to list all datasets.",
+      ),
+  }),
+  execute: async ({ dataset }: { dataset?: string }) => {
+    try {
+      return { success: true as const, ...describeDataset(dataset) };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Error describing dataset.",
+      };
+    }
+  },
+});
+
+export const runBigQuery = tool({
+  description:
+    "Execute a read-only SQL query against the BigQuery data warehouse. Only SELECT statements are allowed. Use exploreDataWarehouse first to discover table names and columns. Always use fully qualified table names (e.g. `kody-408918.kodus_mongo.pullRequests`). A LIMIT is enforced automatically if omitted.",
+  inputSchema: z.object({
+    sql: z.string().describe("The SQL SELECT query to execute."),
+    maxRows: z
+      .number()
+      .optional()
+      .default(100)
+      .describe("Maximum rows to return (default 100, max 500)."),
+  }),
+  execute: async ({ sql, maxRows }: { sql: string; maxRows?: number }) => {
+    try {
+      const capped = Math.min(maxRows ?? 100, 500);
+      const result = await queryBigQuery(sql, capped);
+      return { success: true as const, ...result };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Error executing query.",
+      };
+    }
+  },
+});
+
 export function createAgentTools(userEmail?: string) {
   return {
     generateIdeas,
@@ -1723,6 +1777,8 @@ export function createAgentTools(userEmail?: string) {
     getVoicePolicy: createVoicePolicyTool(userEmail),
     getKeywordVolume,
     analyzeSERP,
+    exploreDataWarehouse,
+    runBigQuery,
   };
 }
 

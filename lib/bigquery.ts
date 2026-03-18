@@ -56,6 +56,114 @@ async function runQuery<T>(
 }
 
 // ---------------------------------------------------------------------------
+// Schema discovery & free-form query
+// ---------------------------------------------------------------------------
+
+import schemaJson from "@/lib/bigquery-schema.json";
+
+const BIGQUERY_SCHEMA = schemaJson as {
+  description: string;
+  tables: Record<
+    string,
+    {
+      name: string;
+      description: string;
+      columns: { name: string; type: string; description: string }[];
+      enums?: Record<string, string[]>;
+      relations?: string[];
+      notes?: string[];
+    }
+  >;
+};
+
+/**
+ * Returns schema for a specific dataset, or a high-level summary of all datasets.
+ */
+export function describeDataset(dataset?: string): {
+  datasets?: { name: string; tables: string[]; description: string }[];
+  tables?: {
+    fullName: string;
+    description: string;
+    columns: { name: string; type: string; description: string }[];
+    enums?: Record<string, string[]>;
+    relations?: string[];
+    notes?: string[];
+  }[];
+} {
+  const tables = Object.values(BIGQUERY_SCHEMA.tables);
+
+  if (!dataset) {
+    // Return high-level summary grouped by dataset
+    const grouped = new Map<string, { names: string[]; descriptions: string[] }>();
+    for (const t of tables) {
+      const ds = t.name.split(".")[1]; // e.g. "kodus_ga"
+      if (!grouped.has(ds)) grouped.set(ds, { names: [], descriptions: [] });
+      const g = grouped.get(ds)!;
+      g.names.push(t.name.split(".")[2]);
+      g.descriptions.push(t.description);
+    }
+    return {
+      datasets: Array.from(grouped.entries()).map(([name, g]) => ({
+        name,
+        tables: g.names,
+        description: g.descriptions[0].split(".")[0], // first sentence
+      })),
+    };
+  }
+
+  // Filter to specific dataset
+  const filtered = tables.filter((t) => t.name.includes(`.${dataset}.`));
+  if (filtered.length === 0) {
+    throw new Error(
+      `Dataset "${dataset}" not found. Available: ${[...new Set(tables.map((t) => t.name.split(".")[1]))].join(", ")}`,
+    );
+  }
+
+  return {
+    tables: filtered.map((t) => ({
+      fullName: t.name,
+      description: t.description,
+      columns: t.columns,
+      enums: t.enums,
+      relations: t.relations,
+      notes: t.notes,
+    })),
+  };
+}
+
+/**
+ * Executes a read-only BigQuery SQL query with safety checks.
+ */
+export async function queryBigQuery(
+  sql: string,
+  maxRows = 100,
+): Promise<{ rows: Record<string, unknown>[]; totalRows: number }> {
+  const trimmed = sql.trim();
+
+  // Safety: only allow SELECT statements
+  if (!/^(SELECT|WITH)\s/i.test(trimmed)) {
+    throw new Error("Only SELECT (or WITH ... SELECT) queries are allowed.");
+  }
+
+  // Block dangerous keywords
+  const blocked = /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|MERGE|GRANT|REVOKE)\b/i;
+  if (blocked.test(trimmed)) {
+    throw new Error("Mutating statements are not allowed. Only read-only queries.");
+  }
+
+  // Enforce LIMIT
+  const hasLimit = /\bLIMIT\s+\d+/i.test(trimmed);
+  const finalSql = hasLimit ? trimmed : `${trimmed}\nLIMIT ${maxRows}`;
+
+  const client = getClient();
+  const [rows] = await client.query({ query: finalSql });
+  return {
+    rows: (rows as Record<string, unknown>[]).slice(0, maxRows),
+    totalRows: (rows as Record<string, unknown>[]).length,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 1. Search Performance (Google Search Console)
 // ---------------------------------------------------------------------------
 

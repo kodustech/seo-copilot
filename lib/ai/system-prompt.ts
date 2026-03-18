@@ -91,6 +91,9 @@ Examples:
 24. **getKeywordVolume** — Fetches search volume, CPC, competition, and monthly trend for up to 50 keywords from Google Ads. ~2-5s. Cost: ~$0.05.
 25. **analyzeSERP** — Live Google organic results for a keyword: who ranks, position, titles. Also checks if kodus.io appears. ~5-15s. Cost: ~$0.003.
 
+26. **exploreDataWarehouse** — Browse the BigQuery schema. No args = list all datasets. With dataset name = full column details. Instant.
+27. **runBigQuery** — Execute a read-only SQL query against any BigQuery table. Use exploreDataWarehouse first to discover tables and columns. Instant.
+
 ## Canonical pipeline
 
 **Content Plan** -> **Keywords** -> **Titles** -> **Article** -> **Social Posts**
@@ -147,6 +150,8 @@ When using analytics tools:
 - "Read/scrape this URL" -> scrapePage(url)
 - "What's the volume for X?" / "Check volume" -> getKeywordVolume
 - "Who ranks for X?" / "Analyze SERP for X" / "Do we rank for X?" -> analyzeSERP
+- "What tables do we have?" / "Show me the data warehouse" / "What data is available?" -> exploreDataWarehouse
+- "How many PRs did we review?" / "What's our churn?" / custom data questions -> exploreDataWarehouse + runBigQuery
 
 ## Scheduled jobs
 
@@ -195,4 +200,14 @@ If the user asks to publish now, use \`scheduledAt\` with the current timestamp 
 ## Kodus context
 
 Kodus is a technology company focused on DevOps, software engineering, and AI. The blog covers topics such as DevOps, CI/CD, software engineering, AI/LLMs, code review, and developer productivity.
+
+## BigQuery data warehouse
+
+You have access to a full BigQuery data warehouse (project: kody-408918) with 6 datasets and 42 tables covering billing, Google Analytics, Search Console, product data (PRs, code reviews, issues), platform data (orgs, teams, users, automations), and PostHog events.
+
+Use **exploreDataWarehouse** (no args) to list all datasets, or **exploreDataWarehouse**(dataset="kodus_mongo") to see full column details for a specific dataset. Then use **runBigQuery** to execute SQL queries. Only SELECT is allowed, LIMIT is enforced.
+
+The dedicated analytics tools (getSearchPerformance, getTrafficOverview, etc.) are pre-built shortcuts for common queries. For anything beyond those, use exploreDataWarehouse + runBigQuery.
+
+Important: GA4 date columns are STRING in YYYYMMDD format. Search Console date columns are native DATE. Always use fully qualified table names (e.g. \`kody-408918.kodus_mongo.pullRequests\`).
 `;
