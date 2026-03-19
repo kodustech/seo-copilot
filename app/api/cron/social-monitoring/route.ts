@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 import { syncSocialMentions } from "@/lib/social-monitoring";
 
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 export async function GET(req: Request) {
   const authHeader = req.headers.get("authorization");

@@ -72,21 +72,54 @@ export type MentionStats = {
 // ---------------------------------------------------------------------------
 
 const KEYWORDS = [
+  // Direct pain points
   "code review taking too long",
   "slow pull request reviews",
+  "PR review bottleneck",
+  "tired of waiting for code review",
+  "need better code review process",
+  "code review is blocking us",
+  "pull request sitting for days",
+  "reviewer bandwidth problem",
+  // Tool / automation intent
   "automated code review tool",
   "AI code review",
-  "PR review bottleneck",
   "code review automation",
-  "need better code review process",
-  "tired of waiting for code review",
+  "best code review tools 2025",
+  "AI pull request review",
+  "automated PR feedback",
+  // Comparisons & alternatives
+  "CodeRabbit vs",
+  "SonarQube alternative",
+  "Codacy alternative",
+  "better than CodeRabbit",
+  "code review tool comparison",
+  // Process & culture
   "code review best practices team",
+  "how to speed up code reviews",
+  "code review culture engineering team",
+  "reducing PR cycle time",
+  "developer experience code review",
+  "engineering velocity pull requests",
 ];
 
 const SUBREDDITS = [
   "codereview",
   "devtools",
   "ExperiencedDevs",
+  "programming",
+  "softwareengineering",
+  "webdev",
+  "golang",
+  "reactjs",
+  "typescript",
+  "node",
+  "Python",
+  "csharp",
+  "java",
+  "devops",
+  "SaaS",
+  "startups",
 ];
 
 const REDDIT_USER_AGENT = "seo-copilot:social-monitor/1.0";
@@ -153,30 +186,50 @@ async function fetchRedditJson(url: string): Promise<RedditListing | null> {
 
 export async function collectReddit(): Promise<RawSocialResult[]> {
   const results: RawSocialResult[] = [];
+  const seen = new Set<string>();
 
-  // Search by keywords (pick top 5 to stay under rate limits)
-  const keywordSubset = KEYWORDS.slice(0, 5);
-  for (const keyword of keywordSubset) {
+  function addResult(r: RawSocialResult) {
+    if (!seen.has(r.url)) {
+      seen.add(r.url);
+      results.push(r);
+    }
+  }
+
+  // Search ALL keywords across Reddit
+  for (const keyword of KEYWORDS) {
     const encoded = encodeURIComponent(keyword);
+    // Search last 3 days to catch things we might have missed
     const listing = await fetchRedditJson(
-      `https://www.reddit.com/search.json?q=${encoded}&sort=new&limit=10&t=day`,
+      `https://www.reddit.com/search.json?q=${encoded}&sort=relevance&limit=15&t=week`,
     );
     if (listing?.data?.children) {
       for (const post of listing.data.children) {
-        results.push(normalizeRedditPost(post));
+        addResult(normalizeRedditPost(post));
       }
     }
     await delay(1200);
   }
 
-  // Browse subreddits for new posts
+  // Browse subreddits for new posts + search within each for code review topics
   for (const subreddit of SUBREDDITS) {
-    const listing = await fetchRedditJson(
-      `https://www.reddit.com/r/${subreddit}/new.json?limit=10`,
+    // New posts
+    const newListing = await fetchRedditJson(
+      `https://www.reddit.com/r/${subreddit}/new.json?limit=15`,
     );
-    if (listing?.data?.children) {
-      for (const post of listing.data.children) {
-        results.push(normalizeRedditPost(post));
+    if (newListing?.data?.children) {
+      for (const post of newListing.data.children) {
+        addResult(normalizeRedditPost(post));
+      }
+    }
+    await delay(1200);
+
+    // Search within subreddit for code review topics
+    const searchListing = await fetchRedditJson(
+      `https://www.reddit.com/r/${subreddit}/search.json?q=code+review+OR+pull+request+OR+PR+review&restrict_sr=on&sort=new&limit=10&t=week`,
+    );
+    if (searchListing?.data?.children) {
+      for (const post of searchListing.data.children) {
+        addResult(normalizeRedditPost(post));
       }
     }
     await delay(1200);
@@ -203,20 +256,21 @@ function isTweetUrl(url: string): boolean {
 
 export async function collectTwitter(): Promise<RawSocialResult[]> {
   const results: RawSocialResult[] = [];
-  const keywordSubset = KEYWORDS.slice(0, 5);
+  const seen = new Set<string>();
 
-  for (const keyword of keywordSubset) {
+  for (const keyword of KEYWORDS) {
     try {
       const { results: exaResults } = await searchWebContent({
         query: keyword,
         domains: ["x.com"],
-        numResults: 10,
-        daysBack: 3,
+        numResults: 15,
+        daysBack: 7,
         textMaxCharacters: 1000,
       });
 
       for (const r of exaResults) {
-        if (!isTweetUrl(r.url)) continue;
+        if (!isTweetUrl(r.url) || seen.has(r.url)) continue;
+        seen.add(r.url);
 
         const author = extractTwitterAuthor(r.url);
         results.push({
@@ -248,27 +302,45 @@ function isLinkedInPostUrl(url: string): boolean {
   return LINKEDIN_POST_PATTERN.test(url);
 }
 
+// Extra LinkedIn queries for broader discovery (thought leadership, DX topics)
+const LINKEDIN_EXTRA_QUERIES = [
+  "developer productivity code review workflow",
+  "engineering team velocity pull request process",
+  "AI code review tool experience",
+  "code quality automation engineering",
+  "reducing code review cycle time",
+  "developer experience PR bottleneck",
+  "automated code review startup",
+  "code review tool recommendation",
+];
+
 export async function collectLinkedIn(): Promise<RawSocialResult[]> {
   const results: RawSocialResult[] = [];
-  const keywordSubset = KEYWORDS.slice(0, 5);
+  const seen = new Set<string>();
+  const allQueries = [...KEYWORDS, ...LINKEDIN_EXTRA_QUERIES];
 
-  for (const keyword of keywordSubset) {
+  for (const keyword of allQueries) {
     try {
       const { results: exaResults } = await searchWebContent({
         query: keyword,
         domains: ["linkedin.com"],
-        numResults: 10,
-        daysBack: 7,
-        textMaxCharacters: 1000,
+        numResults: 15,
+        daysBack: 14,
+        textMaxCharacters: 1500,
       });
 
       for (const r of exaResults) {
-        if (!isLinkedInPostUrl(r.url)) continue;
+        if (!isLinkedInPostUrl(r.url) || seen.has(r.url)) continue;
+        seen.add(r.url);
+
+        // Try to extract author name from title (LinkedIn titles often contain author)
+        const authorMatch = r.title?.match(/^(.+?)\s+(?:on LinkedIn|posted on)/i);
+        const author = authorMatch?.[1] ?? null;
 
         results.push({
           platform: "linkedin",
           url: r.url,
-          author: null,
+          author,
           authorProfileUrl: null,
           title: r.title,
           content: r.text || r.summary || r.title,
