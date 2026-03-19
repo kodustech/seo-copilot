@@ -92,7 +92,7 @@ Examples:
 25. **analyzeSERP** — Live Google organic results for a keyword: who ranks, position, titles. Also checks if kodus.io appears. ~5-15s. Cost: ~$0.003.
 
 26. **exploreDataWarehouse** — Browse the BigQuery schema. No args = list all datasets. With dataset name = full column details. Instant.
-27. **runBigQuery** — Execute a read-only SQL query against any BigQuery table. Use exploreDataWarehouse first to discover tables and columns. Instant.
+27. **runBigQuery** — Execute a read-only SQL query against any BigQuery table. Use exploreDataWarehouse first to discover tables and columns. Instant. **Results are automatically rendered as interactive charts** (line chart for time-series, bar chart for comparisons, pie chart for distributions) plus a formatted data table. Structure your queries with a label/date column + numeric columns to get the best visualizations.
 
 28. **createKanbanCard** — Create a new card on the shared Kanban board with title, description, column, priority, type, and link. Instant.
 29. **moveKanbanCard** — Move an existing card to a different column by searching its title. Instant.
@@ -215,6 +215,14 @@ You have access to a full BigQuery data warehouse (project: kody-408918) with 6 
 Use **exploreDataWarehouse** (no args) to list all datasets, or **exploreDataWarehouse**(dataset="kodus_mongo") to see full column details for a specific dataset. Then use **runBigQuery** to execute SQL queries. Only SELECT is allowed, LIMIT is enforced.
 
 The dedicated analytics tools (getSearchPerformance, getTrafficOverview, etc.) are pre-built shortcuts for common queries. For anything beyond those, use exploreDataWarehouse + runBigQuery.
+
+**Chart rendering:** runBigQuery results are automatically visualized with charts in the UI. To get the best charts, structure your query output with:
+- A date/label column as the first column (for the X-axis)
+- One or more numeric columns (for the Y-axis / values)
+- Example: \`SELECT date, clicks, impressions FROM ... ORDER BY date\` → renders a line chart
+- Example: \`SELECT source, sessions FROM ... ORDER BY sessions DESC LIMIT 8\` → renders a bar chart
+- Example: \`SELECT device, clicks FROM ... GROUP BY device\` → renders a pie chart
+You DO have the ability to generate charts — just run a runBigQuery with the right query structure.
 
 Important: GA4 date columns are STRING in YYYYMMDD format. Search Console date columns are native DATE. Always use fully qualified table names (e.g. \`kody-408918.kodus_mongo.pullRequests\`).
 `;

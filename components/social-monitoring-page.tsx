@@ -182,20 +182,32 @@ export function SocialMonitoringPage() {
     setError(null);
 
     try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 290_000); // 4m50s
+
       const res = await fetch("/api/social/mentions/sync", {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
       });
+      clearTimeout(timeout);
 
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data?.error || "Sync failed");
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || `Sync failed (${res.status})`);
       }
+
+      const result = await res.json();
+      console.log("[sync] Result:", result);
 
       // Reload mentions after sync completes
       await fetchMentions();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sync failed");
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setError("Sync is taking too long. It may still be running — try Refresh in a minute.");
+      } else {
+        setError(err instanceof Error ? err.message : "Sync failed");
+      }
     } finally {
       setSyncing(false);
     }

@@ -153,6 +153,18 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Run async tasks in parallel batches to avoid overwhelming APIs */
+async function batchParallel<T>(
+  items: T[],
+  fn: (item: T) => Promise<void>,
+  concurrency = 5,
+): Promise<void> {
+  for (let i = 0; i < items.length; i += concurrency) {
+    const batch = items.slice(i, i + concurrency);
+    await Promise.allSettled(batch.map(fn));
+  }
+}
+
 function normalizeRedditPost(post: RedditPost): RawSocialResult {
   const d = post.data;
   return {
@@ -184,16 +196,24 @@ async function fetchRedditJson(url: string): Promise<RedditListing | null> {
   }
 }
 
-// Reddit-specific Exa queries for deeper semantic discovery
-const REDDIT_EXTRA_QUERIES = [
-  "frustrated with code review process on my team",
-  "what code review tool do you use and recommend",
+// Focused Reddit queries via Exa (semantic search finds much more than Reddit's own API)
+const REDDIT_EXA_QUERIES = [
+  // Direct pain — high intent
+  "code review taking too long frustrated",
+  "slow pull request reviews blocking team",
+  "PR review bottleneck engineering",
+  "tired of waiting for code review",
+  "need better code review process",
+  // Tool discovery
+  "what code review tool do you recommend",
   "automated code review AI experience",
-  "PR review taking forever blocking deployments",
-  "how to improve pull request turnaround time",
-  "code review bottleneck engineering team",
-  "looking for better code review workflow",
-  "CodeRabbit SonarQube Codacy experience review",
+  "best code review tools 2025",
+  "CodeRabbit vs SonarQube vs Codacy",
+  "AI pull request review tool",
+  // Process
+  "how to speed up code reviews team",
+  "code review culture engineering workflow",
+  "reducing PR cycle time developer experience",
 ];
 
 export async function collectReddit(): Promise<RawSocialResult[]> {
@@ -207,43 +227,40 @@ export async function collectReddit(): Promise<RawSocialResult[]> {
     }
   }
 
-  // Primary: Exa semantic search on reddit.com (finds WAY more than Reddit's own search)
-  const allQueries = [...KEYWORDS, ...REDDIT_EXTRA_QUERIES];
-  for (const keyword of allQueries) {
-    try {
-      const { results: exaResults } = await searchWebContent({
-        query: keyword,
-        domains: ["reddit.com"],
-        numResults: 15,
-        daysBack: 14,
-        textMaxCharacters: 1500,
-      });
-
-      for (const r of exaResults) {
-        // Only accept actual reddit post/comment URLs
-        if (!r.url.includes("reddit.com/r/")) continue;
-
-        // Extract author and subreddit from URL when possible
-        const authorMatch = r.url.match(/reddit\.com\/r\/\w+\/comments\/\w+\/[^/]+/);
-        const subredditMatch = r.url.match(/reddit\.com\/r\/(\w+)/);
-
-        addResult({
-          platform: "reddit",
-          url: r.url,
-          author: null,
-          authorProfileUrl: null,
-          title: r.title || "",
-          content: r.text || r.summary || r.title || "",
-          publishedDate: r.publishedDate ?? null,
+  // Primary: Exa semantic search on reddit.com (parallel batches of 5)
+  await batchParallel(
+    REDDIT_EXA_QUERIES,
+    async (keyword) => {
+      try {
+        const { results: exaResults } = await searchWebContent({
+          query: keyword,
+          domains: ["reddit.com"],
+          numResults: 15,
+          daysBack: 14,
+          textMaxCharacters: 1500,
         });
-      }
-    } catch {
-      // Skip keyword on error, continue with others
-    }
-  }
 
-  // Secondary: Reddit public API for fresh posts from key subreddits (catches very new posts Exa hasn't indexed yet)
-  const coreSubreddits = SUBREDDITS.slice(0, 6); // Top 6 most relevant
+        for (const r of exaResults) {
+          if (!r.url.includes("reddit.com/r/")) continue;
+          addResult({
+            platform: "reddit",
+            url: r.url,
+            author: null,
+            authorProfileUrl: null,
+            title: r.title || "",
+            content: r.text || r.summary || r.title || "",
+            publishedDate: r.publishedDate ?? null,
+          });
+        }
+      } catch {
+        // Skip on error
+      }
+    },
+    5,
+  );
+
+  // Secondary: Reddit public API for very fresh posts from top subreddits
+  const coreSubreddits = SUBREDDITS.slice(0, 5);
   for (const subreddit of coreSubreddits) {
     const newListing = await fetchRedditJson(
       `https://www.reddit.com/r/${subreddit}/new.json?limit=15`,
@@ -275,39 +292,57 @@ function isTweetUrl(url: string): boolean {
   return TWEET_URL_PATTERN.test(url);
 }
 
+// Focused Twitter queries (subset of keywords most likely to appear on X)
+const TWITTER_EXA_QUERIES = [
+  "code review taking too long",
+  "AI code review tool",
+  "automated code review",
+  "PR review bottleneck",
+  "code review automation",
+  "CodeRabbit alternative",
+  "best code review tools",
+  "pull request review slow",
+  "developer experience code review",
+  "code review tool comparison",
+];
+
 export async function collectTwitter(): Promise<RawSocialResult[]> {
   const results: RawSocialResult[] = [];
   const seen = new Set<string>();
 
-  for (const keyword of KEYWORDS) {
-    try {
-      const { results: exaResults } = await searchWebContent({
-        query: keyword,
-        domains: ["x.com"],
-        numResults: 15,
-        daysBack: 7,
-        textMaxCharacters: 1000,
-      });
-
-      for (const r of exaResults) {
-        if (!isTweetUrl(r.url) || seen.has(r.url)) continue;
-        seen.add(r.url);
-
-        const author = extractTwitterAuthor(r.url);
-        results.push({
-          platform: "twitter",
-          url: r.url,
-          author,
-          authorProfileUrl: author ? `https://x.com/${author}` : null,
-          title: r.title,
-          content: r.text || r.summary || r.title,
-          publishedDate: r.publishedDate ?? null,
+  await batchParallel(
+    TWITTER_EXA_QUERIES,
+    async (keyword) => {
+      try {
+        const { results: exaResults } = await searchWebContent({
+          query: keyword,
+          domains: ["x.com"],
+          numResults: 15,
+          daysBack: 7,
+          textMaxCharacters: 1000,
         });
+
+        for (const r of exaResults) {
+          if (!isTweetUrl(r.url) || seen.has(r.url)) continue;
+          seen.add(r.url);
+
+          const author = extractTwitterAuthor(r.url);
+          results.push({
+            platform: "twitter",
+            url: r.url,
+            author,
+            authorProfileUrl: author ? `https://x.com/${author}` : null,
+            title: r.title,
+            content: r.text || r.summary || r.title,
+            publishedDate: r.publishedDate ?? null,
+          });
+        }
+      } catch {
+        // Skip on error
       }
-    } catch {
-      // Skip keyword on error, continue with others
-    }
-  }
+    },
+    5,
+  );
 
   return results;
 }
@@ -323,55 +358,62 @@ function isLinkedInPostUrl(url: string): boolean {
   return LINKEDIN_POST_PATTERN.test(url);
 }
 
-// Extra LinkedIn queries for broader discovery (thought leadership, DX topics)
-const LINKEDIN_EXTRA_QUERIES = [
+// Focused LinkedIn queries for discovery
+const LINKEDIN_EXA_QUERIES = [
+  "code review taking too long engineering team",
+  "AI code review tool experience",
   "developer productivity code review workflow",
   "engineering team velocity pull request process",
-  "AI code review tool experience",
-  "code quality automation engineering",
-  "reducing code review cycle time",
-  "developer experience PR bottleneck",
   "automated code review startup",
   "code review tool recommendation",
+  "reducing code review cycle time",
+  "PR review bottleneck developer experience",
+  "code quality automation engineering",
+  "best code review tools 2025",
+  "CodeRabbit alternative code review",
+  "slow pull request reviews blocking",
+  "code review culture engineering",
 ];
 
 export async function collectLinkedIn(): Promise<RawSocialResult[]> {
   const results: RawSocialResult[] = [];
   const seen = new Set<string>();
-  const allQueries = [...KEYWORDS, ...LINKEDIN_EXTRA_QUERIES];
 
-  for (const keyword of allQueries) {
-    try {
-      const { results: exaResults } = await searchWebContent({
-        query: keyword,
-        domains: ["linkedin.com"],
-        numResults: 15,
-        daysBack: 14,
-        textMaxCharacters: 1500,
-      });
-
-      for (const r of exaResults) {
-        if (!isLinkedInPostUrl(r.url) || seen.has(r.url)) continue;
-        seen.add(r.url);
-
-        // Try to extract author name from title (LinkedIn titles often contain author)
-        const authorMatch = r.title?.match(/^(.+?)\s+(?:on LinkedIn|posted on)/i);
-        const author = authorMatch?.[1] ?? null;
-
-        results.push({
-          platform: "linkedin",
-          url: r.url,
-          author,
-          authorProfileUrl: null,
-          title: r.title,
-          content: r.text || r.summary || r.title,
-          publishedDate: r.publishedDate ?? null,
+  await batchParallel(
+    LINKEDIN_EXA_QUERIES,
+    async (keyword) => {
+      try {
+        const { results: exaResults } = await searchWebContent({
+          query: keyword,
+          domains: ["linkedin.com"],
+          numResults: 15,
+          daysBack: 14,
+          textMaxCharacters: 1500,
         });
+
+        for (const r of exaResults) {
+          if (!isLinkedInPostUrl(r.url) || seen.has(r.url)) continue;
+          seen.add(r.url);
+
+          const authorMatch = r.title?.match(/^(.+?)\s+(?:on LinkedIn|posted on)/i);
+          const author = authorMatch?.[1] ?? null;
+
+          results.push({
+            platform: "linkedin",
+            url: r.url,
+            author,
+            authorProfileUrl: null,
+            title: r.title,
+            content: r.text || r.summary || r.title,
+            publishedDate: r.publishedDate ?? null,
+          });
+        }
+      } catch {
+        // Skip on error
       }
-    } catch {
-      // Skip keyword on error, continue with others
-    }
-  }
+    },
+    5,
+  );
 
   return results;
 }
