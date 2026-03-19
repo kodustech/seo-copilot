@@ -184,6 +184,18 @@ async function fetchRedditJson(url: string): Promise<RedditListing | null> {
   }
 }
 
+// Reddit-specific Exa queries for deeper semantic discovery
+const REDDIT_EXTRA_QUERIES = [
+  "frustrated with code review process on my team",
+  "what code review tool do you use and recommend",
+  "automated code review AI experience",
+  "PR review taking forever blocking deployments",
+  "how to improve pull request turnaround time",
+  "code review bottleneck engineering team",
+  "looking for better code review workflow",
+  "CodeRabbit SonarQube Codacy experience review",
+];
+
 export async function collectReddit(): Promise<RawSocialResult[]> {
   const results: RawSocialResult[] = [];
   const seen = new Set<string>();
@@ -195,40 +207,49 @@ export async function collectReddit(): Promise<RawSocialResult[]> {
     }
   }
 
-  // Search ALL keywords across Reddit
-  for (const keyword of KEYWORDS) {
-    const encoded = encodeURIComponent(keyword);
-    // Search last 3 days to catch things we might have missed
-    const listing = await fetchRedditJson(
-      `https://www.reddit.com/search.json?q=${encoded}&sort=relevance&limit=15&t=week`,
-    );
-    if (listing?.data?.children) {
-      for (const post of listing.data.children) {
-        addResult(normalizeRedditPost(post));
+  // Primary: Exa semantic search on reddit.com (finds WAY more than Reddit's own search)
+  const allQueries = [...KEYWORDS, ...REDDIT_EXTRA_QUERIES];
+  for (const keyword of allQueries) {
+    try {
+      const { results: exaResults } = await searchWebContent({
+        query: keyword,
+        domains: ["reddit.com"],
+        numResults: 15,
+        daysBack: 14,
+        textMaxCharacters: 1500,
+      });
+
+      for (const r of exaResults) {
+        // Only accept actual reddit post/comment URLs
+        if (!r.url.includes("reddit.com/r/")) continue;
+
+        // Extract author and subreddit from URL when possible
+        const authorMatch = r.url.match(/reddit\.com\/r\/\w+\/comments\/\w+\/[^/]+/);
+        const subredditMatch = r.url.match(/reddit\.com\/r\/(\w+)/);
+
+        addResult({
+          platform: "reddit",
+          url: r.url,
+          author: null,
+          authorProfileUrl: null,
+          title: r.title || "",
+          content: r.text || r.summary || r.title || "",
+          publishedDate: r.publishedDate ?? null,
+        });
       }
+    } catch {
+      // Skip keyword on error, continue with others
     }
-    await delay(1200);
   }
 
-  // Browse subreddits for new posts + search within each for code review topics
-  for (const subreddit of SUBREDDITS) {
-    // New posts
+  // Secondary: Reddit public API for fresh posts from key subreddits (catches very new posts Exa hasn't indexed yet)
+  const coreSubreddits = SUBREDDITS.slice(0, 6); // Top 6 most relevant
+  for (const subreddit of coreSubreddits) {
     const newListing = await fetchRedditJson(
       `https://www.reddit.com/r/${subreddit}/new.json?limit=15`,
     );
     if (newListing?.data?.children) {
       for (const post of newListing.data.children) {
-        addResult(normalizeRedditPost(post));
-      }
-    }
-    await delay(1200);
-
-    // Search within subreddit for code review topics
-    const searchListing = await fetchRedditJson(
-      `https://www.reddit.com/r/${subreddit}/search.json?q=code+review+OR+pull+request+OR+PR+review&restrict_sr=on&sort=new&limit=10&t=week`,
-    );
-    if (searchListing?.data?.children) {
-      for (const post of searchListing.data.children) {
         addResult(normalizeRedditPost(post));
       }
     }
