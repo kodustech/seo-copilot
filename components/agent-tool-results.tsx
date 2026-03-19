@@ -1,7 +1,22 @@
 "use client";
 
-import { Loader2, Search, FileText, Newspaper, Share2, Rss, History, Lightbulb, BarChart3, Globe, TrendingUp, Target, GitCompare, TrendingDown, Smartphone, Calendar, List, Trash2, LayoutList, Link2, Eye } from "lucide-react";
+import { useState } from "react";
+import { Loader2, Search, FileText, Newspaper, Share2, Rss, History, Lightbulb, BarChart3, Globe, TrendingUp, Target, GitCompare, TrendingDown, Smartphone, Calendar, List, Trash2, LayoutList, Link2, Eye, Database, Table2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import {
+  BarChart,
+  Bar,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+} from "recharts";
 
 type ToolInvocationState =
   | "input-streaming"
@@ -41,6 +56,8 @@ const TOOL_META: Record<string, { label: string; loadingMsg: string; icon: React
   deleteScheduledJob: { label: "Remove Job", loadingMsg: "Removing job...", icon: Trash2 },
   getKeywordVolume: { label: "Keyword Volume", loadingMsg: "Fetching search volumes...", icon: BarChart3 },
   analyzeSERP: { label: "SERP Analysis", loadingMsg: "Analyzing Google results...", icon: Search },
+  runBigQuery: { label: "BigQuery", loadingMsg: "Running query...", icon: Database },
+  exploreDataWarehouse: { label: "Data Warehouse", loadingMsg: "Exploring schema...", icon: Table2 },
 };
 
 function difficultyColor(score: number): string {
@@ -1214,6 +1231,268 @@ function ScheduledJobListView({ jobs }: { jobs: ScheduledJobListItem[] }) {
 }
 
 // ---------------------------------------------------------------------------
+// BigQuery result view with auto-charting
+// ---------------------------------------------------------------------------
+
+const CHART_COLORS = [
+  "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ef4444",
+  "#ec4899", "#6366f1", "#14b8a6", "#f97316", "#84cc16",
+];
+
+type ChartType = "bar" | "line" | "pie" | "none";
+
+function detectChartType(
+  rows: Record<string, unknown>[],
+  columns: string[],
+): { type: ChartType; labelCol: string; numericCols: string[] } {
+  if (rows.length < 2 || columns.length < 2) {
+    return { type: "none", labelCol: "", numericCols: [] };
+  }
+
+  // Find numeric and string/date columns
+  const numericCols: string[] = [];
+  const stringCols: string[] = [];
+  const dateLikeCols: string[] = [];
+
+  for (const col of columns) {
+    const sample = rows.slice(0, 5).map((r) => r[col]);
+    const allNumeric = sample.every(
+      (v) => v !== null && v !== undefined && !Number.isNaN(Number(v)),
+    );
+    if (allNumeric) {
+      numericCols.push(col);
+    } else {
+      stringCols.push(col);
+      // Check if it looks like a date
+      const looksLikeDate = sample.every((v) => {
+        if (typeof v !== "string") return false;
+        return /^\d{4}[-/]\d{2}([-/]\d{2})?$/.test(v) || /^\d{8}$/.test(v);
+      });
+      if (looksLikeDate) dateLikeCols.push(col);
+    }
+  }
+
+  if (numericCols.length === 0) {
+    return { type: "none", labelCol: "", numericCols: [] };
+  }
+
+  // Pick the best label column (prefer date, then first string)
+  const labelCol = dateLikeCols[0] ?? stringCols[0] ?? "";
+  if (!labelCol) {
+    return { type: "none", labelCol: "", numericCols };
+  }
+
+  // Date column → line chart; few categories + 1 numeric → pie; otherwise bar
+  if (dateLikeCols.includes(labelCol)) {
+    return { type: "line", labelCol, numericCols };
+  }
+  if (rows.length <= 8 && numericCols.length === 1) {
+    return { type: "pie", labelCol, numericCols };
+  }
+  return { type: "bar", labelCol, numericCols };
+}
+
+function formatChartLabel(value: unknown): string {
+  if (typeof value === "string") {
+    // Shorten long labels
+    if (value.length > 25) return value.slice(0, 22) + "...";
+    return value;
+  }
+  return String(value ?? "");
+}
+
+function BigQueryResultView({ rows, totalRows }: { rows: Record<string, unknown>[]; totalRows: number }) {
+  const [showChart, setShowChart] = useState(true);
+
+  if (!rows || rows.length === 0) {
+    return <p className="text-xs text-neutral-500">Query returned no rows.</p>;
+  }
+
+  const columns = Object.keys(rows[0]);
+  const { type: chartType, labelCol, numericCols } = detectChartType(rows, columns);
+  const hasChart = chartType !== "none";
+
+  // Prepare chart data (convert numeric strings to numbers)
+  const chartData = rows.map((row) => {
+    const entry: Record<string, unknown> = { [labelCol]: formatChartLabel(row[labelCol]) };
+    for (const col of numericCols) {
+      entry[col] = Number(row[col]) || 0;
+    }
+    return entry;
+  });
+
+  return (
+    <div className="space-y-3">
+      {/* Toggle + row count */}
+      <div className="flex items-center justify-between">
+        <p className="text-[11px] text-neutral-500">
+          {totalRows} row{totalRows !== 1 ? "s" : ""} returned
+        </p>
+        {hasChart && (
+          <button
+            type="button"
+            onClick={() => setShowChart((prev) => !prev)}
+            className="rounded-full px-2.5 py-0.5 text-[10px] font-medium transition bg-violet-500/10 text-violet-400 hover:bg-violet-500/20"
+          >
+            {showChart ? "Hide chart" : "Show chart"}
+          </button>
+        )}
+      </div>
+
+      {/* Chart */}
+      {hasChart && showChart && (
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3">
+          <ResponsiveContainer width="100%" height={220}>
+            {chartType === "line" ? (
+              <LineChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                <XAxis
+                  dataKey={labelCol}
+                  tick={{ fill: "#737373", fontSize: 10 }}
+                  tickLine={false}
+                  axisLine={{ stroke: "rgba(255,255,255,0.06)" }}
+                />
+                <YAxis
+                  tick={{ fill: "#737373", fontSize: 10 }}
+                  tickLine={false}
+                  axisLine={false}
+                  width={50}
+                />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: "#171717",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    borderRadius: "8px",
+                    fontSize: "12px",
+                    color: "#e5e5e5",
+                  }}
+                />
+                {numericCols.map((col, i) => (
+                  <Line
+                    key={col}
+                    type="monotone"
+                    dataKey={col}
+                    stroke={CHART_COLORS[i % CHART_COLORS.length]}
+                    strokeWidth={2}
+                    dot={{ r: 2 }}
+                    activeDot={{ r: 4 }}
+                  />
+                ))}
+              </LineChart>
+            ) : chartType === "pie" ? (
+              <PieChart>
+                <Pie
+                  data={chartData}
+                  dataKey={numericCols[0]}
+                  nameKey={labelCol}
+                  cx="50%"
+                  cy="50%"
+                  outerRadius={80}
+                  label={({ name, percent }: { name?: string; percent?: number }) =>
+                    `${name ?? ""} ${((percent ?? 0) * 100).toFixed(0)}%`
+                  }
+                  labelLine={false}
+                >
+                  {chartData.map((_, i) => (
+                    <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: "#171717",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    borderRadius: "8px",
+                    fontSize: "12px",
+                    color: "#e5e5e5",
+                  }}
+                />
+              </PieChart>
+            ) : (
+              <BarChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                <XAxis
+                  dataKey={labelCol}
+                  tick={{ fill: "#737373", fontSize: 10 }}
+                  tickLine={false}
+                  axisLine={{ stroke: "rgba(255,255,255,0.06)" }}
+                  interval={0}
+                  angle={chartData.length > 6 ? -45 : 0}
+                  textAnchor={chartData.length > 6 ? "end" : "middle"}
+                  height={chartData.length > 6 ? 60 : 30}
+                />
+                <YAxis
+                  tick={{ fill: "#737373", fontSize: 10 }}
+                  tickLine={false}
+                  axisLine={false}
+                  width={50}
+                />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: "#171717",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    borderRadius: "8px",
+                    fontSize: "12px",
+                    color: "#e5e5e5",
+                  }}
+                />
+                {numericCols.map((col, i) => (
+                  <Bar
+                    key={col}
+                    dataKey={col}
+                    fill={CHART_COLORS[i % CHART_COLORS.length]}
+                    radius={[4, 4, 0, 0]}
+                  />
+                ))}
+              </BarChart>
+            )}
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Table */}
+      <div className="overflow-x-auto rounded-lg border border-white/[0.06]">
+        <table className="w-full text-left text-xs">
+          <thead>
+            <tr className="border-b border-white/[0.06] bg-white/[0.03]">
+              {columns.map((col) => (
+                <th
+                  key={col}
+                  className="whitespace-nowrap px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-neutral-500"
+                >
+                  {col}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr
+                key={i}
+                className="border-b border-white/[0.03] transition hover:bg-white/[0.03]"
+              >
+                {columns.map((col) => (
+                  <td key={col} className="whitespace-nowrap px-3 py-1.5 text-neutral-300">
+                    {formatCellValue(row[col])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function formatCellValue(value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "number") return value.toLocaleString("en-US", { maximumFractionDigits: 4 });
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+// ---------------------------------------------------------------------------
 // Main renderer
 // ---------------------------------------------------------------------------
 
@@ -1404,6 +1683,21 @@ function renderContent(toolName: string, output: Record<string, unknown>) {
     }
     case "deleteScheduledJob": {
       return <p className="text-sm text-neutral-300">{String(output.message ?? "Job removido.")}</p>;
+    }
+    case "runBigQuery": {
+      const rows = output.rows as Record<string, unknown>[] | undefined;
+      const totalRows = (output.totalRows as number) ?? rows?.length ?? 0;
+      if (!rows?.length) return <p className="text-xs text-neutral-500">Query returned no rows.</p>;
+      return <BigQueryResultView rows={rows} totalRows={totalRows} />;
+    }
+    case "exploreDataWarehouse": {
+      // Schema exploration — render as formatted JSON
+      const { success: _s, ...rest } = output;
+      return (
+        <pre className="overflow-x-auto text-xs text-neutral-400 max-h-80 overflow-y-auto">
+          {JSON.stringify(rest, null, 2)}
+        </pre>
+      );
     }
     default:
       return (
