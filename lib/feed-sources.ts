@@ -244,7 +244,7 @@ async function fetchResearchPapers(): Promise<FeedItem[]> {
 
 async function fetchWordPressPosts(): Promise<FeedItem[]> {
   const endpoint = new URL(`${WORDPRESS_API_BASE}/posts`);
-  endpoint.searchParams.set("per_page", "20");
+  endpoint.searchParams.set("per_page", "100");
   endpoint.searchParams.set("orderby", "date");
   endpoint.searchParams.set("order", "desc");
   endpoint.searchParams.set(

@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CalendarPlus,
+  ChevronsUpDown,
   Clipboard,
   Loader2,
   RefreshCw,
+  Search,
   Sparkles,
   Wand2,
   X,
@@ -38,6 +40,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
 type PostIdea = {
@@ -220,6 +235,10 @@ export function SocialGenerator() {
   const [feedLoading, setFeedLoading] = useState(false);
   const [feedError, setFeedError] = useState<string | null>(null);
   const [selectedFeedId, setSelectedFeedId] = useState("");
+  const [feedComboOpen, setFeedComboOpen] = useState(false);
+  const [browseOpen, setBrowseOpen] = useState(false);
+  const [browseSearch, setBrowseSearch] = useState("");
+  const [browseSource, setBrowseSource] = useState<FeedSource>("blog");
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [scheduleTarget, setScheduleTarget] = useState<PostIdea | null>(null);
   const [scheduleDate, setScheduleDate] = useState(getDefaultScheduleDate);
@@ -236,10 +255,43 @@ export function SocialGenerator() {
   );
   const canGenerate = baseContent.trim().length > 12 && hasValidPlatform && !loading;
 
+  // Browse modal: filtered posts
+  const browsePosts = useMemo(() => {
+    if (!browseSearch.trim()) return feedPosts;
+    const q = browseSearch.toLowerCase();
+    return feedPosts.filter(
+      (p) =>
+        p.title.toLowerCase().includes(q) ||
+        (p.excerpt && p.excerpt.toLowerCase().includes(q)),
+    );
+  }, [feedPosts, browseSearch]);
+
+  const handleOpenBrowse = useCallback(() => {
+    setBrowseSearch("");
+    setBrowseSource(feedSource);
+    setBrowseOpen(true);
+  }, [feedSource]);
+
+  const handleSelectFromBrowse = useCallback(
+    (postId: string) => {
+      handleSelectFeedPost(postId);
+      setBrowseOpen(false);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [feedPosts],
+  );
+
   useEffect(() => {
     setSelectedFeedId("");
     void reloadFeed(feedSource);
   }, [feedSource]);
+
+  // When browse source changes inside modal, sync it
+  function handleBrowseSourceChange(source: FeedSource) {
+    setBrowseSource(source);
+    setFeedSource(source);
+    setBrowseSearch("");
+  }
 
   async function handleGeneratePosts() {
     if (!canGenerate) {
@@ -612,7 +664,7 @@ export function SocialGenerator() {
                 placeholder="Paste an article excerpt, brief, or core idea..."
                 className="min-h-[160px] resize-none bg-neutral-50/70 text-base dark:bg-neutral-800"
               />
-              <div className="grid gap-2 md:grid-cols-[minmax(220px,260px)_minmax(0,1fr)_auto]">
+              <div className="grid gap-2 md:grid-cols-[minmax(200px,240px)_minmax(0,1fr)_auto_auto]">
                 <div className="min-w-0">
                   <Select
                     value={feedSource}
@@ -631,28 +683,58 @@ export function SocialGenerator() {
                   </Select>
                 </div>
                 <div className="min-w-0">
-                  <Select
-                    value={selectedFeedId || undefined}
-                    onValueChange={handleSelectFeedPost}
-                    disabled={feedLoading || feedPosts.length === 0}
-                  >
-                    <SelectTrigger className="w-full min-w-0 bg-neutral-50/70 text-sm dark:bg-neutral-800 [&>span]:truncate">
-                      <SelectValue
-                        placeholder={
-                          feedSource === "changelog"
-                            ? "Pick a changelog update"
-                            : "Pick a recent blog post"
-                        }
-                      />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {feedPosts.map((post) => (
-                        <SelectItem key={post.id} value={post.id}>
-                          {post.title}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Popover open={feedComboOpen} onOpenChange={setFeedComboOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="outline"
+                        role="combobox"
+                        aria-expanded={feedComboOpen}
+                        disabled={feedLoading || feedPosts.length === 0}
+                        className="w-full min-w-0 justify-between bg-neutral-50/70 text-sm font-normal dark:bg-neutral-800 dark:border-neutral-700"
+                      >
+                        <span className="truncate">
+                          {selectedFeedId
+                            ? feedPosts.find((p) => p.id === selectedFeedId)?.title ?? "Select..."
+                            : feedSource === "changelog"
+                              ? "Search changelog updates..."
+                              : "Search blog posts..."}
+                        </span>
+                        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+                      <Command>
+                        <CommandInput
+                          placeholder={`Search ${feedPosts.length} ${feedSource === "changelog" ? "updates" : "posts"}...`}
+                        />
+                        <CommandList className="max-h-72">
+                          <CommandEmpty>No results found.</CommandEmpty>
+                          <CommandGroup>
+                            {feedPosts.map((post) => (
+                              <CommandItem
+                                key={post.id}
+                                value={`${post.title} ${post.excerpt ?? ""}`}
+                                onSelect={() => {
+                                  handleSelectFeedPost(post.id);
+                                  setFeedComboOpen(false);
+                                }}
+                                className="flex flex-col items-start gap-0.5 py-2"
+                              >
+                                <span className="text-sm font-medium leading-tight">
+                                  {post.title}
+                                </span>
+                                {post.publishedAt && (
+                                  <span className="text-[10px] text-neutral-500">
+                                    {new Date(post.publishedAt).toLocaleDateString("pt-BR")}
+                                  </span>
+                                )}
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
                 </div>
                 <Button
                   type="button"
@@ -666,16 +748,22 @@ export function SocialGenerator() {
                   disabled={feedLoading}
                 >
                   {feedLoading ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Loading
-                    </>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   ) : (
-                    <>
-                      <RefreshCw className="mr-2 h-4 w-4" />
-                      Refresh
-                    </>
+                    <RefreshCw className="mr-2 h-4 w-4" />
                   )}
+                  <span className="hidden md:inline">Refresh</span>
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="w-full text-sm md:w-auto"
+                  onClick={handleOpenBrowse}
+                  disabled={feedLoading || feedPosts.length === 0}
+                >
+                  <Search className="mr-2 h-4 w-4" />
+                  Browse
                 </Button>
               </div>
               <p className="text-[11px] text-neutral-500">
@@ -1162,6 +1250,105 @@ export function SocialGenerator() {
                 )}
               </Button>
             </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Browse posts modal */}
+        <Dialog open={browseOpen} onOpenChange={setBrowseOpen}>
+          <DialogContent className="border-neutral-800 bg-neutral-950 text-neutral-100 sm:max-w-2xl max-h-[85vh] flex flex-col">
+            <DialogHeader>
+              <DialogTitle>Browse content</DialogTitle>
+              <DialogDescription className="text-neutral-400">
+                Search and explore posts to use as base content.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-3 flex-1 min-h-0 flex flex-col">
+              {/* Source tabs */}
+              <div className="flex gap-2">
+                {(["blog", "changelog"] as const).map((src) => (
+                  <button
+                    key={src}
+                    type="button"
+                    onClick={() => handleBrowseSourceChange(src)}
+                    className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                      browseSource === src
+                        ? "bg-violet-500/20 text-violet-300"
+                        : "bg-white/[0.04] text-neutral-500 hover:text-neutral-300"
+                    }`}
+                  >
+                    {src === "blog" ? "Blog posts" : "Changelog"}
+                  </button>
+                ))}
+                <span className="ml-auto self-center text-[10px] text-neutral-600">
+                  {feedPosts.length} items
+                </span>
+              </div>
+
+              {/* Search */}
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-500" />
+                <input
+                  type="text"
+                  value={browseSearch}
+                  onChange={(e) => setBrowseSearch(e.target.value)}
+                  placeholder="Search by title or content..."
+                  className="w-full rounded-lg border border-white/10 bg-white/5 py-2 pl-10 pr-3 text-sm text-neutral-100 placeholder:text-neutral-500 focus:border-violet-500/50 focus:outline-none focus:ring-1 focus:ring-violet-500/30"
+                  autoFocus
+                />
+              </div>
+
+              {/* Results list */}
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
+                {feedLoading ? (
+                  <div className="flex items-center justify-center py-12">
+                    <Loader2 className="h-5 w-5 animate-spin text-neutral-600" />
+                  </div>
+                ) : browsePosts.length === 0 ? (
+                  <div className="py-12 text-center text-sm text-neutral-500">
+                    {browseSearch
+                      ? "No posts match your search."
+                      : "No posts available."}
+                  </div>
+                ) : (
+                  browsePosts.map((post) => (
+                    <button
+                      key={post.id}
+                      type="button"
+                      onClick={() => handleSelectFromBrowse(post.id)}
+                      className={`group w-full rounded-lg border px-4 py-3 text-left transition ${
+                        selectedFeedId === post.id
+                          ? "border-violet-400/60 bg-violet-500/10"
+                          : "border-white/[0.06] bg-white/[0.02] hover:border-white/15 hover:bg-white/[0.04]"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium leading-snug text-white line-clamp-2">
+                            {post.title}
+                          </p>
+                          {post.excerpt && (
+                            <p className="mt-1 text-xs leading-relaxed text-neutral-500 line-clamp-2">
+                              {post.excerpt}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 flex-col items-end gap-1">
+                          {post.publishedAt && (
+                            <span className="text-[10px] text-neutral-600">
+                              {new Date(post.publishedAt).toLocaleDateString("pt-BR")}
+                            </span>
+                          )}
+                          <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-neutral-500 opacity-0 transition group-hover:opacity-100">
+                            Select
+                          </span>
+                        </div>
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
           </DialogContent>
         </Dialog>
       </div>
