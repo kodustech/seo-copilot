@@ -9,6 +9,7 @@ import {
   X,
   Loader2,
   RefreshCw,
+  Zap,
 } from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
@@ -87,6 +88,7 @@ export function SocialMonitoringPage() {
   const [mentions, setMentions] = useState<SocialMention[]>([]);
   const [stats, setStats] = useState<MentionStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [platformFilter, setPlatformFilter] = useState<FilterPlatform>("all");
@@ -174,6 +176,31 @@ export function SocialMonitoringPage() {
     }
   };
 
+  const syncNow = async () => {
+    if (!token || syncing) return;
+    setSyncing(true);
+    setError(null);
+
+    try {
+      const res = await fetch("/api/social/mentions/sync", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data?.error || "Sync failed");
+      }
+
+      // Reload mentions after sync completes
+      await fetchMentions();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Sync failed");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   function toggleExpand(id: string) {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -200,14 +227,28 @@ export function SocialMonitoringPage() {
               : "Loading..."}
           </p>
         </div>
-        <button
-          onClick={fetchMentions}
-          disabled={loading}
-          className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-neutral-200 transition hover:bg-white/10 disabled:opacity-50"
-        >
-          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={syncNow}
+            disabled={syncing || loading}
+            className="flex items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-2 text-sm font-medium text-violet-300 transition hover:bg-violet-500/20 disabled:opacity-50"
+          >
+            {syncing ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Zap className="h-4 w-4" />
+            )}
+            {syncing ? "Syncing..." : "Sync Now"}
+          </button>
+          <button
+            onClick={fetchMentions}
+            disabled={loading || syncing}
+            className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-neutral-200 transition hover:bg-white/10 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -293,7 +334,7 @@ export function SocialMonitoringPage() {
           <Radar className="h-12 w-12 text-neutral-800" />
           <p className="text-neutral-500">No mentions found with current filters.</p>
           <p className="text-xs text-neutral-600">
-            The cron runs daily at 9 AM UTC. Try adjusting filters or check back later.
+            Click "Sync Now" to collect mentions from Reddit, LinkedIn, and Twitter.
           </p>
         </div>
       ) : (
