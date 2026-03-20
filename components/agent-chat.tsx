@@ -10,7 +10,13 @@ import { Loader2, AlertCircle, RotateCcw, User, Search, FileText, Share2, ArrowU
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
 import { ToolResultRenderer } from "@/components/agent-tool-results";
 import { ConversationSidebar } from "@/components/conversation-sidebar";
@@ -161,7 +167,7 @@ function getToolInfo(part: Record<string, unknown>) {
 // Main component
 // ---------------------------------------------------------------------------
 
-export function AgentChat() {
+export function AgentChat({ compact }: { compact?: boolean } = {}) {
   const token = useAuthToken();
   const [userEmail, setUserEmail] = useState<string | null>(null);
 
@@ -403,80 +409,158 @@ export function AgentChat() {
 
   return (
     <>
-      <ConversationSidebar
-        conversations={conversations}
-        activeId={activeConversationId}
-        onSelect={handleSelectConversation}
-        onNew={handleNewConversation}
-        onDelete={handleDeleteConversation}
-        isOpen={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
-      />
+      {!compact && (
+        <ConversationSidebar
+          conversations={conversations}
+          activeId={activeConversationId}
+          onSelect={handleSelectConversation}
+          onNew={handleNewConversation}
+          onDelete={handleDeleteConversation}
+          isOpen={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
+        />
+      )}
 
-      <div className="flex h-[calc(100dvh-73px)] flex-col bg-neutral-950">
+      <div className={compact ? "flex h-full flex-col bg-neutral-950" : "flex h-[calc(100dvh-73px)] flex-col bg-neutral-950"}>
         {/* Header */}
-        <div className="border-b border-white/[0.06] bg-neutral-950">
-          <div className="mx-auto flex max-w-4xl items-center gap-3 px-6 py-4">
-            {/* Sidebar toggle */}
-            <button
-              onClick={() => setSidebarOpen(true)}
-              className="rounded-lg p-1.5 text-neutral-400 transition hover:bg-white/[0.06] hover:text-white"
-              title="Conversas"
-            >
-              <PanelLeft className="h-5 w-5" />
-            </button>
-
+        {compact ? (
+          <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-2">
             <div className="relative">
-              <AtlasAvatar size="md" />
-              <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-neutral-950 bg-emerald-400" />
+              <AtlasAvatar size="sm" />
+              <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-neutral-950 bg-emerald-400" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-base font-semibold text-white">Atlas</h1>
-                <Badge className="border-0 bg-white/[0.06] text-[10px] font-medium text-neutral-400 hover:bg-white/[0.08]">
-                  CMO Agent
-                </Badge>
-              </div>
-              <p className="text-xs text-neutral-500">Chief Marketing Officer</p>
-            </div>
-            <div className="ml-auto flex items-center gap-3">
-              <div className="flex items-center gap-1.5 text-xs text-neutral-500">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                Online
-              </div>
-              {/* New conversation button */}
+            <span className="text-sm font-medium text-white">Atlas</span>
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            <div className="ml-auto flex items-center gap-1">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button
+                    className="rounded-lg p-1 text-neutral-500 transition hover:bg-white/[0.06] hover:text-white"
+                    title="Conversations"
+                  >
+                    <PanelLeft className="h-4 w-4" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  side="bottom"
+                  align="end"
+                  className="w-72 border-white/[0.08] bg-neutral-900 p-0"
+                >
+                  <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-2">
+                    <span className="text-xs font-medium text-neutral-400">History</span>
+                    <button
+                      onClick={handleNewConversation}
+                      className="rounded p-1 text-neutral-500 transition hover:bg-white/[0.06] hover:text-white"
+                    >
+                      <SquarePen className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <div className="max-h-[300px] overflow-y-auto p-1">
+                    {conversations.length === 0 ? (
+                      <p className="px-2 py-6 text-center text-xs text-neutral-500">No conversations yet</p>
+                    ) : (
+                      conversations.slice(0, 20).map((c) => (
+                        <button
+                          key={c.id}
+                          onClick={() => handleSelectConversation(c.id)}
+                          className={cn(
+                            "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition",
+                            activeConversationId === c.id
+                              ? "bg-violet-500/15 text-violet-300"
+                              : "text-neutral-300 hover:bg-white/[0.04]",
+                          )}
+                        >
+                          <span className="flex-1 truncate text-xs">{c.title}</span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </PopoverContent>
+              </Popover>
               <button
                 onClick={handleNewConversation}
-                className="rounded-lg p-1.5 text-neutral-400 transition hover:bg-white/[0.06] hover:text-white"
+                className="rounded-lg p-1 text-neutral-500 transition hover:bg-white/[0.06] hover:text-white"
                 title="New conversation"
               >
-                <SquarePen className="h-5 w-5" />
+                <SquarePen className="h-4 w-4" />
               </button>
             </div>
           </div>
-        </div>
+        ) : (
+          <div className="border-b border-white/[0.06] bg-neutral-950">
+            <div className="mx-auto flex max-w-4xl items-center gap-3 px-6 py-4">
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="rounded-lg p-1.5 text-neutral-400 transition hover:bg-white/[0.06] hover:text-white"
+                title="Conversas"
+              >
+                <PanelLeft className="h-5 w-5" />
+              </button>
+              <div className="relative">
+                <AtlasAvatar size="md" />
+                <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-neutral-950 bg-emerald-400" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h1 className="text-base font-semibold text-white">Atlas</h1>
+                  <Badge className="border-0 bg-white/[0.06] text-[10px] font-medium text-neutral-400 hover:bg-white/[0.08]">
+                    CMO Agent
+                  </Badge>
+                </div>
+                <p className="text-xs text-neutral-500">Chief Marketing Officer</p>
+              </div>
+              <div className="ml-auto flex items-center gap-3">
+                <div className="flex items-center gap-1.5 text-xs text-neutral-500">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                  Online
+                </div>
+                <button
+                  onClick={handleNewConversation}
+                  className="rounded-lg p-1.5 text-neutral-400 transition hover:bg-white/[0.06] hover:text-white"
+                  title="New conversation"
+                >
+                  <SquarePen className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Messages area */}
         <div ref={scrollRef} className="flex-1 overflow-y-auto bg-neutral-900">
           {isEmpty ? (
-            <div className="flex h-full flex-col items-center justify-center gap-8 px-6">
+            <div className={cn(
+              "flex h-full flex-col items-center justify-center px-6",
+              compact ? "gap-4" : "gap-8",
+            )}>
               {/* Persona */}
-              <div className="flex flex-col items-center text-center">
-                <div className="mb-4">
-                  <AtlasAvatar size="lg" />
+              {!compact && (
+                <div className="flex flex-col items-center text-center">
+                  <div className="mb-4">
+                    <AtlasAvatar size="lg" />
+                  </div>
+                  <h2 className="text-xl font-semibold text-white">Atlas</h2>
+                  <p className="mt-1 text-sm text-neutral-400">
+                    Seu CMO de Growth &amp; SEO
+                  </p>
+                  <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-neutral-500">
+                    I research trends, create content, and drive your organic
+                    growth.
+                  </p>
                 </div>
-                <h2 className="text-xl font-semibold text-white">Atlas</h2>
-                <p className="mt-1 text-sm text-neutral-400">
-                  Seu CMO de Growth &amp; SEO
+              )}
+
+              {compact && (
+                <p className="text-center text-xs text-neutral-500">
+                  Ask me anything about SEO, content, social, or analytics.
                 </p>
-                <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-neutral-500">
-                  I research trends, create content, and drive your organic
-                  growth.
-                </p>
-              </div>
+              )}
 
               {/* Suggestion categories */}
-              <div className="grid w-full max-w-3xl grid-cols-4 gap-3">
+              <div className={cn(
+                "grid w-full gap-3",
+                compact ? "max-w-full grid-cols-2" : "max-w-3xl grid-cols-4",
+              )}>
                 {SUGGESTION_CATEGORIES.map((cat) => {
                   const CatIcon = cat.icon;
                   return (
@@ -509,7 +593,7 @@ export function AgentChat() {
               </div>
             </div>
           ) : (
-            <div className="mx-auto max-w-4xl space-y-1 px-6 py-4">
+            <div className={cn("mx-auto space-y-1 py-4", compact ? "max-w-full px-3" : "max-w-4xl px-6")}>
               {messages.map((message) => {
                 const isUser = message.role === "user";
 

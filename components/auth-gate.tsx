@@ -4,10 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { Session } from "@supabase/supabase-js";
-import { Calendar, ChevronDown, Clock, Loader2, LogOut, Settings, Star } from "lucide-react";
+import { Calendar, ChevronDown, Clock, Loader2, LogOut, MessageSquare, Settings, Star, X } from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
+import { AgentChat } from "@/components/agent-chat";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -36,8 +37,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const [manualToolParam, setManualToolParam] = useState<string | null>(null);
   const primaryLinks = useMemo(
     () => [
-      { href: "/", label: "Growth Agent" },
-      { href: "/ideias", label: "Ideas Canvas" },
+      { href: "/", label: "Content Canvas" },
       { href: "/kanban", label: "Kanban" },
       { href: "/dashboard", label: "Dashboard" },
       { href: "/social-monitoring", label: "Social Monitor" },
@@ -63,6 +63,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     ],
     [],
   );
+  const [agentOpen, setAgentOpen] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [initializing, setInitializing] = useState(true);
   const [mode, setMode] = useState<AuthMode>("signin");
@@ -368,6 +369,24 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
             </nav>
 
             <div className="ml-auto flex shrink-0 items-center gap-2 text-sm">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setAgentOpen((v) => !v)}
+                className={cn(
+                  "h-8 gap-1.5 rounded-lg px-2.5",
+                  agentOpen
+                    ? isDarkPage
+                      ? "bg-violet-600/20 text-violet-300"
+                      : "bg-violet-100 text-violet-700"
+                    : isDarkPage
+                      ? "text-neutral-400 hover:bg-white/10 hover:text-white"
+                      : "text-neutral-500 hover:bg-neutral-100",
+                )}
+              >
+                <MessageSquare className="h-4 w-4" />
+                <span className="hidden sm:inline">Agent</span>
+              </Button>
               <Popover>
                 <PopoverTrigger asChild>
                   <Button
@@ -538,7 +557,28 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           )}
         </div>
       </header>
-      {children}
+      <div className="flex h-[calc(100vh-65px)]">
+        <main className={cn("min-w-0 flex-1 overflow-auto", agentOpen && "mr-[420px]")}>
+          {children}
+        </main>
+
+        {/* Agent sidebar */}
+        <div
+          className={cn(
+            "fixed right-0 top-[65px] z-30 h-[calc(100vh-65px)] w-[420px] border-l transition-transform duration-300",
+            isDarkPage
+              ? "border-white/[0.06] bg-neutral-950"
+              : "border-neutral-200 bg-white",
+            agentOpen ? "translate-x-0" : "translate-x-full",
+          )}
+        >
+          <div className="flex h-full flex-col">
+            <div className="min-h-0 flex-1">
+              {agentOpen && <AgentChat compact />}
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

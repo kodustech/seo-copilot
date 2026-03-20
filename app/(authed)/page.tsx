@@ -1,5 +1,5 @@
-import { AgentChat } from "@/components/agent-chat";
+import { CreationCanvas } from "@/components/creation-canvas";
 
 export default function Home() {
-  return <AgentChat />;
+  return <CreationCanvas />;
 }

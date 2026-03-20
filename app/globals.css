@@ -152,3 +152,16 @@
   box-shadow: none;
   padding: 0;
 }
+
+/* Make target handles bigger drop zones when dragging a connection */
+.react-flow .react-flow__handle.connectionindicator {
+  width: 14px;
+  height: 14px;
+}
+
+/* Style the connection line being dragged */
+.react-flow .react-flow__connection-path {
+  stroke: rgba(251, 191, 36, 0.5);
+  stroke-width: 2;
+  stroke-dasharray: 5 5;
+}

@@ -1,5 +1,5 @@
-import { IdeasCanvas } from "@/components/ideas-canvas";
+import { redirect } from "next/navigation";
 
 export default function IdeiasPage() {
-  return <IdeasCanvas />;
+  redirect("/");
 }

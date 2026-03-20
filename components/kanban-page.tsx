@@ -169,6 +169,18 @@ const PIPELINE_ACTIONS: PipelineAction[] = [
     icon: Share2,
     prompt: (t) => `Generate social media posts (LinkedIn + Twitter) about: "${t}"`,
   },
+  {
+    id: "canvas-blog",
+    label: "Canvas: Blog Post",
+    icon: Zap,
+    prompt: (t) => t,
+  },
+  {
+    id: "canvas-social",
+    label: "Canvas: Social Post",
+    icon: Zap,
+    prompt: (t) => t,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1213,6 +1225,16 @@ export function KanbanPage() {
   function handlePipelineAction(item: GrowthWorkItem, actionId: string) {
     const action = PIPELINE_ACTIONS.find((a) => a.id === actionId);
     if (!action) return;
+
+    if (actionId === "canvas-blog") {
+      router.push(`/?topic=${encodeURIComponent(item.title)}&mode=blog`);
+      return;
+    }
+    if (actionId === "canvas-social") {
+      router.push(`/?topic=${encodeURIComponent(item.title)}&mode=social`);
+      return;
+    }
+
     const prompt = action.prompt(item.title);
     router.push(`/?prompt=${encodeURIComponent(prompt)}`);
   }
