@@ -142,9 +142,9 @@ export function SeoWorkspace({
   >("draft");
   const [comparisonUseResearch, setComparisonUseResearch] = useState(true);
   const [comparisonResearchInstructions, setComparisonResearchInstructions] =
-    useState(DEFAULT_COMPARISON_RESEARCH_INSTRUCTIONS);
+    useState("");
   const [comparisonCustomInstructions, setComparisonCustomInstructions] =
-    useState(DEFAULT_COMPARISON_CUSTOM_INSTRUCTIONS);
+    useState("");
   const [comparisonSelectedCategories, setComparisonSelectedCategories] =
     useState<string[]>([]);
   const [reverseSearchTitle, setReverseSearchTitle] = useState("");
@@ -832,9 +832,9 @@ export function SeoWorkspace({
           useResearch: comparisonUseResearch,
           publishMode: comparisonPublishMode,
           researchInstructions: comparisonUseResearch
-            ? comparisonResearchInstructions
+            ? comparisonResearchInstructions.trim() || undefined
             : undefined,
-          customInstructions: comparisonCustomInstructions,
+          customInstructions: comparisonCustomInstructions.trim() || undefined,
           categories: comparisonSelectedCategories,
         },
         token,
@@ -1030,10 +1030,8 @@ export function SeoWorkspace({
     setComparisonTitle("");
     setComparisonPublishMode("draft");
     setComparisonUseResearch(true);
-    setComparisonResearchInstructions(
-      DEFAULT_COMPARISON_RESEARCH_INSTRUCTIONS
-    );
-    setComparisonCustomInstructions(DEFAULT_COMPARISON_CUSTOM_INSTRUCTIONS);
+    setComparisonResearchInstructions("");
+    setComparisonCustomInstructions("");
     setComparisonSelectedCategories([]);
     setLoading((state) => ({ ...state, keywords: false }));
     setBanner({
@@ -2574,12 +2572,6 @@ async function getJson<T>(url: string, token?: string | null): Promise<T> {
 
   return (data as T) ?? ({} as T);
 }
-
-const DEFAULT_COMPARISON_RESEARCH_INSTRUCTIONS =
-  "Research the leading options for the target keyword, compare features, support, pricing signals, Bitbucket or ecosystem compatibility, trade-offs, and practical differences teams should evaluate.";
-
-const DEFAULT_COMPARISON_CUSTOM_INSTRUCTIONS =
-  "Technical and direct tone. Structure the content as a comparison and list article for readers evaluating options related to the target keyword. Highlight practical differences, trade-offs, which team profile each option fits best, and what to watch when choosing a solution. Avoid generic language and vague sections. Prioritize useful comparison, clarity, and decision support.";
 
 const ARTICLE_CATEGORIES = [
   { id: "11", label: "Agilidade" },
