@@ -63,7 +63,8 @@ export type SeoWorkspaceTab =
   | "complete"
   | "reverse"
   | "manual"
-  | "comparison";
+  | "comparison"
+  | "update";
 
 type SeoWorkspaceProps = {
   forcedTab?: SeoWorkspaceTab;
@@ -147,6 +148,19 @@ export function SeoWorkspace({
     useState("");
   const [comparisonSelectedCategories, setComparisonSelectedCategories] =
     useState<string[]>([]);
+  const [updateKeyword, setUpdateKeyword] = useState("");
+  const [updateTitle, setUpdateTitle] = useState("");
+  const [updateCurrentContent, setUpdateCurrentContent] = useState("");
+  const [updatePublishMode, setUpdatePublishMode] = useState<
+    "draft" | "publish"
+  >("draft");
+  const [updateUseResearch, setUpdateUseResearch] = useState(true);
+  const [updateResearchInstructions, setUpdateResearchInstructions] =
+    useState("");
+  const [updateCustomInstructions, setUpdateCustomInstructions] = useState("");
+  const [updateSelectedCategories, setUpdateSelectedCategories] = useState<
+    string[]
+  >([]);
   const [reverseSearchTitle, setReverseSearchTitle] = useState("");
   const [activeTab, setActiveTab] = useState<SeoWorkspaceTab>(
     forcedTab ?? "complete"
@@ -366,6 +380,7 @@ export function SeoWorkspace({
           selectedTitle?.text?.trim() ||
           manualTitle.trim() ||
           comparisonTitle.trim() ||
+          updateTitle.trim() ||
           "Untitled article";
         hydrateArticleResult(first, fallbackTitle);
         setIsPollingArticle(false);
@@ -411,6 +426,7 @@ export function SeoWorkspace({
     selectedTitle,
     manualTitle,
     comparisonTitle,
+    updateTitle,
   ]);
 
   function clearArticleResult() {
@@ -426,6 +442,10 @@ export function SeoWorkspace({
 
   function handleComparisonPublishModeChange(value: string) {
     setComparisonPublishMode(value === "publish" ? "publish" : "draft");
+  }
+
+  function handleUpdatePublishModeChange(value: string) {
+    setUpdatePublishMode(value === "publish" ? "publish" : "draft");
   }
 
   function hydrateArticleResult(
@@ -865,6 +885,78 @@ export function SeoWorkspace({
     }
   }
 
+  async function handleGenerateUpdateArticle() {
+    if (!updateTitle.trim()) {
+      setBanner({
+        intent: "error",
+        message: "Type a title for the article update.",
+      });
+      return;
+    }
+
+    if (!updateKeyword.trim()) {
+      setBanner({
+        intent: "error",
+        message: "Type the primary keyword for the article update.",
+      });
+      return;
+    }
+
+    if (!updateCurrentContent.trim()) {
+      setBanner({
+        intent: "error",
+        message: "Paste the current article content before requesting the update.",
+      });
+      return;
+    }
+
+    setBanner(null);
+    setLoading((state) => ({ ...state, content: true }));
+    try {
+      const ticket = await postJson<{ taskId: number; status?: string | null }>(
+        "/api/articles",
+        {
+          flow: "update",
+          title: updateTitle.trim(),
+          keyword: updateKeyword.trim(),
+          keywordId: `manual-${Date.now()}`,
+          useResearch: updateUseResearch,
+          publishMode: updatePublishMode,
+          currentContent: updateCurrentContent.trim(),
+          researchInstructions: updateUseResearch
+            ? updateResearchInstructions.trim() || undefined
+            : undefined,
+          customInstructions: updateCustomInstructions.trim() || undefined,
+          categories: updateSelectedCategories,
+        },
+        token,
+      );
+      if (!ticket.taskId) {
+        throw new Error(
+          "We did not receive the article update task identifier."
+        );
+      }
+      clearArticleResult();
+      setArticleTaskId(ticket.taskId);
+      setArticleTaskStatus(ticket.status ?? "in-progress");
+      setIsPollingArticle(true);
+      setBanner({
+        intent: "info",
+        message: `Article update task #${ticket.taskId} queued. We'll notify you when it is ready.`,
+      });
+    } catch (error) {
+      setBanner({
+        intent: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "We couldn't update the article right now.",
+      });
+    } finally {
+      setLoading((state) => ({ ...state, content: false }));
+    }
+  }
+
   async function handleReverseSearchKeywords() {
     if (!reverseSearchTitle.trim()) {
       setBanner({
@@ -1033,6 +1125,14 @@ export function SeoWorkspace({
     setComparisonResearchInstructions("");
     setComparisonCustomInstructions("");
     setComparisonSelectedCategories([]);
+    setUpdateKeyword("");
+    setUpdateTitle("");
+    setUpdateCurrentContent("");
+    setUpdatePublishMode("draft");
+    setUpdateUseResearch(true);
+    setUpdateResearchInstructions("");
+    setUpdateCustomInstructions("");
+    setUpdateSelectedCategories([]);
     setLoading((state) => ({ ...state, keywords: false }));
     setBanner({
       intent: "info",
@@ -1095,7 +1195,7 @@ export function SeoWorkspace({
           className="w-full"
         >
           {showTabs && (
-            <TabsList className="grid w-full grid-cols-4 rounded-2xl bg-neutral-100/80 p-1 dark:bg-neutral-800">
+            <TabsList className="grid w-full grid-cols-5 rounded-2xl bg-neutral-100/80 p-1 dark:bg-neutral-800">
               <TabsTrigger
                 value="complete"
                 className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-neutral-900"
@@ -1119,6 +1219,12 @@ export function SeoWorkspace({
                 className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-neutral-900"
               >
                 Comparison
+              </TabsTrigger>
+              <TabsTrigger
+                value="update"
+                className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-neutral-900"
+              >
+                Update
               </TabsTrigger>
             </TabsList>
           )}
@@ -2232,6 +2338,200 @@ export function SeoWorkspace({
                 </CardContent>
               </Card>
             )}
+          </TabsContent>
+
+          <TabsContent value="update" className="mt-8 space-y-8">
+            <Card className="border-0 bg-gradient-to-br from-sky-50 to-white shadow-sm ring-1 ring-sky-100/50 dark:from-sky-950/30 dark:to-neutral-900 dark:ring-sky-900/30">
+              <CardHeader>
+                <div className="flex items-center gap-3">
+                  <Badge
+                    variant="outline"
+                    className="rounded-full border-sky-300 px-3 py-1 text-xs text-sky-700 dark:border-sky-700 dark:text-sky-300"
+                  >
+                    Update Flow
+                  </Badge>
+                </div>
+                <CardTitle className="text-2xl">
+                  Dedicated article update workflow
+                </CardTitle>
+                <CardDescription className="text-base">
+                  Use this tab to refresh an existing article. It sends the
+                  title, keyword, current content, and briefing to the dedicated
+                  n8n update flow.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-neutral-700 dark:text-neutral-200">
+                      Current article title
+                    </label>
+                    <Input
+                      type="text"
+                      value={updateTitle}
+                      onChange={(event) => setUpdateTitle(event.target.value)}
+                      placeholder="Paste the existing article title"
+                      className="bg-neutral-50/70 text-base dark:bg-neutral-800"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-neutral-700 dark:text-neutral-200">
+                      Main keyword
+                    </label>
+                    <Input
+                      type="text"
+                      value={updateKeyword}
+                      onChange={(event) => setUpdateKeyword(event.target.value)}
+                      placeholder="Paste the main keyword"
+                      className="bg-neutral-50/70 text-base dark:bg-neutral-800"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-neutral-700 dark:text-neutral-200">
+                    Current content
+                  </label>
+                  <Textarea
+                    value={updateCurrentContent}
+                    onChange={(event) =>
+                      setUpdateCurrentContent(event.target.value)
+                    }
+                    placeholder="Paste the article content you already have here..."
+                    className="min-h-[280px] resize-y bg-neutral-50/70 text-sm leading-relaxed dark:bg-neutral-800"
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
+            {updateKeyword.trim() &&
+              updateTitle.trim() &&
+              updateCurrentContent.trim() && (
+                <Card className="border-0 bg-white/90 shadow-sm ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/5">
+                  <CardHeader>
+                    <CardTitle className="text-2xl">
+                      Article update settings
+                    </CardTitle>
+                    <CardDescription className="text-base">
+                      Guide the refresh process, add research instructions if
+                      needed, and keep the update aligned with the article that
+                      already exists.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-6">
+                    <div className="grid gap-6 lg:grid-cols-2">
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <p className="text-xs uppercase text-neutral-500">
+                            Publishing mode
+                          </p>
+                          <Select
+                            value={updatePublishMode}
+                            onValueChange={handleUpdatePublishModeChange}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Choose mode" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="draft">
+                                Draft (edit before publishing)
+                              </SelectItem>
+                              <SelectItem value="publish">
+                                Auto publish to WordPress
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="flex items-center justify-between rounded-2xl border border-dashed border-neutral-200/80 px-4 py-3 text-sm text-neutral-600 dark:border-white/10 dark:text-neutral-300">
+                          <span>Include extra research</span>
+                          <Switch
+                            checked={updateUseResearch}
+                            onCheckedChange={(checked) =>
+                              setUpdateUseResearch(Boolean(checked))
+                            }
+                          />
+                        </div>
+                        {updateUseResearch && (
+                          <Textarea
+                            value={updateResearchInstructions}
+                            onChange={(event) =>
+                              setUpdateResearchInstructions(event.target.value)
+                            }
+                            placeholder="Add instructions for the research that should support this refresh..."
+                            className="min-h-[120px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
+                          />
+                        )}
+                        <div className="space-y-2">
+                          <p className="text-xs uppercase text-neutral-500">
+                            Categories (optional)
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {ARTICLE_CATEGORIES.map((category) => (
+                              <label
+                                key={`update-category-${category.id}`}
+                                className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs transition ${
+                                  updateSelectedCategories.includes(category.id)
+                                    ? "border-neutral-900 bg-neutral-900 text-white dark:bg-white dark:text-neutral-900"
+                                    : "border-neutral-200/80 bg-white/80 dark:border-white/10 dark:bg-neutral-900"
+                                }`}
+                              >
+                                <Checkbox
+                                  checked={updateSelectedCategories.includes(
+                                    category.id
+                                  )}
+                                  onCheckedChange={(checked) => {
+                                    setUpdateSelectedCategories((prev) => {
+                                      const next = new Set(prev);
+                                      if (checked) {
+                                        next.add(category.id);
+                                      } else {
+                                        next.delete(category.id);
+                                      }
+                                      return Array.from(next);
+                                    });
+                                  }}
+                                />
+                                <span>{category.label}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                        <Textarea
+                          value={updateCustomInstructions}
+                          onChange={(event) =>
+                            setUpdateCustomInstructions(event.target.value)
+                          }
+                          placeholder="Add refresh-specific instructions, gaps to cover, Kodus angles, checklist requests, or sections to preserve..."
+                          className="min-h-[180px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
+                        />
+                        <Button
+                          className="w-full rounded-2xl bg-sky-700 py-6 text-base font-medium text-white hover:bg-sky-600"
+                          onClick={handleGenerateUpdateArticle}
+                          disabled={loading.content}
+                        >
+                          {loading.content ? (
+                            <>
+                              <Loader2 className="mr-3 h-5 w-5 animate-spin" />
+                              Updating article...
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="mr-3 h-5 w-5" />
+                              Update article
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                      <div className="rounded-3xl border border-neutral-200/80 bg-neutral-50/70 p-5 dark:border-white/10 dark:bg-neutral-950/40">
+                        <div className="mb-4 flex items-center gap-2 text-sm font-medium text-neutral-500 dark:text-neutral-300">
+                          <FileText className="h-4 w-4" />
+                          Updated article editor
+                        </div>
+                        {renderArticleEditor()}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
           </TabsContent>
         </Tabs>
 

@@ -59,6 +59,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       { href: "/manual?tool=reverse", label: "Title → Keywords", tool: "reverse" },
       { href: "/manual?tool=quick", label: "Quick manual", tool: "quick" },
       { href: "/manual?tool=comparison", label: "Comparison", tool: "comparison" },
+      { href: "/manual?tool=update", label: "Update article", tool: "update" },
       { href: "/manual?tool=social", label: "Social posts", tool: "social" },
       { href: "/manual?tool=yolo", label: "YOLO queue", tool: "yolo" },
     ],

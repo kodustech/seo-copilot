@@ -17,6 +17,8 @@ export async function POST(request: Request) {
       useResearch: Boolean(body.useResearch),
       publishMode: normalizePublishMode(body.publishMode),
       workflow: normalizeArticleWorkflow(body.flow ?? body.workflow),
+      currentContent:
+        typeof body.currentContent === "string" ? body.currentContent : undefined,
       researchInstructions:
         typeof body.researchInstructions === "string"
           ? body.researchInstructions
@@ -93,8 +95,9 @@ function normalizePublishMode(
 
 function normalizeArticleWorkflow(
   value: unknown,
-): "default" | "comparison" | undefined {
+): "default" | "comparison" | "update" | undefined {
   if (value === "comparison") return "comparison";
+  if (value === "update") return "update";
   if (value === "default") return "default";
   return undefined;
 }

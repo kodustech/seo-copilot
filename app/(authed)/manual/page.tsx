@@ -8,6 +8,7 @@ type ManualTool =
   | "reverse"
   | "quick"
   | "comparison"
+  | "update"
   | "social"
   | "yolo";
 
@@ -20,6 +21,7 @@ function normalizeTool(value: string | undefined): ManualTool {
   if (value === "reverse") return "reverse";
   if (value === "quick") return "quick";
   if (value === "comparison") return "comparison";
+  if (value === "update") return "update";
   if (value === "social") return "social";
   if (value === "yolo") return "yolo";
   return "all";
@@ -30,6 +32,7 @@ function toolToWorkspaceTab(tool: ManualTool): SeoWorkspaceTab | undefined {
   if (tool === "reverse") return "reverse";
   if (tool === "quick") return "manual";
   if (tool === "comparison") return "comparison";
+  if (tool === "update") return "update";
   return undefined;
 }
 

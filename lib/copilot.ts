@@ -25,6 +25,9 @@ const POSTS_ENDPOINT =
 const COMPARISON_POSTS_ENDPOINT =
   process.env.N8N_COMPARISON_POST_ENDPOINT ??
   "https://n8n.kodus.io/webhook/generate-comparison";
+const UPDATE_POSTS_ENDPOINT =
+  process.env.N8N_UPDATE_POST_ENDPOINT ??
+  "https://n8n.kodus.io/webhook/updates-articles";
 const SOCIAL_ENDPOINT =
   process.env.N8N_SOCIAL_ENDPOINT ??
   "https://n8n.kodus.io/webhook/social";
@@ -240,7 +243,8 @@ type ArticleTaskPayload = {
   keywordId?: string;
   useResearch: boolean;
   publishMode?: "draft" | "publish";
-  workflow?: "default" | "comparison";
+  workflow?: "default" | "comparison" | "update";
+  currentContent?: string;
   researchInstructions?: string;
   customInstructions?: string;
   categories?: number[];
@@ -256,10 +260,15 @@ export async function enqueueArticleTask(
   if (!payload.keyword.trim()) {
     throw new Error("Choose a main keyword for the article.");
   }
+  if (payload.workflow === "update" && !payload.currentContent?.trim()) {
+    throw new Error("Provide the current article content to update.");
+  }
 
   const endpoint =
     payload.workflow === "comparison"
       ? COMPARISON_POSTS_ENDPOINT
+      : payload.workflow === "update"
+        ? UPDATE_POSTS_ENDPOINT
       : POSTS_ENDPOINT;
   const response = await fetch(
     endpoint,
@@ -270,6 +279,7 @@ export async function enqueueArticleTask(
       useResearch: payload.useResearch,
       publishMode: payload.publishMode,
       autoPublish: payload.publishMode === "publish",
+      currentContent: payload.currentContent?.trim() || undefined,
       researchInstructions: payload.researchInstructions?.trim() || undefined,
       customInstructions: payload.customInstructions?.trim() || undefined,
       categories:
