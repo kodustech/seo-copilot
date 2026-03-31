@@ -16,6 +16,7 @@ export async function POST(request: Request) {
       keywordId: typeof body.keywordId === "string" ? body.keywordId : undefined,
       useResearch: Boolean(body.useResearch),
       publishMode: normalizePublishMode(body.publishMode),
+      workflow: normalizeArticleWorkflow(body.flow ?? body.workflow),
       researchInstructions:
         typeof body.researchInstructions === "string"
           ? body.researchInstructions
@@ -87,5 +88,13 @@ function normalizePublishMode(
 ): "draft" | "publish" | undefined {
   if (value === "publish") return "publish";
   if (value === "draft") return "draft";
+  return undefined;
+}
+
+function normalizeArticleWorkflow(
+  value: unknown,
+): "default" | "comparison" | undefined {
+  if (value === "comparison") return "comparison";
+  if (value === "default") return "default";
   return undefined;
 }

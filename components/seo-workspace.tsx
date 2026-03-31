@@ -59,7 +59,11 @@ type Banner =
   | { intent: "success" | "info"; message: string }
   | { intent: "error"; message: string };
 
-export type SeoWorkspaceTab = "complete" | "reverse" | "manual";
+export type SeoWorkspaceTab =
+  | "complete"
+  | "reverse"
+  | "manual"
+  | "comparison";
 
 type SeoWorkspaceProps = {
   forcedTab?: SeoWorkspaceTab;
@@ -131,6 +135,18 @@ export function SeoWorkspace({
   );
   const [manualKeyword, setManualKeyword] = useState("");
   const [manualTitle, setManualTitle] = useState("");
+  const [comparisonKeyword, setComparisonKeyword] = useState("");
+  const [comparisonTitle, setComparisonTitle] = useState("");
+  const [comparisonPublishMode, setComparisonPublishMode] = useState<
+    "draft" | "publish"
+  >("draft");
+  const [comparisonUseResearch, setComparisonUseResearch] = useState(true);
+  const [comparisonResearchInstructions, setComparisonResearchInstructions] =
+    useState(DEFAULT_COMPARISON_RESEARCH_INSTRUCTIONS);
+  const [comparisonCustomInstructions, setComparisonCustomInstructions] =
+    useState(DEFAULT_COMPARISON_CUSTOM_INSTRUCTIONS);
+  const [comparisonSelectedCategories, setComparisonSelectedCategories] =
+    useState<string[]>([]);
   const [reverseSearchTitle, setReverseSearchTitle] = useState("");
   const [activeTab, setActiveTab] = useState<SeoWorkspaceTab>(
     forcedTab ?? "complete"
@@ -347,7 +363,10 @@ export function SeoWorkspace({
 
         const first = data.articles[0];
         const fallbackTitle =
-          selectedTitle?.text?.trim() || manualTitle.trim() || "Untitled article";
+          selectedTitle?.text?.trim() ||
+          manualTitle.trim() ||
+          comparisonTitle.trim() ||
+          "Untitled article";
         hydrateArticleResult(first, fallbackTitle);
         setIsPollingArticle(false);
         setArticleTaskStatus(null);
@@ -385,7 +404,14 @@ export function SeoWorkspace({
       isCancelled = true;
       clearInterval(interval);
     };
-  }, [articleTaskId, isPollingArticle, token, selectedTitle, manualTitle]);
+  }, [
+    articleTaskId,
+    isPollingArticle,
+    token,
+    selectedTitle,
+    manualTitle,
+    comparisonTitle,
+  ]);
 
   function clearArticleResult() {
     setArticleContent("");
@@ -396,6 +422,10 @@ export function SeoWorkspace({
 
   function handlePublishModeChange(value: string) {
     setArticlePublishMode(value === "publish" ? "publish" : "draft");
+  }
+
+  function handleComparisonPublishModeChange(value: string) {
+    setComparisonPublishMode(value === "publish" ? "publish" : "draft");
   }
 
   function hydrateArticleResult(
@@ -772,6 +802,69 @@ export function SeoWorkspace({
     }
   }
 
+  async function handleGenerateComparisonArticle() {
+    if (!comparisonTitle.trim()) {
+      setBanner({
+        intent: "error",
+        message: "Type a title for the comparison article.",
+      });
+      return;
+    }
+
+    if (!comparisonKeyword.trim()) {
+      setBanner({
+        intent: "error",
+        message: "Type the primary keyword for the comparison article.",
+      });
+      return;
+    }
+
+    setBanner(null);
+    setLoading((state) => ({ ...state, content: true }));
+    try {
+      const ticket = await postJson<{ taskId: number; status?: string | null }>(
+        "/api/articles",
+        {
+          flow: "comparison",
+          title: comparisonTitle.trim(),
+          keyword: comparisonKeyword.trim(),
+          keywordId: `manual-${Date.now()}`,
+          useResearch: comparisonUseResearch,
+          publishMode: comparisonPublishMode,
+          researchInstructions: comparisonUseResearch
+            ? comparisonResearchInstructions
+            : undefined,
+          customInstructions: comparisonCustomInstructions,
+          categories: comparisonSelectedCategories,
+        },
+        token,
+      );
+      if (!ticket.taskId) {
+        throw new Error(
+          "We did not receive the comparison article task identifier."
+        );
+      }
+      clearArticleResult();
+      setArticleTaskId(ticket.taskId);
+      setArticleTaskStatus(ticket.status ?? "in-progress");
+      setIsPollingArticle(true);
+      setBanner({
+        intent: "info",
+        message: `Comparison article task #${ticket.taskId} queued. We'll notify you when it is ready.`,
+      });
+    } catch (error) {
+      setBanner({
+        intent: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "We couldn't generate the comparison article right now.",
+      });
+    } finally {
+      setLoading((state) => ({ ...state, content: false }));
+    }
+  }
+
   async function handleReverseSearchKeywords() {
     if (!reverseSearchTitle.trim()) {
       setBanner({
@@ -931,6 +1024,17 @@ export function SeoWorkspace({
     setKeywordTaskId(null);
     setIsPollingTask(false);
     setKeywordTaskStatus(null);
+    setManualKeyword("");
+    setManualTitle("");
+    setComparisonKeyword("");
+    setComparisonTitle("");
+    setComparisonPublishMode("draft");
+    setComparisonUseResearch(true);
+    setComparisonResearchInstructions(
+      DEFAULT_COMPARISON_RESEARCH_INSTRUCTIONS
+    );
+    setComparisonCustomInstructions(DEFAULT_COMPARISON_CUSTOM_INSTRUCTIONS);
+    setComparisonSelectedCategories([]);
     setLoading((state) => ({ ...state, keywords: false }));
     setBanner({
       intent: "info",
@@ -993,7 +1097,7 @@ export function SeoWorkspace({
           className="w-full"
         >
           {showTabs && (
-            <TabsList className="grid w-full grid-cols-3 rounded-2xl bg-neutral-100/80 p-1 dark:bg-neutral-800">
+            <TabsList className="grid w-full grid-cols-4 rounded-2xl bg-neutral-100/80 p-1 dark:bg-neutral-800">
               <TabsTrigger
                 value="complete"
                 className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-neutral-900"
@@ -1011,6 +1115,12 @@ export function SeoWorkspace({
                 className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-neutral-900"
               >
                 Quick Manual
+              </TabsTrigger>
+              <TabsTrigger
+                value="comparison"
+                className="rounded-xl data-[state=active]:bg-white dark:data-[state=active]:bg-neutral-900"
+              >
+                Comparison
               </TabsTrigger>
             </TabsList>
           )}
@@ -1947,6 +2057,184 @@ export function SeoWorkspace({
               </Card>
             )}
           </TabsContent>
+
+          <TabsContent value="comparison" className="mt-8 space-y-8">
+            <Card className="border-0 bg-gradient-to-br from-amber-50 to-white shadow-sm ring-1 ring-amber-100/50 dark:from-amber-950/30 dark:to-neutral-900 dark:ring-amber-900/30">
+              <CardHeader>
+                <div className="flex items-center gap-3">
+                  <Badge
+                    variant="outline"
+                    className="rounded-full border-amber-300 px-3 py-1 text-xs text-amber-700 dark:border-amber-700 dark:text-amber-300"
+                  >
+                    Comparison Flow
+                  </Badge>
+                </div>
+                <CardTitle className="text-2xl">
+                  Dedicated comparison article production
+                </CardTitle>
+                <CardDescription className="text-base">
+                  This tab sends the request to the dedicated n8n comparison
+                  workflow, with a briefing tailored for list and comparison
+                  articles.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-neutral-700 dark:text-neutral-200">
+                      Comparison title
+                    </label>
+                    <Input
+                      type="text"
+                      value={comparisonTitle}
+                      onChange={(event) => setComparisonTitle(event.target.value)}
+                      placeholder="Ex: Best AI Code Review Tools for Bitbucket"
+                      className="bg-neutral-50/70 text-base dark:bg-neutral-800"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-neutral-700 dark:text-neutral-200">
+                      Main keyword
+                    </label>
+                    <Input
+                      type="text"
+                      value={comparisonKeyword}
+                      onChange={(event) => setComparisonKeyword(event.target.value)}
+                      placeholder="Ex: AI code review tools for Bitbucket"
+                      className="bg-neutral-50/70 text-base dark:bg-neutral-800"
+                    />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {comparisonKeyword.trim() && comparisonTitle.trim() && (
+              <Card className="border-0 bg-white/90 shadow-sm ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/5">
+                <CardHeader>
+                  <CardTitle className="text-2xl">
+                    Comparison article settings
+                  </CardTitle>
+                  <CardDescription className="text-base">
+                    Review the default comparison briefing, adjust the research,
+                    and send it to the new comparison flow.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <div className="grid gap-6 lg:grid-cols-2">
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <p className="text-xs uppercase text-neutral-500">
+                          Publishing mode
+                        </p>
+                        <Select
+                          value={comparisonPublishMode}
+                          onValueChange={handleComparisonPublishModeChange}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Choose mode" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="draft">
+                              Draft (edit before publishing)
+                            </SelectItem>
+                            <SelectItem value="publish">
+                              Auto publish to WordPress
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="flex items-center justify-between rounded-2xl border border-dashed border-neutral-200/80 px-4 py-3 text-sm text-neutral-600 dark:border-white/10 dark:text-neutral-300">
+                        <span>Include extra research</span>
+                        <Switch
+                          checked={comparisonUseResearch}
+                          onCheckedChange={(checked) =>
+                            setComparisonUseResearch(Boolean(checked))
+                          }
+                        />
+                      </div>
+                      {comparisonUseResearch && (
+                        <Textarea
+                          value={comparisonResearchInstructions}
+                          onChange={(event) =>
+                            setComparisonResearchInstructions(event.target.value)
+                          }
+                          placeholder="Describe how the research should compare the available options."
+                          className="min-h-[120px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
+                        />
+                      )}
+                      <div className="space-y-2">
+                        <p className="text-xs uppercase text-neutral-500">
+                          Categories (optional)
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {ARTICLE_CATEGORIES.map((category) => (
+                            <label
+                              key={`comparison-category-${category.id}`}
+                              className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs transition ${
+                                comparisonSelectedCategories.includes(category.id)
+                                  ? "border-neutral-900 bg-neutral-900 text-white dark:bg-white dark:text-neutral-900"
+                                  : "border-neutral-200/80 bg-white/80 dark:border-white/10 dark:bg-neutral-900"
+                              }`}
+                            >
+                              <Checkbox
+                                checked={comparisonSelectedCategories.includes(
+                                  category.id
+                                )}
+                                onCheckedChange={(checked) => {
+                                  setComparisonSelectedCategories((prev) => {
+                                    const next = new Set(prev);
+                                    if (checked) {
+                                      next.add(category.id);
+                                    } else {
+                                      next.delete(category.id);
+                                    }
+                                    return Array.from(next);
+                                  });
+                                }}
+                              />
+                              <span>{category.label}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                      <Textarea
+                        value={comparisonCustomInstructions}
+                        onChange={(event) =>
+                          setComparisonCustomInstructions(event.target.value)
+                        }
+                        placeholder="Add practical trade-offs, target audience, product angles, or CTA guidance..."
+                        className="min-h-[180px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
+                      />
+                      <Button
+                        className="w-full rounded-2xl bg-amber-600 py-6 text-base font-medium text-white hover:bg-amber-500"
+                        onClick={handleGenerateComparisonArticle}
+                        disabled={loading.content}
+                      >
+                        {loading.content ? (
+                          <>
+                            <Loader2 className="mr-3 h-5 w-5 animate-spin" />
+                            Generating comparison article...
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="mr-3 h-5 w-5" />
+                            Generate comparison article
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                    <div className="rounded-3xl border border-neutral-200/80 bg-neutral-50/70 p-5 dark:border-white/10 dark:bg-neutral-950/40">
+                      <div className="mb-4 flex items-center gap-2 text-sm font-medium text-neutral-500 dark:text-neutral-300">
+                        <FileText className="h-4 w-4" />
+                        Comparison article editor
+                      </div>
+                      {renderArticleEditor()}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
         </Tabs>
 
         {articleTaskId && isPollingArticle && (
@@ -2286,6 +2574,13 @@ async function getJson<T>(url: string, token?: string | null): Promise<T> {
 
   return (data as T) ?? ({} as T);
 }
+
+const DEFAULT_COMPARISON_RESEARCH_INSTRUCTIONS =
+  "Research the leading options for the target keyword, compare features, support, pricing signals, Bitbucket or ecosystem compatibility, trade-offs, and practical differences teams should evaluate.";
+
+const DEFAULT_COMPARISON_CUSTOM_INSTRUCTIONS =
+  "Technical and direct tone. Structure the content as a comparison and list article for readers evaluating options related to the target keyword. Highlight practical differences, trade-offs, which team profile each option fits best, and what to watch when choosing a solution. Avoid generic language and vague sections. Prioritize useful comparison, clarity, and decision support.";
+
 const ARTICLE_CATEGORIES = [
   { id: "11", label: "Agilidade" },
   { id: "336", label: "Agilidade (EN)" },

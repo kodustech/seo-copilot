@@ -2,7 +2,14 @@ import { SeoWorkspace, type SeoWorkspaceTab } from "@/components/seo-workspace";
 import { SocialGenerator } from "@/components/social-generator";
 import { SocialYoloPage } from "@/components/social-yolo-page";
 
-type ManualTool = "all" | "complete" | "reverse" | "quick" | "social" | "yolo";
+type ManualTool =
+  | "all"
+  | "complete"
+  | "reverse"
+  | "quick"
+  | "comparison"
+  | "social"
+  | "yolo";
 
 type ManualPageProps = {
   searchParams: Promise<{ tool?: string | string[] }>;
@@ -12,6 +19,7 @@ function normalizeTool(value: string | undefined): ManualTool {
   if (value === "complete") return "complete";
   if (value === "reverse") return "reverse";
   if (value === "quick") return "quick";
+  if (value === "comparison") return "comparison";
   if (value === "social") return "social";
   if (value === "yolo") return "yolo";
   return "all";
@@ -21,6 +29,7 @@ function toolToWorkspaceTab(tool: ManualTool): SeoWorkspaceTab | undefined {
   if (tool === "complete") return "complete";
   if (tool === "reverse") return "reverse";
   if (tool === "quick") return "manual";
+  if (tool === "comparison") return "comparison";
   return undefined;
 }
 

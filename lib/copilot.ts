@@ -22,6 +22,9 @@ const TITLES_ENDPOINT =
 const POSTS_ENDPOINT =
   process.env.N8N_POST_ENDPOINT ??
   "https://n8n.kodus.io/webhook/generate-post";
+const COMPARISON_POSTS_ENDPOINT =
+  process.env.N8N_COMPARISON_POST_ENDPOINT ??
+  "https://n8n.kodus.io/webhook/generate-comparison";
 const SOCIAL_ENDPOINT =
   process.env.N8N_SOCIAL_ENDPOINT ??
   "https://n8n.kodus.io/webhook/social";
@@ -237,6 +240,7 @@ type ArticleTaskPayload = {
   keywordId?: string;
   useResearch: boolean;
   publishMode?: "draft" | "publish";
+  workflow?: "default" | "comparison";
   researchInstructions?: string;
   customInstructions?: string;
   categories?: number[];
@@ -253,8 +257,12 @@ export async function enqueueArticleTask(
     throw new Error("Choose a main keyword for the article.");
   }
 
+  const endpoint =
+    payload.workflow === "comparison"
+      ? COMPARISON_POSTS_ENDPOINT
+      : POSTS_ENDPOINT;
   const response = await fetch(
-    POSTS_ENDPOINT,
+    endpoint,
     n8nPostInit({
       title: payload.title,
       keyword: payload.keyword,
