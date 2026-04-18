@@ -423,7 +423,7 @@ export function IdeasCanvas() {
           </div>
         </div>
       ) : (
-        <div className="flex-1">
+        <div className="relative flex-1">
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -448,6 +448,20 @@ export function IdeasCanvas() {
               maskColor="rgba(0,0,0,0.6)"
             />
           </ReactFlow>
+
+          {refreshing ? (
+            <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-neutral-950/70 backdrop-blur-sm">
+              <div className="flex flex-col items-center gap-3 rounded-2xl border border-violet-400/30 bg-neutral-900/90 px-8 py-6 text-neutral-200 shadow-xl">
+                <Loader2 className="h-6 w-6 animate-spin text-violet-400" />
+                <p className="text-sm font-medium">
+                  Regenerating ideas from all lanes...
+                </p>
+                <p className="text-[11px] text-neutral-500">
+                  ~15–25s. Previous cards stay visible behind.
+                </p>
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
     </div>
