@@ -22,6 +22,7 @@ export type FeedSource =
   | "hackernews"
   | "research"
   | "competitor"
+  | "reddit"
   | "all";
 
 export type FeedItem = {
@@ -31,7 +32,13 @@ export type FeedItem = {
   excerpt: string;
   content: string;
   publishedAt?: string;
-  source: "blog" | "changelog" | "hackernews" | "research" | "competitor";
+  source:
+    | "blog"
+    | "changelog"
+    | "hackernews"
+    | "research"
+    | "competitor"
+    | "reddit";
 };
 
 export function parseFeedSource(value: string | null): FeedSource {
@@ -46,6 +53,9 @@ export function parseFeedSource(value: string | null): FeedSource {
   }
   if (value === "competitor") {
     return "competitor";
+  }
+  if (value === "reddit") {
+    return "reddit";
   }
   if (value === "all") {
     return "all";
@@ -69,22 +79,33 @@ export async function fetchFeedPosts(source: FeedSource): Promise<FeedItem[]> {
   if (source === "competitor") {
     return fetchCompetitorNarratives();
   }
+  if (source === "reddit") {
+    return fetchRedditDiscussions();
+  }
 
-  const [blogResult, changelogResult, hnResult, researchResult, competitorResult] =
-    await Promise.allSettled([
-      fetchWordPressPosts(),
-      fetchChangelogPosts(),
-      fetchHackerNewsPosts(),
-      fetchResearchPapers(),
-      fetchCompetitorNarratives(),
-    ]);
+  const [
+    blogResult,
+    changelogResult,
+    hnResult,
+    researchResult,
+    competitorResult,
+    redditResult,
+  ] = await Promise.allSettled([
+    fetchWordPressPosts(),
+    fetchChangelogPosts(),
+    fetchHackerNewsPosts(),
+    fetchResearchPapers(),
+    fetchCompetitorNarratives(),
+    fetchRedditDiscussions(),
+  ]);
 
   if (
     blogResult.status === "rejected" &&
     changelogResult.status === "rejected" &&
     hnResult.status === "rejected" &&
     researchResult.status === "rejected" &&
-    competitorResult.status === "rejected"
+    competitorResult.status === "rejected" &&
+    redditResult.status === "rejected"
   ) {
     throw blogResult.reason instanceof Error
       ? blogResult.reason
@@ -97,6 +118,7 @@ export async function fetchFeedPosts(source: FeedSource): Promise<FeedItem[]> {
     ...(hnResult.status === "fulfilled" ? hnResult.value : []),
     ...(researchResult.status === "fulfilled" ? researchResult.value : []),
     ...(competitorResult.status === "fulfilled" ? competitorResult.value : []),
+    ...(redditResult.status === "fulfilled" ? redditResult.value : []),
   ];
 
   return sortByPublishedAtDesc(merged);
@@ -283,7 +305,12 @@ const COMPETITOR_MAX_RESULTS = 14;
 
 async function fetchCompetitorNarratives(): Promise<FeedItem[]> {
   const domains = await resolveCompetitorDomains();
-  const responses = await Promise.allSettled(
+
+  // First pass: strict includeDomains. Exa only returns URLs from the listed
+  // domains, which is the precise signal we want but often comes back empty
+  // when the competitor's blog lives on a subdomain we did not list, or when
+  // Exa's index doesn't have that domain well-covered.
+  const strictResponses = await Promise.allSettled(
     COMPETITOR_QUERIES.map((query) =>
       searchWebContent({
         query,
@@ -298,7 +325,7 @@ async function fetchCompetitorNarratives(): Promise<FeedItem[]> {
   const items: FeedItem[] = [];
   const seen = new Set<string>();
 
-  for (const response of responses) {
+  for (const response of strictResponses) {
     if (response.status !== "fulfilled") continue;
     for (const hit of response.value.results) {
       if (!hit.url || seen.has(hit.url)) continue;
@@ -321,8 +348,126 @@ async function fetchCompetitorNarratives(): Promise<FeedItem[]> {
     }
   }
 
+  // Fallback: strict search found nothing. Run the same queries as a broad
+  // web search excluding our own domain so we at least surface competing
+  // narratives in the space. Results are less precise but better than zero.
+  if (!items.length) {
+    const fallbackResponses = await Promise.allSettled(
+      COMPETITOR_QUERIES.map((query) =>
+        searchWebContent({
+          query,
+          excludeDomains: ["kodus.io"],
+          numResults: 4,
+          daysBack: 120,
+          textMaxCharacters: 800,
+        }),
+      ),
+    );
+    for (const response of fallbackResponses) {
+      if (response.status !== "fulfilled") continue;
+      for (const hit of response.value.results) {
+        if (!hit.url || seen.has(hit.url)) continue;
+        // Skip obviously generic pages (docs, login, home)
+        if (/\/(login|signup|pricing|privacy|terms)\b/i.test(hit.url)) continue;
+        seen.add(hit.url);
+
+        const excerpt = hit.summary || hit.highlights[0] || "";
+        const contentParts = [hit.summary, hit.text].filter(
+          (part): part is string => typeof part === "string" && part.length > 0,
+        );
+
+        items.push({
+          id: hit.id,
+          title: hit.title,
+          link: hit.url,
+          excerpt,
+          content: contentParts.join("\n\n") || hit.title,
+          publishedAt: hit.publishedDate ?? undefined,
+          source: "competitor" as const,
+        });
+      }
+    }
+  }
+
   return sortByPublishedAtDesc(items).slice(0, COMPETITOR_MAX_RESULTS);
 }
+
+// Reddit discussions pulled via Exa semantic search on dev-focused subreddits.
+// Great signal for Bubble / Hot Takes lanes: devs complain, debate, and share
+// experiences in ways Twitter and HN don't always capture.
+const REDDIT_SUBREDDIT_DOMAINS = [
+  "reddit.com/r/ExperiencedDevs",
+  "reddit.com/r/programming",
+  "reddit.com/r/cscareerquestions",
+  "reddit.com/r/devops",
+  "reddit.com/r/webdev",
+  "reddit.com/r/MachineLearning",
+  "reddit.com/r/LocalLLaMA",
+  "reddit.com/r/LLMDevs",
+  "reddit.com/r/ClaudeAI",
+  "reddit.com/r/ChatGPTCoding",
+];
+
+const REDDIT_QUERIES = [
+  "AI code review experience developers",
+  "pull request workflow complaints",
+  "AI coding assistant productivity discussion",
+  "LLM in software engineering debate",
+  "senior engineer AI tools opinion",
+  "agentic coding devex reality",
+];
+
+const REDDIT_MAX_RESULTS = 14;
+
+async function fetchRedditDiscussions(): Promise<FeedItem[]> {
+  const responses = await Promise.allSettled(
+    REDDIT_QUERIES.map((query) =>
+      searchWebContent({
+        query,
+        domains: ["reddit.com"],
+        numResults: 3,
+        daysBack: 60,
+        textMaxCharacters: 900,
+      }),
+    ),
+  );
+
+  const items: FeedItem[] = [];
+  const seen = new Set<string>();
+
+  for (const response of responses) {
+    if (response.status !== "fulfilled") continue;
+    for (const hit of response.value.results) {
+      if (!hit.url || seen.has(hit.url)) continue;
+      // Reddit returns a lot of cross-posts and sidebars; keep only comment
+      // threads (URLs containing /comments/ are real discussions).
+      if (!/reddit\.com\/r\/[^/]+\/comments\//i.test(hit.url)) continue;
+      seen.add(hit.url);
+
+      const excerpt = hit.summary || hit.highlights[0] || "";
+      const contentParts = [hit.summary, hit.text].filter(
+        (part): part is string => typeof part === "string" && part.length > 0,
+      );
+      const subredditMatch = hit.url.match(/reddit\.com\/r\/([^/]+)\//);
+      const subreddit = subredditMatch ? `r/${subredditMatch[1]}` : "Reddit";
+
+      items.push({
+        id: hit.id,
+        title: `[${subreddit}] ${hit.title}`,
+        link: hit.url,
+        excerpt,
+        content: contentParts.join("\n\n") || hit.title,
+        publishedAt: hit.publishedDate ?? undefined,
+        source: "reddit" as const,
+      });
+    }
+  }
+
+  return sortByPublishedAtDesc(items).slice(0, REDDIT_MAX_RESULTS);
+}
+
+// Silence subreddit list if unused (kept for future broadening)
+void REDDIT_SUBREDDIT_DOMAINS;
 
 async function fetchResearchPapers(): Promise<FeedItem[]> {
   const { results } = await searchResearchPapers({

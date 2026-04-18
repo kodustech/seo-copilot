@@ -42,10 +42,10 @@ const LANE_ORDER: IdeaLaneKey[] = [
 ];
 
 const LANE_WIDTH = 260;
-const LANE_SPACING = 40;
+const LANE_SPACING = 80;
 const LANE_Y = 180;
 const CARD_START_Y = 340;
-const CARD_SPACING_Y = 180;
+const CARD_SPACING_Y = 300;
 
 function useAuthToken() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
@@ -234,7 +234,8 @@ export function IdeasCanvas() {
     [router, updateCardState],
   );
 
-  // Build nodes/edges from session + cardStates
+  // Rebuild the full graph only when the session changes. Card drag positions
+  // are preserved because cardStates/handler changes don't retrigger a rebuild.
   useEffect(() => {
     if (!session) {
       setNodes([]);
@@ -272,7 +273,7 @@ export function IdeasCanvas() {
           count: lane.cards.length,
           error: lane.error,
         } satisfies LaneNodeData,
-        draggable: false,
+        draggable: true,
         selectable: false,
       });
 
@@ -287,13 +288,10 @@ export function IdeasCanvas() {
           },
           data: {
             card,
-            state: cardStates[card.id] ?? "idle",
-            onSave: () => handleSave(card),
-            onDismiss: () => handleDismiss(card),
-            onDraft: () => handleDraft(card),
+            state: "idle",
           } satisfies CardNodeData,
-          draggable: false,
-          selectable: false,
+          draggable: true,
+          selectable: true,
         });
 
         nextEdges.push({
@@ -308,7 +306,29 @@ export function IdeasCanvas() {
 
     setNodes(nextNodes);
     setEdges(nextEdges);
-  }, [session, cardStates, handleSave, handleDismiss, handleDraft, setEdges, setNodes]);
+  }, [session, setEdges, setNodes]);
+
+  // Patch card nodes when states or handlers change, without resetting the
+  // positions the user might have dragged.
+  useEffect(() => {
+    setNodes((prev) =>
+      prev.map((node) => {
+        if (node.type !== "card") return node;
+        const data = node.data as unknown as CardNodeData;
+        const card = data.card;
+        return {
+          ...node,
+          data: {
+            card,
+            state: cardStates[card.id] ?? "idle",
+            onSave: () => handleSave(card),
+            onDismiss: () => handleDismiss(card),
+            onDraft: () => handleDraft(card),
+          } satisfies CardNodeData,
+        };
+      }),
+    );
+  }, [cardStates, handleSave, handleDismiss, handleDraft, setNodes]);
 
   const totalIdeas = session?.cards.length ?? 0;
   const hasSession = Boolean(session);

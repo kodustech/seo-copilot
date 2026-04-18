@@ -230,24 +230,30 @@ async function runBubbleLane(options: {
   };
 
   try {
-    const [hn, competitor] = await Promise.all([
+    const [hn, competitor, reddit] = await Promise.all([
       fetchFeedPosts("hackernews").catch(() => []),
       fetchFeedPosts("competitor").catch(() => []),
+      fetchFeedPosts("reddit").catch(() => []),
     ]);
 
     const contextItems = [
-      ...hn.slice(0, 8).map(
+      ...hn.slice(0, 6).map(
         (item) =>
           `HN • ${item.title}\n${(item.excerpt || item.content || "").slice(0, 400)}`,
       ),
-      ...competitor.slice(0, 8).map(
+      ...competitor.slice(0, 6).map(
         (item) =>
           `Competitor • ${item.title} (${item.link})\n${(item.excerpt || item.content || "").slice(0, 400)}`,
+      ),
+      ...reddit.slice(0, 6).map(
+        (item) =>
+          `Reddit • ${item.title}\n${(item.excerpt || item.content || "").slice(0, 400)}`,
       ),
     ];
 
     if (!contextItems.length) {
-      lane.error = "No trending items found in Hacker News or competitor sources.";
+      lane.error =
+        "No trending items found in Hacker News, competitor, or Reddit sources.";
       return lane;
     }
 
@@ -268,7 +274,7 @@ async function runBubbleLane(options: {
       angle: idea.angle,
       whyItWorks: idea.whyItWorks,
       suggestedFormat: idea.suggestedFormat,
-      source: { label: "HN + competitor trends" },
+      source: { label: "HN + Reddit + competitor trends" },
     }));
   } catch (err) {
     lane.error = err instanceof Error ? err.message : "Bubble lane failed.";
@@ -422,20 +428,31 @@ async function runHotTakesLane(options: {
     cards: [],
   };
 
+  if (!options.worldview || !options.worldview.trim()) {
+    lane.error =
+      "Worldview is empty. Add beliefs and rejections in /settings to unlock this lane.";
+    return lane;
+  }
+
   try {
-    const [hn, competitor] = await Promise.all([
+    const [hn, competitor, reddit] = await Promise.all([
       fetchFeedPosts("hackernews").catch(() => []),
       fetchFeedPosts("competitor").catch(() => []),
+      fetchFeedPosts("reddit").catch(() => []),
     ]);
 
     const contextItems = [
-      ...hn.slice(0, 6).map(
+      ...hn.slice(0, 4).map(
         (item) =>
           `HN • ${item.title}\n${(item.excerpt || item.content || "").slice(0, 320)}`,
       ),
-      ...competitor.slice(0, 6).map(
+      ...competitor.slice(0, 4).map(
         (item) =>
           `Competitor • ${item.title}\n${(item.excerpt || item.content || "").slice(0, 320)}`,
+      ),
+      ...reddit.slice(0, 4).map(
+        (item) =>
+          `Reddit • ${item.title}\n${(item.excerpt || item.content || "").slice(0, 320)}`,
       ),
     ];
 
