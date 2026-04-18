@@ -1,4 +1,6 @@
 import { searchResearchPapers, searchWebContent } from "@/lib/exa";
+import { getSupabaseServiceClient } from "@/lib/supabase-server";
+import { getCompetitorDomains } from "@/lib/voice-policy";
 
 const WORDPRESS_API_BASE =
   process.env.WORDPRESS_API_BASE?.replace(/\/$/, "") ||
@@ -231,10 +233,11 @@ const RESEARCH_TOPICS = [
 ];
 const RESEARCH_MAX_RESULTS = 10;
 
-// Competitor blogs and thought leaders in AI coding. Used as seed for
-// adversarial posts so the author pushes back on real external narratives
-// instead of positioning against their own content.
-const COMPETITOR_DOMAINS = [
+// Fallback competitor domains used when the admin hasn't configured any yet
+// in brand_voice_profiles.competitor_domains. Used as seed for adversarial
+// posts so the author pushes back on real external narratives instead of
+// positioning against their own content.
+const DEFAULT_COMPETITOR_DOMAINS = [
   "qodo.ai",
   "codium.ai",
   "greptile.com",
@@ -257,6 +260,16 @@ const COMPETITOR_DOMAINS = [
   "latent.space",
 ];
 
+async function resolveCompetitorDomains(): Promise<string[]> {
+  try {
+    const configured = await getCompetitorDomains(getSupabaseServiceClient());
+    if (configured.length) return configured;
+  } catch (err) {
+    console.warn("[feed-sources] failed to read competitor_domains:", err);
+  }
+  return DEFAULT_COMPETITOR_DOMAINS;
+}
+
 const COMPETITOR_QUERIES = [
   "AI code review automation future of engineering",
   "agentic code review vs human reviewer trade-offs",
@@ -269,11 +282,12 @@ const COMPETITOR_QUERIES = [
 const COMPETITOR_MAX_RESULTS = 14;
 
 async function fetchCompetitorNarratives(): Promise<FeedItem[]> {
+  const domains = await resolveCompetitorDomains();
   const responses = await Promise.allSettled(
     COMPETITOR_QUERIES.map((query) =>
       searchWebContent({
         query,
-        domains: COMPETITOR_DOMAINS,
+        domains,
         numResults: 4,
         daysBack: 120,
         textMaxCharacters: 800,

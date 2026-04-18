@@ -47,6 +47,7 @@ type MeResponse = {
 
 type GlobalResponse = {
   profile: VoiceProfile;
+  competitorDomains: string[];
   canEdit: boolean;
   error?: string;
 };
@@ -161,6 +162,7 @@ export function VoicePolicySettings() {
     toFormState(emptyProfile()),
   );
   const [canEditGlobal, setCanEditGlobal] = useState(false);
+  const [competitorDomainsInput, setCompetitorDomainsInput] = useState("");
   const [mergedPrompt, setMergedPrompt] = useState("");
 
   const [loading, setLoading] = useState(true);
@@ -209,6 +211,9 @@ export function VoicePolicySettings() {
       setMyForm(toFormState(meData.profile ?? emptyProfile()));
       setGlobalForm(toFormState(globalData.profile ?? emptyProfile()));
       setCanEditGlobal(Boolean(globalData.canEdit));
+      setCompetitorDomainsInput(
+        (globalData.competitorDomains ?? []).join("\n"),
+      );
       setMergedPrompt(meData.prompt || "");
     } catch (error) {
       setLoadingError(
@@ -266,7 +271,10 @@ export function VoicePolicySettings() {
       const response = await fetch("/api/voice/global", {
         method: "PATCH",
         headers: authHeaders(freshToken),
-        body: JSON.stringify(toPatchPayload(globalForm)),
+        body: JSON.stringify({
+          ...toPatchPayload(globalForm),
+          competitorDomains: competitorDomainsInput,
+        }),
       });
 
       const data = (await response.json()) as GlobalResponse;
@@ -387,6 +395,8 @@ export function VoicePolicySettings() {
             saveLabel="Save global profile"
             onSave={saveGlobalProfile}
             readonlyMessage={!canEditGlobal ? "Read-only: you are not a global voice admin." : null}
+            competitorDomainsInput={competitorDomainsInput}
+            onCompetitorDomainsChange={setCompetitorDomainsInput}
           />
         </div>
 
@@ -422,6 +432,8 @@ function VoiceCard({
   saveLabel,
   onSave,
   readonlyMessage,
+  competitorDomainsInput,
+  onCompetitorDomainsChange,
 }: {
   icon: React.ReactNode;
   title: string;
@@ -436,6 +448,8 @@ function VoiceCard({
   saveLabel: string;
   onSave: () => void;
   readonlyMessage?: string | null;
+  competitorDomainsInput?: string;
+  onCompetitorDomainsChange?: (value: string) => void;
 }) {
   return (
     <Card className="border-0 bg-neutral-900 shadow-sm ring-1 ring-white/10">
@@ -510,6 +524,17 @@ function VoiceCard({
           onChange={(value) => onFormChange({ ...form, worldview: value })}
           placeholder={`## What we believe\n- Code review is a conversation, not a checklist\n- AI should amplify engineering judgment, not replace learning\n\n## What we reject\n- "AI bots that just run lint in fancy clothes"\n- Vanity metrics (PR count without cycle time)\n\n## No-go zones\n- Language wars (Go vs Rust etc.)\n- Political takes`}
         />
+
+        {onCompetitorDomainsChange ? (
+          <ProfileTextArea
+            label="Competitor domains"
+            hint="One domain per line. Used by YOLO adversarial lane, gap analysis, and Ideas generation."
+            value={competitorDomainsInput ?? ""}
+            disabled={!editable}
+            onChange={onCompetitorDomainsChange}
+            placeholder={`qodo.ai\ngreptile.com\ncoderabbit.ai\ncursor.sh\ngraphite.dev`}
+          />
+        ) : null}
 
         {readonlyMessage && (
           <p className="text-xs text-amber-300">{readonlyMessage}</p>

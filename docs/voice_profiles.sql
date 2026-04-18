@@ -10,6 +10,7 @@ create table if not exists public.brand_voice_profiles (
   forbidden_words text[] not null default '{}',
   additional_instructions text,
   worldview text,
+  competitor_domains text[] not null default '{}',
   updated_by text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -47,6 +48,9 @@ alter table public.brand_voice_profiles
 
 alter table public.brand_voice_profiles
   add column if not exists worldview text;
+
+alter table public.brand_voice_profiles
+  add column if not exists competitor_domains text[] not null default '{}';
 
 update public.brand_voice_profiles
 set scope = 'kodus'

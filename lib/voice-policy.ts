@@ -407,6 +407,88 @@ function patchToDatabasePayload(
   return payload;
 }
 
+// ---------------------------------------------------------------------------
+// Competitor domains (brand-level only)
+// ---------------------------------------------------------------------------
+
+function normalizeDomain(raw: string): string | null {
+  const trimmed = raw.trim().toLowerCase();
+  if (!trimmed) return null;
+  const stripped = trimmed
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .replace(/\/+$/, "")
+    .replace(/\s+/g, "");
+  if (!/^[a-z0-9][a-z0-9.\-]+\.[a-z]{2,}/.test(stripped)) return null;
+  return stripped;
+}
+
+export function normalizeDomainList(value: unknown): string[] {
+  const raw: string[] = [];
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item === "string") raw.push(item);
+    }
+  } else if (typeof value === "string") {
+    raw.push(...value.split(/[\n,;]/g));
+  }
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const item of raw) {
+    const clean = normalizeDomain(item);
+    if (!clean || seen.has(clean)) continue;
+    seen.add(clean);
+    normalized.push(clean);
+  }
+  return normalized;
+}
+
+export async function getCompetitorDomains(
+  client: SupabaseClient,
+  scope = DEFAULT_GLOBAL_SCOPE,
+): Promise<string[]> {
+  const { data, error } = await client
+    .from("brand_voice_profiles")
+    .select("competitor_domains")
+    .eq("scope", scope)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const row = data as { competitor_domains: string[] | null } | null;
+  return normalizeDomainList(row?.competitor_domains ?? []);
+}
+
+export async function upsertCompetitorDomains(
+  client: SupabaseClient,
+  domains: string[],
+  options?: { scope?: string; updatedBy?: string | null },
+): Promise<string[]> {
+  const scope = options?.scope ?? DEFAULT_GLOBAL_SCOPE;
+  const normalized = normalizeDomainList(domains);
+
+  const payload: Record<string, unknown> = {
+    scope,
+    competitor_domains: normalized,
+    updated_at: new Date().toISOString(),
+  };
+  const updatedBy = normalizeNullableText(options?.updatedBy ?? null);
+  if (updatedBy) payload.updated_by = updatedBy;
+
+  const { data, error } = await client
+    .from("brand_voice_profiles")
+    .upsert(payload, { onConflict: "scope" })
+    .select("competitor_domains")
+    .single();
+
+  if (error) throw new Error(error.message);
+
+  const row = data as { competitor_domains: string[] | null };
+  return normalizeDomainList(row?.competitor_domains ?? []);
+}
+
 export async function getGlobalVoiceProfile(
   client: SupabaseClient,
   scope = DEFAULT_GLOBAL_SCOPE,
