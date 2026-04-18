@@ -18,6 +18,7 @@ type VoiceProfileRow = {
   preferred_words: string[] | null;
   forbidden_words: string[] | null;
   additional_instructions: string | null;
+  worldview: string | null;
 };
 
 export type VoiceProfile = {
@@ -27,6 +28,7 @@ export type VoiceProfile = {
   preferredWords: string[];
   forbiddenWords: string[];
   additionalInstructions: string | null;
+  worldview: string | null;
 };
 
 export type VoiceProfilePatch = Partial<{
@@ -36,6 +38,7 @@ export type VoiceProfilePatch = Partial<{
   preferredWords: string[];
   forbiddenWords: string[];
   additionalInstructions: string | null;
+  worldview: string | null;
 }>;
 
 export type VoicePolicyMode = "auto" | "global" | "user" | "custom";
@@ -46,6 +49,7 @@ export type VoicePolicyPayload = {
   userProfile: VoiceProfile | null;
   mergedProfile: VoiceProfile;
   prompt: string;
+  worldview: string | null;
   mode?: VoicePolicyMode;
 };
 
@@ -96,6 +100,7 @@ export function emptyVoiceProfile(): VoiceProfile {
     preferredWords: [],
     forbiddenWords: [],
     additionalInstructions: null,
+    worldview: null,
   };
 }
 
@@ -109,6 +114,7 @@ function normalizeVoiceProfileRow(row: VoiceProfileRow | null): VoiceProfile | n
     preferredWords: normalizeWordList(row.preferred_words),
     forbiddenWords: normalizeWordList(row.forbidden_words),
     additionalInstructions: normalizeNullableText(row.additional_instructions),
+    worldview: normalizeNullableText(row.worldview),
   };
 }
 
@@ -168,6 +174,10 @@ export function mergeVoiceProfiles(
     additionalInstructions: joinInstructions(
       globalProfile?.additionalInstructions,
       userProfile?.additionalInstructions,
+    ),
+    worldview: joinInstructions(
+      globalProfile?.worldview,
+      userProfile?.worldview,
     ),
   };
 }
@@ -256,6 +266,7 @@ export function toVoicePolicyPayload({
       globalProfile,
       userProfile,
     }),
+    worldview: mergedProfile.worldview,
   };
 }
 
@@ -349,6 +360,10 @@ export function parseVoiceProfilePatch(body: unknown): VoiceProfilePatch {
     );
   }
 
+  if ("worldview" in record) {
+    patch.worldview = normalizeNullableText(record.worldview);
+  }
+
   return patch;
 }
 
@@ -385,6 +400,10 @@ function patchToDatabasePayload(
     payload.additional_instructions = patch.additionalInstructions;
   }
 
+  if ("worldview" in patch) {
+    payload.worldview = patch.worldview;
+  }
+
   return payload;
 }
 
@@ -395,7 +414,7 @@ export async function getGlobalVoiceProfile(
   const { data, error } = await client
     .from("brand_voice_profiles")
     .select(
-      "tone, persona, writing_guidelines, preferred_words, forbidden_words, additional_instructions",
+      "tone, persona, writing_guidelines, preferred_words, forbidden_words, additional_instructions, worldview",
     )
     .eq("scope", scope)
     .maybeSingle();
@@ -414,7 +433,7 @@ export async function getUserVoiceProfile(
   const { data, error } = await client
     .from("user_voice_profiles")
     .select(
-      "tone, persona, writing_guidelines, preferred_words, forbidden_words, additional_instructions",
+      "tone, persona, writing_guidelines, preferred_words, forbidden_words, additional_instructions, worldview",
     )
     .eq("user_email", userEmail)
     .maybeSingle();
@@ -446,7 +465,7 @@ export async function upsertGlobalVoiceProfile(
     .from("brand_voice_profiles")
     .upsert(payload, { onConflict: "scope" })
     .select(
-      "tone, persona, writing_guidelines, preferred_words, forbidden_words, additional_instructions",
+      "tone, persona, writing_guidelines, preferred_words, forbidden_words, additional_instructions, worldview",
     )
     .single();
 
@@ -473,7 +492,7 @@ export async function upsertUserVoiceProfile(
     .from("user_voice_profiles")
     .upsert(payload, { onConflict: "user_email" })
     .select(
-      "tone, persona, writing_guidelines, preferred_words, forbidden_words, additional_instructions",
+      "tone, persona, writing_guidelines, preferred_words, forbidden_words, additional_instructions, worldview",
     )
     .single();
 

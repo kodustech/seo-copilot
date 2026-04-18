@@ -386,8 +386,8 @@ function createGenerateSocialPostsTool(userEmail?: string) {
       tone: z
         .string()
         .optional()
-        .default("professional")
-        .describe("Tom dos posts (professional, casual, bold)"),
+        .default("personal, direct, technical, candid")
+        .describe("Tom dos posts"),
       platforms: z
         .array(
           z.object({

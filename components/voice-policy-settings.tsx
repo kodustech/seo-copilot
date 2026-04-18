@@ -23,6 +23,7 @@ type VoiceProfile = {
   preferredWords: string[];
   forbiddenWords: string[];
   additionalInstructions: string | null;
+  worldview: string | null;
 };
 
 type ProfileFormState = {
@@ -32,6 +33,7 @@ type ProfileFormState = {
   preferredWords: string;
   forbiddenWords: string;
   additionalInstructions: string;
+  worldview: string;
 };
 
 type MeResponse = {
@@ -57,6 +59,7 @@ function emptyProfile(): VoiceProfile {
     preferredWords: [],
     forbiddenWords: [],
     additionalInstructions: null,
+    worldview: null,
   };
 }
 
@@ -68,6 +71,7 @@ function toFormState(profile: VoiceProfile): ProfileFormState {
     preferredWords: profile.preferredWords.join("\n"),
     forbiddenWords: profile.forbiddenWords.join("\n"),
     additionalInstructions: profile.additionalInstructions ?? "",
+    worldview: profile.worldview ?? "",
   };
 }
 
@@ -94,6 +98,7 @@ function toPatchPayload(form: ProfileFormState) {
   const persona = form.persona.trim();
   const writingGuidelines = form.writingGuidelines.trim();
   const additionalInstructions = form.additionalInstructions.trim();
+  const worldview = form.worldview.trim();
 
   return {
     tone: tone || null,
@@ -102,6 +107,7 @@ function toPatchPayload(form: ProfileFormState) {
     preferredWords: parseWordList(form.preferredWords),
     forbiddenWords: parseWordList(form.forbiddenWords),
     additionalInstructions: additionalInstructions || null,
+    worldview: worldview || null,
   };
 }
 
@@ -111,9 +117,20 @@ function useAuthToken() {
 
   useEffect(() => {
     if (!supabase) return;
+
     supabase.auth.getSession().then(({ data }) => {
       setToken(data.session?.access_token ?? null);
     });
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        setToken(session?.access_token ?? null);
+      },
+    );
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
   }, [supabase]);
 
   return token;
@@ -127,7 +144,14 @@ function authHeaders(token: string) {
 }
 
 export function VoicePolicySettings() {
+  const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const token = useAuthToken();
+
+  const getFreshToken = useCallback(async (): Promise<string | null> => {
+    if (!supabase) return token;
+    const { data } = await supabase.auth.getSession();
+    return data.session?.access_token ?? token;
+  }, [supabase, token]);
 
   const [userEmail, setUserEmail] = useState<string>("");
   const [myForm, setMyForm] = useState<ProfileFormState>(() =>
@@ -200,7 +224,8 @@ export function VoicePolicySettings() {
   }, [loadProfiles]);
 
   async function saveMyProfile() {
-    if (!token) return;
+    const freshToken = await getFreshToken();
+    if (!freshToken) return;
 
     setSavingMyProfile(true);
     setMyError(null);
@@ -209,7 +234,7 @@ export function VoicePolicySettings() {
     try {
       const response = await fetch("/api/voice/me", {
         method: "PATCH",
-        headers: authHeaders(token),
+        headers: authHeaders(freshToken),
         body: JSON.stringify(toPatchPayload(myForm)),
       });
 
@@ -230,7 +255,8 @@ export function VoicePolicySettings() {
   }
 
   async function saveGlobalProfile() {
-    if (!token || !canEditGlobal) return;
+    const freshToken = await getFreshToken();
+    if (!freshToken || !canEditGlobal) return;
 
     setSavingGlobalProfile(true);
     setGlobalError(null);
@@ -239,7 +265,7 @@ export function VoicePolicySettings() {
     try {
       const response = await fetch("/api/voice/global", {
         method: "PATCH",
-        headers: authHeaders(token),
+        headers: authHeaders(freshToken),
         body: JSON.stringify(toPatchPayload(globalForm)),
       });
 
@@ -429,7 +455,7 @@ function VoiceCard({
           value={form.tone}
           disabled={!editable}
           onChange={(value) => onFormChange({ ...form, tone: value })}
-          placeholder="Ex: Technical, direct, no hype"
+          placeholder="Ex: Personal, direct, technical, candid, slightly opinionated"
         />
 
         <ProfileField
@@ -437,7 +463,7 @@ function VoiceCard({
           value={form.persona}
           disabled={!editable}
           onChange={(value) => onFormChange({ ...form, persona: value })}
-          placeholder="Ex: Senior engineering advisor"
+          placeholder="Ex: Founder/builder close to engineering and product decisions"
         />
 
         <ProfileTextArea
@@ -445,7 +471,7 @@ function VoiceCard({
           value={form.writingGuidelines}
           disabled={!editable}
           onChange={(value) => onFormChange({ ...form, writingGuidelines: value })}
-          placeholder="Style, structure, audience and clarity rules."
+          placeholder="Write like a technical operator, not a brand account. Start from concrete lessons, trade-offs, mistakes, or strong opinions. Avoid generic marketing copy."
         />
 
         <ProfileTextArea
@@ -463,7 +489,7 @@ function VoiceCard({
           value={form.forbiddenWords}
           disabled={!editable}
           onChange={(value) => onFormChange({ ...form, forbiddenWords: value })}
-          placeholder="revolutionary\ngame changer"
+          placeholder="revolutionary\ngame changer\nunlock\nsupercharge\nseamless"
         />
 
         <ProfileTextArea
@@ -474,6 +500,15 @@ function VoiceCard({
             onFormChange({ ...form, additionalInstructions: value })
           }
           placeholder="Extra constraints and preferences."
+        />
+
+        <ProfileTextArea
+          label="Worldview"
+          hint="Beliefs, rejections, and no-go zones. Used only by the Adversarial style to keep pushback aligned with your real positions."
+          value={form.worldview}
+          disabled={!editable}
+          onChange={(value) => onFormChange({ ...form, worldview: value })}
+          placeholder={`## What we believe\n- Code review is a conversation, not a checklist\n- AI should amplify engineering judgment, not replace learning\n\n## What we reject\n- "AI bots that just run lint in fancy clothes"\n- Vanity metrics (PR count without cycle time)\n\n## No-go zones\n- Language wars (Go vs Rust etc.)\n- Political takes`}
         />
 
         {readonlyMessage && (

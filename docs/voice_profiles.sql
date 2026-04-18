@@ -9,6 +9,7 @@ create table if not exists public.brand_voice_profiles (
   preferred_words text[] not null default '{}',
   forbidden_words text[] not null default '{}',
   additional_instructions text,
+  worldview text,
   updated_by text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -44,6 +45,9 @@ alter table public.brand_voice_profiles
 alter table public.brand_voice_profiles
   add column if not exists updated_at timestamptz not null default now();
 
+alter table public.brand_voice_profiles
+  add column if not exists worldview text;
+
 update public.brand_voice_profiles
 set scope = 'kodus'
 where scope is null;
@@ -63,6 +67,7 @@ create table if not exists public.user_voice_profiles (
   preferred_words text[] not null default '{}',
   forbidden_words text[] not null default '{}',
   additional_instructions text,
+  worldview text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -93,6 +98,9 @@ alter table public.user_voice_profiles
 
 alter table public.user_voice_profiles
   add column if not exists updated_at timestamptz not null default now();
+
+alter table public.user_voice_profiles
+  add column if not exists worldview text;
 
 alter table public.user_voice_profiles
   alter column user_email set not null;

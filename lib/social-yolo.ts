@@ -8,8 +8,6 @@ const YOLO_TIMEZONE = "America/Sao_Paulo";
 const YOLO_TARGET_POSTS = 50;
 const YOLO_DEFAULT_USERS = ["gabriel@kodus.io", "edvaldo.freitas@kodus.io"];
 const YOLO_LANGUAGE = process.env.SOCIAL_YOLO_LANGUAGE?.trim() || "en-US";
-const SOCIAL_FORMATTING_HINT =
-  "Separate paragraphs with one blank line and keep blocks short (max 2 sentences each) for social readability.";
 
 const EDITORIAL_ANGLES = [
   {
@@ -35,7 +33,13 @@ const EDITORIAL_ANGLES = [
 ];
 
 export type SocialYoloStatus = "draft" | "selected" | "discarded";
-export type SocialYoloLane = "blog" | "changelog" | "mixed" | "hackernews" | "research";
+export type SocialYoloLane =
+  | "blog"
+  | "changelog"
+  | "mixed"
+  | "hackernews"
+  | "research"
+  | "adversarial";
 
 export type SocialYoloPost = {
   id: string;
@@ -67,7 +71,7 @@ type SocialYoloCandidate = {
 type LanePlan = {
   lane: SocialYoloLane;
   title: string;
-  generationMode: "content_marketing" | "build_in_public";
+  generationMode: "content_marketing" | "build_in_public" | "adversarial";
   contentSource: "blog" | "changelog" | "manual";
   instructions: string;
   variationStrategy: string;
@@ -220,14 +224,21 @@ export async function regenerateYoloBatchForUser({
     }
   }
 
-  const [blogResult, changelogResult, hnResult, researchResult, voicePolicyResult] =
-    await Promise.allSettled([
-      fetchFeedPosts("blog"),
-      fetchFeedPosts("changelog"),
-      fetchFeedPosts("hackernews"),
-      fetchFeedPosts("research"),
-      resolveVoicePolicyForUser(normalizedEmail),
-    ]);
+  const [
+    blogResult,
+    changelogResult,
+    hnResult,
+    researchResult,
+    competitorResult,
+    voicePolicyResult,
+  ] = await Promise.allSettled([
+    fetchFeedPosts("blog"),
+    fetchFeedPosts("changelog"),
+    fetchFeedPosts("hackernews"),
+    fetchFeedPosts("research"),
+    fetchFeedPosts("competitor"),
+    resolveVoicePolicyForUser(normalizedEmail),
+  ]);
 
   const blogPosts = blogResult.status === "fulfilled" ? blogResult.value : [];
   const changelogPosts =
@@ -235,6 +246,8 @@ export async function regenerateYoloBatchForUser({
   const hnPosts = hnResult.status === "fulfilled" ? hnResult.value : [];
   const researchPosts =
     researchResult.status === "fulfilled" ? researchResult.value : [];
+  const competitorPosts =
+    competitorResult.status === "fulfilled" ? competitorResult.value : [];
   const voicePolicy =
     voicePolicyResult.status === "fulfilled"
       ? voicePolicyResult.value
@@ -252,15 +265,31 @@ export async function regenerateYoloBatchForUser({
   if (researchResult.status === "rejected") {
     console.warn("[social-yolo] Research papers source failed:", researchResult.reason);
   }
+  if (competitorResult.status === "rejected") {
+    console.warn("[social-yolo] Competitor source failed:", competitorResult.reason);
+  }
 
-  if (!blogPosts.length && !changelogPosts.length && !hnPosts.length && !researchPosts.length) {
+  if (
+    !blogPosts.length &&
+    !changelogPosts.length &&
+    !hnPosts.length &&
+    !researchPosts.length &&
+    !competitorPosts.length
+  ) {
     throw new Error(
       "Could not fetch any content sources for YOLO generation.",
     );
   }
 
   const editorialAngle = pickEditorialAngle(normalizedEmail);
-  const lanePlans = buildLanePlans(blogPosts, changelogPosts, hnPosts, researchPosts, editorialAngle);
+  const lanePlans = buildLanePlans(
+    blogPosts,
+    changelogPosts,
+    hnPosts,
+    researchPosts,
+    competitorPosts,
+    editorialAngle,
+  );
   const activeLanePlans = lanePlans.filter((plan) => plan.feedItems.length > 0);
   if (!activeLanePlans.length) {
     throw new Error("No source content available to generate YOLO posts.");
@@ -374,12 +403,14 @@ function buildLanePlans(
   changelog: FeedItem[],
   hackernews: FeedItem[] = [],
   research: FeedItem[] = [],
+  competitor: FeedItem[] = [],
   editorialAngle?: (typeof EDITORIAL_ANGLES)[number],
 ): LanePlan[] {
   const recentBlog = blog.slice(0, 10);
   const recentChangelog = changelog.slice(0, 14);
   const recentHn = hackernews.slice(0, 15);
   const recentResearch = research.slice(0, 10);
+  const recentCompetitor = competitor.slice(0, 12);
   const mixed = interleaveFeed(recentBlog.slice(0, 6), recentChangelog.slice(0, 6));
 
   const angleDirective = editorialAngle
@@ -393,7 +424,7 @@ function buildLanePlans(
       generationMode: "content_marketing",
       contentSource: "blog",
       instructions:
-        `Create practical social posts for senior engineers using insights from recent blog entries. Each variation must focus on a different technical decision, trade-off, failure pattern, or implementation lesson. ${SOCIAL_FORMATTING_HINT}${angleDirective}`,
+        `Create practical social posts for senior engineers using insights from recent blog entries. Each variation must focus on a different technical decision, trade-off, failure pattern, or implementation lesson.${angleDirective}`,
       variationStrategy:
         "Keep each variation independent and concrete. Use a different angle per variation: architecture, code review, reliability, delivery process, or team practices.",
       fallbackThemes: [
@@ -412,7 +443,7 @@ function buildLanePlans(
       generationMode: "build_in_public",
       contentSource: "changelog",
       instructions:
-        `Create build-in-public posts showing real product progress, decisions, and implementation details from changelog updates. Keep the tone transparent and hands-on. ${SOCIAL_FORMATTING_HINT}${angleDirective}`,
+        `Create build-in-public posts showing real product progress, decisions, and implementation details from changelog updates. Keep the tone transparent and hands-on.${angleDirective}`,
       variationStrategy:
         "Each variation must highlight a different shipped change, engineering choice, learning, or follow-up plan.",
       fallbackThemes: [
@@ -431,7 +462,7 @@ function buildLanePlans(
       generationMode: "content_marketing",
       contentSource: "manual",
       instructions:
-        `Blend ideas from blog and changelog sources to create posts that connect shipped work with repeatable engineering lessons. Keep each variation concise and useful. ${SOCIAL_FORMATTING_HINT}${angleDirective}`,
+        `Blend ideas from blog and changelog sources to create posts that connect shipped work with repeatable engineering lessons. Keep each variation concise and useful.${angleDirective}`,
       variationStrategy:
         "Use a different pattern per variation: lesson learned, decision rationale, cautionary mistake, process improvement, or measurable outcome.",
       fallbackThemes: [
@@ -450,7 +481,7 @@ function buildLanePlans(
       generationMode: "content_marketing",
       contentSource: "manual",
       instructions:
-        `Create posts that comment on AI Coding trends from the market, with the practical perspective of someone who builds developer tools (Kodus). Reference real discussions and take a clear stance. Format for social readability. ${SOCIAL_FORMATTING_HINT}${angleDirective}`,
+        `Create posts that comment on AI Coding trends from the market, with the practical perspective of someone who builds developer tools (Kodus). Reference real discussions and take a clear stance.${angleDirective}`,
       variationStrategy:
         "Each variation must cover a different trending topic or discussion. Use angles like: industry hot take, builder perspective, practical implications, contrarian view, or lessons from the trenches.",
       fallbackThemes: [
@@ -469,7 +500,7 @@ function buildLanePlans(
       generationMode: "content_marketing",
       contentSource: "manual",
       instructions:
-        `Create posts that translate recent academic research into practical insights for engineering teams. Reference specific findings and connect them to real-world developer workflows. Make research accessible without dumbing it down. ${SOCIAL_FORMATTING_HINT}${angleDirective}`,
+        `Create posts that translate recent academic research into practical insights for engineering teams. Reference specific findings and connect them to real-world developer workflows. Make research accessible without dumbing it down.${angleDirective}`,
       variationStrategy:
         "Each variation must cover a different paper or finding. Use angles like: surprising result, practical implication, myth-busting, data point worth knowing, or connection to industry trends.",
       fallbackThemes: [
@@ -481,6 +512,28 @@ function buildLanePlans(
         "Automated code review research",
       ],
       feedItems: recentResearch,
+    },
+    {
+      lane: "adversarial",
+      title: "Adversarial pushback on external narratives in AI coding",
+      generationMode: "adversarial",
+      contentSource: "manual",
+      instructions:
+        `These source items come from competitors, thought leaders, and HN discussions in the AI coding / devtools space. Pick a specific claim, assumption, or dominant narrative from them and push back against it with a grounded counter-position aligned with the author's worldview. Do not mention the author's own company or product. Do not name a competitor to trash them; push back on the IDEA, not the brand. Never strawman, never be edgy for the sake of it. If worldview is empty, stay narrow and only push back on things baseContent directly supports.${angleDirective}`,
+      variationStrategy:
+        "Each variation must push back on a DIFFERENT specific claim or use a DIFFERENT angle of pushback (contradicting data, exposing a hidden trade-off, naming what the dominant framing leaves out). Do NOT turn the post into a product comparison.",
+      fallbackThemes: [
+        "AI coding hype vs. reality",
+        "Devtool metrics that mislead",
+        "Review process myths",
+        "Productivity narratives worth challenging",
+        "PR workflow assumptions",
+        "Platform engineering dogma",
+      ],
+      feedItems: interleaveFeed(
+        recentCompetitor.slice(0, 8),
+        recentHn.slice(0, 6),
+      ),
     },
   ];
 }
@@ -687,7 +740,14 @@ function normalizeYoloRow(item: unknown): SocialYoloPost | null {
 }
 
 function normalizeLane(value: unknown): SocialYoloLane | null {
-  if (value === "blog" || value === "changelog" || value === "mixed" || value === "hackernews" || value === "research") {
+  if (
+    value === "blog" ||
+    value === "changelog" ||
+    value === "mixed" ||
+    value === "hackernews" ||
+    value === "research" ||
+    value === "adversarial"
+  ) {
     return value;
   }
   return null;

@@ -1,4 +1,4 @@
-import { searchResearchPapers } from "@/lib/exa";
+import { searchResearchPapers, searchWebContent } from "@/lib/exa";
 
 const WORDPRESS_API_BASE =
   process.env.WORDPRESS_API_BASE?.replace(/\/$/, "") ||
@@ -14,7 +14,13 @@ const CHANGELOG_LOOKBACK_DAYS = parseLookbackDays(
 );
 const CHANGELOG_GITHUB_TOKEN = process.env.CHANGELOG_GITHUB_TOKEN?.trim();
 
-export type FeedSource = "blog" | "changelog" | "hackernews" | "research" | "all";
+export type FeedSource =
+  | "blog"
+  | "changelog"
+  | "hackernews"
+  | "research"
+  | "competitor"
+  | "all";
 
 export type FeedItem = {
   id: string;
@@ -23,7 +29,7 @@ export type FeedItem = {
   excerpt: string;
   content: string;
   publishedAt?: string;
-  source: "blog" | "changelog" | "hackernews" | "research";
+  source: "blog" | "changelog" | "hackernews" | "research" | "competitor";
 };
 
 export function parseFeedSource(value: string | null): FeedSource {
@@ -35,6 +41,9 @@ export function parseFeedSource(value: string | null): FeedSource {
   }
   if (value === "research") {
     return "research";
+  }
+  if (value === "competitor") {
+    return "competitor";
   }
   if (value === "all") {
     return "all";
@@ -55,19 +64,25 @@ export async function fetchFeedPosts(source: FeedSource): Promise<FeedItem[]> {
   if (source === "research") {
     return fetchResearchPapers();
   }
+  if (source === "competitor") {
+    return fetchCompetitorNarratives();
+  }
 
-  const [blogResult, changelogResult, hnResult, researchResult] = await Promise.allSettled([
-    fetchWordPressPosts(),
-    fetchChangelogPosts(),
-    fetchHackerNewsPosts(),
-    fetchResearchPapers(),
-  ]);
+  const [blogResult, changelogResult, hnResult, researchResult, competitorResult] =
+    await Promise.allSettled([
+      fetchWordPressPosts(),
+      fetchChangelogPosts(),
+      fetchHackerNewsPosts(),
+      fetchResearchPapers(),
+      fetchCompetitorNarratives(),
+    ]);
 
   if (
     blogResult.status === "rejected" &&
     changelogResult.status === "rejected" &&
     hnResult.status === "rejected" &&
-    researchResult.status === "rejected"
+    researchResult.status === "rejected" &&
+    competitorResult.status === "rejected"
   ) {
     throw blogResult.reason instanceof Error
       ? blogResult.reason
@@ -79,6 +94,7 @@ export async function fetchFeedPosts(source: FeedSource): Promise<FeedItem[]> {
     ...(changelogResult.status === "fulfilled" ? changelogResult.value : []),
     ...(hnResult.status === "fulfilled" ? hnResult.value : []),
     ...(researchResult.status === "fulfilled" ? researchResult.value : []),
+    ...(competitorResult.status === "fulfilled" ? competitorResult.value : []),
   ];
 
   return sortByPublishedAtDesc(merged);
@@ -214,6 +230,85 @@ const RESEARCH_TOPICS = [
   "AI-assisted debugging and testing",
 ];
 const RESEARCH_MAX_RESULTS = 10;
+
+// Competitor blogs and thought leaders in AI coding. Used as seed for
+// adversarial posts so the author pushes back on real external narratives
+// instead of positioning against their own content.
+const COMPETITOR_DOMAINS = [
+  "qodo.ai",
+  "codium.ai",
+  "greptile.com",
+  "blog.greptile.com",
+  "coderabbit.ai",
+  "blog.coderabbit.ai",
+  "graphite.dev",
+  "graphite.com",
+  "sourcegraph.com",
+  "about.sourcegraph.com",
+  "cursor.com",
+  "cursor.sh",
+  "continue.dev",
+  "aider.chat",
+  "sweep.dev",
+  "codegen.com",
+  "windsurf.com",
+  "swyx.io",
+  "simonwillison.net",
+  "latent.space",
+];
+
+const COMPETITOR_QUERIES = [
+  "AI code review automation future of engineering",
+  "agentic code review vs human reviewer trade-offs",
+  "AI pull request analysis productivity",
+  "LLM code generation quality assurance",
+  "developer productivity AI tools replace senior engineers",
+  "AI assisted programming critique",
+];
+
+const COMPETITOR_MAX_RESULTS = 14;
+
+async function fetchCompetitorNarratives(): Promise<FeedItem[]> {
+  const responses = await Promise.allSettled(
+    COMPETITOR_QUERIES.map((query) =>
+      searchWebContent({
+        query,
+        domains: COMPETITOR_DOMAINS,
+        numResults: 4,
+        daysBack: 120,
+        textMaxCharacters: 800,
+      }),
+    ),
+  );
+
+  const items: FeedItem[] = [];
+  const seen = new Set<string>();
+
+  for (const response of responses) {
+    if (response.status !== "fulfilled") continue;
+    for (const hit of response.value.results) {
+      if (!hit.url || seen.has(hit.url)) continue;
+      seen.add(hit.url);
+
+      const excerpt = hit.summary || hit.highlights[0] || "";
+      const contentParts = [hit.summary, hit.text].filter(
+        (part): part is string => typeof part === "string" && part.length > 0,
+      );
+
+      items.push({
+        id: hit.id,
+        title: hit.title,
+        link: hit.url,
+        excerpt,
+        content: contentParts.join("\n\n") || hit.title,
+        publishedAt: hit.publishedDate ?? undefined,
+        source: "competitor" as const,
+      });
+    }
+  }
+
+  return sortByPublishedAtDesc(items).slice(0, COMPETITOR_MAX_RESULTS);
+}
 
 async function fetchResearchPapers(): Promise<FeedItem[]> {
   const { results } = await searchResearchPapers({

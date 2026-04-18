@@ -3,10 +3,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CalendarPlus,
+  ChevronDown,
   ChevronsUpDown,
+  ChevronUp,
   Clipboard,
+  Flame,
+  GraduationCap,
   Loader2,
   RefreshCw,
+  Rocket,
   Search,
   Sparkles,
   Wand2,
@@ -53,6 +58,8 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { copyToClipboard as copyTextToClipboard } from "@/lib/clipboard";
+import { DEFAULT_SOCIAL_VARIATION_STRATEGY } from "@/lib/social-writing-style";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
 type PostIdea = {
@@ -81,7 +88,43 @@ type FeedPost = {
 };
 
 type FeedSource = "blog" | "changelog";
-type SocialGenerationMode = "content_marketing" | "build_in_public";
+type SocialGenerationMode =
+  | "content_marketing"
+  | "build_in_public"
+  | "adversarial";
+type SocialStyle = "default" | "build_in_public" | "adversarial";
+
+const STYLE_TO_MODE: Record<SocialStyle, SocialGenerationMode> = {
+  default: "content_marketing",
+  build_in_public: "build_in_public",
+  adversarial: "adversarial",
+};
+
+const STYLE_OPTIONS: {
+  value: SocialStyle;
+  label: string;
+  hint: string;
+  icon: typeof Sparkles;
+}[] = [
+  {
+    value: "default",
+    label: "Default",
+    hint: "Teach a lesson from the content (P.A.T)",
+    icon: GraduationCap,
+  },
+  {
+    value: "build_in_public",
+    label: "Build in public",
+    hint: "Ship-update: what changed, why, what we learned",
+    icon: Rocket,
+  },
+  {
+    value: "adversarial",
+    label: "Adversarial",
+    hint: "Push back against a common belief (uses your worldview)",
+    icon: Flame,
+  },
+];
 
 type SocialAccount = {
   id: number;
@@ -119,9 +162,6 @@ const voiceModeOptions: { label: string; value: VoiceMode; helper: string }[] = 
     helper: "Overrides tone just for this generation.",
   },
 ];
-
-const FORMATTING_HINT =
-  "Separate paragraphs with one blank line and keep blocks short (max 3 sentences) to improve readability on social platforms.";
 
 function createConfigId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -217,9 +257,11 @@ export function SocialGenerator() {
   const [baseContent, setBaseContent] = useState("");
   const [instructions, setInstructions] = useState("");
   const [voiceMode, setVoiceMode] = useState<VoiceMode>("auto");
-  const [customTone, setCustomTone] = useState("Conversational and direct");
+  const [customTone, setCustomTone] = useState(
+    "Personal, direct, technical, candid, slightly opinionated",
+  );
   const [variationStrategy, setVariationStrategy] = useState(
-    "Vary hook and format (carousel/thread/short post) across variations."
+    DEFAULT_SOCIAL_VARIATION_STRATEGY,
   );
   const [language, setLanguage] = useState("pt-BR");
   const [platformConfigs, setPlatformConfigs] = useState<PlatformConfigForm[]>(
@@ -239,6 +281,9 @@ export function SocialGenerator() {
   const [browseOpen, setBrowseOpen] = useState(false);
   const [browseSearch, setBrowseSearch] = useState("");
   const [browseSource, setBrowseSource] = useState<FeedSource>("blog");
+  const [style, setStyle] = useState<SocialStyle>("default");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [hasWorldview, setHasWorldview] = useState<boolean | null>(null);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [scheduleTarget, setScheduleTarget] = useState<PostIdea | null>(null);
   const [scheduleDate, setScheduleDate] = useState(getDefaultScheduleDate);
@@ -286,6 +331,40 @@ export function SocialGenerator() {
     void reloadFeed(feedSource);
   }, [feedSource]);
 
+  // Auto-suggest style from feed source (user can override)
+  useEffect(() => {
+    if (feedSource === "changelog") {
+      setStyle((prev) => (prev === "default" ? "build_in_public" : prev));
+    }
+  }, [feedSource]);
+
+  // Fetch worldview status once we have a token, so we can warn if adversarial
+  // is picked without a worldview configured.
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    fetch("/api/voice/me", { headers: jsonHeaders(token) })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        const worldview =
+          typeof data?.profile?.worldview === "string"
+            ? data.profile.worldview.trim()
+            : "";
+        const globalWorldview =
+          typeof data?.globalProfile?.worldview === "string"
+            ? data.globalProfile.worldview.trim()
+            : "";
+        setHasWorldview(Boolean(worldview || globalWorldview));
+      })
+      .catch(() => {
+        if (!cancelled) setHasWorldview(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
   // When browse source changes inside modal, sync it
   function handleBrowseSourceChange(source: FeedSource) {
     setBrowseSource(source);
@@ -319,9 +398,6 @@ export function SocialGenerator() {
       }
 
       const userInstructions = instructions.trim();
-      const payloadInstructions = userInstructions
-        ? `${userInstructions}\n\n${FORMATTING_HINT}`
-        : FORMATTING_HINT;
 
       const response = await fetch("/api/content", {
         method: "POST",
@@ -333,9 +409,9 @@ export function SocialGenerator() {
           tone: voiceMode === "custom" ? customTone : undefined,
           variationStrategy,
           platformConfigs: formattedPlatforms,
-          instructions: payloadInstructions,
+          instructions: userInstructions || undefined,
           contentSource: feedSource,
-          generationMode: getGenerationMode(feedSource),
+          generationMode: STYLE_TO_MODE[style],
         }),
       });
 
@@ -543,16 +619,14 @@ export function SocialGenerator() {
     return sections.join("\n\n");
   }
 
-  function copyToClipboard(id: string, content: string) {
-    navigator.clipboard
-      .writeText(content)
-      .then(() => {
-        setCopiedId(id);
-        setTimeout(() => setCopiedId(null), 1500);
-      })
-      .catch(() => {
-        setError("Could not copiar o texto agora.");
-      });
+  async function handleCopyPost(id: string, content: string) {
+    try {
+      await copyTextToClipboard(content);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 1500);
+    } catch {
+      setError("Could not copy the text right now.");
+    }
   }
 
   function handleConfigChange(
@@ -773,27 +847,46 @@ export function SocialGenerator() {
                 <p className="text-xs text-red-500">{feedError}</p>
               )}
             </div>
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <p className="text-xs uppercase text-neutral-500">Instructions</p>
-                <Textarea
-                  value={instructions}
-                  onChange={(event) => setInstructions(event.target.value)}
-                  placeholder="Tone, audience, short/long format, allowed emojis..."
-                  className="min-h-[120px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
-                />
+            <div className="space-y-3">
+              <p className="text-xs uppercase text-neutral-500">Style</p>
+              <div className="grid gap-2 sm:grid-cols-3">
+                {STYLE_OPTIONS.map((option) => {
+                  const Icon = option.icon;
+                  const active = style === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setStyle(option.value)}
+                      className={`flex h-full flex-col items-start gap-1 rounded-2xl border p-3 text-left transition ${
+                        active
+                          ? "border-violet-400/60 bg-violet-500/10"
+                          : "border-neutral-200/70 bg-neutral-50/70 hover:border-neutral-300 dark:border-white/10 dark:bg-neutral-800 dark:hover:border-white/30"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 text-sm font-medium">
+                        <Icon className="h-4 w-4" />
+                        {option.label}
+                      </div>
+                      <p className="text-[11px] leading-snug text-neutral-500 dark:text-neutral-400">
+                        {option.hint}
+                      </p>
+                    </button>
+                  );
+                })}
               </div>
-              <div className="space-y-2">
-                <p className="text-xs uppercase text-neutral-500">
-                  Variation strategy
-                </p>
-                <Textarea
-                  value={variationStrategy}
-                  onChange={(event) => setVariationStrategy(event.target.value)}
-                  placeholder="Ex.: variar ganchos e estrutura (bullet x thread x carrossel)..."
-                  className="min-h-[120px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
-                />
-              </div>
+              {style === "adversarial" && hasWorldview === false ? (
+                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-300">
+                  Adversarial works best with a worldview defined. Set one up in{" "}
+                  <a
+                    href="/settings"
+                    className="underline underline-offset-2"
+                  >
+                    Settings → Voice Policy
+                  </a>{" "}
+                  so the pushback stays aligned with what you actually believe.
+                </div>
+              ) : null}
             </div>
             <div className="grid gap-4 md:grid-cols-3">
               <div className="space-y-2">
@@ -854,6 +947,48 @@ export function SocialGenerator() {
                   </p>
                 ) : null}
               </div>
+            </div>
+            <div className="rounded-2xl border border-neutral-200/80 dark:border-white/10">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between px-4 py-3 text-xs uppercase text-neutral-500"
+                onClick={() => setAdvancedOpen((open) => !open)}
+              >
+                <span>Advanced (optional overrides)</span>
+                {advancedOpen ? (
+                  <ChevronUp className="h-4 w-4" />
+                ) : (
+                  <ChevronDown className="h-4 w-4" />
+                )}
+              </button>
+              {advancedOpen ? (
+                <div className="grid gap-4 border-t border-neutral-200/80 p-4 md:grid-cols-2 dark:border-white/10">
+                  <div className="space-y-2">
+                    <p className="text-xs uppercase text-neutral-500">
+                      Instructions
+                    </p>
+                    <Textarea
+                      value={instructions}
+                      onChange={(event) => setInstructions(event.target.value)}
+                      placeholder="Extra guidance for this specific generation. Leave empty to rely on the selected style."
+                      className="min-h-[120px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <p className="text-xs uppercase text-neutral-500">
+                      Variation strategy
+                    </p>
+                    <Textarea
+                      value={variationStrategy}
+                      onChange={(event) =>
+                        setVariationStrategy(event.target.value)
+                      }
+                      placeholder="Override how variations should differ."
+                      className="min-h-[120px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
+                    />
+                  </div>
+                </div>
+              ) : null}
             </div>
             <div className="space-y-4 rounded-2xl border border-neutral-200/80 p-4 dark:border-white/10">
               <div className="flex items-center justify-between">
@@ -1072,7 +1207,7 @@ export function SocialGenerator() {
                         size="sm"
                         className="rounded-full px-3 py-2 text-xs"
                         onClick={() =>
-                          copyToClipboard(post.id, formatPostForCopy(post))
+                          handleCopyPost(post.id, formatPostForCopy(post))
                         }
                       >
                         <Clipboard className="mr-2 h-4 w-4" />
@@ -1356,6 +1491,3 @@ export function SocialGenerator() {
   );
 }
 
-function getGenerationMode(source: FeedSource): SocialGenerationMode {
-  return source === "changelog" ? "build_in_public" : "content_marketing";
-}

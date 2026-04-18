@@ -6,6 +6,10 @@ import type {
   TitleIdea,
 } from "@/lib/types";
 import type { VoicePolicyPayload } from "@/lib/voice-policy";
+import {
+  buildSocialInstructions,
+  buildSocialVariationStrategy,
+} from "@/lib/social-writing-style";
 
 const KEYWORDS_ENDPOINT =
   process.env.N8N_KEYWORDS_ENDPOINT ??
@@ -400,7 +404,10 @@ export type ScheduledSocialCalendarPost = {
 };
 
 export type SocialContentSource = "blog" | "changelog" | "manual";
-export type SocialGenerationMode = "content_marketing" | "build_in_public";
+export type SocialGenerationMode =
+  | "content_marketing"
+  | "build_in_public"
+  | "adversarial";
 
 export async function generateSocialContent({
   baseContent,
@@ -435,19 +442,33 @@ export async function generateSocialContent({
   const resolvedGenerationMode =
     generationMode ??
     (contentSource === "changelog" ? "build_in_public" : "content_marketing");
+  const socialInstructions = buildSocialInstructions({
+    instructions,
+    contentSource,
+    generationMode: resolvedGenerationMode,
+    platformConfigs: normalizedConfigs,
+  });
+  const socialVariationStrategy = buildSocialVariationStrategy(variationStrategy);
 
   const payload: Record<string, unknown> = {
     baseContent: baseContent.trim(),
     language,
     platformConfigs: normalizedConfigs,
     generationMode: resolvedGenerationMode,
+    instructions: socialInstructions,
+    variationStrategy: socialVariationStrategy,
   };
 
-  if (instructions?.trim()) payload.instructions = instructions.trim();
   if (tone?.trim()) payload.tone = tone.trim();
-  if (variationStrategy?.trim()) payload.variationStrategy = variationStrategy.trim();
   if (contentSource) payload.contentSource = contentSource;
   if (voicePolicy) payload.voicePolicy = voicePolicy;
+
+  // Worldview is only surfaced to n8n when the style actually needs it.
+  // Adversarial posts must align with the user's worldview; other styles
+  // should not be biased by it.
+  if (resolvedGenerationMode === "adversarial" && voicePolicy?.worldview) {
+    payload.worldview = voicePolicy.worldview;
+  }
 
   const response = await fetch(SOCIAL_ENDPOINT, n8nPostInit(payload));
 

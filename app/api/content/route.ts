@@ -162,7 +162,11 @@ function normalizeGenerationMode(
   rawMode: unknown,
   rawSource: unknown,
 ): SocialGenerationMode {
-  if (rawMode === "build_in_public" || rawMode === "content_marketing") {
+  if (
+    rawMode === "build_in_public" ||
+    rawMode === "content_marketing" ||
+    rawMode === "adversarial"
+  ) {
     return rawMode;
   }
 
