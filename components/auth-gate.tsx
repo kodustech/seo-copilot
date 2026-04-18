@@ -41,6 +41,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       { href: "/kanban", label: "Kanban" },
       { href: "/dashboard", label: "Dashboard" },
       { href: "/social-monitoring", label: "Social Monitor" },
+      { href: "/reply-radar", label: "Reply Radar" },
     ],
     [],
   );
