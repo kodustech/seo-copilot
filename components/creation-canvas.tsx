@@ -13,7 +13,14 @@ import {
   type OnConnect,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Sparkles, Search, FileText, Share2, StickyNote } from "lucide-react";
+import {
+  FileText,
+  Lightbulb,
+  Search,
+  Share2,
+  Sparkles,
+  StickyNote,
+} from "lucide-react";
 
 import { useCreationPipeline } from "@/components/creation-canvas/use-creation-pipeline";
 import { deriveNodesAndEdges } from "@/components/creation-canvas/layout";
@@ -181,10 +188,22 @@ function CreationCanvasInner() {
               />
             </div>
             <div className="flex w-full gap-3">
+              <a
+                href={
+                  topicInput.trim()
+                    ? `/ideas?topic=${encodeURIComponent(topicInput.trim())}`
+                    : "/ideas"
+                }
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 py-3 text-sm font-medium text-white transition hover:bg-violet-500"
+                title="Brainstorm ideas across 5 lanes (no input required)"
+              >
+                <Lightbulb className="h-4 w-4" />
+                Ideas
+              </a>
               <button
                 onClick={() => handleStart("blog")}
                 disabled={!topicInput.trim()}
-                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 py-3 text-sm font-medium text-white transition hover:bg-violet-500 disabled:opacity-40"
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.06] px-4 py-3 text-sm font-medium text-white transition hover:bg-white/[0.1] disabled:opacity-40"
               >
                 <FileText className="h-4 w-4" />
                 Blog Post
@@ -198,6 +217,10 @@ function CreationCanvasInner() {
                 Social Post
               </button>
             </div>
+            <p className="text-center text-[11px] text-neutral-600">
+              No idea yet? Click <span className="text-neutral-400">Ideas</span> —
+              works without typing anything.
+            </p>
           </div>
         </div>
       )}
