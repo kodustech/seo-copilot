@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Background,
   BackgroundVariant,
@@ -74,13 +74,16 @@ type CardStateEntry = {
 
 export function IdeasCanvas() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const initialTopic = searchParams.get("topic") ?? "";
+
   const { token, supabase } = useAuthToken();
 
   const [session, setSession] = useState<IdeaSession | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [topicInput, setTopicInput] = useState("");
+  const [topicInput, setTopicInput] = useState(initialTopic);
   const [cardStates, setCardStates] = useState<Record<string, CardState>>({});
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
@@ -156,10 +159,13 @@ export function IdeasCanvas() {
 
   useEffect(() => {
     if (token) {
-      void loadSession();
+      void loadSession({ topic: initialTopic || null });
       void loadCardStates();
     }
-  }, [token, loadSession, loadCardStates]);
+    // We only want this to run on token change / first topic hydration, not
+    // every time initialTopic updates mid-session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
 
   const updateCardState = useCallback(
     async (cardKey: string, state: CardState, payload: IdeaCard) => {
@@ -356,6 +362,11 @@ export function IdeasCanvas() {
             onSubmit={(event) => {
               event.preventDefault();
               const topic = topicInput.trim() || null;
+              // Sync the URL so refresh/share/back preserves the topic.
+              router.replace(
+                topic ? `/ideas?topic=${encodeURIComponent(topic)}` : "/ideas",
+                { scroll: false },
+              );
               void loadSession({ topic, force: true });
             }}
           >

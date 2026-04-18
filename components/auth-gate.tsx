@@ -38,7 +38,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const primaryLinks = useMemo(
     () => [
       { href: "/", label: "Content Canvas" },
-      { href: "/ideas", label: "Ideas" },
       { href: "/kanban", label: "Kanban" },
       { href: "/dashboard", label: "Dashboard" },
       { href: "/social-monitoring", label: "Social Monitor" },
