@@ -1,52 +1,51 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
-  ReactFlow,
-  Controls,
-  MiniMap,
   Background,
   BackgroundVariant,
-  useNodesState,
-  useEdgesState,
-  type Node,
+  Controls,
+  MiniMap,
+  ReactFlow,
   type Edge,
+  type Node,
+  useEdgesState,
+  useNodesState,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Search, Sparkles } from "lucide-react";
+import { Loader2, RefreshCw, Search, Sparkles } from "lucide-react";
 
-import type { IdeaResult, IdeaAngle, SearchIdeasOutput } from "@/lib/exa";
-import { useFavorites } from "@/lib/use-favorites";
-import { TopicNode } from "@/components/canvas/topic-node";
-import { AngleNode } from "@/components/canvas/angle-node";
-import { IdeaNode } from "@/components/canvas/idea-node";
-import { IdeaDetailPanel } from "@/components/canvas/idea-detail-panel";
+import { CardNode, type CardNodeData } from "@/components/canvas/card-node";
+import { LaneNode, type LaneNodeData } from "@/components/canvas/lane-node";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
+import type {
+  IdeaCard,
+  IdeaLane,
+  IdeaLaneKey,
+  IdeaSession,
+} from "@/lib/ideas";
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+type CardState = "idle" | "saved" | "dismissed" | "promoted";
 
-const ANGLE_RADIUS = 320;
-const IDEA_CARD_W = 280;
-const IDEA_CARD_H = 160;
-const IDEA_GAP = 20;
-const IDEA_COLS = 2;
-const IDEA_OFFSET = 180; // distance from angle node to first idea row
+const NODE_TYPES = {
+  lane: LaneNode,
+  card: CardNode,
+} as const;
 
-const ANGLES_ORDER: IdeaAngle[] = [
-  "pain_points",
-  "questions",
-  "trends",
-  "comparisons",
-  "best_practices",
+const LANE_ORDER: IdeaLaneKey[] = [
+  "topic",
+  "bubble",
+  "my_data",
+  "gap",
+  "hot_takes",
 ];
 
-const nodeTypes = {
-  topic: TopicNode,
-  angle: AngleNode,
-  idea: IdeaNode,
-};
+const LANE_WIDTH = 260;
+const LANE_SPACING = 40;
+const LANE_Y = 180;
+const CARD_START_Y = 340;
+const CARD_SPACING_Y = 180;
 
 function useAuthToken() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
@@ -57,382 +56,368 @@ function useAuthToken() {
     supabase.auth.getSession().then(({ data }) => {
       setToken(data.session?.access_token ?? null);
     });
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+      setToken(session?.access_token ?? null);
+    });
+    return () => {
+      sub.subscription.unsubscribe();
+    };
   }, [supabase]);
 
-  return token;
+  return { token, supabase };
 }
 
-function jsonHeaders(token?: string | null) {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-  return headers;
-}
-
-// ---------------------------------------------------------------------------
-// Layout helpers
-// ---------------------------------------------------------------------------
-
-function anglePosition(index: number, total: number) {
-  const startAngle = -Math.PI / 2; // start from top
-  const step = (2 * Math.PI) / total;
-  const angle = startAngle + step * index;
-  return {
-    x: Math.cos(angle) * ANGLE_RADIUS,
-    y: Math.sin(angle) * ANGLE_RADIUS,
-  };
-}
-
-function ideaPosition(parentX: number, parentY: number, index: number) {
-  // Lay out ideas in a grid extending outward from the angle node
-  const dir = Math.atan2(parentY, parentX); // direction away from center
-  const col = index % IDEA_COLS;
-  const row = Math.floor(index / IDEA_COLS);
-
-  // Perpendicular offset for columns (spread left/right relative to direction)
-  const perpX = -Math.sin(dir);
-  const perpY = Math.cos(dir);
-
-  // Along-direction offset for rows
-  const alongX = Math.cos(dir);
-  const alongY = Math.sin(dir);
-
-  const colOffset = (col - (IDEA_COLS - 1) / 2) * (IDEA_CARD_W + IDEA_GAP);
-  const rowOffset = IDEA_OFFSET + row * (IDEA_CARD_H + IDEA_GAP);
-
-  return {
-    x: parentX + alongX * rowOffset + perpX * colOffset,
-    y: parentY + alongY * rowOffset + perpY * colOffset,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
+type CardStateEntry = {
+  card_key: string;
+  state: CardState;
+};
 
 export function IdeasCanvas() {
-  const token = useAuthToken();
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([] as Node[]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([] as Edge[]);
+  const router = useRouter();
+  const { token, supabase } = useAuthToken();
 
+  const [session, setSession] = useState<IdeaSession | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [topicInput, setTopicInput] = useState("");
-  const [hasExplored, setHasExplored] = useState(false);
-  const [selectedIdea, setSelectedIdea] = useState<IdeaResult | null>(null);
+  const [cardStates, setCardStates] = useState<Record<string, CardState>>({});
 
-  const { isFavorited, toggleFavorite } = useFavorites();
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
-  // Store all ideas grouped by angle for expand/collapse
-  const ideasByAngle = useRef<Record<IdeaAngle, IdeaResult[]>>({
-    pain_points: [],
-    questions: [],
-    trends: [],
-    comparisons: [],
-    best_practices: [],
-  });
-  const expandedAngles = useRef<Set<IdeaAngle>>(new Set());
+  const authHeaders = useCallback(() => {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return headers;
+  }, [token]);
 
-  // -------------------------------------------------------------------------
-  // Explore topic
-  // -------------------------------------------------------------------------
+  const getFreshToken = useCallback(async (): Promise<string | null> => {
+    if (!supabase) return token;
+    const { data } = await supabase.auth.getSession();
+    return data.session?.access_token ?? token;
+  }, [supabase, token]);
 
-  const handleExplore = useCallback(
-    async (topic: string) => {
-      if (!topic.trim()) return;
+  const loadCardStates = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await fetch("/api/ideas/cards", { headers: authHeaders() });
+      if (!res.ok) return;
+      const data = await res.json();
+      const map: Record<string, CardState> = {};
+      for (const entry of (data.cards ?? []) as CardStateEntry[]) {
+        map[entry.card_key] = entry.state;
+      }
+      setCardStates(map);
+    } catch {
+      // Non-fatal: cards render as idle
+    }
+  }, [token, authHeaders]);
 
-      setHasExplored(true);
-
-      // Create topic node in loading state
-      const topicNode: Node = {
-        id: "topic",
-        type: "topic",
-        position: { x: 0, y: 0 },
-        data: { label: topic, status: "loading" },
-      };
-      setNodes([topicNode]);
-      setEdges([]);
+  const loadSession = useCallback(
+    async (options: { topic?: string | null; force?: boolean } = {}) => {
+      if (!token) return;
+      setError(null);
+      if (options.force) setRefreshing(true);
+      else setLoading(true);
 
       try {
-        const res = await fetch("/api/canvas/explore", {
-          method: "POST",
-          headers: jsonHeaders(token),
-          body: JSON.stringify({ action: "explore", topic }),
-        });
-        const data: SearchIdeasOutput = await res.json();
+        const method = options.force ? "POST" : "GET";
+        const url =
+          options.topic && !options.force
+            ? `/api/ideas?topic=${encodeURIComponent(options.topic)}`
+            : "/api/ideas";
 
-        if (!res.ok) throw new Error((data as unknown as { error: string }).error);
-
-        // Group results by angle
-        const grouped: Record<IdeaAngle, IdeaResult[]> = {
-          pain_points: [],
-          questions: [],
-          trends: [],
-          comparisons: [],
-          best_practices: [],
+        const init: RequestInit = {
+          method,
+          headers: authHeaders(),
         };
-        for (const r of data.results) {
-          if (grouped[r.angle]) grouped[r.angle].push(r);
+        if (options.force) {
+          init.body = JSON.stringify(
+            options.topic ? { topic: options.topic } : {},
+          );
         }
-        ideasByAngle.current = grouped;
-        expandedAngles.current = new Set();
 
-        // Build angle nodes
-        const newNodes: Node[] = [
-          {
-            id: "topic",
-            type: "topic",
-            position: { x: 0, y: 0 },
-            data: { label: topic, status: "done" },
+        const res = await fetch(url, init);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to load ideas.");
+        setSession(data.session as IdeaSession);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unknown error");
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [token, authHeaders],
+  );
+
+  useEffect(() => {
+    if (token) {
+      void loadSession();
+      void loadCardStates();
+    }
+  }, [token, loadSession, loadCardStates]);
+
+  const updateCardState = useCallback(
+    async (cardKey: string, state: CardState, payload: IdeaCard) => {
+      const freshToken = await getFreshToken();
+      if (!freshToken) return;
+
+      setCardStates((prev) => ({ ...prev, [cardKey]: state }));
+
+      try {
+        await fetch("/api/ideas/cards", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${freshToken}`,
           },
-        ];
-        const newEdges: Edge[] = [];
-
-        ANGLES_ORDER.forEach((angle, i) => {
-          const pos = anglePosition(i, ANGLES_ORDER.length);
-          const ideas = grouped[angle];
-          const angleLabel =
-            ideas[0]?.angleLabel ??
-            angle.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-
-          newNodes.push({
-            id: `angle-${angle}`,
-            type: "angle",
-            position: pos,
-            data: {
-              angle,
-              label: angleLabel,
-              count: ideas.length,
-              expanded: false,
-              onToggle: () => toggleAngle(angle),
-            },
-          });
-
-          newEdges.push({
-            id: `edge-topic-${angle}`,
-            source: "topic",
-            target: `angle-${angle}`,
-            type: "smoothstep",
-            style: { stroke: "rgba(255,255,255,0.08)", strokeWidth: 1.5 },
-          });
+          body: JSON.stringify({ cardKey, state, payload }),
         });
-
-        setNodes(newNodes);
-        setEdges(newEdges);
       } catch {
-        setNodes([
-          {
-            id: "topic",
-            type: "topic",
-            position: { x: 0, y: 0 },
-            data: { label: topic, status: "error", onExplore: () => handleExplore(topic) },
-          },
-        ]);
+        // Best-effort — local state already reflects the choice.
       }
     },
-    [setNodes, setEdges, token],
+    [getFreshToken],
   );
 
-  // -------------------------------------------------------------------------
-  // Toggle angle expansion
-  // -------------------------------------------------------------------------
-
-  const toggleAngle = useCallback(
-    (angle: IdeaAngle) => {
-      const wasExpanded = expandedAngles.current.has(angle);
-
-      if (wasExpanded) {
-        expandedAngles.current.delete(angle);
-      } else {
-        expandedAngles.current.add(angle);
+  const handleSave = useCallback(
+    (card: IdeaCard) => {
+      const currentState = cardStates[card.id] ?? "idle";
+      if (currentState === "saved") {
+        setCardStates((prev) => {
+          const next = { ...prev };
+          delete next[card.id];
+          return next;
+        });
+        void (async () => {
+          const freshToken = await getFreshToken();
+          if (!freshToken) return;
+          await fetch(`/api/ideas/cards?cardKey=${encodeURIComponent(card.id)}`, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${freshToken}` },
+          }).catch(() => {});
+        })();
+        return;
       }
+      void updateCardState(card.id, "saved", card);
+    },
+    [cardStates, getFreshToken, updateCardState],
+  );
 
-      setNodes((currentNodes) => {
-        // Remove all idea nodes for this angle
-        let filtered = currentNodes.filter(
-          (n) => !(n.type === "idea" && (n.data as { angle?: string }).angle === angle),
-        );
+  const handleDismiss = useCallback(
+    (card: IdeaCard) => {
+      void updateCardState(card.id, "dismissed", card);
+    },
+    [updateCardState],
+  );
 
-        // Update the angle node expanded state
-        filtered = filtered.map((n) => {
-          if (n.id === `angle-${angle}`) {
-            return {
-              ...n,
-              data: {
-                ...n.data,
-                expanded: !wasExpanded,
-                onToggle: () => toggleAngle(angle),
-              },
-            };
-          }
-          return n;
+  const handleDraft = useCallback(
+    (card: IdeaCard) => {
+      void updateCardState(card.id, "promoted", card);
+      // Map the suggested format to the Content Canvas "mode" param.
+      const mode =
+        card.suggestedFormat === "linkedin" ||
+        card.suggestedFormat === "twitter"
+          ? "social"
+          : "blog";
+      const params = new URLSearchParams({
+        topic: card.workingTitle,
+        mode,
+        angle: card.angle,
+      });
+      router.push(`/?${params.toString()}`);
+    },
+    [router, updateCardState],
+  );
+
+  // Build nodes/edges from session + cardStates
+  useEffect(() => {
+    if (!session) {
+      setNodes([]);
+      setEdges([]);
+      return;
+    }
+
+    const visibleLanes = session.lanes.filter((lane) => {
+      if (lane.key === "topic" && !session.topic) return false;
+      return true;
+    });
+    visibleLanes.sort(
+      (a, b) => LANE_ORDER.indexOf(a.key) - LANE_ORDER.indexOf(b.key),
+    );
+
+    const laneCount = visibleLanes.length;
+    const totalWidth =
+      laneCount * LANE_WIDTH + Math.max(0, laneCount - 1) * LANE_SPACING;
+    const startX = -totalWidth / 2;
+
+    const nextNodes: Node[] = [];
+    const nextEdges: Edge[] = [];
+
+    visibleLanes.forEach((lane: IdeaLane, laneIndex) => {
+      const laneX = startX + laneIndex * (LANE_WIDTH + LANE_SPACING);
+
+      nextNodes.push({
+        id: `lane-${lane.key}`,
+        type: "lane",
+        position: { x: laneX, y: LANE_Y },
+        data: {
+          lane: lane.key,
+          label: lane.label,
+          description: lane.description,
+          count: lane.cards.length,
+          error: lane.error,
+        } satisfies LaneNodeData,
+        draggable: false,
+        selectable: false,
+      });
+
+      lane.cards.forEach((card, cardIndex) => {
+        const cardId = `card-${card.id}`;
+        nextNodes.push({
+          id: cardId,
+          type: "card",
+          position: {
+            x: laneX + (LANE_WIDTH - 300) / 2,
+            y: CARD_START_Y + cardIndex * CARD_SPACING_Y,
+          },
+          data: {
+            card,
+            state: cardStates[card.id] ?? "idle",
+            onSave: () => handleSave(card),
+            onDismiss: () => handleDismiss(card),
+            onDraft: () => handleDraft(card),
+          } satisfies CardNodeData,
+          draggable: false,
+          selectable: false,
         });
 
-        if (!wasExpanded) {
-          // Add idea nodes
-          const ideas = ideasByAngle.current[angle] || [];
-          const angleNode = filtered.find((n) => n.id === `angle-${angle}`);
-          if (angleNode) {
-            const parentX = angleNode.position.x;
-            const parentY = angleNode.position.y;
-            ideas.forEach((idea, idx) => {
-              const pos = ideaPosition(parentX, parentY, idx);
-              filtered.push({
-                id: `idea-${idea.id}`,
-                type: "idea",
-                position: pos,
-                data: {
-                  ideaId: idea.id,
-                  title: idea.title,
-                  source: idea.source,
-                  summary: idea.summary,
-                  url: idea.url,
-                  angle: idea.angle,
-                  favorited: isFavorited(idea.id),
-                  onSelect: () => setSelectedIdea(idea),
-                  onToggleFavorite: () => handleToggleFavoriteOnNode(idea),
-                },
-              });
-            });
-          }
-        }
-
-        return filtered;
+        nextEdges.push({
+          id: `edge-${lane.key}-${card.id}`,
+          source: `lane-${lane.key}`,
+          target: cardId,
+          animated: false,
+          style: { stroke: "rgba(255,255,255,0.1)" },
+        });
       });
+    });
 
-      setEdges((currentEdges) => {
-        // Remove idea edges for this angle
-        const filtered = currentEdges.filter(
-          (e) => !e.id.startsWith(`edge-${angle}-idea-`),
-        );
+    setNodes(nextNodes);
+    setEdges(nextEdges);
+  }, [session, cardStates, handleSave, handleDismiss, handleDraft, setEdges, setNodes]);
 
-        if (!wasExpanded) {
-          const ideas = ideasByAngle.current[angle] || [];
-          ideas.forEach((idea) => {
-            filtered.push({
-              id: `edge-${angle}-idea-${idea.id}`,
-              source: `angle-${angle}`,
-              target: `idea-${idea.id}`,
-              type: "smoothstep",
-              style: { stroke: "rgba(255,255,255,0.06)", strokeWidth: 1 },
-            });
-          });
-        }
-
-        return filtered;
-      });
-    },
-    [isFavorited, setNodes, setEdges],
-  );
-
-  // -------------------------------------------------------------------------
-  // Toggle favorite on node + persist
-  // -------------------------------------------------------------------------
-
-  const handleToggleFavoriteOnNode = useCallback(
-    (idea: IdeaResult) => {
-      toggleFavorite(idea);
-      setNodes((currentNodes) =>
-        currentNodes.map((n) => {
-          if (n.id === `idea-${idea.id}`) {
-            const current = (n.data as { favorited?: boolean }).favorited ?? false;
-            return {
-              ...n,
-              data: { ...n.data, favorited: !current },
-            };
-          }
-          return n;
-        }),
-      );
-    },
-    [toggleFavorite, setNodes],
-  );
-
-  // -------------------------------------------------------------------------
-  // Submit handler
-  // -------------------------------------------------------------------------
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (topicInput.trim()) handleExplore(topicInput.trim());
-  }
-
-  // -------------------------------------------------------------------------
-  // Render
-  // -------------------------------------------------------------------------
+  const totalIdeas = session?.cards.length ?? 0;
+  const hasSession = Boolean(session);
+  const isLoading = loading && !hasSession;
 
   return (
-    <div className="relative h-[calc(100vh-65px)] w-full bg-neutral-950">
-      {/* Empty state — input overlay */}
-      {!hasExplored && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center">
+    <div className="relative flex h-full w-full flex-col bg-neutral-950 text-neutral-100">
+      <div className="absolute left-1/2 top-6 z-10 w-full max-w-2xl -translate-x-1/2 px-4">
+        <div className="rounded-2xl border border-white/10 bg-neutral-900/90 p-4 shadow-xl backdrop-blur">
+          <div className="flex items-center gap-2 text-white">
+            <Sparkles className="h-5 w-5 text-violet-300" />
+            <span className="text-sm font-semibold">Ideas canvas</span>
+            {session?.generatedAt ? (
+              <span className="ml-auto text-[11px] text-neutral-500">
+                generated{" "}
+                {new Date(session.generatedAt).toLocaleString("en-US", {
+                  dateStyle: "short",
+                  timeStyle: "short",
+                })}
+              </span>
+            ) : null}
+          </div>
           <form
-            onSubmit={handleSubmit}
-            className="flex w-full max-w-lg flex-col items-center gap-5"
+            className="mt-3 flex items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const topic = topicInput.trim() || null;
+              void loadSession({ topic, force: true });
+            }}
           >
-            <div className="flex items-center gap-2 text-neutral-400">
-              <Sparkles className="h-5 w-5 text-violet-400" />
-              <span className="text-lg font-medium text-white">Ideas Canvas</span>
-            </div>
-            <p className="text-center text-sm text-neutral-500">
-              Explore ideas progressively: topic &rarr; angles &rarr; ideas &rarr; keywords &rarr; titles
-            </p>
-            <div className="flex w-full items-center gap-2 rounded-xl border border-white/10 bg-neutral-900/80 px-4 py-3 backdrop-blur">
-              <Search className="h-4 w-4 text-neutral-500" />
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-500" />
               <input
                 type="text"
                 value={topicInput}
-                onChange={(e) => setTopicInput(e.target.value)}
-                placeholder="Which topic do you want to explore?"
-                className="flex-1 bg-transparent text-sm text-white outline-none placeholder:text-neutral-600"
-                autoFocus
+                onChange={(event) => setTopicInput(event.target.value)}
+                placeholder="Optional: narrow all lanes around a topic..."
+                className="w-full rounded-lg border border-white/10 bg-neutral-950 py-2 pl-10 pr-3 text-sm text-neutral-100 placeholder:text-neutral-500 focus:border-violet-500/50 focus:outline-none focus:ring-1 focus:ring-violet-500/30"
               />
-              <button
-                type="submit"
-                disabled={!topicInput.trim()}
-                className="rounded-lg bg-violet-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-violet-500 disabled:opacity-40"
-              >
-                Explore
-              </button>
             </div>
+            <button
+              type="submit"
+              disabled={refreshing}
+              className="flex items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-2 text-xs font-medium text-white transition hover:bg-violet-500 disabled:opacity-50"
+            >
+              {refreshing ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5" />
+              )}
+              {topicInput.trim() ? "Generate" : "Refresh"}
+            </button>
           </form>
+          {session?.topic ? (
+            <p className="mt-2 text-[11px] text-neutral-500">
+              Current topic:{" "}
+              <span className="text-neutral-300">{session.topic}</span>
+            </p>
+          ) : null}
+          {error ? (
+            <p className="mt-2 rounded bg-red-500/10 px-2 py-1 text-xs text-red-300">
+              {error}
+            </p>
+          ) : null}
+          {totalIdeas > 0 ? (
+            <p className="mt-1 text-[11px] text-neutral-500">
+              {totalIdeas} ideas across {session?.lanes.length ?? 0} lanes
+            </p>
+          ) : null}
         </div>
-      )}
+      </div>
 
-      {/* React Flow canvas */}
-      {hasExplored && (
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          nodeTypes={nodeTypes}
-          fitView
-          fitViewOptions={{ padding: 0.3 }}
-          proOptions={{ hideAttribution: true }}
-          minZoom={0.2}
-          maxZoom={2}
-        >
-          <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="rgba(255,255,255,0.04)" />
-          <Controls
-            showInteractive={false}
-            className="!rounded-xl !border-white/10 !bg-neutral-900/80 !shadow-xl"
-          />
-          <MiniMap
-            className="!rounded-xl !border-white/10 !bg-neutral-900/60"
-            maskColor="rgba(0,0,0,0.6)"
-            nodeColor="rgba(139,92,246,0.4)"
-          />
-        </ReactFlow>
-      )}
-
-      {/* Detail panel */}
-      {selectedIdea && (
-        <IdeaDetailPanel
-          idea={selectedIdea}
-          favorited={isFavorited(selectedIdea.id)}
-          onToggleFavorite={() => handleToggleFavoriteOnNode(selectedIdea)}
-          onClose={() => setSelectedIdea(null)}
-        />
+      {isLoading ? (
+        <div className="flex flex-1 items-center justify-center">
+          <div className="flex flex-col items-center gap-3 text-neutral-400">
+            <Loader2 className="h-6 w-6 animate-spin text-violet-400" />
+            <p className="text-sm">Generating ideas from your 5 lanes...</p>
+            <p className="text-xs text-neutral-500">
+              First load: ~15–25s. Next time this will be instant (cached 6h).
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="flex-1">
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={NODE_TYPES}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            fitView
+            fitViewOptions={{ padding: 0.2 }}
+            proOptions={{ hideAttribution: true }}
+            minZoom={0.3}
+            maxZoom={1.4}
+          >
+            <Background variant={BackgroundVariant.Dots} gap={24} size={1} />
+            <Controls
+              className="!bg-neutral-900 !border-white/10"
+              showInteractive={false}
+            />
+            <MiniMap
+              pannable
+              className="!bg-neutral-900 !border-white/10"
+              nodeColor={() => "#1e293b"}
+              maskColor="rgba(0,0,0,0.6)"
+            />
+          </ReactFlow>
+        </div>
       )}
     </div>
   );
