@@ -14,7 +14,7 @@ import {
   useNodesState,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Loader2, RefreshCw, Search, Sparkles } from "lucide-react";
+import { Bug, Loader2, RefreshCw, Search, Sparkles } from "lucide-react";
 
 import { CardNode, type CardNodeData } from "@/components/canvas/card-node";
 import { LaneNode, type LaneNodeData } from "@/components/canvas/lane-node";
@@ -85,6 +85,9 @@ export function IdeasCanvas() {
   const [error, setError] = useState<string | null>(null);
   const [topicInput, setTopicInput] = useState(initialTopic);
   const [cardStates, setCardStates] = useState<Record<string, CardState>>({});
+  const [debugOutput, setDebugOutput] = useState<unknown>(null);
+  const [debugOpen, setDebugOpen] = useState(false);
+  const [debugLoading, setDebugLoading] = useState(false);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -220,6 +223,24 @@ export function IdeasCanvas() {
     },
     [updateCardState],
   );
+
+  const runDebug = useCallback(async () => {
+    if (!token) return;
+    setDebugLoading(true);
+    setDebugOpen(true);
+    setDebugOutput(null);
+    try {
+      const res = await fetch("/api/ideas/debug", { headers: authHeaders() });
+      const data = await res.json();
+      setDebugOutput(data);
+    } catch (err) {
+      setDebugOutput({
+        error: err instanceof Error ? err.message : "Unknown error",
+      });
+    } finally {
+      setDebugLoading(false);
+    }
+  }, [token, authHeaders]);
 
   const handleDraft = useCallback(
     (card: IdeaCard) => {
@@ -409,8 +430,54 @@ export function IdeasCanvas() {
               {totalIdeas} ideas across {session?.lanes.length ?? 0} lanes
             </p>
           ) : null}
+          <button
+            type="button"
+            onClick={runDebug}
+            className="mt-2 inline-flex items-center gap-1 text-[11px] text-neutral-500 transition hover:text-neutral-300"
+          >
+            <Bug className="h-3 w-3" />
+            Diagnose lanes
+          </button>
         </div>
       </div>
+
+      {debugOpen ? (
+        <div
+          className="absolute inset-0 z-40 flex items-center justify-center bg-black/70 p-6"
+          onClick={() => setDebugOpen(false)}
+        >
+          <div
+            className="max-h-[80vh] w-full max-w-3xl overflow-hidden rounded-xl border border-white/10 bg-neutral-950 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+              <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                <Bug className="h-4 w-4 text-amber-400" />
+                Ideas diagnostic
+              </div>
+              <button
+                type="button"
+                onClick={() => setDebugOpen(false)}
+                className="rounded px-2 py-1 text-xs text-neutral-400 hover:bg-white/5 hover:text-white"
+              >
+                Close
+              </button>
+            </div>
+            <div className="max-h-[70vh] overflow-auto p-4 text-xs">
+              {debugLoading ? (
+                <div className="flex items-center gap-2 text-neutral-400">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Running probes...
+                </div>
+              ) : (
+                <pre className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-neutral-200">
+                  {JSON.stringify(debugOutput, null, 2)}
+                </pre>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {isLoading ? (
         <div className="flex flex-1 items-center justify-center">
