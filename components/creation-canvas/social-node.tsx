@@ -4,6 +4,7 @@ import { memo, useCallback, type PointerEvent } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { Loader2, Copy, Check } from "lucide-react";
 import { useState } from "react";
+import { copyToClipboard } from "@/lib/clipboard";
 import type { SocialPostVariation } from "@/lib/types";
 import type { StepStatus } from "./types";
 
@@ -27,14 +28,18 @@ function SocialNodeComponent({ data }: NodeProps) {
   const { status, socialIndex, variation } = data as unknown as SocialNodeData;
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = useCallback(() => {
+  const handleCopy = useCallback(async () => {
     if (!variation) return;
     const text = [variation.hook, variation.post, variation.cta, variation.hashtags.join(" ")]
       .filter(Boolean)
       .join("\n\n");
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await copyToClipboard(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
   }, [variation]);
 
   const platform = variation?.platform?.toLowerCase() ?? "";

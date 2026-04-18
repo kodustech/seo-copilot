@@ -13,6 +13,7 @@ import {
   Sparkles,
 } from "lucide-react";
 
+import { copyToClipboard } from "@/lib/clipboard";
 import type { KeywordSuggestion, TitleIdea } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -471,7 +472,7 @@ export function SeoWorkspace({
 
     const payload = [title, body].filter(Boolean).join("\n\n");
     try {
-      await navigator.clipboard.writeText(payload);
+      await copyToClipboard(payload);
       setArticleCopied(true);
       setTimeout(() => setArticleCopied(false), 1400);
     } catch {

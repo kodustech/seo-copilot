@@ -31,6 +31,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { copyToClipboard } from "@/lib/clipboard";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
 type LaneFilter = "all" | "blog" | "changelog" | "mixed";
@@ -524,15 +525,15 @@ export function SocialYoloPage() {
     }
   }
 
-  function copyPost(post: EditableYoloPost) {
+  async function copyPost(post: EditableYoloPost) {
     const payload = normalizeMultiline(post.body);
-    navigator.clipboard
-      .writeText(payload)
-      .then(() => {
-        setCopiedId(post.id);
-        setTimeout(() => setCopiedId(null), 1200);
-      })
-      .catch(() => setError("Could not copy this draft right now."));
+    try {
+      await copyToClipboard(payload);
+      setCopiedId(post.id);
+      setTimeout(() => setCopiedId(null), 1200);
+    } catch {
+      setError("Could not copy this draft right now.");
+    }
   }
 
   function togglePostSelection(postId: string, checked: boolean) {
