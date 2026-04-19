@@ -252,11 +252,31 @@ begin
   if not exists (
     select 1 from pg_policies
     where schemaname = 'public' and tablename = 'x_reply_drafts'
+      and policyname = 'x_reply_drafts_insert_own'
+  ) then
+    create policy x_reply_drafts_insert_own
+      on public.x_reply_drafts for insert
+      with check (user_email = auth.jwt() ->> 'email');
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'x_reply_drafts'
       and policyname = 'x_reply_drafts_update_own'
   ) then
     create policy x_reply_drafts_update_own
       on public.x_reply_drafts for update
       using (user_email = auth.jwt() ->> 'email')
       with check (user_email = auth.jwt() ->> 'email');
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'x_reply_drafts'
+      and policyname = 'x_reply_drafts_delete_own'
+  ) then
+    create policy x_reply_drafts_delete_own
+      on public.x_reply_drafts for delete
+      using (user_email = auth.jwt() ->> 'email');
   end if;
 end $$;
