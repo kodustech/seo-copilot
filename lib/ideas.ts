@@ -172,10 +172,20 @@ async function generateIdeasFromContext({
       system,
       prompt,
     });
-    return object.ideas.slice(0, maxCards);
+    const ideas = object.ideas.slice(0, maxCards);
+    if (!ideas.length) {
+      console.warn(
+        `[ideas] LLM returned 0 ideas for lane ${laneLabel} despite ${contextItems.length} context items`,
+      );
+    }
+    return ideas;
   } catch (err) {
     console.error(`[ideas] LLM call failed for lane ${laneLabel}:`, err);
-    return [];
+    throw new Error(
+      `LLM generation failed for ${laneLabel}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   }
 }
 
@@ -230,6 +240,12 @@ async function runBubbleLane(options: {
       voicePrompt: options.voicePrompt,
       maxCards: options.maxCards,
     });
+
+    if (!ideas.length) {
+      lane.error =
+        "LLM returned no ideas despite having context. Check server logs.";
+      return lane;
+    }
 
     lane.cards = ideas.map((idea) => ({
       id: makeCardId("bubble", idea.workingTitle),
@@ -294,6 +310,12 @@ async function runMyDataLane(options: {
       voicePrompt: options.voicePrompt,
       maxCards: options.maxCards,
     });
+
+    if (!ideas.length) {
+      lane.error =
+        "LLM returned no ideas from Search Console signals. Check server logs.";
+      return lane;
+    }
 
     lane.cards = ideas.map((idea) => ({
       id: makeCardId("my_data", idea.workingTitle),
@@ -360,6 +382,11 @@ async function runGapLane(options: {
       voicePrompt: options.voicePrompt,
       maxCards: options.maxCards,
     });
+
+    if (!ideas.length) {
+      lane.error = "LLM returned no ideas from the gap analysis.";
+      return lane;
+    }
 
     lane.cards = ideas.map((idea) => ({
       id: makeCardId("gap", idea.workingTitle),
@@ -430,11 +457,17 @@ async function runHotTakesLane(options: {
       contextLabel: "External narratives in the space",
       contextItems,
       instruction:
-        "Each idea is an adversarial take: name a specific claim or assumption from the context that conflicts with the author's worldview, and propose a short angle pushing back. Ground each pushback in a concrete counter-observation. Do NOT name competitors to trash them; push back on the IDEA. If worldview is empty, stay narrow and skip this lane.",
+        "Each idea is an adversarial take: name a specific claim or assumption from the context that conflicts with the author's worldview, and propose a short angle pushing back. Ground each pushback in a concrete counter-observation. Do NOT name competitors to trash them; push back on the IDEA.",
       voicePrompt: options.voicePrompt,
       worldview: options.worldview,
       maxCards: options.maxCards,
     });
+
+    if (!ideas.length) {
+      lane.error =
+        "LLM returned no adversarial takes (possibly refused on worldview grounds).";
+      return lane;
+    }
 
     lane.cards = ideas.map((idea) => ({
       id: makeCardId("hot_takes", idea.workingTitle),

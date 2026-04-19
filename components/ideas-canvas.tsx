@@ -146,11 +146,53 @@ export function IdeasCanvas() {
           );
         }
 
+        console.info("[ideas] fetching session", {
+          method,
+          url,
+          body: init.body ?? null,
+        });
         const res = await fetch(url, init);
         const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || "Failed to load ideas.");
-        setSession(data.session as IdeaSession);
+        if (!res.ok) {
+          console.error("[ideas] session fetch failed", {
+            status: res.status,
+            body: data,
+          });
+          throw new Error(data?.error || "Failed to load ideas.");
+        }
+
+        const nextSession = data.session as IdeaSession;
+        setSession(nextSession);
+
+        // Surface lane health in the console so empty lanes are easy to debug
+        // without opening the diagnostic modal.
+        if (typeof console.group === "function") {
+          console.group(
+            `[ideas] session ${nextSession.id} (${nextSession.lanes.length} lanes, ${nextSession.cards.length} cards total)`,
+          );
+          for (const lane of nextSession.lanes) {
+            const payload = {
+              key: lane.key,
+              label: lane.label,
+              cardCount: lane.cards.length,
+              error: lane.error ?? null,
+              sampleTitles: lane.cards.slice(0, 3).map((c) => c.workingTitle),
+            };
+            if (lane.error) {
+              console.warn(`[ideas] lane ${lane.key} error`, payload);
+            } else if (lane.cards.length === 0) {
+              console.warn(
+                `[ideas] lane ${lane.key} returned 0 cards (no error reported)`,
+                payload,
+              );
+            } else {
+              console.info(`[ideas] lane ${lane.key}`, payload);
+            }
+          }
+          console.groupEnd();
+        }
       } catch (err) {
+        console.error("[ideas] loadSession threw", err);
         setError(err instanceof Error ? err.message : "Unknown error");
       } finally {
         setLoading(false);
