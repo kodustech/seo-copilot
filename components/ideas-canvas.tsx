@@ -356,7 +356,12 @@ export function IdeasCanvas() {
           },
           data: {
             card,
-            state: "idle",
+            state: cardStates[card.id] ?? "idle",
+            kanbanBusy: Boolean(kanbanBusy[card.id]),
+            onDraftBlog: () => handleDraftBlog(card),
+            onDraftSocial: () => handleDraftSocial(card),
+            onSendToKanban: () => handleSendToKanban(card),
+            onDismiss: () => handleDismiss(card),
           } satisfies CardNodeData,
           draggable: true,
           selectable: true,
