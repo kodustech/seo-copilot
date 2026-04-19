@@ -3,7 +3,10 @@ import { NextResponse } from "next/server";
 import { searchWebContent } from "@/lib/exa";
 import { fetchFeedPosts } from "@/lib/feed-sources";
 import { getSupabaseServiceClient, getSupabaseUserClient } from "@/lib/supabase-server";
-import { getCompetitorDomains } from "@/lib/voice-policy";
+import {
+  getCompetitorDomains,
+  resolveVoicePolicyForUser,
+} from "@/lib/voice-policy";
 
 export const maxDuration = 120;
 
@@ -12,10 +15,15 @@ export const maxDuration = 120;
 // problem is misconfigured domains, an empty Exa response, or a missing key.
 export async function GET(request: Request) {
   try {
-    await getSupabaseUserClient(request.headers.get("authorization"));
+    const { userEmail } = await getSupabaseUserClient(
+      request.headers.get("authorization"),
+    );
 
     const domains = await getCompetitorDomains(getSupabaseServiceClient());
     const hasExaKey = Boolean(process.env.EXA_API_KEY?.trim());
+
+    const voicePolicy = await resolveVoicePolicyForUser(userEmail);
+    const worldviewText = voicePolicy.worldview ?? "";
 
     const [competitor, reddit, hn, sampleStrict, sampleBroad] = await Promise.allSettled([
       fetchFeedPosts("competitor"),
@@ -48,6 +56,15 @@ export async function GET(request: Request) {
         aiProvider: process.env.AI_PROVIDER || "(unset, defaults to google)",
       },
       configuredDomains: domains,
+      voicePolicy: {
+        userEmail: voicePolicy.userEmail,
+        hasGlobalProfile: Boolean(voicePolicy.globalProfile),
+        hasUserProfile: Boolean(voicePolicy.userProfile),
+        worldviewLength: worldviewText.length,
+        worldviewPreview: worldviewText.slice(0, 200),
+        mergedTone: voicePolicy.mergedProfile.tone,
+        mergedPersona: voicePolicy.mergedProfile.persona,
+      },
       feedCounts: {
         competitor:
           competitor.status === "fulfilled" ? competitor.value.length : null,

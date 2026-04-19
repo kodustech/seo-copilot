@@ -1,4 +1,4 @@
-import { generateText } from "ai";
+import { generateObject } from "ai";
 import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -118,29 +118,6 @@ function makeCardId(lane: IdeaLaneKey, seed: string): string {
   return `${lane}:${slug || Math.random().toString(36).slice(2, 8)}`;
 }
 
-function safeParseJsonObject(text: string): unknown {
-  const cleaned = text
-    .trim()
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/, "")
-    .replace(/```$/, "")
-    .trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    // Try to extract the first JSON object substring
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (match) {
-      try {
-        return JSON.parse(match[0]);
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  }
-}
-
 async function generateIdeasFromContext({
   laneLabel,
   contextLabel,
@@ -175,7 +152,6 @@ async function generateIdeasFromContext({
     "Never invent data, customer stories, or competitor features that are not in the context.",
     "Do NOT write the actual post content. Stop at the idea.",
     "Do NOT reference Kodus by name. Talk about the reader's point of view, not the brand.",
-    "Output STRICT JSON matching: { \"ideas\": [{ workingTitle, angle, whyItWorks, suggestedFormat }] }.",
     "suggestedFormat must be one of: blog, linkedin, twitter, any.",
   ]
     .filter((line): line is string => Boolean(line))
@@ -186,33 +162,21 @@ async function generateIdeasFromContext({
     contextItems.map((item, i) => `[${i + 1}] ${item}`).join("\n\n"),
     "",
     instruction,
-    `Generate up to ${maxCards} distinct ideas. Return JSON only.`,
+    `Generate up to ${maxCards} distinct ideas.`,
   ].join("\n");
 
-  let raw: string;
   try {
-    const { text } = await generateText({
+    const { object } = await generateObject({
       model: getModel(),
+      schema: IdeaListSchema,
       system,
       prompt,
     });
-    raw = text;
+    return object.ideas.slice(0, maxCards);
   } catch (err) {
     console.error(`[ideas] LLM call failed for lane ${laneLabel}:`, err);
     return [];
   }
-
-  const parsed = safeParseJsonObject(raw);
-  const validation = IdeaListSchema.safeParse(parsed);
-  if (!validation.success) {
-    console.warn(
-      `[ideas] invalid LLM output for lane ${laneLabel}:`,
-      validation.error.flatten(),
-    );
-    return [];
-  }
-
-  return validation.data.ideas.slice(0, maxCards);
 }
 
 // ---------------------------------------------------------------------------
