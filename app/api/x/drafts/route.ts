@@ -66,10 +66,22 @@ export async function POST(request: Request) {
       );
     }
 
+    const rawHint = typeof body?.userHint === "string" ? body.userHint : null;
+    const nextHint =
+      rawHint === null ? undefined : rawHint.trim().length ? rawHint.trim() : null;
+
+    if (nextHint !== undefined) {
+      await client
+        .from("x_reply_candidates")
+        .update({ user_hint: nextHint })
+        .eq("id", candidateId)
+        .eq("user_email", userEmail);
+    }
+
     const { data: candidate, error: candidateError } = await client
       .from("x_reply_candidates")
       .select(
-        "id, user_email, post_text, author_username, author_display_name, metrics",
+        "id, user_email, post_text, author_username, author_display_name, metrics, user_hint",
       )
       .eq("id", candidateId)
       .eq("user_email", userEmail)

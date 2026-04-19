@@ -252,6 +252,7 @@ export type CandidateForDraft = {
   author_username: string;
   author_display_name: string | null;
   metrics: Record<string, number>;
+  user_hint?: string | null;
 };
 
 function buildReplyPrompt({
@@ -263,7 +264,12 @@ function buildReplyPrompt({
   candidate: CandidateForDraft;
   voicePolicy: VoicePolicyPayload;
 }): { system: string; prompt: string } {
-  const system = [
+  const hint =
+    typeof candidate.user_hint === "string" && candidate.user_hint.trim()
+      ? candidate.user_hint.trim()
+      : null;
+
+  const systemLines = [
     "You draft replies to X (Twitter) posts on behalf of a founder in the devtools space.",
     "",
     "HARD CONSTRAINTS",
@@ -286,13 +292,32 @@ function buildReplyPrompt({
     "- Reference something specific from the ORIGINAL POST (a word, a claim, a detail) so the reader sees it's a real engagement, not a template.",
     "- One clear point. Don't try to say 3 things.",
     "- Output ONLY the reply text. No quotes around it. No prefix. No explanation of what you did.",
+  ];
+
+  if (hint) {
+    systemLines.push(
+      "",
+      "AUTHOR'S TAKE (highest-priority context)",
+      `The author already knows what they want to say: "${hint}".`,
+      "Your job is to express this take through the angle's lens. Do NOT",
+      "contradict the take to satisfy the angle. The angle controls the FORM",
+      "(contrarian / specifics / question); the take controls the CONTENT.",
+      "If the take cannot be expressed in this angle without contradicting it,",
+      "return the take rephrased naturally in the angle's voice instead of",
+      "forcing a contradiction.",
+    );
+  }
+
+  systemLines.push(
     "",
     "VOICE POLICY",
     voicePolicy.prompt,
     "",
     "ANGLE FOR THIS REPLY",
     ANGLE_INSTRUCTIONS[angle],
-  ].join("\n");
+  );
+
+  const system = systemLines.join("\n");
 
   const authorLabel = candidate.author_display_name
     ? `${candidate.author_display_name} (@${candidate.author_username})`
@@ -302,7 +327,9 @@ function buildReplyPrompt({
     `Original post by ${authorLabel}:`,
     `"""${candidate.post_text}"""`,
     "",
-    `Draft the reply now. Finish your thought before ${TARGET_REPLY_CHARS} chars.`,
+    hint
+      ? `Remember the author's take: "${hint}". Draft the reply now and finish your thought before ${TARGET_REPLY_CHARS} chars.`
+      : `Draft the reply now. Finish your thought before ${TARGET_REPLY_CHARS} chars.`,
   ].join("\n");
 
   return { system, prompt };

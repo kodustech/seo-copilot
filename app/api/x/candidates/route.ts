@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 
 const CANDIDATE_COLUMNS =
-  "id, target_account_id, x_post_id, post_url, post_text, post_created_at, author_username, author_display_name, author_avatar_url, metrics, engagement_score, status, snoozed_until, fetched_at";
+  "id, target_account_id, x_post_id, post_url, post_text, post_created_at, author_username, author_display_name, author_avatar_url, metrics, engagement_score, status, snoozed_until, user_hint, fetched_at";
 
 const ALLOWED_STATUSES = new Set([
   "new",

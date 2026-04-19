@@ -135,9 +135,13 @@ create table if not exists public.x_reply_candidates (
   engagement_score numeric not null default 0,
   status text not null default 'new' check (status in ('new', 'drafted', 'dismissed', 'replied', 'snoozed')),
   snoozed_until timestamptz,
+  user_hint text,
   fetched_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.x_reply_candidates
+  add column if not exists user_hint text;
 
 create unique index if not exists x_reply_candidates_user_post_uidx
   on public.x_reply_candidates (user_email, x_post_id);

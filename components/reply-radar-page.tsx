@@ -77,6 +77,7 @@ type Candidate = {
   engagement_score: number;
   status: "new" | "drafted" | "dismissed" | "replied" | "snoozed";
   fetched_at: string;
+  user_hint?: string | null;
   x_reply_drafts?: Draft[];
 };
 
@@ -143,6 +144,7 @@ export function ReplyRadarPage() {
   const [draftEdits, setDraftEdits] = useState<Record<string, string>>({});
   const [regenerating, setRegenerating] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [hintDraft, setHintDraft] = useState<string>("");
 
   useEffect(() => {
     supabase?.auth.getSession().then(({ data }) => {
@@ -292,14 +294,22 @@ export function ReplyRadarPage() {
       const res = await fetch("/api/x/drafts", {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify({ candidateId }),
+        body: JSON.stringify({
+          candidateId,
+          userHint: hintDraft.trim() || null,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to generate");
       setCandidates((prev) =>
         prev.map((c) =>
           c.id === candidateId
-            ? { ...c, x_reply_drafts: data.drafts ?? [], status: "drafted" }
+            ? {
+                ...c,
+                x_reply_drafts: data.drafts ?? [],
+                status: "drafted",
+                user_hint: hintDraft.trim() || null,
+              }
             : c,
         ),
       );
@@ -324,6 +334,10 @@ export function ReplyRadarPage() {
     () => candidates.find((c) => c.id === selectedId) ?? null,
     [candidates, selectedId],
   );
+
+  useEffect(() => {
+    setHintDraft(selectedCandidate?.user_hint ?? "");
+  }, [selectedId, selectedCandidate?.user_hint]);
 
   const remainingSlots = Math.max(0, 20 - targets.length);
 
@@ -505,6 +519,32 @@ export function ReplyRadarPage() {
                   </div>
                 </CardContent>
               </Card>
+
+              <div className="space-y-2">
+                <label className="flex items-center justify-between text-xs text-neutral-400">
+                  <span>Your take (optional)</span>
+                  {hintDraft.trim() ? (
+                    <button
+                      type="button"
+                      onClick={() => setHintDraft("")}
+                      className="text-[10px] text-neutral-500 hover:text-neutral-300"
+                    >
+                      Clear
+                    </button>
+                  ) : null}
+                </label>
+                <Textarea
+                  value={hintDraft}
+                  onChange={(event) => setHintDraft(event.target.value)}
+                  placeholder="What do you want to say about this post? E.g. 'I think building your own email editor is worth it when you need deep brand integration.'"
+                  className="min-h-[72px] resize-none border-white/10 bg-white/[0.02] text-xs text-neutral-200"
+                />
+                <p className="text-[10px] text-neutral-500">
+                  If filled, the 3 drafts will express this take through each
+                  angle (contrarian / specifics / question) instead of guessing
+                  one from the post alone. Saved per candidate.
+                </p>
+              </div>
 
               <div className="flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-neutral-200">
