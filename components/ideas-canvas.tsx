@@ -193,35 +193,72 @@ export function IdeasCanvas() {
     [getFreshToken],
   );
 
-  const handleSave = useCallback(
-    (card: IdeaCard) => {
-      const currentState = cardStates[card.id] ?? "idle";
-      if (currentState === "saved") {
-        setCardStates((prev) => {
-          const next = { ...prev };
-          delete next[card.id];
-          return next;
-        });
-        void (async () => {
-          const freshToken = await getFreshToken();
-          if (!freshToken) return;
-          await fetch(`/api/ideas/cards?cardKey=${encodeURIComponent(card.id)}`, {
-            method: "DELETE",
-            headers: { Authorization: `Bearer ${freshToken}` },
-          }).catch(() => {});
-        })();
-        return;
-      }
-      void updateCardState(card.id, "saved", card);
-    },
-    [cardStates, getFreshToken, updateCardState],
-  );
-
   const handleDismiss = useCallback(
     (card: IdeaCard) => {
       void updateCardState(card.id, "dismissed", card);
     },
     [updateCardState],
+  );
+
+  const [kanbanBusy, setKanbanBusy] = useState<Record<string, boolean>>({});
+
+  const handleSendToKanban = useCallback(
+    async (card: IdeaCard) => {
+      const freshToken = await getFreshToken();
+      if (!freshToken) return;
+      setKanbanBusy((prev) => ({ ...prev, [card.id]: true }));
+      try {
+        const itemType =
+          card.suggestedFormat === "linkedin" ||
+          card.suggestedFormat === "twitter"
+            ? "social"
+            : "idea";
+        const description = [
+          card.angle,
+          `Why it might work: ${card.whyItWorks}`,
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+
+        const res = await fetch("/api/kanban/items", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${freshToken}`,
+          },
+          body: JSON.stringify({
+            title: card.workingTitle,
+            description,
+            itemType,
+            stage: "backlog",
+            source: "agent",
+            sourceRef: card.id,
+            priority: "medium",
+            payload: {
+              lane: card.lane,
+              source: card.source,
+              suggestedFormat: card.suggestedFormat,
+            },
+          }),
+        });
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data?.error || "Failed to add to Kanban.");
+        }
+
+        void updateCardState(card.id, "saved", card);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unknown error");
+      } finally {
+        setKanbanBusy((prev) => {
+          const next = { ...prev };
+          delete next[card.id];
+          return next;
+        });
+      }
+    },
+    [getFreshToken, updateCardState],
   );
 
   const runDebug = useCallback(async () => {
@@ -242,15 +279,9 @@ export function IdeasCanvas() {
     }
   }, [token, authHeaders]);
 
-  const handleDraft = useCallback(
-    (card: IdeaCard) => {
+  const goToContentCanvas = useCallback(
+    (card: IdeaCard, mode: "blog" | "social") => {
       void updateCardState(card.id, "promoted", card);
-      // Map the suggested format to the Content Canvas "mode" param.
-      const mode =
-        card.suggestedFormat === "linkedin" ||
-        card.suggestedFormat === "twitter"
-          ? "social"
-          : "blog";
       const params = new URLSearchParams({
         topic: card.workingTitle,
         mode,
@@ -259,6 +290,16 @@ export function IdeasCanvas() {
       router.push(`/?${params.toString()}`);
     },
     [router, updateCardState],
+  );
+
+  const handleDraftBlog = useCallback(
+    (card: IdeaCard) => goToContentCanvas(card, "blog"),
+    [goToContentCanvas],
+  );
+
+  const handleDraftSocial = useCallback(
+    (card: IdeaCard) => goToContentCanvas(card, "social"),
+    [goToContentCanvas],
   );
 
   // Rebuild the full graph only when the session changes. Card drag positions
@@ -348,14 +389,24 @@ export function IdeasCanvas() {
           data: {
             card,
             state: cardStates[card.id] ?? "idle",
-            onSave: () => handleSave(card),
+            kanbanBusy: Boolean(kanbanBusy[card.id]),
+            onDraftBlog: () => handleDraftBlog(card),
+            onDraftSocial: () => handleDraftSocial(card),
+            onSendToKanban: () => handleSendToKanban(card),
             onDismiss: () => handleDismiss(card),
-            onDraft: () => handleDraft(card),
           } satisfies CardNodeData,
         };
       }),
     );
-  }, [cardStates, handleSave, handleDismiss, handleDraft, setNodes]);
+  }, [
+    cardStates,
+    kanbanBusy,
+    handleDraftBlog,
+    handleDraftSocial,
+    handleSendToKanban,
+    handleDismiss,
+    setNodes,
+  ]);
 
   const totalIdeas = session?.cards.length ?? 0;
   const hasSession = Boolean(session);
