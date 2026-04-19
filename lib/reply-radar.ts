@@ -229,11 +229,11 @@ export type DraftAngle = "contrarian" | "add_specificity" | "sharp_question";
 
 const ANGLE_INSTRUCTIONS: Record<DraftAngle, string> = {
   contrarian:
-    "Take a sharp contrarian angle. Respectfully push back on the post's premise with a concrete counter-point. No hedging words like 'maybe', 'I think'. State the opposing view plainly.",
+    "Push back on a specific claim or assumption the post makes. Name what you disagree with and state your alternative in plain language. Must reference something concrete from the post itself. Never hedge with 'maybe' or 'in my opinion'.",
   add_specificity:
-    "Add a specific, concrete data point, example, or number the original post is missing. Reference real engineering practice (AI code review, PR workflows, devtools) where relevant.",
+    "Name one real, known-to-be-true specific: a tool, a standard, a well-documented behavior, a named pattern. NEVER invent percentages, survey results, customer stories, or studies. If you can't cite something real, skip this angle and write nothing.",
   sharp_question:
-    "Ask one sharp, specific question that exposes an assumption or edge case in the post. Not a soft open question — one that forces the author to think harder.",
+    "Ask one question that exposes a hidden assumption or edge case in the post. Must be specific enough that answering it requires thinking. Never generic like 'have you considered X'.",
 };
 
 const ANGLE_ORDER: DraftAngle[] = [
@@ -243,6 +243,7 @@ const ANGLE_ORDER: DraftAngle[] = [
 ];
 
 const MAX_REPLY_CHARS = 260;
+const TARGET_REPLY_CHARS = 220;
 
 export type CandidateForDraft = {
   id: string;
@@ -263,18 +264,34 @@ function buildReplyPrompt({
   voicePolicy: VoicePolicyPayload;
 }): { system: string; prompt: string } {
   const system = [
-    "You draft replies to X (Twitter) posts on behalf of a founder at Kodus, an AI code review devtool for engineering teams.",
-    "Rules:",
-    `- Maximum ${MAX_REPLY_CHARS} characters. Hard limit.`,
-    "- No hashtags. No emojis unless they materially help. No 'Great post!' or any sycophantic opener.",
-    "- One clear point of view. Plain, direct language. Sound like a human, not marketing.",
-    "- Do not pitch Kodus or any product. The goal is to add value and provoke replies.",
-    "- Output ONLY the reply text. No quotes, no prefix, no explanation.",
+    "You draft replies to X (Twitter) posts on behalf of a founder in the devtools space.",
     "",
-    "Voice policy:",
+    "HARD CONSTRAINTS",
+    `- Target length: ${TARGET_REPLY_CHARS} chars. Absolute maximum: ${MAX_REPLY_CHARS}. Never get truncated mid-sentence — finish the thought.`,
+    "- Write in FIRST PERSON when making a claim ('I', 'my'). Avoid 'we' or 'teams'. You are one founder replying, not a marketing account.",
+    "- Do NOT invent data, metrics, customer stories, studies, or percentages. If you write '20%', '30%', 'X hours', '2-3 days', delete it.",
+    "- Do NOT pitch Kodus or any product. No CTAs. No links. No sign-offs.",
+    "- Do NOT compliment the post. No 'Great thread', 'Nice take', 'This is so true', 'Love this'.",
+    "- Do NOT use hashtags or emojis.",
+    "",
+    "BANNED WORDS AND PHRASES (if any appear, rewrite)",
+    "- Significant, long-term, incredible, leverage, robust, powerful, seamless, scalable, game-changer",
+    "- The real challenge, the key takeaway, the main point, the bottom line, at the end of the day",
+    "- We've seen, we've found, in our experience, teams invest, companies are, organizations need",
+    "- It's not about X, it's about Y (contrast framing)",
+    "- Technical debt, core value, holistic, paradigm, ecosystem",
+    "",
+    "STYLE",
+    "- Sound like a real person typing in Slack. Short sentences. No corporate rhythm.",
+    "- Reference something specific from the ORIGINAL POST (a word, a claim, a detail) so the reader sees it's a real engagement, not a template.",
+    "- One clear point. Don't try to say 3 things.",
+    "- Output ONLY the reply text. No quotes around it. No prefix. No explanation of what you did.",
+    "",
+    "VOICE POLICY",
     voicePolicy.prompt,
     "",
-    `Angle for this reply: ${ANGLE_INSTRUCTIONS[angle]}`,
+    "ANGLE FOR THIS REPLY",
+    ANGLE_INSTRUCTIONS[angle],
   ].join("\n");
 
   const authorLabel = candidate.author_display_name
@@ -285,7 +302,7 @@ function buildReplyPrompt({
     `Original post by ${authorLabel}:`,
     `"""${candidate.post_text}"""`,
     "",
-    "Draft the reply now.",
+    `Draft the reply now. Finish your thought before ${TARGET_REPLY_CHARS} chars.`,
   ].join("\n");
 
   return { system, prompt };
@@ -302,6 +319,70 @@ function sanitizeDraft(text: string): string {
   ).trimEnd();
 }
 
+// Fingerprints of AI-flavored replies that slip past the prompt.
+const BANNED_REPLY_PATTERNS: RegExp[] = [
+  /\bsignificant(?:ly)?\b/i,
+  /\blong-term\b/i,
+  /\bincredible\b/i,
+  /\bleverage\b/i,
+  /\brobust\b/i,
+  /\bseamless\b/i,
+  /\bscalable\b/i,
+  /\bgame[- ]changer\b/i,
+  /\btechnical debt\b/i,
+  /\bcore value\b/i,
+  /\bholistic\b/i,
+  /\bparadigm\b/i,
+  /\becosystem\b/i,
+  /\bthe real challenge\b/i,
+  /\bthe (?:key|main) (?:takeaway|point)\b/i,
+  /\bthe bottom line\b/i,
+  /\bat the end of the day\b/i,
+  /\bin (?:our|my) experience,/i,
+  /\bwe['']?ve seen\b/i,
+  /\bwe['']?ve found\b/i,
+  /\bteams invest\b/i,
+  /\b(?:companies|organizations|teams) (?:are|need)\b/i,
+  /\bit['']?s not (?:about|just) .+ it['']?s\b/i,
+];
+
+// Crude detector for invented quantitative claims ("20-30% more time",
+// "saved 5 hours", "3x faster"). Anything like a percentage or multiplier
+// paired with a verb should be rejected unless it came from the source post.
+const INVENTED_DATA_PATTERNS: RegExp[] = [
+  /\b\d+\s*[-–]\s*\d+\s*%/,
+  /\b\d+(?:\.\d+)?\s*%\s+(?:more|less|fewer|faster|slower|higher|lower|of)\b/i,
+  /\b\d+x\s+(?:faster|slower|more|less)\b/i,
+  /\b\d+\s+(?:hours?|days?|weeks?|months?)\s+(?:faster|slower|saved|less|more)\b/i,
+];
+
+function draftLooksAiGenerated(text: string, sourcePost: string): {
+  ok: boolean;
+  reason?: string;
+} {
+  for (const pattern of BANNED_REPLY_PATTERNS) {
+    if (pattern.test(text)) {
+      return { ok: false, reason: `banned phrase: ${pattern}` };
+    }
+  }
+
+  for (const pattern of INVENTED_DATA_PATTERNS) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    // If the exact match also appears in the source post, it's fine to quote.
+    if (!sourcePost.toLowerCase().includes(match[0].toLowerCase())) {
+      return { ok: false, reason: `invented stat: ${match[0]}` };
+    }
+  }
+
+  // Sycophantic openers
+  if (/^(great|nice|love this|this is so true|amazing|interesting take)\b/i.test(text.trim())) {
+    return { ok: false, reason: "sycophantic opener" };
+  }
+
+  return { ok: true };
+}
+
 export async function generateDraftsForCandidate({
   candidate,
   voicePolicy,
@@ -311,23 +392,37 @@ export async function generateDraftsForCandidate({
 }): Promise<Array<{ angle: DraftAngle; text: string }>> {
   const model = getModel();
 
+  const MAX_REROLL_ATTEMPTS = 2;
+
   const results = await Promise.all(
     ANGLE_ORDER.map(async (angle) => {
-      try {
-        const { system, prompt } = buildReplyPrompt({
-          angle,
-          candidate,
-          voicePolicy,
-        });
-        const { text } = await generateText({ model, system, prompt });
-        return { angle, text: sanitizeDraft(text) };
-      } catch (err) {
-        console.error(
-          `[reply-radar] draft generation failed for ${candidate.id} / ${angle}`,
-          err,
-        );
-        return null;
+      for (let attempt = 0; attempt <= MAX_REROLL_ATTEMPTS; attempt += 1) {
+        try {
+          const { system, prompt } = buildReplyPrompt({
+            angle,
+            candidate,
+            voicePolicy,
+          });
+          const { text } = await generateText({ model, system, prompt });
+          const clean = sanitizeDraft(text);
+          if (!clean) continue;
+
+          const check = draftLooksAiGenerated(clean, candidate.post_text);
+          if (check.ok) {
+            return { angle, text: clean };
+          }
+          console.warn(
+            `[reply-radar] rejecting draft for ${candidate.id} / ${angle} (${check.reason}), reroll ${attempt + 1}/${MAX_REROLL_ATTEMPTS}`,
+          );
+        } catch (err) {
+          console.error(
+            `[reply-radar] draft generation failed for ${candidate.id} / ${angle}`,
+            err,
+          );
+          return null;
+        }
       }
+      return null;
     }),
   );
 
