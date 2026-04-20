@@ -242,8 +242,8 @@ const ANGLE_ORDER: DraftAngle[] = [
   "sharp_question",
 ];
 
-const MAX_REPLY_CHARS = 260;
-const TARGET_REPLY_CHARS = 220;
+const MAX_REPLY_CHARS = 240;
+const TARGET_REPLY_CHARS = 180;
 
 export type CandidateForDraft = {
   id: string;
@@ -270,28 +270,42 @@ function buildReplyPrompt({
       : null;
 
   const systemLines = [
-    "You draft replies to X (Twitter) posts on behalf of a founder in the devtools space.",
+    "You draft Twitter/X replies on behalf of a founder in the devtools space.",
+    "Write like someone typing fast on their phone, not like a LinkedIn thought leader.",
     "",
-    "HARD CONSTRAINTS",
-    `- Target length: ${TARGET_REPLY_CHARS} chars. Absolute maximum: ${MAX_REPLY_CHARS}. Never get truncated mid-sentence — finish the thought.`,
-    "- Write in FIRST PERSON when making a claim ('I', 'my'). Avoid 'we' or 'teams'. You are one founder replying, not a marketing account.",
-    "- Do NOT invent data, metrics, customer stories, studies, or percentages. If you write '20%', '30%', 'X hours', '2-3 days', delete it.",
-    "- Do NOT pitch Kodus or any product. No CTAs. No links. No sign-offs.",
-    "- Do NOT compliment the post. No 'Great thread', 'Nice take', 'This is so true', 'Love this'.",
-    "- Do NOT use hashtags or emojis.",
+    "LENGTH",
+    `- Target ${TARGET_REPLY_CHARS} chars. Absolute max ${MAX_REPLY_CHARS}. Short is better than complete.`,
+    "- Most sentences under 12 words. Fragments are fine.",
+    "- Lead with the point. Zero setup. Zero 'I think that', 'I believe', 'I look at X and...'.",
     "",
-    "BANNED WORDS AND PHRASES (if any appear, rewrite)",
-    "- Significant, long-term, incredible, leverage, robust, powerful, seamless, scalable, game-changer",
-    "- The real challenge, the key takeaway, the main point, the bottom line, at the end of the day",
-    "- We've seen, we've found, in our experience, teams invest, companies are, organizations need",
-    "- It's not about X, it's about Y (contrast framing)",
-    "- Technical debt, core value, holistic, paradigm, ecosystem",
+    "VOICE",
+    "- First person only when personal experience is actually being referenced. Otherwise, just state it.",
+    "- Contractions, plain verbs, direct. 'doesn't' not 'does not'. 'can't' not 'cannot'.",
+    "- No formal hedges. Kill 'I doubt', 'I suspect', 'I'd argue', 'one could say'.",
+    "- No pundit openers. Kill 'The stock reaction to X overlooks', 'People miss that', 'What X actually solves is'.",
+    "- Strong claim > hedged claim. If unsure what to say, say less, not more.",
     "",
-    "STYLE",
-    "- Sound like a real person typing in Slack. Short sentences. No corporate rhythm.",
-    "- Reference something specific from the ORIGINAL POST (a word, a claim, a detail) so the reader sees it's a real engagement, not a template.",
-    "- One clear point. Don't try to say 3 things.",
-    "- Output ONLY the reply text. No quotes around it. No prefix. No explanation of what you did.",
+    "NEVER",
+    "- Rule of three. Do NOT write 'X, Y, and Z' lists. Two is fine. Four is fine. Three is the AI tell.",
+    "- Invent data/numbers/customer stories/studies.",
+    "- Compliments, 'Great thread', 'Love this', 'Nice take', 'So true'.",
+    "- Hashtags, emojis, sign-offs, CTAs, links.",
+    "- Mention Kodus or any product by name.",
+    "- Contrast framing ('not X, it's Y'; 'X is a start, but...'; 'X is one thing. Y is what matters.').",
+    "- Self-narration ('My question is', 'My main point is', 'Here's my take').",
+    "- 'significant', 'long-term', 'incredible', 'leverage', 'robust', 'seamless', 'scalable', 'holistic', 'paradigm', 'ecosystem', 'critical', 'precisely', 'reliably', 'fundamental'.",
+    "",
+    "FEW-SHOT — what good looks like",
+    "Good:  \"PRs where the spec is vague never converge. Even perfect reviewers can't save a fuzzy problem statement.\"",
+    "Good:  \"Every 'AI will replace reviewers' take ignores that most review work is questions, not approvals.\"",
+    "Good:  \"Generating components is easy. Naming them consistently across a design system is where Figma still wins.\"",
+    "Bad:   \"I doubt Claude Design is a direct Figma competitor today. Generating components is a start, but it's far from the full design workflow Figma handles.\" (hedged, setup-heavy, rule-of-three behind 'workflow Figma handles')",
+    "Bad:   \"I think the stock reaction overlooks what Figma actually solves.\" (pundit voice, self-narration)",
+    "",
+    "FORMAT",
+    "- Reference one specific detail from the ORIGINAL POST so the reader sees it's engagement, not a template.",
+    "- One clear point. No list.",
+    "- Output ONLY the reply text. No quotes wrapping it. No prefix. No explanation.",
   ];
 
   if (hint) {
@@ -348,6 +362,7 @@ function sanitizeDraft(text: string): string {
 
 // Fingerprints of AI-flavored replies that slip past the prompt.
 const BANNED_REPLY_PATTERNS: RegExp[] = [
+  // Word-level tells
   /\bsignificant(?:ly)?\b/i,
   /\blong-term\b/i,
   /\bincredible\b/i,
@@ -361,8 +376,13 @@ const BANNED_REPLY_PATTERNS: RegExp[] = [
   /\bholistic\b/i,
   /\bparadigm\b/i,
   /\becosystem\b/i,
+  /\bprecisely\b/i,
+  /\breliably\b/i,
+  /\bfundamental(?:ly)?\b/i,
+  /\bcritical\b/i,
+  // Phrase-level tells
   /\bthe real challenge\b/i,
-  /\bthe (?:key|main) (?:takeaway|point)\b/i,
+  /\bthe (?:key|main) (?:takeaway|point|question)\b/i,
   /\bthe bottom line\b/i,
   /\bat the end of the day\b/i,
   /\bin (?:our|my) experience,/i,
@@ -371,7 +391,28 @@ const BANNED_REPLY_PATTERNS: RegExp[] = [
   /\bteams invest\b/i,
   /\b(?:companies|organizations|teams) (?:are|need)\b/i,
   /\bit['']?s not (?:about|just) .+ it['']?s\b/i,
+  // Pundit openers
+  /^(?:the (?:stock )?reaction (?:to|from) )/i,
+  /^(?:people (?:miss|overlook|forget) that)/i,
+  /^(?:what .+ (?:actually|really) (?:solves|means|does) is)/i,
+  // Hedged openers
+  /^I doubt\b/i,
+  /^I suspect\b/i,
+  /^I['']?d argue\b/i,
+  /^I look at\b/i,
+  /^I believe\b/i,
+  // Self-narration
+  /\bmy (?:main )?(?:question|point|take) is\b/i,
+  /\bhere['']?s my (?:take|point)\b/i,
+  // Setup phrases
+  /\bis a start,? but\b/i,
+  /\b(?:is|are) one thing\. /i,
 ];
+
+// Rule-of-three detector: three comma-separated items ending with ", and".
+// Matches patterns like "precision, iteration, and component libraries".
+const RULE_OF_THREE_PATTERN =
+  /\b[a-z][a-z0-9 '’-]{2,30},\s+[a-z][a-z0-9 '’-]{2,30},\s+and\s+[a-z]/i;
 
 // Crude detector for invented quantitative claims ("20-30% more time",
 // "saved 5 hours", "3x faster"). Anything like a percentage or multiplier
@@ -391,6 +432,12 @@ function draftLooksAiGenerated(text: string, sourcePost: string): {
     if (pattern.test(text)) {
       return { ok: false, reason: `banned phrase: ${pattern}` };
     }
+  }
+
+  // Rule of three: only reject if the pattern isn't quoting the source post.
+  const rot = text.match(RULE_OF_THREE_PATTERN);
+  if (rot && !sourcePost.toLowerCase().includes(rot[0].toLowerCase())) {
+    return { ok: false, reason: `rule-of-three: ${rot[0]}` };
   }
 
   for (const pattern of INVENTED_DATA_PATTERNS) {
