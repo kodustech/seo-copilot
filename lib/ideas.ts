@@ -92,17 +92,17 @@ const DEFAULT_MAX_CARDS_PER_LANE = 5;
 // Schemas for structured LLM output
 // ---------------------------------------------------------------------------
 
+// Loose schema: Gemini Flash Lite struggles with min/max length constraints.
+// We validate/trim in application code after the LLM returns.
 const IdeaCardSchema = z.object({
-  workingTitle: z.string().min(4).max(140),
-  angle: z.string().min(10).max(260),
-  whyItWorks: z.string().min(10).max(260),
-  suggestedFormat: z
-    .enum(["blog", "linkedin", "twitter", "any"])
-    .default("any"),
+  workingTitle: z.string(),
+  angle: z.string(),
+  whyItWorks: z.string(),
+  suggestedFormat: z.enum(["blog", "linkedin", "twitter", "any"]),
 });
 
 const IdeaListSchema = z.object({
-  ideas: z.array(IdeaCardSchema).min(1).max(8),
+  ideas: z.array(IdeaCardSchema),
 });
 
 // ---------------------------------------------------------------------------
@@ -172,13 +172,30 @@ async function generateIdeasFromContext({
       system,
       prompt,
     });
-    const ideas = object.ideas.slice(0, maxCards);
-    if (!ideas.length) {
+
+    // Post-filter: drop items the LLM left nearly empty, and truncate long
+    // ones. We trust the structure but not the contents.
+    const filtered = object.ideas
+      .map((idea) => ({
+        workingTitle: (idea.workingTitle ?? "").trim().slice(0, 200),
+        angle: (idea.angle ?? "").trim().slice(0, 320),
+        whyItWorks: (idea.whyItWorks ?? "").trim().slice(0, 320),
+        suggestedFormat: idea.suggestedFormat ?? "any",
+      }))
+      .filter(
+        (idea) =>
+          idea.workingTitle.length >= 4 &&
+          idea.angle.length >= 8 &&
+          idea.whyItWorks.length >= 8,
+      )
+      .slice(0, maxCards);
+
+    if (!filtered.length) {
       console.warn(
-        `[ideas] LLM returned 0 ideas for lane ${laneLabel} despite ${contextItems.length} context items`,
+        `[ideas] LLM returned 0 usable ideas for lane ${laneLabel} (raw count: ${object.ideas.length}, context items: ${contextItems.length})`,
       );
     }
-    return ideas;
+    return filtered;
   } catch (err) {
     console.error(`[ideas] LLM call failed for lane ${laneLabel}:`, err);
     throw new Error(
