@@ -86,7 +86,7 @@ const LANE_META: Record<
 
 const SESSION_TTL_HOURS = 6;
 
-const DEFAULT_MAX_CARDS_PER_LANE = 5;
+const DEFAULT_MAX_CARDS_PER_LANE = 8;
 
 // ---------------------------------------------------------------------------
 // Schemas for structured LLM output

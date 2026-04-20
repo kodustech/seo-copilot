@@ -303,9 +303,50 @@ const COMPETITOR_QUERIES = [
 
 const COMPETITOR_MAX_RESULTS = 14;
 
+// ---------------------------------------------------------------------------
+// In-memory cache for expensive Exa-backed fetchers.
+// HN/Blog/Changelog stay uncached: they're free public APIs and we want the
+// most recent data. Reddit and competitor hit Exa credits per call, so they
+// benefit from short-lived caching without loss of freshness.
+// ---------------------------------------------------------------------------
+const FEED_CACHE_TTL_MS = 30 * 60 * 1000; // 30 min
+
+type FeedCacheEntry = {
+  expiresAt: number;
+  data: FeedItem[];
+};
+
+const feedCache = new Map<string, FeedCacheEntry>();
+
+async function cachedFeed(
+  cacheKey: string,
+  fetcher: () => Promise<FeedItem[]>,
+): Promise<FeedItem[]> {
+  const now = Date.now();
+  const hit = feedCache.get(cacheKey);
+  if (hit && hit.expiresAt > now) {
+    return hit.data;
+  }
+
+  const data = await fetcher();
+  feedCache.set(cacheKey, {
+    data,
+    expiresAt: now + FEED_CACHE_TTL_MS,
+  });
+  return data;
+}
+
 async function fetchCompetitorNarratives(): Promise<FeedItem[]> {
   const domains = await resolveCompetitorDomains();
+  // Cache key includes a stable hash of the configured domains so changing
+  // them in /settings invalidates without needing a server restart.
+  const cacheKey = `competitor:${[...domains].sort().join(",")}`;
+  return cachedFeed(cacheKey, () => fetchCompetitorNarrativesUncached(domains));
+}
 
+async function fetchCompetitorNarrativesUncached(
+  domains: string[],
+): Promise<FeedItem[]> {
   // First pass: strict includeDomains. Exa only returns URLs from the listed
   // domains, which is the precise signal we want but often comes back empty
   // when the competitor's blog lives on a subdomain we did not list, or when
@@ -420,6 +461,10 @@ const REDDIT_QUERIES = [
 const REDDIT_MAX_RESULTS = 14;
 
 async function fetchRedditDiscussions(): Promise<FeedItem[]> {
+  return cachedFeed("reddit", fetchRedditDiscussionsUncached);
+}
+
+async function fetchRedditDiscussionsUncached(): Promise<FeedItem[]> {
   const responses = await Promise.allSettled(
     REDDIT_QUERIES.map((query) =>
       searchWebContent({
