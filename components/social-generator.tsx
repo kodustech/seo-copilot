@@ -87,7 +87,21 @@ type FeedPost = {
   publishedAt?: string;
 };
 
-type FeedSource = "blog" | "changelog";
+type FeedSource = "blog" | "changelog" | "hackernews" | "reddit" | "competitor";
+
+const FEED_SOURCE_OPTIONS: { value: FeedSource; label: string }[] = [
+  { value: "blog", label: "Blog posts (your site)" },
+  { value: "changelog", label: "Changelog (build in public)" },
+  { value: "hackernews", label: "Hacker News (trending)" },
+  { value: "reddit", label: "Reddit (dev subreddits)" },
+  { value: "competitor", label: "Competitor posts" },
+];
+
+function feedSourceLabel(source: FeedSource): string {
+  return (
+    FEED_SOURCE_OPTIONS.find((opt) => opt.value === source)?.label ?? source
+  );
+}
 type SocialGenerationMode =
   | "content_marketing"
   | "build_in_public"
@@ -335,6 +349,13 @@ export function SocialGenerator() {
   useEffect(() => {
     if (feedSource === "changelog") {
       setStyle((prev) => (prev === "default" ? "build_in_public" : prev));
+    } else if (
+      feedSource === "hackernews" ||
+      feedSource === "reddit" ||
+      feedSource === "competitor"
+    ) {
+      // External narratives → adversarial makes the most sense by default.
+      setStyle((prev) => (prev === "default" ? "adversarial" : prev));
     }
   }, [feedSource]);
 
@@ -749,10 +770,11 @@ export function SocialGenerator() {
                       <SelectValue placeholder="Source" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="blog">Blog posts</SelectItem>
-                      <SelectItem value="changelog">
-                        Changelog (build in public)
-                      </SelectItem>
+                      {FEED_SOURCE_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -769,9 +791,7 @@ export function SocialGenerator() {
                         <span className="truncate">
                           {selectedFeedId
                             ? feedPosts.find((p) => p.id === selectedFeedId)?.title ?? "Select..."
-                            : feedSource === "changelog"
-                              ? "Search changelog updates..."
-                              : "Search blog posts..."}
+                            : `Search ${feedSourceLabel(feedSource).toLowerCase()}...`}
                         </span>
                         <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                       </Button>
@@ -779,7 +799,7 @@ export function SocialGenerator() {
                     <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
                       <Command>
                         <CommandInput
-                          placeholder={`Search ${feedPosts.length} ${feedSource === "changelog" ? "updates" : "posts"}...`}
+                          placeholder={`Search ${feedPosts.length} items...`}
                         />
                         <CommandList className="max-h-72">
                           <CommandEmpty>No results found.</CommandEmpty>
@@ -1400,19 +1420,19 @@ export function SocialGenerator() {
 
             <div className="space-y-3 flex-1 min-h-0 flex flex-col">
               {/* Source tabs */}
-              <div className="flex gap-2">
-                {(["blog", "changelog"] as const).map((src) => (
+              <div className="flex flex-wrap gap-2">
+                {FEED_SOURCE_OPTIONS.map((opt) => (
                   <button
-                    key={src}
+                    key={opt.value}
                     type="button"
-                    onClick={() => handleBrowseSourceChange(src)}
+                    onClick={() => handleBrowseSourceChange(opt.value)}
                     className={`rounded-full px-3 py-1 text-xs font-medium transition ${
-                      browseSource === src
+                      browseSource === opt.value
                         ? "bg-violet-500/20 text-violet-300"
                         : "bg-white/[0.04] text-neutral-500 hover:text-neutral-300"
                     }`}
                   >
-                    {src === "blog" ? "Blog posts" : "Changelog"}
+                    {opt.label}
                   </button>
                 ))}
                 <span className="ml-auto self-center text-[10px] text-neutral-600">
