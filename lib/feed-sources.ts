@@ -125,22 +125,50 @@ export async function fetchFeedPosts(source: FeedSource): Promise<FeedItem[]> {
 }
 
 const HN_API_BASE = "https://hacker-news.firebaseio.com/v0";
+// Broad-ish filter: we want anything a founder in the devtools / AI coding
+// space would plausibly have a take on. Keep it generous — the user can
+// still skim and pick.
 const HN_AI_KEYWORDS = [
-  "ai coding",
-  "copilot",
+  // AI / LLM
+  "ai",
   "llm",
-  "ai agent",
-  "code generation",
-  "ai programming",
-  "cursor",
-  "claude",
   "gpt",
+  "claude",
+  "gemini",
+  "anthropic",
+  "openai",
+  "copilot",
+  "cursor",
+  "ai agent",
+  "agentic",
+  "code generation",
   "ai-assisted",
   "vibe coding",
-  "agentic",
+  "mcp",
+  // Engineering / devtools
+  "code review",
+  "pull request",
+  "pr review",
+  "developer",
+  "engineering",
+  "software engineer",
+  "devtools",
+  "dev tools",
+  "programming",
+  "startup",
+  "github",
+  "open source",
+  "typescript",
+  "javascript",
+  "python",
+  "rust",
+  "kubernetes",
+  "platform engineering",
+  "sre",
+  "devops",
 ];
-const HN_MAX_RESULTS = 15;
-const HN_FETCH_BATCH = 30;
+const HN_MAX_RESULTS = 25;
+const HN_FETCH_BATCH = 80;
 
 async function fetchHackerNewsPosts(): Promise<FeedItem[]> {
   const topStoriesResponse = await fetch(`${HN_API_BASE}/topstories.json`, {
