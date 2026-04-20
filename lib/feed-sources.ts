@@ -1,4 +1,8 @@
-import { searchResearchPapers, searchWebContent } from "@/lib/exa";
+import {
+  scrapePageContent,
+  searchResearchPapers,
+  searchWebContent,
+} from "@/lib/exa";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 import { getCompetitorDomains } from "@/lib/voice-policy";
 
@@ -169,6 +173,10 @@ const HN_AI_KEYWORDS = [
 ];
 const HN_MAX_RESULTS = 25;
 const HN_FETCH_BATCH = 80;
+// Top N HN items get their linked article scraped for real context. Beyond
+// this, items stay with metadata only so we don't blow Exa credits on every
+// fetch.
+const HN_ENRICH_COUNT = 12;
 
 async function fetchHackerNewsPosts(): Promise<FeedItem[]> {
   const topStoriesResponse = await fetch(`${HN_API_BASE}/topstories.json`, {
@@ -214,7 +222,47 @@ async function fetchHackerNewsPosts(): Promise<FeedItem[]> {
     }
   }
 
-  return items;
+  // Enrich top items with the actual article content (scraped via Exa with
+  // 24h URL cache). HN metadata alone is too thin for the LLM to write a
+  // grounded social post — we want the real claims from the linked article.
+  const enrichCount = Math.min(items.length, HN_ENRICH_COUNT);
+  const enrichTargets = items
+    .slice(0, enrichCount)
+    .filter((item) => !item.link.includes("news.ycombinator.com/item"));
+
+  const enriched = await Promise.allSettled(
+    enrichTargets.map(async (item) => {
+      const scraped = await scrapeUrlCached(item.link);
+      if (!scraped.summary && !scraped.text) return item;
+      const articleBody = [
+        scraped.summary ? `Article summary: ${scraped.summary}` : null,
+        scraped.text ? `Article excerpt:\n${scraped.text}` : null,
+      ]
+        .filter((part): part is string => Boolean(part))
+        .join("\n\n");
+
+      const mergedContent = [item.content, articleBody]
+        .filter(Boolean)
+        .join("\n\n");
+
+      return {
+        ...item,
+        content: mergedContent,
+        excerpt:
+          scraped.summary?.slice(0, 220) ?? item.excerpt ?? buildExcerpt(mergedContent),
+      } as FeedItem;
+    }),
+  );
+
+  const enrichedById = new Map<string, FeedItem>();
+  for (let idx = 0; idx < enrichTargets.length; idx += 1) {
+    const result = enriched[idx];
+    if (result?.status === "fulfilled") {
+      enrichedById.set(enrichTargets[idx].id, result.value);
+    }
+  }
+
+  return items.map((item) => enrichedById.get(item.id) ?? item);
 }
 
 function normalizeHackerNewsItem(item: unknown): FeedItem | null {
@@ -362,6 +410,56 @@ async function cachedFeed(
     expiresAt: now + FEED_CACHE_TTL_MS,
   });
   return data;
+}
+
+// ---------------------------------------------------------------------------
+// URL scrape cache (24h). HN posts link to external articles, and we want the
+// LLM to see the real content, not just the HN metadata line.
+// ---------------------------------------------------------------------------
+const URL_CONTENT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+type UrlContentCacheEntry = {
+  expiresAt: number;
+  summary: string | null;
+  text: string | null;
+};
+
+const urlContentCache = new Map<string, UrlContentCacheEntry>();
+
+async function scrapeUrlCached(
+  url: string,
+): Promise<{ summary: string | null; text: string | null }> {
+  const now = Date.now();
+  const hit = urlContentCache.get(url);
+  if (hit && hit.expiresAt > now) {
+    return { summary: hit.summary, text: hit.text };
+  }
+
+  try {
+    const page = await scrapePageContent({
+      url,
+      maxCharacters: 2500,
+      includeSummary: true,
+      includeHighlights: false,
+      livecrawl: "fallback",
+    });
+    const entry: UrlContentCacheEntry = {
+      summary: page.summary ?? null,
+      text: page.text ?? null,
+      expiresAt: now + URL_CONTENT_CACHE_TTL_MS,
+    };
+    urlContentCache.set(url, entry);
+    return { summary: entry.summary, text: entry.text };
+  } catch (err) {
+    console.warn(`[feed-sources] scrape failed for ${url}:`, err);
+    // Negative cache for 30 min so we don't retry a broken URL on every sync.
+    urlContentCache.set(url, {
+      summary: null,
+      text: null,
+      expiresAt: now + 30 * 60 * 1000,
+    });
+    return { summary: null, text: null };
+  }
 }
 
 async function fetchCompetitorNarratives(): Promise<FeedItem[]> {
