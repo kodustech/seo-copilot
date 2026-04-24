@@ -107,6 +107,12 @@ type SocialGenerationMode =
   | "build_in_public"
   | "adversarial";
 type SocialStyle = "default" | "build_in_public" | "adversarial";
+type SocialSourcePerspective = "owned" | "observed" | "inspired";
+type SocialNarrativeStyle =
+  | "analysis"
+  | "storytelling"
+  | "hot_take"
+  | "lesson";
 
 const STYLE_TO_MODE: Record<SocialStyle, SocialGenerationMode> = {
   default: "content_marketing",
@@ -137,6 +143,55 @@ const STYLE_OPTIONS: {
     label: "Adversarial",
     hint: "Push back against a common belief (uses your worldview)",
     icon: Flame,
+  },
+];
+
+const SOURCE_PERSPECTIVE_OPTIONS: {
+  value: SocialSourcePerspective;
+  label: string;
+  helper: string;
+}[] = [
+  {
+    value: "inspired",
+    label: "Use as inspiration",
+    helper: "Turns the source into a POV without claiming the experience.",
+  },
+  {
+    value: "observed",
+    label: "I read/saw this",
+    helper: "Frames the post as commentary on an external source.",
+  },
+  {
+    value: "owned",
+    label: "Our story",
+    helper: "Allows first-person posts about Kodus/team work.",
+  },
+];
+
+const NARRATIVE_STYLE_OPTIONS: {
+  value: SocialNarrativeStyle;
+  label: string;
+  helper: string;
+}[] = [
+  {
+    value: "lesson",
+    label: "Lesson",
+    helper: "Extracts a practical takeaway or framework.",
+  },
+  {
+    value: "analysis",
+    label: "Analysis",
+    helper: "Comments on the source with clear ownership.",
+  },
+  {
+    value: "hot_take",
+    label: "Hot take",
+    helper: "Pushes against one specific idea or framing.",
+  },
+  {
+    value: "storytelling",
+    label: "Storytelling",
+    helper: "Uses a narrative arc within the selected perspective.",
   },
 ];
 
@@ -210,6 +265,48 @@ function getDefaultPlatformConfigs() {
       linksPolicy: "Sem link",
     }),
   ];
+}
+
+function isExternalFeedSource(source: FeedSource): boolean {
+  return (
+    source === "hackernews" ||
+    source === "reddit" ||
+    source === "competitor"
+  );
+}
+
+function defaultSourcePerspectiveForSelection(
+  source: FeedSource,
+  selectedStyle: SocialStyle,
+): SocialSourcePerspective {
+  if (source === "changelog" || selectedStyle === "build_in_public") {
+    return "owned";
+  }
+
+  if (isExternalFeedSource(source) || selectedStyle === "adversarial") {
+    return "observed";
+  }
+
+  return "inspired";
+}
+
+function defaultNarrativeStyleForSelection(
+  source: FeedSource,
+  selectedStyle: SocialStyle,
+): SocialNarrativeStyle {
+  if (source === "changelog" || selectedStyle === "build_in_public") {
+    return "storytelling";
+  }
+
+  if (selectedStyle === "adversarial" || source === "competitor") {
+    return "hot_take";
+  }
+
+  if (isExternalFeedSource(source)) {
+    return "analysis";
+  }
+
+  return "lesson";
 }
 
 function getDefaultScheduleDate(): string {
@@ -296,6 +393,10 @@ export function SocialGenerator() {
   const [browseSearch, setBrowseSearch] = useState("");
   const [browseSource, setBrowseSource] = useState<FeedSource>("blog");
   const [style, setStyle] = useState<SocialStyle>("default");
+  const [sourcePerspective, setSourcePerspective] =
+    useState<SocialSourcePerspective>("inspired");
+  const [narrativeStyle, setNarrativeStyle] =
+    useState<SocialNarrativeStyle>("lesson");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [hasWorldview, setHasWorldview] = useState<boolean | null>(null);
   const [scheduleOpen, setScheduleOpen] = useState(false);
@@ -331,6 +432,43 @@ export function SocialGenerator() {
     setBrowseOpen(true);
   }, [feedSource]);
 
+  function suggestStyleForFeedSource(
+    source: FeedSource,
+    currentStyle: SocialStyle,
+  ): SocialStyle {
+    if (source === "changelog" && currentStyle === "default") {
+      return "build_in_public";
+    }
+
+    if (isExternalFeedSource(source) && currentStyle === "default") {
+      return "adversarial";
+    }
+
+    return currentStyle;
+  }
+
+  function applyPerspectiveDefaults(
+    source: FeedSource,
+    selectedStyle: SocialStyle,
+  ) {
+    setSourcePerspective(
+      defaultSourcePerspectiveForSelection(source, selectedStyle),
+    );
+    setNarrativeStyle(defaultNarrativeStyleForSelection(source, selectedStyle));
+  }
+
+  function handleFeedSourceChange(source: FeedSource) {
+    const nextStyle = suggestStyleForFeedSource(source, style);
+    setFeedSource(source);
+    setStyle(nextStyle);
+    applyPerspectiveDefaults(source, nextStyle);
+  }
+
+  function handleStyleChange(nextStyle: SocialStyle) {
+    setStyle(nextStyle);
+    applyPerspectiveDefaults(feedSource, nextStyle);
+  }
+
   const handleSelectFromBrowse = useCallback(
     (postId: string) => {
       handleSelectFeedPost(postId);
@@ -343,20 +481,6 @@ export function SocialGenerator() {
   useEffect(() => {
     setSelectedFeedId("");
     void reloadFeed(feedSource);
-  }, [feedSource]);
-
-  // Auto-suggest style from feed source (user can override)
-  useEffect(() => {
-    if (feedSource === "changelog") {
-      setStyle((prev) => (prev === "default" ? "build_in_public" : prev));
-    } else if (
-      feedSource === "hackernews" ||
-      feedSource === "reddit" ||
-      feedSource === "competitor"
-    ) {
-      // External narratives → adversarial makes the most sense by default.
-      setStyle((prev) => (prev === "default" ? "adversarial" : prev));
-    }
   }, [feedSource]);
 
   // Fetch worldview status once we have a token, so we can warn if adversarial
@@ -389,7 +513,7 @@ export function SocialGenerator() {
   // When browse source changes inside modal, sync it
   function handleBrowseSourceChange(source: FeedSource) {
     setBrowseSource(source);
-    setFeedSource(source);
+    handleFeedSourceChange(source);
     setBrowseSearch("");
   }
 
@@ -433,6 +557,8 @@ export function SocialGenerator() {
           instructions: userInstructions || undefined,
           contentSource: feedSource,
           generationMode: STYLE_TO_MODE[style],
+          sourcePerspective,
+          narrativeStyle,
         }),
       });
 
@@ -763,7 +889,9 @@ export function SocialGenerator() {
                 <div className="min-w-0">
                   <Select
                     value={feedSource}
-                    onValueChange={(value) => setFeedSource(value as FeedSource)}
+                    onValueChange={(value) =>
+                      handleFeedSourceChange(value as FeedSource)
+                    }
                     disabled={feedLoading}
                   >
                     <SelectTrigger className="w-full min-w-0 bg-neutral-50/70 text-sm dark:bg-neutral-800 [&>span]:truncate">
@@ -877,7 +1005,7 @@ export function SocialGenerator() {
                     <button
                       key={option.value}
                       type="button"
-                      onClick={() => setStyle(option.value)}
+                      onClick={() => handleStyleChange(option.value)}
                       className={`flex h-full flex-col items-start gap-1 rounded-2xl border p-3 text-left transition ${
                         active
                           ? "border-violet-400/60 bg-violet-500/10"
@@ -907,6 +1035,67 @@ export function SocialGenerator() {
                   so the pushback stays aligned with what you actually believe.
                 </div>
               ) : null}
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <p className="text-xs uppercase text-neutral-500">
+                  Perspective
+                </p>
+                <Select
+                  value={sourcePerspective}
+                  onValueChange={(value) =>
+                    setSourcePerspective(value as SocialSourcePerspective)
+                  }
+                >
+                  <SelectTrigger className="bg-neutral-50/70 dark:bg-neutral-800">
+                    <SelectValue placeholder="Perspective" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SOURCE_PERSPECTIVE_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-neutral-500">
+                  {
+                    SOURCE_PERSPECTIVE_OPTIONS.find(
+                      (option) => option.value === sourcePerspective,
+                    )?.helper
+                  }
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs uppercase text-neutral-500">
+                  Narrative
+                </p>
+                <Select
+                  value={narrativeStyle}
+                  onValueChange={(value) =>
+                    setNarrativeStyle(value as SocialNarrativeStyle)
+                  }
+                >
+                  <SelectTrigger className="bg-neutral-50/70 dark:bg-neutral-800">
+                    <SelectValue placeholder="Narrative" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {NARRATIVE_STYLE_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-neutral-500">
+                  {
+                    NARRATIVE_STYLE_OPTIONS.find(
+                      (option) => option.value === narrativeStyle,
+                    )?.helper
+                  }
+                </p>
+              </div>
             </div>
             <div className="grid gap-4 md:grid-cols-3">
               <div className="space-y-2">
@@ -1510,4 +1699,3 @@ export function SocialGenerator() {
     </div>
   );
 }
-

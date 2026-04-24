@@ -1,6 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { generateSocialContent } from "@/lib/copilot";
+import {
+  generateSocialContent,
+  type SocialContentSource,
+  type SocialNarrativeStyle,
+  type SocialSourcePerspective,
+} from "@/lib/copilot";
 import { fetchFeedPosts, type FeedItem } from "@/lib/feed-sources";
 import { resolveVoicePolicyForUser } from "@/lib/voice-policy";
 
@@ -72,7 +77,9 @@ type LanePlan = {
   lane: SocialYoloLane;
   title: string;
   generationMode: "content_marketing" | "build_in_public" | "adversarial";
-  contentSource: "blog" | "changelog" | "manual";
+  contentSource: SocialContentSource;
+  sourcePerspective: SocialSourcePerspective;
+  narrativeStyle: SocialNarrativeStyle;
   instructions: string;
   variationStrategy: string;
   fallbackThemes: string[];
@@ -423,6 +430,8 @@ function buildLanePlans(
       title: "Technical thought leadership from recent blog posts",
       generationMode: "content_marketing",
       contentSource: "blog",
+      sourcePerspective: "inspired",
+      narrativeStyle: "lesson",
       instructions:
         `Create practical social posts for senior engineers using insights from recent blog entries. Each variation must focus on a different technical decision, trade-off, failure pattern, or implementation lesson.${angleDirective}`,
       variationStrategy:
@@ -442,6 +451,8 @@ function buildLanePlans(
       title: "Build in public from product changelog updates",
       generationMode: "build_in_public",
       contentSource: "changelog",
+      sourcePerspective: "owned",
+      narrativeStyle: "storytelling",
       instructions:
         `Create build-in-public posts showing real product progress, decisions, and implementation details from changelog updates. Keep the tone transparent and hands-on.${angleDirective}`,
       variationStrategy:
@@ -461,6 +472,8 @@ function buildLanePlans(
       title: "Bridge product updates with evergreen engineering lessons",
       generationMode: "content_marketing",
       contentSource: "manual",
+      sourcePerspective: "inspired",
+      narrativeStyle: "lesson",
       instructions:
         `Blend ideas from blog and changelog sources to create posts that connect shipped work with repeatable engineering lessons. Keep each variation concise and useful.${angleDirective}`,
       variationStrategy:
@@ -479,7 +492,9 @@ function buildLanePlans(
       lane: "hackernews",
       title: "AI Coding industry trends from Hacker News",
       generationMode: "content_marketing",
-      contentSource: "manual",
+      contentSource: "external",
+      sourcePerspective: "observed",
+      narrativeStyle: "analysis",
       instructions:
         `Create posts that comment on AI Coding trends from the market, with the practical perspective of someone who builds developer tools (Kodus). Reference real discussions and take a clear stance.${angleDirective}`,
       variationStrategy:
@@ -498,7 +513,9 @@ function buildLanePlans(
       lane: "research",
       title: "Research-backed insights on AI coding and developer productivity",
       generationMode: "content_marketing",
-      contentSource: "manual",
+      contentSource: "external",
+      sourcePerspective: "observed",
+      narrativeStyle: "lesson",
       instructions:
         `Create posts that translate recent academic research into practical insights for engineering teams. Reference specific findings and connect them to real-world developer workflows. Make research accessible without dumbing it down.${angleDirective}`,
       variationStrategy:
@@ -517,7 +534,9 @@ function buildLanePlans(
       lane: "adversarial",
       title: "Adversarial pushback on external narratives in AI coding",
       generationMode: "adversarial",
-      contentSource: "manual",
+      contentSource: "external",
+      sourcePerspective: "observed",
+      narrativeStyle: "hot_take",
       instructions:
         `These source items come from competitors, thought leaders, and HN discussions in the AI coding / devtools space. Pick a specific claim, assumption, or dominant narrative from them and push back against it with a grounded counter-position aligned with the author's worldview. Do not mention the author's own company or product. Do not name a competitor to trash them; push back on the IDEA, not the brand. Never strawman, never be edgy for the sake of it. If worldview is empty, stay narrow and only push back on things baseContent directly supports.${angleDirective}`,
       variationStrategy:
@@ -558,6 +577,8 @@ async function generateLaneCandidates(
     variationStrategy: lanePlan.variationStrategy,
     generationMode: lanePlan.generationMode,
     contentSource: lanePlan.contentSource,
+    sourcePerspective: lanePlan.sourcePerspective,
+    narrativeStyle: lanePlan.narrativeStyle,
     voicePolicy,
     platformConfigs: [
       {

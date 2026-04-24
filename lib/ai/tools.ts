@@ -388,6 +388,18 @@ function createGenerateSocialPostsTool(userEmail?: string) {
         .optional()
         .default("personal, direct, technical, candid")
         .describe("Tom dos posts"),
+      sourcePerspective: z
+        .enum(["owned", "observed", "inspired"])
+        .optional()
+        .describe(
+          "Who owns the source experience: owned, observed, or inspired",
+        ),
+      narrativeStyle: z
+        .enum(["analysis", "storytelling", "hot_take", "lesson"])
+        .optional()
+        .describe(
+          "Narrative shape for the post: analysis, storytelling, hot_take, or lesson",
+        ),
       platforms: z
         .array(
           z.object({
@@ -408,7 +420,15 @@ function createGenerateSocialPostsTool(userEmail?: string) {
         ])
         .describe("Target platforms and number of variations"),
     }),
-    execute: async ({ baseContent, instructions, language, tone, platforms }) => {
+    execute: async ({
+      baseContent,
+      instructions,
+      language,
+      tone,
+      sourcePerspective,
+      narrativeStyle,
+      platforms,
+    }) => {
       try {
         const voicePolicy = await resolveVoicePolicyForUser(userEmail);
         const posts = await generateSocialContent({
@@ -416,6 +436,8 @@ function createGenerateSocialPostsTool(userEmail?: string) {
           instructions,
           language,
           tone,
+          sourcePerspective,
+          narrativeStyle,
           platformConfigs: platforms.map((p) => ({
             platform: p.platform,
             numVariations: p.numVariations,

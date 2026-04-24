@@ -4,7 +4,9 @@ import {
   generateSocialContent,
   type SocialContentSource,
   type SocialGenerationMode,
+  type SocialNarrativeStyle,
   type SocialPlatformConfigInput,
+  type SocialSourcePerspective,
 } from "@/lib/copilot";
 import {
   applyVoicePolicyMode,
@@ -52,6 +54,8 @@ export async function POST(request: Request) {
         body.generationMode,
         body.contentSource,
       ),
+      sourcePerspective: normalizeSourcePerspective(body.sourcePerspective),
+      narrativeStyle: normalizeNarrativeStyle(body.narrativeStyle),
       voicePolicy,
     });
     return NextResponse.json({ posts: variations });
@@ -155,6 +159,15 @@ function normalizeContentSource(raw: unknown): SocialContentSource {
   if (raw === "manual") {
     return "manual";
   }
+  if (
+    raw === "external" ||
+    raw === "hackernews" ||
+    raw === "reddit" ||
+    raw === "competitor" ||
+    raw === "research"
+  ) {
+    return "external";
+  }
   return "blog";
 }
 
@@ -175,4 +188,27 @@ function normalizeGenerationMode(
   }
 
   return "content_marketing";
+}
+
+function normalizeSourcePerspective(
+  raw: unknown,
+): SocialSourcePerspective | undefined {
+  if (raw === "owned" || raw === "observed" || raw === "inspired") {
+    return raw;
+  }
+
+  return undefined;
+}
+
+function normalizeNarrativeStyle(raw: unknown): SocialNarrativeStyle | undefined {
+  if (
+    raw === "analysis" ||
+    raw === "storytelling" ||
+    raw === "hot_take" ||
+    raw === "lesson"
+  ) {
+    return raw;
+  }
+
+  return undefined;
 }

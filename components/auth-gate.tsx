@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { Session } from "@supabase/supabase-js";
-import { Calendar, ChevronDown, Clock, Loader2, LogOut, MessageSquare, Settings, Star, X } from "lucide-react";
+import { Calendar, ChevronDown, Clock, Loader2, LogOut, MessageSquare, Settings, Star } from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
@@ -29,7 +29,20 @@ import {
 const allowedDomain =
   process.env.NEXT_PUBLIC_ALLOWED_DOMAIN?.toLowerCase() || "@kodus.io";
 
-type AuthMode = "signin" | "signup";
+type AuthMode = "signin" | "signup" | "forgot";
+
+function getPasswordResetRedirectUrl(): string | undefined {
+  const configuredUrl = process.env.NEXT_PUBLIC_APP_URL?.trim();
+  if (configuredUrl) {
+    return `${configuredUrl.replace(/\/$/, "")}/reset-password`;
+  }
+
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  return `${window.location.origin}/reset-password`;
+}
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
@@ -146,6 +159,44 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     setFormError(null);
     setFormMessage(null);
 
+    if (mode === "forgot") {
+      if (!email.trim()) {
+        setFormError("Enter your email.");
+        return;
+      }
+
+      const normalizedEmail = email.trim().toLowerCase();
+      if (allowedDomain && !normalizedEmail.endsWith(allowedDomain)) {
+        setFormError(`Only ${allowedDomain} accounts can reset passwords.`);
+        return;
+      }
+
+      setSubmitting(true);
+      try {
+        const { error } = await supabase.auth.resetPasswordForEmail(
+          normalizedEmail,
+          {
+            redirectTo: getPasswordResetRedirectUrl(),
+          },
+        );
+        if (error) {
+          throw error;
+        }
+        setFormMessage(
+          "Password reset email sent. Check your inbox and open the link from the same browser.",
+        );
+      } catch (error) {
+        setFormError(
+          error instanceof Error
+            ? error.message
+            : "We couldn't send the reset email.",
+        );
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
     if (!email.trim() || !password.trim()) {
       setFormError("Enter email and password.");
       return;
@@ -226,12 +277,20 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
               Restricted access
             </Badge>
             <CardTitle className="text-2xl font-semibold">
-              Sign in to use Copilot
+              {mode === "forgot"
+                ? "Reset your password"
+                : "Sign in to use Copilot"}
             </CardTitle>
             <CardDescription className="text-neutral-400">
-              Use the project&apos;s Supabase credentials. Only emails ending with{" "}
-              {allowedDomain} are allowed. Don&apos;t have an account yet? Ask your
-              team or create one below.
+              {mode === "forgot"
+                ? `Enter your ${allowedDomain} email and we will send a secure reset link.`
+                : (
+                    <>
+                      Use the project&apos;s Supabase credentials. Only emails ending with{" "}
+                      {allowedDomain} are allowed. Don&apos;t have an account yet? Ask your
+                      team or create one below.
+                    </>
+                  )}
             </CardDescription>
           </CardHeader>
           <form onSubmit={handleAuth}>
@@ -243,13 +302,15 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
                 onChange={(event) => setEmail(event.target.value)}
                 className="border-white/10 bg-neutral-900 focus-visible:ring-neutral-200"
               />
-              <Input
-                type="password"
-                placeholder="Senha"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                className="border-white/10 bg-neutral-900 focus-visible:ring-neutral-200"
-              />
+              {mode !== "forgot" ? (
+                <Input
+                  type="password"
+                  placeholder="Senha"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  className="border-white/10 bg-neutral-900 focus-visible:ring-neutral-200"
+                />
+              ) : null}
               {domainError && (
                 <p className="text-sm text-red-400">{domainError}</p>
               )}
@@ -269,6 +330,8 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     Processando...
                   </>
+                ) : mode === "forgot" ? (
+                  "Send reset link"
                 ) : mode === "signin" ? (
                   "Sign in"
                 ) : (
@@ -280,14 +343,28 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
               <button
                 type="button"
                 className="underline-offset-4 transition hover:text-white hover:underline"
-                onClick={() =>
-                  setMode((prev) => (prev === "signin" ? "signup" : "signin"))
-                }
+                onClick={() => {
+                  setFormError(null);
+                  setFormMessage(null);
+                  setMode((prev) => (prev === "signin" ? "signup" : "signin"));
+                }}
               >
-                {mode === "signin"
-                  ? "Create an account"
-                  : "I already have an account"}
+                {mode === "signin" ? "Create an account" : "Back to sign in"}
               </button>
+              {mode === "signin" ? (
+                <button
+                  type="button"
+                  className="underline-offset-4 transition hover:text-white hover:underline"
+                  onClick={() => {
+                    setFormError(null);
+                    setFormMessage(null);
+                    setPassword("");
+                    setMode("forgot");
+                  }}
+                >
+                  Forgot password?
+                </button>
+              ) : null}
             </CardFooter>
           </form>
         </Card>

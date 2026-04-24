@@ -19,7 +19,8 @@ Copiloto em Next.js com UI estilo Notion usando shadcn/ui para gerar ideias de k
 
    - `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_ANON_KEY` para habilitar o login (os valores públicos do seu projeto Supabase)
    - `NEXT_PUBLIC_ALLOWED_DOMAIN` para restringir o domínio (por padrão `@kodus.io`)
-   - `N8N_KEYWORDS_ENDPOINT`, `N8N_KEYWORDS_STATUS_ENDPOINT`, `N8N_KEYWORDS_HISTORY_ENDPOINT`, `N8N_TITLES_ENDPOINT`, `N8N_SOCIAL_ENDPOINT`, `N8N_POST_ENDPOINT`, `N8N_ARTICLES_ENDPOINT` caso precise sobrescrever os padrões
+   - `NEXT_PUBLIC_APP_URL` para montar links de recuperação de senha (ex: `http://localhost:3737` no dev). Libere também `NEXT_PUBLIC_APP_URL/reset-password` nos Redirect URLs do Supabase Auth.
+   - `N8N_KEYWORDS_ENDPOINT`, `N8N_KEYWORDS_STATUS_ENDPOINT`, `N8N_KEYWORDS_HISTORY_ENDPOINT`, `N8N_TITLES_ENDPOINT`, `N8N_POST_ENDPOINT`, `N8N_ARTICLES_ENDPOINT` caso precise sobrescrever os padrões
    - `N8N_BEARER_TOKEN` se os webhooks exigirem autenticação
    - `POST_BRIDGE_API_URL` (default `https://api.post-bridge.com`) e `POST_BRIDGE_API_KEY` para listar contas e agendar posts sociais direto do app
    - `CHANGELOG_API_URL` (base URL ou endpoint completo) para buscar updates de changelog como ideias de social (`source=changelog`)
@@ -74,7 +75,7 @@ A interface em `/` já traz todo o fluxo: dois botões para gerar keywords (com 
 
 ### Social: gerar e agendar
 
-- A aba de Social continua gerando variações via `N8N_SOCIAL_ENDPOINT`.
+- A aba de Social gera variações direto na app usando o provider configurado por `AI_PROVIDER`/`AI_MODEL_*`.
 - No bloco de conteúdo base, você pode trocar a fonte entre:
   - `Blog posts` (WordPress)
   - `Changelog (build in public)` (via `CHANGELOG_API_URL` -> `POST /api/v1/changelog` em `format=json`)

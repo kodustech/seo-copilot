@@ -5,10 +5,15 @@ import type {
   SocialPostVariation,
   TitleIdea,
 } from "@/lib/types";
+import { generateObject } from "ai";
+import { z } from "zod";
+import { getModel } from "@/lib/ai/provider";
 import type { VoicePolicyPayload } from "@/lib/voice-policy";
 import {
-  buildSocialInstructions,
   buildSocialVariationStrategy,
+  buildSocialWriterPrompt,
+  type SocialNarrativeStyle,
+  type SocialSourcePerspective,
 } from "@/lib/social-writing-style";
 
 const KEYWORDS_ENDPOINT =
@@ -32,9 +37,6 @@ const COMPARISON_POSTS_ENDPOINT =
 const UPDATE_POSTS_ENDPOINT =
   process.env.N8N_UPDATE_POST_ENDPOINT ??
   "https://n8n.kodus.io/webhook/updates-articles";
-const SOCIAL_ENDPOINT =
-  process.env.N8N_SOCIAL_ENDPOINT ??
-  "https://n8n.kodus.io/webhook/social";
 const ARTICLES_STATUS_ENDPOINT =
   process.env.N8N_ARTICLES_ENDPOINT ??
   "https://n8n.kodus.io/webhook/get-articles";
@@ -368,6 +370,19 @@ type SocialPlatformConfigPayload = {
   numVariations?: number;
 };
 
+const SocialGeneratedPostsSchema = z.object({
+  posts: z.array(
+    z.object({
+      platform: z.string().optional(),
+      variant: z.number().optional(),
+      hook: z.string().optional(),
+      post: z.string(),
+      cta: z.string().optional(),
+      hashtags: z.array(z.string()).optional(),
+    }),
+  ),
+});
+
 export type SocialAccount = {
   id: number;
   platform: string;
@@ -403,11 +418,46 @@ export type ScheduledSocialCalendarPost = {
   socialAccountIds: number[];
 };
 
-export type SocialContentSource = "blog" | "changelog" | "manual";
+export type SocialContentSource = "blog" | "changelog" | "manual" | "external";
+export type { SocialNarrativeStyle, SocialSourcePerspective };
 export type SocialGenerationMode =
   | "content_marketing"
   | "build_in_public"
   | "adversarial";
+
+function defaultSourcePerspective(
+  contentSource: SocialContentSource | undefined,
+  generationMode: SocialGenerationMode,
+): SocialSourcePerspective {
+  if (generationMode === "build_in_public" || contentSource === "changelog") {
+    return "owned";
+  }
+
+  if (generationMode === "adversarial" || contentSource === "external") {
+    return "observed";
+  }
+
+  return "inspired";
+}
+
+function defaultNarrativeStyle(
+  contentSource: SocialContentSource | undefined,
+  generationMode: SocialGenerationMode,
+): SocialNarrativeStyle {
+  if (generationMode === "build_in_public" || contentSource === "changelog") {
+    return "storytelling";
+  }
+
+  if (generationMode === "adversarial") {
+    return "hot_take";
+  }
+
+  if (contentSource === "external") {
+    return "analysis";
+  }
+
+  return "lesson";
+}
 
 export async function generateSocialContent({
   baseContent,
@@ -418,6 +468,8 @@ export async function generateSocialContent({
   platformConfigs,
   contentSource,
   generationMode,
+  sourcePerspective,
+  narrativeStyle,
   voicePolicy,
 }: {
   baseContent: string;
@@ -428,6 +480,8 @@ export async function generateSocialContent({
   platformConfigs?: SocialPlatformConfigInput[];
   contentSource?: SocialContentSource;
   generationMode?: SocialGenerationMode;
+  sourcePerspective?: SocialSourcePerspective;
+  narrativeStyle?: SocialNarrativeStyle;
   voicePolicy?: VoicePolicyPayload | null;
 }): Promise<SocialPostVariation[]> {
   if (!baseContent.trim()) {
@@ -442,45 +496,34 @@ export async function generateSocialContent({
   const resolvedGenerationMode =
     generationMode ??
     (contentSource === "changelog" ? "build_in_public" : "content_marketing");
-  const socialInstructions = buildSocialInstructions({
+  const resolvedSourcePerspective =
+    sourcePerspective ??
+    defaultSourcePerspective(contentSource, resolvedGenerationMode);
+  const resolvedNarrativeStyle =
+    narrativeStyle ?? defaultNarrativeStyle(contentSource, resolvedGenerationMode);
+  const socialVariationStrategy = buildSocialVariationStrategy(variationStrategy);
+  const socialWriterPrompt = buildSocialWriterPrompt({
+    baseContent,
     instructions,
     contentSource,
     generationMode: resolvedGenerationMode,
+    sourcePerspective: resolvedSourcePerspective,
+    narrativeStyle: resolvedNarrativeStyle,
     platformConfigs: normalizedConfigs,
-  });
-  const socialVariationStrategy = buildSocialVariationStrategy(variationStrategy);
-
-  const payload: Record<string, unknown> = {
-    baseContent: baseContent.trim(),
     language,
-    platformConfigs: normalizedConfigs,
-    generationMode: resolvedGenerationMode,
-    instructions: socialInstructions,
+    tone,
     variationStrategy: socialVariationStrategy,
-  };
+    voicePolicyPrompt: voicePolicy?.prompt,
+    worldview: voicePolicy?.worldview,
+  });
 
-  if (tone?.trim()) payload.tone = tone.trim();
-  if (contentSource) payload.contentSource = contentSource;
-  if (voicePolicy) payload.voicePolicy = voicePolicy;
+  const { object } = await generateObject({
+    model: getModel(),
+    schema: SocialGeneratedPostsSchema,
+    prompt: socialWriterPrompt,
+  });
 
-  // Worldview is only surfaced to n8n when the style actually needs it.
-  // Adversarial posts must align with the user's worldview; other styles
-  // should not be biased by it.
-  if (resolvedGenerationMode === "adversarial" && voicePolicy?.worldview) {
-    payload.worldview = voicePolicy.worldview;
-  }
-
-  const response = await fetch(SOCIAL_ENDPOINT, n8nPostInit(payload));
-
-  if (!response.ok) {
-    const text = await safeReadText(response);
-    throw new Error(
-      `Error generating posts (${response.status}). ${text || "Try again."}`,
-    );
-  }
-
-  const body = await safeReadJson(response);
-  const variations = normalizeSocialPosts(body);
+  const variations = normalizeSocialPosts(object);
 
   if (!variations.length) {
     throw new Error("We did not receive posts from the copilot.");
