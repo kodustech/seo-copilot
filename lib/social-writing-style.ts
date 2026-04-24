@@ -1,3 +1,8 @@
+import {
+  formatSourceAttachmentsForPrompt,
+  type SourceAttachmentPayload,
+} from "@/lib/source-attachments";
+
 type PlatformConfigLike = {
   platform: string;
   maxLength?: number;
@@ -21,6 +26,7 @@ type BuildSocialWriterPromptInput = BuildSocialInstructionsInput & {
   language: string;
   tone?: string;
   variationStrategy: string;
+  sourceAttachments?: SourceAttachmentPayload[];
   voicePolicyPrompt?: string | null;
   worldview?: string | null;
 };
@@ -44,7 +50,7 @@ Voice:
 Content quality:
 - Start from one concrete observation, tension, mistake, lesson, or trade-off.
 - Make the post useful for senior engineers, engineering managers, founders, or technical operators.
-- Include a practical takeaway. If there is no takeaway, make the post sharper before writing.
+- Include a practical next step or concrete lesson. If there is none, make the post more specific before writing.
 - Do not summarize the source mechanically. Turn it into a point of view.
 
 Avoid:
@@ -57,6 +63,65 @@ export const SOCIAL_FORMATTING_HINT =
 export const DEFAULT_SOCIAL_VARIATION_STRATEGY =
   "Make each variation meaningfully different: one contrarian take, one practical lesson, one build-in-public observation, one tactical checklist, or one question-led post. Do not only rewrite the same idea with different hooks.";
 
+const SOCIAL_ANTI_AI_GUARDRAILS = `Rules never to break:
+- No em dashes. Use commas, periods, parentheses, or line breaks.
+- No rule-of-three lists. Do not group things into trios. Two items is fine. Four or five is fine.
+- No contrast framing. Do not write "it is not X, it is Y", "this is not X, it is Y", "not X but Y", "not only X but also Y", "more than X, it is Y", or "X? No. Actually Y."
+- No staccato bursts. Do not string together three or more short sentences for drama.
+- No rhetorical transition questions like "The catch?", "The kicker?", "But here is the thing", "So what does this mean?", "Why does this matter?", or "Thoughts?"
+- No "nobody" as a dramatic opener.
+- No emojis in professional writing.
+- No "let's" openers.
+- No fake naming. Do not invent named methods, frameworks, flywheels, paradoxes, or capitalized concepts.
+- No self-narration. Delete phrases whose only job is to announce the point.
+
+Avoid these transition words:
+Arguably, Certainly, Consequently, Hence, However as a sentence opener, Indeed, Moreover, Nevertheless, Nonetheless, Thus, Undoubtedly, Accordingly, Additionally, On the contrary, Furthermore, Notably, Essentially, Fundamentally, Inherently, Particularly as a sentence opener.
+
+Avoid these AI-overused adjectives:
+Adept, Commendable, Compelling, Comprehensive, Crucial, Cutting-edge, Dynamic, Efficient, Ever-evolving, Exciting, Exemplary, Game-changing, Genuine, Groundbreaking, Holistic, Innovative, Invaluable, Meticulous, Multifaceted, Noteworthy, Nuanced, Paramount, Pivotal, Profound, Remarkable, Robust, Scalable, Seamless, Significant, State-of-the-art, Streamlined, Substantial, Synergistic, Tailored, Thought-provoking, Transformative, Unprecedented, Vibrant, Vital, hidden, invisible, sharp, powerful, effective, subtle.
+
+Avoid these AI-overused adverbs:
+Drastically, Genuinely, Meticulously, Notably, Profoundly, Remarkably, Significantly, Strategically, Substantially, Truly.
+
+Avoid these abstract nouns when they are figurative or vague:
+Bandwidth, Bedrock, Cadence, Catalyst, Cornerstone, Deep dive, Ecosystem, Efficiency, Framework, Game-changer, Guardrails, Headwinds, Tailwinds, Implementation, Innovation, Institution, Integration, Interplay, Intersection, Intricacies, Juxtaposition, Landscape, Linchpin, North star, Optimization, Pain point, Paradigm, Paradigm shift, Realm, Synergy, Takeaway, Key takeaway, Tapestry, Transformation, friction.
+
+Avoid these verbs:
+Aligns, Amplify, Augment, Bolster, Catalyze, Craft as a figurative verb, Cultivate, Curate, Delve, Demystify, Dive in, Double down, Elevate, Embark, Empower, Enhance, Facilitate, Foster, Garner, Harness, Leverage, Maximize, Navigate as a figurative verb, Reimagine, Resonate, Revolutionize, Showcase, Spearhead, Streamline, Underscore, Unlock as a figurative verb, Unpack as a figurative verb, Utilize, Explore.
+
+Delete these phrases and framings:
+"A testament to", "In conclusion", "In summary", "It is important to note", "It is worth noting", "This is not an exhaustive list", "At its core", "In today's fast-paced world", "In today's rapidly evolving landscape", "At the end of the day", "Moving forward", "That said", "That being said", "With that in mind", "When it comes to", "In terms of", "At the intersection of", "Here is the thing", "Make no mistake", "Simply put", "To put it simply", "In a nutshell", "The reality is", "Let that sink in", "Read that again", "Full stop", "Period" as emphasis, "Think about that for a second", "This cannot be overstated", "It bears mentioning", "What is more", "To be sure", "First and foremost", "Last but not least", "Needless to say", "It goes without saying", "Rest assured", "Here is why that matters", "And that is okay", "Spoiler alert", "Hot take", "Pro tip", "The takeaway", "The bottom line", "Level up", "Move the needle", "Low-hanging fruit", "Circle back", "The elephant in the room", "Only time will tell", "Stands out as", "Serves as a reminder", "Paves the way for", "Sheds light on", "Bridges the gap", "Strikes a balance", "Pushes the envelope", "Raises the bar", "This highlights", "This underscores", "This speaks to", "This illustrates", "This demonstrates", "This signals", "This points to", "This reflects", "This suggests that", "This is a clear sign that", "This is a reminder that", "Here is the real story", "Here is what is really going on", "The key takeaway is", "The big picture here is", "The real lesson here is", "The important thing is", "The point is", "Now for the interesting part", "And that is where it gets interesting", "Which brings us to the real question", "What does this tell us", "What does this mean", "Why should you care", "And here is what most people miss", "And here is the best part", "And here is the crazy part", "And that is exactly why", "And that is the point".
+
+Use plain replacements:
+utilize -> use, execute -> do, facilitate -> help, expedite -> speed up, implement -> start or build, optimize -> improve, leverage -> use, garner -> get, delve -> look at, underscore -> show, embark -> start, augment -> add to, maximize -> increase, align -> match, cultivate -> build or grow, harness -> use, bolster -> support, catalyze -> start or cause, amplify -> increase, elevate -> raise or improve, empower -> let or enable, navigate -> handle or deal with, spearhead -> lead, streamline -> simplify, curate -> pick or choose, craft -> write or make, unpack -> explain, demystify -> explain, reimagine -> rethink or redo, resonate -> connect or land.
+
+Remove these content patterns:
+- Significance inflation. Do not announce importance. Show why with specifics.
+- Promotional tone. No travel-brochure or launch-copy language.
+- Vague attribution like "experts say", "industry observers note", or "some critics argue" without named sources.
+- Generic positive endings like "the future looks bright" or "this is a major step in the right direction".
+- False ranges like "from X to Y" unless X and Y are a real spectrum.
+- Synonym cycling. Pick one name for the subject and keep it.
+
+Remove these language patterns:
+- Copula avoidance. Prefer "is" over "serves as", "stands as", "functions as", or "represents".
+- Ing-phrase padding at the end of sentences.
+- Boldface abuse.
+- Vertical lists with inline headers.
+- Title case unless it is a proper noun.
+- Curly quotes.
+- Filler like "in order to", "due to the fact that", "at this point in time", "has the ability to", and "in the event that".
+- Excessive hedging. One qualifier per claim is enough.
+
+Naturalness guardrails:
+- Write like a real person explaining something to a colleague in Slack.
+- Avoid article voice, LinkedIn coach voice, press release voice, and debate-bro voice.
+- Vary rhythm without using dramatic one-line punchlines.
+- Have opinions, but keep them grounded.
+- Acknowledge mixed feelings when the source supports them.
+- Leave some imperfection. Perfect structure feels generated.`;
+
 function platformRules(platformConfigs?: PlatformConfigLike[]): string {
   const platforms = new Set(
     (platformConfigs ?? [])
@@ -68,7 +133,7 @@ function platformRules(platformConfigs?: PlatformConfigLike[]): string {
 
   if (platforms.has("linkedin")) {
     rules.push(`LinkedIn:
-- Use short paragraphs and a clear narrative arc: hook -> context -> lesson -> practical takeaway.
+- Use short paragraphs and a clear narrative arc: hook -> context -> lesson -> practical next step.
 - Prefer 80-180 words unless maxLength is tighter.
 - One idea per post. No generic "thought leadership" tone.
 - CTA should invite a real discussion, not beg for engagement.
@@ -77,7 +142,7 @@ function platformRules(platformConfigs?: PlatformConfigLike[]): string {
 
   if (platforms.has("twitter") || platforms.has("x") || platforms.has("twitter / x")) {
     rules.push(`Twitter/X:
-- One sharp idea. Cut setup, throat-clearing, and corporate language.
+- One clear idea. Cut setup, throat-clearing, and corporate language.
 - Fit the configured maxLength. If maxLength is above 280, write like a compact thread starter, not a LinkedIn post.
 - Prefer a strong sentence, concrete example, or useful question.
 - Avoid hashtags unless explicitly requested.`);
@@ -110,7 +175,7 @@ function perspectiveRules(sourcePerspective?: SocialSourcePerspective): string {
   if (sourcePerspective === "observed") {
     return [
       "Source perspective: observed.",
-      "The author read, saw, or is reacting to third-party material. Write as commentary from the outside. Phrases like 'this postmortem shows', 'after reading this', or 'the landscape points to' are allowed. Do not write 'we had this bug', 'our postmortem', 'I was looking for a tool', or anything that makes the external event sound like the author's experience.",
+      "The author read, saw, or is reacting to third-party material. Write as commentary from the outside. Phrases like 'this postmortem shows', 'after reading this', or 'the comparison points to' are allowed. Do not write 'we had this bug', 'our postmortem', 'I was looking for a tool', or anything that makes the external event sound like the author's experience.",
     ].join("\n");
   }
 
@@ -133,11 +198,11 @@ function narrativeRules(narrativeStyle?: SocialNarrativeStyle): string {
   }
 
   if (narrativeStyle === "hot_take") {
-    return "Narrative style: hot take. Make one sharp, defensible claim with concrete support. Push against an idea or framing, not against a person or brand for drama.";
+    return "Narrative style: hot take. Make one direct, defensible claim with concrete support. Push against an idea or framing, not against a person or brand for drama.";
   }
 
   if (narrativeStyle === "lesson") {
-    return "Narrative style: lesson. Extract a practical takeaway, rule of thumb, or decision framework. Avoid fake anecdotes and avoid pretending the lesson came from the author's own mistake unless the input says so.";
+    return "Narrative style: lesson. Extract a practical lesson, rule of thumb, or decision rule. Avoid fake anecdotes and avoid pretending the lesson came from the author's own mistake unless the input says so.";
   }
 
   return "Narrative style: analysis. Lead with a concrete observation, explain the implication, and keep ownership of events clear.";
@@ -166,7 +231,7 @@ function sourceRules(
     );
   } else if (contentSource === "blog") {
     rules.push(
-      "For blog-based posts, do not just tease the article. Extract one useful opinion, framework, or lesson from it and make the post stand alone.",
+      "For blog-based posts, do not just tease the article. Extract one useful opinion, rule of thumb, or lesson from it and make the post stand alone.",
     );
   }
 
@@ -249,7 +314,7 @@ Use the selected narrative style (${narrativeStyle ?? "analysis"}) while keeping
 
   return `Generate standalone content-marketing social posts inspired by the source material.
 
-Use the source to extract useful problems, opinions, lessons, or frameworks for experienced engineering readers. The post should stand on its own, but it must not claim that third-party events happened to the author.
+Use the source to extract useful problems, opinions, lessons, or decision rules for experienced engineering readers. The post should stand on its own, but it must not claim that third-party events happened to the author.
 
 Use the selected narrative style (${narrativeStyle ?? "lesson"}) and make each variation materially different.`;
 }
@@ -270,6 +335,9 @@ Style rules:
 - No contrast framing like "it is not X, it is Y".
 - No staccato strings of short dramatic sentences.
 - No self-narration like "the key takeaway is" or "here is why this matters".
+
+Anti-AI writing guardrails:
+${SOCIAL_ANTI_AI_GUARDRAILS}
 
 Before returning, rewrite any post that sounds like a press release, a LinkedIn coach, or a fake personal anecdote.`;
 }
@@ -321,6 +389,7 @@ export function buildSocialWriterPrompt({
   language,
   tone,
   variationStrategy,
+  sourceAttachments,
   voicePolicyPrompt,
   worldview,
 }: BuildSocialWriterPromptInput): string {
@@ -361,6 +430,9 @@ export function buildSocialWriterPrompt({
     )}`,
     `Variation strategy:\n${variationStrategy}`,
     `Base content:\n${baseContent.trim()}`,
+    formatSourceAttachmentsForPrompt(sourceAttachments, {
+      heading: "Attached sources for this social generation",
+    }),
     `Safety and quality:\n${safetyContract()}`,
     `Output format:\n${outputContract()}`,
   ].filter((part): part is string => Boolean(part));

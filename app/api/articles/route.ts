@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { enqueueArticleTask, fetchArticleTaskResult } from "@/lib/copilot";
+import { normalizeSourceAttachments } from "@/lib/source-attachments";
 import { resolveVoicePolicyForRequest } from "@/lib/voice-policy";
 
 export async function POST(request: Request) {
@@ -27,6 +28,7 @@ export async function POST(request: Request) {
         typeof body.customInstructions === "string"
           ? body.customInstructions
           : undefined,
+      sourceAttachments: normalizeSourceAttachments(body.sourceAttachments),
       categories: normalizeCategories(body.categories),
       voicePolicy,
     });

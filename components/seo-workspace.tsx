@@ -54,6 +54,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SourceAttachmentPicker } from "@/components/source-attachment-picker";
+import type { SourceAttachmentPayload } from "@/lib/source-attachments";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
 type Banner =
@@ -137,6 +139,9 @@ export function SeoWorkspace({
   );
   const [manualKeyword, setManualKeyword] = useState("");
   const [manualTitle, setManualTitle] = useState("");
+  const [manualSourceAttachments, setManualSourceAttachments] = useState<
+    SourceAttachmentPayload[]
+  >([]);
   const [comparisonKeyword, setComparisonKeyword] = useState("");
   const [comparisonTitle, setComparisonTitle] = useState("");
   const [comparisonPublishMode, setComparisonPublishMode] = useState<
@@ -795,6 +800,7 @@ export function SeoWorkspace({
           publishMode: articlePublishMode,
           researchInstructions,
           customInstructions,
+          sourceAttachments: manualSourceAttachments,
           categories: selectedCategories,
         },
         token,
@@ -2131,6 +2137,14 @@ export function SeoWorkspace({
                         }
                         placeholder="Add important notes, CTA, personas, ideal length..."
                         className="min-h-[150px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
+                      />
+                      <SourceAttachmentPicker
+                        value={manualSourceAttachments}
+                        onChange={setManualSourceAttachments}
+                        token={token}
+                        label="Article sources"
+                        helper="Attach PDFs, images, or source files for this article only. They are added to this queued request."
+                        disabled={loading.content}
                       />
                       <Button
                         className="w-full rounded-2xl bg-emerald-700 py-6 text-base font-medium hover:bg-emerald-600 text-white"

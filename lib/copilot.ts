@@ -15,6 +15,11 @@ import {
   type SocialNarrativeStyle,
   type SocialSourcePerspective,
 } from "@/lib/social-writing-style";
+import {
+  formatSourceAttachmentsForPrompt,
+  normalizeSourceAttachments,
+  type SourceAttachmentPayload,
+} from "@/lib/source-attachments";
 
 const KEYWORDS_ENDPOINT =
   process.env.N8N_KEYWORDS_ENDPOINT ??
@@ -61,6 +66,16 @@ const jsonHeaders: Record<string, string> = {
 
 if (n8nBearerToken) {
   jsonHeaders.Authorization = `Bearer ${n8nBearerToken}`;
+}
+
+function joinPromptSections(
+  ...parts: Array<string | null | undefined>
+): string | undefined {
+  const normalized = parts
+    .map((part) => part?.trim())
+    .filter((part): part is string => Boolean(part));
+
+  return normalized.length ? normalized.join("\n\n") : undefined;
 }
 
 type StreamingJsonRequestInit = RequestInit & { duplex: "half" };
@@ -253,6 +268,7 @@ type ArticleTaskPayload = {
   currentContent?: string;
   researchInstructions?: string;
   customInstructions?: string;
+  sourceAttachments?: SourceAttachmentPayload[];
   categories?: number[];
   voicePolicy?: VoicePolicyPayload | null;
 };
@@ -276,6 +292,21 @@ export async function enqueueArticleTask(
       : payload.workflow === "update"
         ? UPDATE_POSTS_ENDPOINT
       : POSTS_ENDPOINT;
+  const sourceAttachments = normalizeSourceAttachments(payload.sourceAttachments);
+  const sourceAttachmentContext = formatSourceAttachmentsForPrompt(
+    sourceAttachments,
+    { heading: "Attached sources for this article request" },
+  );
+  const researchInstructions = joinPromptSections(
+    payload.researchInstructions,
+    sourceAttachmentContext,
+  );
+  const customInstructions = joinPromptSections(
+    payload.customInstructions,
+    sourceAttachmentContext
+      ? `Use the attached source context only for this article request.\n\n${sourceAttachmentContext}`
+      : undefined,
+  );
   const response = await fetch(
     endpoint,
     n8nPostInit({
@@ -286,8 +317,10 @@ export async function enqueueArticleTask(
       publishMode: payload.publishMode,
       autoPublish: payload.publishMode === "publish",
       currentContent: payload.currentContent?.trim() || undefined,
-      researchInstructions: payload.researchInstructions?.trim() || undefined,
-      customInstructions: payload.customInstructions?.trim() || undefined,
+      researchInstructions,
+      customInstructions,
+      sourceAttachments:
+        sourceAttachments.length > 0 ? sourceAttachments : undefined,
       categories:
         payload.categories && payload.categories.length > 0
           ? payload.categories.map((value) => Number(value))
@@ -471,6 +504,7 @@ export async function generateSocialContent({
   sourcePerspective,
   narrativeStyle,
   voicePolicy,
+  sourceAttachments,
 }: {
   baseContent: string;
   instructions?: string;
@@ -483,9 +517,11 @@ export async function generateSocialContent({
   sourcePerspective?: SocialSourcePerspective;
   narrativeStyle?: SocialNarrativeStyle;
   voicePolicy?: VoicePolicyPayload | null;
+  sourceAttachments?: SourceAttachmentPayload[];
 }): Promise<SocialPostVariation[]> {
-  if (!baseContent.trim()) {
-    throw new Error("Provide base content to generate posts.");
+  const normalizedSourceAttachments = normalizeSourceAttachments(sourceAttachments);
+  if (!baseContent.trim() && !normalizedSourceAttachments.length) {
+    throw new Error("Provide base content or attach a source to generate posts.");
   }
 
   const normalizedConfigs = sanitizePlatformConfigs(platformConfigs);
@@ -513,6 +549,7 @@ export async function generateSocialContent({
     language,
     tone,
     variationStrategy: socialVariationStrategy,
+    sourceAttachments: normalizedSourceAttachments,
     voicePolicyPrompt: voicePolicy?.prompt,
     worldview: voicePolicy?.worldview,
   });

@@ -13,6 +13,7 @@ import {
   resolveVoicePolicyForRequest,
   type VoicePolicyMode,
 } from "@/lib/voice-policy";
+import { normalizeSourceAttachments } from "@/lib/source-attachments";
 
 export async function POST(request: Request) {
   const body = await readBody(request);
@@ -56,6 +57,7 @@ export async function POST(request: Request) {
       ),
       sourcePerspective: normalizeSourcePerspective(body.sourcePerspective),
       narrativeStyle: normalizeNarrativeStyle(body.narrativeStyle),
+      sourceAttachments: normalizeSourceAttachments(body.sourceAttachments),
       voicePolicy,
     });
     return NextResponse.json({ posts: variations });

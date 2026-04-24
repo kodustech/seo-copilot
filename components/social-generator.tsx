@@ -58,8 +58,10 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { SourceAttachmentPicker } from "@/components/source-attachment-picker";
 import { copyToClipboard as copyTextToClipboard } from "@/lib/clipboard";
 import { DEFAULT_SOCIAL_VARIATION_STRATEGY } from "@/lib/social-writing-style";
+import type { SourceAttachmentPayload } from "@/lib/source-attachments";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
 type PostIdea = {
@@ -366,6 +368,9 @@ function jsonHeaders(token?: string | null) {
 export function SocialGenerator() {
   const token = useAuthToken();
   const [baseContent, setBaseContent] = useState("");
+  const [sourceAttachments, setSourceAttachments] = useState<
+    SourceAttachmentPayload[]
+  >([]);
   const [instructions, setInstructions] = useState("");
   const [voiceMode, setVoiceMode] = useState<VoiceMode>("auto");
   const [customTone, setCustomTone] = useState(
@@ -413,7 +418,9 @@ export function SocialGenerator() {
   const hasValidPlatform = platformConfigs.some(
     (config) => config.platform.trim().length > 0
   );
-  const canGenerate = baseContent.trim().length > 12 && hasValidPlatform && !loading;
+  const hasSourceMaterial =
+    baseContent.trim().length > 12 || sourceAttachments.length > 0;
+  const canGenerate = hasSourceMaterial && hasValidPlatform && !loading;
 
   // Browse modal: filtered posts
   const browsePosts = useMemo(() => {
@@ -519,7 +526,7 @@ export function SocialGenerator() {
 
   async function handleGeneratePosts() {
     if (!canGenerate) {
-      setError("Add at least one base idea to generate a post.");
+      setError("Add a base idea or attach a source to generate a post.");
       return;
     }
     setError(null);
@@ -559,6 +566,7 @@ export function SocialGenerator() {
           generationMode: STYLE_TO_MODE[style],
           sourcePerspective,
           narrativeStyle,
+          sourceAttachments,
         }),
       });
 
@@ -995,6 +1003,14 @@ export function SocialGenerator() {
                 <p className="text-xs text-red-500">{feedError}</p>
               )}
             </div>
+            <SourceAttachmentPicker
+              value={sourceAttachments}
+              onChange={setSourceAttachments}
+              token={token}
+              label="Per-post sources"
+              helper="Attach a study, screenshot, or source file for this generation. It only goes into this submit."
+              disabled={loading}
+            />
             <div className="space-y-3">
               <p className="text-xs uppercase text-neutral-500">Style</p>
               <div className="grid gap-2 sm:grid-cols-3">
@@ -1338,6 +1354,7 @@ export function SocialGenerator() {
                 onClick={() => {
                   setBaseContent("");
                   setSelectedFeedId("");
+                  setSourceAttachments([]);
                   setInstructions("");
                   setVoiceMode("auto");
                   setCustomTone("Conversational and direct");
