@@ -58,7 +58,7 @@ Avoid:
 - empty hype, exaggerated certainty, fake vulnerability, generic lists, and engagement bait.`;
 
 export const SOCIAL_FORMATTING_HINT =
-  "Separate paragraphs with one blank line and keep blocks short. Make every line earn its place.";
+  "Separate paragraphs with one blank line and keep blocks short. Make every line earn its place. Preserve those paragraph breaks inside the returned JSON string using newline characters.";
 
 export const DEFAULT_SOCIAL_VARIATION_STRATEGY =
   "Make each variation meaningfully different: one contrarian take, one practical lesson, one build-in-public observation, one tactical checklist, or one question-led post. Do not only rewrite the same idea with different hooks.";
@@ -270,7 +270,17 @@ For each platform in platformConfigs:
 - Generate exactly numVariations posts.
 - Respect maxLength strictly.
 - Adapt formatting to the platform.
+- For LinkedIn, return a readable post with short paragraphs separated by blank lines.
+- Do not collapse the post into one dense paragraph.
 - Include hashtags only when the platform config or instructions explicitly request them.`;
+}
+
+function finalFormattingContract(): string {
+  return `Formatting must survive the JSON response:
+- Keep paragraph breaks in the "post" field.
+- Use newline characters inside the JSON string for paragraph breaks.
+- Do not return one dense paragraph unless the platform maxLength forces a very short post.
+- Preserve readable spacing even when the source attachment is long.`;
 }
 
 function taskContract(
@@ -433,6 +443,7 @@ export function buildSocialWriterPrompt({
     formatSourceAttachmentsForPrompt(sourceAttachments, {
       heading: "Attached sources for this social generation",
     }),
+    `Final formatting check:\n${finalFormattingContract()}`,
     `Safety and quality:\n${safetyContract()}`,
     `Output format:\n${outputContract()}`,
   ].filter((part): part is string => Boolean(part));
