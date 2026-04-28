@@ -4,11 +4,14 @@ export type SourceAttachmentPayload = {
   mimeType: string;
   size?: number;
   summary?: string;
+  usageInstructions?: string;
   extractedText: string;
 };
 
 export const SOURCE_ATTACHMENT_MAX_FILES = 6;
-export const SOURCE_ATTACHMENT_MAX_TEXT_CHARS = 14_000;
+export const SOURCE_ATTACHMENT_MAX_FILE_BYTES = 50 * 1024 * 1024;
+export const SOURCE_ATTACHMENT_MAX_FILE_LABEL = "50 MB";
+export const SOURCE_ATTACHMENT_MAX_TEXT_CHARS = 100_000;
 
 function readString(record: Record<string, unknown>, key: string): string {
   const value = record[key];
@@ -71,6 +74,9 @@ export function normalizeSourceAttachments(
       mimeType: readString(record, "mimeType") || "application/octet-stream",
       size: readNumber(record, "size"),
       summary: sanitizeSourceText(readString(record, "summary"), 1_200) || undefined,
+      usageInstructions:
+        sanitizeSourceText(readString(record, "usageInstructions"), 1_200) ||
+        undefined,
       extractedText,
     });
 
@@ -98,8 +104,11 @@ export function formatSourceAttachmentsForPrompt(
       const summary = attachment.summary
         ? `\nSummary:\n${attachment.summary}`
         : "";
+      const usageInstructions = attachment.usageInstructions
+        ? `\nHow to use this source:\n${attachment.usageInstructions}`
+        : "";
 
-      return `[${label} | ${attachment.mimeType}]${summary}\nExtracted content:\n${attachment.extractedText}`;
+      return `[${label} | ${attachment.mimeType}]${summary}${usageInstructions}\nExtracted content:\n${attachment.extractedText}`;
     })
     .join("\n\n");
 

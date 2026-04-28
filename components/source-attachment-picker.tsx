@@ -12,8 +12,11 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import {
   sanitizeSourceText,
+  SOURCE_ATTACHMENT_MAX_FILE_BYTES,
+  SOURCE_ATTACHMENT_MAX_FILE_LABEL,
   SOURCE_ATTACHMENT_MAX_FILES,
   SOURCE_ATTACHMENT_MAX_TEXT_CHARS,
   type SourceAttachmentPayload,
@@ -21,7 +24,6 @@ import {
 
 const ACCEPTED_SOURCE_TYPES =
   ".pdf,image/*,.txt,.md,.markdown,.csv,.json,.log,text/plain,text/markdown,text/csv,application/json";
-const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 type SourceAttachmentPickerProps = {
   value: SourceAttachmentPayload[];
@@ -31,6 +33,7 @@ type SourceAttachmentPickerProps = {
   helper?: string;
   disabled?: boolean;
   maxFiles?: number;
+  instructionPlaceholder?: string;
 };
 
 export function SourceAttachmentPicker({
@@ -41,6 +44,7 @@ export function SourceAttachmentPicker({
   helper = "Attach sources for this generation only. PDF and images are extracted by the model.",
   disabled = false,
   maxFiles = SOURCE_ATTACHMENT_MAX_FILES,
+  instructionPlaceholder = "Optional: tell the generator how to use this context.",
 }: SourceAttachmentPickerProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [extracting, setExtracting] = useState(false);
@@ -88,6 +92,19 @@ export function SourceAttachmentPicker({
         }
         return attachmentIndex !== index;
       }),
+    );
+  }
+
+  function handleUsageInstructionsChange(index: number, instructions: string) {
+    onChange(
+      value.map((attachment, attachmentIndex) =>
+        attachmentIndex === index
+          ? {
+              ...attachment,
+              usageInstructions: instructions,
+            }
+          : attachment,
+      ),
     );
   }
 
@@ -155,6 +172,15 @@ export function SourceAttachmentPicker({
                       {preview}
                     </p>
                   ) : null}
+                  <Textarea
+                    value={attachment.usageInstructions ?? ""}
+                    onChange={(event) =>
+                      handleUsageInstructionsChange(index, event.target.value)
+                    }
+                    placeholder={instructionPlaceholder}
+                    className="min-h-[72px] resize-none bg-neutral-50/80 text-xs dark:bg-neutral-950/60"
+                    disabled={disabled || extracting}
+                  />
                 </div>
                 <Button
                   type="button"
@@ -179,8 +205,10 @@ async function buildAttachment(
   file: File,
   token?: string | null,
 ): Promise<SourceAttachmentPayload> {
-  if (file.size > MAX_FILE_BYTES) {
-    throw new Error(`${file.name} is too large. Keep each source under 10 MB.`);
+  if (file.size > SOURCE_ATTACHMENT_MAX_FILE_BYTES) {
+    throw new Error(
+      `${file.name} is too large. Keep each source under ${SOURCE_ATTACHMENT_MAX_FILE_LABEL}.`,
+    );
   }
 
   const id = createAttachmentId();

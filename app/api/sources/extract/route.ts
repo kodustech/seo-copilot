@@ -5,11 +5,11 @@ import { z } from "zod";
 import { getModel } from "@/lib/ai/provider";
 import {
   sanitizeSourceText,
+  SOURCE_ATTACHMENT_MAX_FILE_BYTES,
+  SOURCE_ATTACHMENT_MAX_FILE_LABEL,
   SOURCE_ATTACHMENT_MAX_TEXT_CHARS,
   type SourceAttachmentPayload,
 } from "@/lib/source-attachments";
-
-const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 const ExtractedSourceSchema = z.object({
   summary: z
@@ -58,9 +58,14 @@ export async function POST(request: Request) {
   }
 
   const estimatedBytes = estimateBase64Bytes(data);
-  if ((size && size > MAX_FILE_BYTES) || estimatedBytes > MAX_FILE_BYTES) {
+  if (
+    (size && size > SOURCE_ATTACHMENT_MAX_FILE_BYTES) ||
+    estimatedBytes > SOURCE_ATTACHMENT_MAX_FILE_BYTES
+  ) {
     return NextResponse.json(
-      { error: "File is too large. Keep each source under 10 MB." },
+      {
+        error: `File is too large. Keep each source under ${SOURCE_ATTACHMENT_MAX_FILE_LABEL}.`,
+      },
       { status: 400 },
     );
   }

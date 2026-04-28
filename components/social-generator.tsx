@@ -1009,6 +1009,7 @@ export function SocialGenerator() {
               token={token}
               label="Per-post sources"
               helper="Attach a study, screenshot, or source file for this generation. It only goes into this submit."
+              instructionPlaceholder="Optional: explain how this context should shape the social post."
               disabled={loading}
             />
             <div className="space-y-3">

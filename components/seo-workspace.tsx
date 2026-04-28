@@ -2038,6 +2038,15 @@ export function SeoWorkspace({
                       className="bg-neutral-50/70 text-base dark:bg-neutral-800"
                     />
                   </div>
+                  <SourceAttachmentPicker
+                    value={manualSourceAttachments}
+                    onChange={setManualSourceAttachments}
+                    token={token}
+                    label="Article context"
+                    helper="Attach PDFs, images, or source files to guide this article only."
+                    instructionPlaceholder="Optional: explain how this context should shape the article."
+                    disabled={loading.content}
+                  />
                 </div>
               </CardContent>
             </Card>
@@ -2137,14 +2146,6 @@ export function SeoWorkspace({
                         }
                         placeholder="Add important notes, CTA, personas, ideal length..."
                         className="min-h-[150px] resize-none bg-neutral-50/70 dark:bg-neutral-800"
-                      />
-                      <SourceAttachmentPicker
-                        value={manualSourceAttachments}
-                        onChange={setManualSourceAttachments}
-                        token={token}
-                        label="Article sources"
-                        helper="Attach PDFs, images, or source files for this article only. They are added to this queued request."
-                        disabled={loading.content}
                       />
                       <Button
                         className="w-full rounded-2xl bg-emerald-700 py-6 text-base font-medium hover:bg-emerald-600 text-white"
