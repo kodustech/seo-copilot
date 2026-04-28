@@ -63,7 +63,7 @@ export const SOCIAL_FORMATTING_HINT =
 export const DEFAULT_SOCIAL_VARIATION_STRATEGY =
   "Make each variation meaningfully different: one contrarian take, one practical lesson, one build-in-public observation, one tactical checklist, or one question-led post. Do not only rewrite the same idea with different hooks.";
 
-const SOCIAL_ANTI_AI_GUARDRAILS = `Rules never to break:
+export const SOCIAL_ANTI_AI_GUARDRAILS = `Rules never to break:
 - No em dashes. Use commas, periods, parentheses, or line breaks.
 - No rule-of-three lists. Do not group things into trios. Two items is fine. Four or five is fine.
 - No contrast framing. Do not write "it is not X, it is Y", "this is not X, it is Y", "not X but Y", "not only X but also Y", "more than X, it is Y", or "X? No. Actually Y."

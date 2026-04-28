@@ -10,6 +10,7 @@ import { z } from "zod";
 import { getModel } from "@/lib/ai/provider";
 import type { VoicePolicyPayload } from "@/lib/voice-policy";
 import {
+  SOCIAL_ANTI_AI_GUARDRAILS,
   buildSocialVariationStrategy,
   buildSocialWriterPrompt,
   type SocialNarrativeStyle,
@@ -566,7 +567,140 @@ export async function generateSocialContent({
     throw new Error("We did not receive posts from the copilot.");
   }
 
-  return variations;
+  return reviseSocialPostsWithEditor(variations, {
+    language,
+    platformConfigs: normalizedConfigs,
+  });
+}
+
+async function reviseSocialPostsWithEditor(
+  posts: SocialPostVariation[],
+  options: {
+    language: string;
+    platformConfigs: SocialPlatformConfigInput[];
+  },
+): Promise<SocialPostVariation[]> {
+  const violations = collectSocialPostStyleViolations(posts);
+
+  try {
+    const { object } = await generateObject({
+      model: getModel(),
+      schema: SocialGeneratedPostsSchema,
+      prompt: buildSocialEditorPrompt(posts, {
+        ...options,
+        violations,
+      }),
+    });
+
+    const revised = normalizeSocialPosts(object);
+    if (!revised.length) {
+      return posts;
+    }
+
+    return posts.map((original, index) => {
+      const next = revised[index];
+      if (!next) return original;
+      return {
+        ...next,
+        variant: original.variant,
+        platform: original.platform ?? next.platform,
+      };
+    });
+  } catch (error) {
+    console.warn("Social post editor pass failed", error);
+    return posts;
+  }
+}
+
+function buildSocialEditorPrompt(
+  posts: SocialPostVariation[],
+  options: {
+    language: string;
+    platformConfigs: SocialPlatformConfigInput[];
+    violations: string[];
+  },
+): string {
+  return `You are a writing editor. Your job is to make AI-generated social posts read like a human wrote them.
+
+Remove the specific patterns that make text sound AI-generated, then add actual personality. Text with AI patterns removed but no voice added just reads like a boring press release.
+
+Rules to apply:
+${SOCIAL_ANTI_AI_GUARDRAILS}
+
+Extra rules for this edit:
+- Fix every known violation listed below.
+- Preserve the original meaning, factual claims, source attribution, platform, variant, CTA, and hashtags.
+- Do not add facts, metrics, incidents, customers, quotes, or tools.
+- Keep paragraph breaks readable inside the JSON string.
+- Respect each platform's maxLength as much as possible.
+- Return only the corrected JSON object.
+
+Language: ${options.language}
+
+Platform configs:
+${JSON.stringify(options.platformConfigs, null, 2)}
+
+Known violations:
+${
+  options.violations.length
+    ? options.violations.map((violation) => `- ${violation}`).join("\n")
+    : "- No deterministic violation was detected. Still apply the editor rules and remove any AI-writing patterns you see."
+}
+
+Posts to edit:
+${JSON.stringify({ posts }, null, 2)}
+
+Return this shape:
+{
+  "posts": [
+    {
+      "platform": "LinkedIn",
+      "variant": 1,
+      "hook": "short hook",
+      "post": "full post text",
+      "cta": "optional CTA",
+      "hashtags": []
+    }
+  ]
+}`;
+}
+
+function collectSocialPostStyleViolations(
+  posts: SocialPostVariation[],
+): string[] {
+  const violations = new Set<string>();
+
+  for (const post of posts) {
+    const label = `${post.platform ?? "post"} var #${post.variant}`;
+    const text = [post.hook, post.post, post.cta].filter(Boolean).join("\n");
+
+    if (/[—–]/.test(text)) {
+      violations.add(`${label}: uses em dash or en dash.`);
+    }
+    if (/\b(?:this|it|that)\s+(?:isn't|is not|wasn't|was not)\s+about\b/i.test(text)) {
+      violations.add(`${label}: uses banned contrast framing ("isn't about").`);
+    }
+    if (/\b(?:it's|it is|this is|that's|that is)\s+not\b[^.!?\n]{0,180}\b(?:it's|it is|this is|that's|that is)\b/i.test(text)) {
+      violations.add(`${label}: uses banned "not X, it is Y" framing.`);
+    }
+    if (/\bnot\s+(?:just|only)\b/i.test(text)) {
+      violations.add(`${label}: uses banned "not just/not only" framing.`);
+    }
+    if (/\bmore than just\b/i.test(text)) {
+      violations.add(`${label}: uses banned "more than just" framing.`);
+    }
+    if (/\b(?:this highlights|this underscores|this speaks to|this illustrates|this demonstrates|the key takeaway is|here'?s why (?:this|that) matters)\b/i.test(text)) {
+      violations.add(`${label}: uses self-narration instead of a specific detail.`);
+    }
+    if (/\b(?:game changer|revolutionary|unlock|supercharge|leverage|seamless|dive into|ever-evolving)\b/i.test(text)) {
+      violations.add(`${label}: uses banned AI-marketing language.`);
+    }
+    if (/(🚀|💡|🎯|✅|🔥|💪|🌟|✨|📈|🏆|💎|🔑|🎉|⚡|🌐|📊|🤝|💼|🧠|🔒|⭐|📌|👉|🛠️|📢|🔷|💠|🪄|⚙️|🎁|💰|🧩|🏅|📍|🔔|💬|📝|🎓|🌱|💥)/u.test(text)) {
+      violations.add(`${label}: uses banned professional-writing emoji.`);
+    }
+  }
+
+  return Array.from(violations);
 }
 
 export async function fetchSocialAccounts({
