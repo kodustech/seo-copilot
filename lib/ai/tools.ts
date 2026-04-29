@@ -400,6 +400,17 @@ function createGenerateSocialPostsTool(userEmail?: string) {
         .describe(
           "Narrative shape for the post: analysis, storytelling, hot_take, or lesson",
         ),
+      generationMode: z
+        .enum([
+          "content_marketing",
+          "build_in_public",
+          "adversarial",
+          "product_update",
+        ])
+        .optional()
+        .describe(
+          "Generation mode: content_marketing, build_in_public, adversarial, or product_update",
+        ),
       platforms: z
         .array(
           z.object({
@@ -427,6 +438,7 @@ function createGenerateSocialPostsTool(userEmail?: string) {
       tone,
       sourcePerspective,
       narrativeStyle,
+      generationMode,
       platforms,
     }) => {
       try {
@@ -436,6 +448,7 @@ function createGenerateSocialPostsTool(userEmail?: string) {
           instructions,
           language,
           tone,
+          generationMode,
           sourcePerspective,
           narrativeStyle,
           platformConfigs: platforms.map((p) => ({

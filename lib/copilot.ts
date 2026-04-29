@@ -10,12 +10,12 @@ import { z } from "zod";
 import { getModel } from "@/lib/ai/provider";
 import type { VoicePolicyPayload } from "@/lib/voice-policy";
 import {
-  SOCIAL_ANTI_AI_GUARDRAILS,
   buildSocialVariationStrategy,
   buildSocialWriterPrompt,
   type SocialNarrativeStyle,
   type SocialSourcePerspective,
 } from "@/lib/social-writing-style";
+import { WRITING_EDITOR_RULES } from "@/lib/writing-editor";
 import {
   formatSourceAttachmentsForPrompt,
   normalizeSourceAttachments,
@@ -457,13 +457,18 @@ export type { SocialNarrativeStyle, SocialSourcePerspective };
 export type SocialGenerationMode =
   | "content_marketing"
   | "build_in_public"
-  | "adversarial";
+  | "adversarial"
+  | "product_update";
 
 function defaultSourcePerspective(
   contentSource: SocialContentSource | undefined,
   generationMode: SocialGenerationMode,
 ): SocialSourcePerspective {
-  if (generationMode === "build_in_public" || contentSource === "changelog") {
+  if (
+    generationMode === "build_in_public" ||
+    generationMode === "product_update" ||
+    contentSource === "changelog"
+  ) {
     return "owned";
   }
 
@@ -478,7 +483,11 @@ function defaultNarrativeStyle(
   contentSource: SocialContentSource | undefined,
   generationMode: SocialGenerationMode,
 ): SocialNarrativeStyle {
-  if (generationMode === "build_in_public" || contentSource === "changelog") {
+  if (
+    generationMode === "build_in_public" ||
+    generationMode === "product_update" ||
+    contentSource === "changelog"
+  ) {
     return "storytelling";
   }
 
@@ -625,7 +634,7 @@ function buildSocialEditorPrompt(
 Remove the specific patterns that make text sound AI-generated, then add actual personality. Text with AI patterns removed but no voice added just reads like a boring press release.
 
 Rules to apply:
-${SOCIAL_ANTI_AI_GUARDRAILS}
+${WRITING_EDITOR_RULES}
 
 Extra rules for this edit:
 - Fix every known violation listed below.

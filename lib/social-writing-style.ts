@@ -215,7 +215,11 @@ function sourceRules(
 ): string {
   const rules: string[] = [];
 
-  if (generationMode === "adversarial") {
+  if (generationMode === "product_update") {
+    rules.push(
+      "For product updates, do not write a generic launch announcement from a feature spec. Treat the product or feature as the consequence of a thesis, customer signal, trade-off, or strategic choice. Include information only the team would know when the input supports it: why this was built now, what changed in the market or workflow, what was deliberately not built, or what hard choice shaped the release.",
+    );
+  } else if (generationMode === "adversarial") {
     rules.push(
       sourcePerspective === "owned"
         ? "For adversarial posts about owned material, push back on a common belief or dominant narrative using the author's actual company, product, team, or shipped work as support. Do not invent internal incidents, metrics, or customer stories. The pushback must be defensible and aligned with the author's worldview (provided separately). Do not strawman. Do not be edgy for the sake of it."
@@ -300,6 +304,24 @@ Each variation should naturally cover:
 - What the team learned or what is next.
 
 Do not use build-in-public framing for third-party material. If sourcePerspective is not "owned", treat the material as observed and explain what the author noticed while reading it.`;
+  }
+
+  if (generationMode === "product_update") {
+    return `Generate product update social posts with a real editorial angle.
+
+Before writing, identify the launch angle internally:
+- What thesis or market/workflow shift makes this release matter now.
+- What opinion the company is willing to defend.
+- What customer signal, internal constraint, or product bet shaped the work.
+- What the team chose not to build, or what trade-off made the release non-obvious.
+
+Each post must:
+- Lead with thesis, tension, customer pain, or a specific choice, not "we launched".
+- Make the feature feel like the result of a strategic claim.
+- Include a why-now, opinion, trade-off, or rejected alternative when the source supports it.
+- Avoid announcements that could be written by any competitor with the same feature list.
+
+If the source only contains a feature spec, infer a cautious angle from the provided context without inventing facts.`;
   }
 
   if (generationMode === "adversarial") {

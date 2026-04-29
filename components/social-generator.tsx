@@ -10,6 +10,7 @@ import {
   Flame,
   GraduationCap,
   Loader2,
+  Megaphone,
   RefreshCw,
   Rocket,
   Search,
@@ -107,8 +108,13 @@ function feedSourceLabel(source: FeedSource): string {
 type SocialGenerationMode =
   | "content_marketing"
   | "build_in_public"
-  | "adversarial";
-type SocialStyle = "default" | "build_in_public" | "adversarial";
+  | "adversarial"
+  | "product_update";
+type SocialStyle =
+  | "default"
+  | "build_in_public"
+  | "adversarial"
+  | "product_update";
 type SocialSourcePerspective = "owned" | "observed" | "inspired";
 type SocialNarrativeStyle =
   | "analysis"
@@ -120,6 +126,7 @@ const STYLE_TO_MODE: Record<SocialStyle, SocialGenerationMode> = {
   default: "content_marketing",
   build_in_public: "build_in_public",
   adversarial: "adversarial",
+  product_update: "product_update",
 };
 
 const STYLE_OPTIONS: {
@@ -139,6 +146,12 @@ const STYLE_OPTIONS: {
     label: "Build in public",
     hint: "Ship-update: what changed, why, what we learned",
     icon: Rocket,
+  },
+  {
+    value: "product_update",
+    label: "Product update",
+    hint: "Launch writing with thesis, tradeoff, and why now",
+    icon: Megaphone,
   },
   {
     value: "adversarial",
@@ -281,7 +294,11 @@ function defaultSourcePerspectiveForSelection(
   source: FeedSource,
   selectedStyle: SocialStyle,
 ): SocialSourcePerspective {
-  if (source === "changelog" || selectedStyle === "build_in_public") {
+  if (
+    source === "changelog" ||
+    selectedStyle === "build_in_public" ||
+    selectedStyle === "product_update"
+  ) {
     return "owned";
   }
 
@@ -296,7 +313,11 @@ function defaultNarrativeStyleForSelection(
   source: FeedSource,
   selectedStyle: SocialStyle,
 ): SocialNarrativeStyle {
-  if (source === "changelog" || selectedStyle === "build_in_public") {
+  if (
+    source === "changelog" ||
+    selectedStyle === "build_in_public" ||
+    selectedStyle === "product_update"
+  ) {
     return "storytelling";
   }
 
@@ -1014,7 +1035,7 @@ export function SocialGenerator() {
             />
             <div className="space-y-3">
               <p className="text-xs uppercase text-neutral-500">Style</p>
-              <div className="grid gap-2 sm:grid-cols-3">
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                 {STYLE_OPTIONS.map((option) => {
                   const Icon = option.icon;
                   const active = style === option.value;

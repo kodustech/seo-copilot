@@ -180,7 +180,8 @@ function normalizeGenerationMode(
   if (
     rawMode === "build_in_public" ||
     rawMode === "content_marketing" ||
-    rawMode === "adversarial"
+    rawMode === "adversarial" ||
+    rawMode === "product_update"
   ) {
     return rawMode;
   }
