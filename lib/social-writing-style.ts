@@ -451,7 +451,8 @@ export function buildSocialWriterPrompt({
     normalizePart(voicePolicyPrompt)
       ? `Voice policy:\n${normalizePart(voicePolicyPrompt)}`
       : null,
-    generationMode === "adversarial" && normalizePart(worldview)
+    (generationMode === "adversarial" || generationMode === "product_update") &&
+    normalizePart(worldview)
       ? `Author worldview:\n${normalizePart(worldview)}`
       : null,
     `Writing instructions:\n${socialInstructions}`,
