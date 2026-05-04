@@ -1,9 +1,14 @@
 /**
- * Tool registry shared by both transports (stdio + HTTP).
+ * Tool registry shared by both MCP transports (HTTP + stdio).
  *
- * Returns the list of MCP-compatible tool definitions built from the
- * Vercel AI SDK tools in `lib/ai/tools.ts`. Each transport then plugs
- * these into its own dispatch mechanism.
+ * Pure function — no side effects, no transport coupling. Returns the
+ * list of MCP-compatible tool definitions built from the Vercel AI SDK
+ * tools in `lib/ai/tools.ts`. Each transport then plugs these into its
+ * own dispatch mechanism.
+ *
+ * Used by:
+ *   - app/api/mcp/route.ts        (HTTP, deployed)
+ *   - mcp-server/src/index.ts     (stdio, local dev)
  */
 
 import { zodToJsonSchema } from "zod-to-json-schema";
@@ -35,7 +40,6 @@ export interface BuildToolsResult {
 
 /**
  * Build the MCP-compatible tool registry from `createAgentTools`.
- * Pure function — no side effects, no transport coupling.
  */
 export function buildMcpTools(options: BuildToolsOptions = {}): BuildToolsResult {
   const userEmail = options.userEmail ?? "growth@kodus.io";

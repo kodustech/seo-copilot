@@ -1,104 +1,44 @@
-# @kodus/seo-copilot-mcp
+# mcp-server (stdio mode, local dev only)
 
-MCP server exposing the seo-copilot tools (`lib/ai/tools.ts`) to Claude Code, Anthropic Desktop, Cursor, Cline, or any MCP client.
+Standalone entrypoint for running the MCP server over stdio — useful for local development and debugging without needing the seo-copilot Next.js app running.
 
-**Single source of truth**: the same handlers power the web UI agent (`/api/agent/chat`) and this CLI-friendly MCP wrapper. Zero duplication.
+**Production uses HTTP at `/api/mcp`** (see `seo-copilot/app/api/mcp/route.ts`). This folder is just for local stdio testing.
 
-## What this exposes
+## What's here
 
-All 33 tools from `createAgentTools()`:
+- `src/index.ts` — stdio entrypoint, imports the shared factory from `@/lib/mcp/server`
+- `tsconfig.json` — extends the root tsconfig
 
-- Content: `generateIdeas`, `generateKeywords`, `getKeywordHistory`, `generateTitles`, `generateArticle`, `generateSocialPosts`, `generateContentPlan`, `fetchBlogFeed`
-- Analytics (BigQuery): `getSearchPerformance`, `getTrafficOverview`, `getTopContent`, `getContentOpportunities`, `comparePerformance`, `getContentDecay`, `getSearchBySegment`, `getPageKeywords`, `exploreDataWarehouse`, `runBigQuery`
-- SERP / web research: `analyzeCompetitor`, `searchWeb`, `scrapePage`, `getKeywordVolume`, `analyzeSERP`
-- Social: `listSocialAccounts`, `scheduleSocialPost`
-- Scheduled jobs: `scheduleJob`, `listScheduledJobs`, `deleteScheduledJob`, `scheduleArticlePublication`
-- Kanban: `createKanbanCard`, `moveKanbanCard`, `listKanbanCards`
-- Voice: `getVoicePolicy`
+No own `package.json`. Dependencies (`@modelcontextprotocol/sdk`, `tsx`, `zod-to-json-schema`) are in the seo-copilot root `package.json`.
 
-## Setup
+## Running
 
 From the seo-copilot root:
 
 ```bash
-cd mcp-server
-npm install        # installs @modelcontextprotocol/sdk, zod-to-json-schema, tsx
+npm run mcp
 ```
 
-The server reuses the parent seo-copilot `.env.local` for Supabase / n8n / Post-Bridge / BigQuery credentials.
+That runs `tsx mcp-server/src/index.ts`, which connects via stdio.
 
-## Run modes
+You should see:
 
-### Dev (recommended for now)
-
-```bash
-npm run dev
+```
+[mcp/stdio] seo-copilot ready. Registered N tools (skipped 0). User: growth@kodus.io
 ```
 
-Uses `tsx` — hot-reloads on file changes. Stays attached via stdio.
+The process stays attached. Connect with any MCP stdio client.
 
-### Production
+## When to use stdio vs HTTP
 
-```bash
-npm run build
-npm start
-```
-
-## Configuration
-
-| Env var | Default | Description |
+| | stdio (this folder) | HTTP (`/api/mcp`) |
 |---|---|---|
-| `MCP_USER_EMAIL` | `growth@kodus.io` | Email used as identity for user-scoped tools (kanban, social schedule, voice policy) |
+| **Use case** | Local debugging | Production (Junior + Ed via Claude Code) |
+| **Setup** | Clone repo + `npm install` | Just configure `.mcp.json` with URL + token |
+| **Auth** | None (filesystem access = trust) | Bearer token via `MCP_AUTH_TOKEN` env var |
+| **Hot reload** | Yes (tsx) | Yes (Next.js dev mode) |
+| **Multi-user** | No (1 process per user) | Yes (1 endpoint, many clients) |
 
-All other env vars are inherited from the seo-copilot `.env.local` (Supabase, n8n, Post-Bridge, BigQuery, AI providers, etc).
+## Spec
 
-## Connecting from Claude Code
-
-In `kodus-growth/.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "seo-copilot": {
-      "command": "npx",
-      "args": [
-        "tsx",
-        "/Users/gabrielmalinosqui/dev/kodus/seo-copilot/mcp-server/src/index.ts"
-      ],
-      "env": {
-        "MCP_USER_EMAIL": "growth@kodus.io"
-      }
-    }
-  }
-}
-```
-
-When Claude Code starts in `kodus-growth/`, it auto-connects and tools become available.
-
-## Smoke test (manual)
-
-```bash
-cd /Users/gabrielmalinosqui/dev/kodus/seo-copilot/mcp-server
-npm install
-npm run dev
-```
-
-Should output:
-
-```
-[mcp] seo-copilot ready. Registered 33 tools (skipped 0). User: growth@kodus.io
-```
-
-The process stays open via stdio. Send a `tools/list` JSON-RPC request to verify tools enumerate.
-
-## Design notes
-
-- **Generic wrapper**: `src/index.ts` iterates `createAgentTools()` and registers each tool. Adding a new tool to `lib/ai/tools.ts` automatically exposes it via MCP after restart.
-- **Zod → JSON Schema**: MCP wire format requires JSON Schema. `zod-to-json-schema` handles the conversion.
-- **Error surfacing**: tool exceptions return `{ isError: true, content: [{ type: 'text', text: 'Error: ...' }] }` instead of crashing.
-- **Auth model (current)**: single `MCP_USER_EMAIL` — Junior + Ed share. For multi-user real-time, future iteration with token-based auth.
-- **No HTTP transport (yet)**: stdio-only. Local/desktop use only. To expose remotely, add HTTP+SSE transport in a follow-up.
-
-## Related specs
-
-- [`kodus-growth/specs/setup/18-seo-copilot-mcp-export.md`](../../growth/specs/setup/18-seo-copilot-mcp-export.md) — full architectural spec
+See `kodus-growth/specs/setup/18-seo-copilot-mcp-export.md` for full architecture.

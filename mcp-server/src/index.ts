@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 /**
- * Kodus SEO Copilot — MCP Server (stdio mode)
+ * Kodus SEO Copilot — MCP Server (stdio mode, local dev)
  *
- * Local development entrypoint. For remote/HTTP mode, see
- * `seo-copilot/app/api/mcp/route.ts`.
+ * For production HTTP mode, see `seo-copilot/app/api/mcp/route.ts`.
  *
  * Run:
  *   - dev:   `npm run mcp` (uses tsx, hot reload)
@@ -12,11 +11,14 @@
  * Configuration:
  *   - MCP_USER_EMAIL : email used as identity for user-scoped tools.
  *                     Defaults to `growth@kodus.io`.
+ *
+ * The shared factory lives at `seo-copilot/lib/mcp/server.ts` so the
+ * HTTP and stdio transports stay in sync (single source of truth).
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { buildMcpTools, SERVER_INFO } from "./server.js";
+import { buildMcpTools, SERVER_INFO } from "@/lib/mcp/server";
 
 const userEmail = process.env.MCP_USER_EMAIL ?? "growth@kodus.io";
 const { tools, skipped } = buildMcpTools({ userEmail });

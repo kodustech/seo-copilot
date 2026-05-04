@@ -27,7 +27,7 @@ import {
   SERVER_INFO,
   PROTOCOL_VERSION,
   type McpToolDefinition,
-} from "../../../mcp-server/src/server";
+} from "@/lib/mcp/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
