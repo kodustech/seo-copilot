@@ -1348,14 +1348,24 @@ export function KanbanPage() {
   // Visible columns based on the active type filter. When filter is "all", we
   // render synthetic macro columns instead (handled in displayColumns below).
   // For type-specific filters, show only columns whose name matches the
-  // canonical set (case-insensitive).
+  // canonical set (case-insensitive) AND order them by the canonical sequence
+  // — not by their DB position. The canonical order encodes the workflow
+  // (Backlog → Next → in-progress → Review → terminal).
   const visibleColumns = useMemo(() => {
     if (typeFilter === "all") return columns;
-    const allowed = CANONICAL_COLUMNS_BY_FILTER[typeFilter].map((n) =>
-      n.toLowerCase(),
+    const canonical = CANONICAL_COLUMNS_BY_FILTER[typeFilter];
+    if (!canonical.length) return columns;
+    const orderIndex = new Map<string, number>();
+    canonical.forEach((name, idx) =>
+      orderIndex.set(name.toLowerCase(), idx),
     );
-    if (!allowed.length) return columns;
-    return columns.filter((c) => allowed.includes(c.name.toLowerCase()));
+    return columns
+      .filter((c) => orderIndex.has(c.name.toLowerCase()))
+      .sort((a, b) => {
+        const ai = orderIndex.get(a.name.toLowerCase()) ?? 999;
+        const bi = orderIndex.get(b.name.toLowerCase()) ?? 999;
+        return ai - bi;
+      });
   }, [columns, typeFilter]);
 
   // What we actually render. In "all" mode, synthetic macro columns. Otherwise,
