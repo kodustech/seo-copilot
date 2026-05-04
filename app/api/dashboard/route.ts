@@ -63,13 +63,15 @@ export async function GET(request: Request) {
         return null;
       }),
       fetchBacklinkSummary().catch((e) => {
-        console.error("[dashboard] backlinkSummary error:", e);
-        return null;
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error("[dashboard] backlinkSummary error:", msg);
+        return { __error: msg };
       }),
       fetchNewBacklinksAboveRank({ rankMin: 500, periodDays: days }).catch(
         (e) => {
-          console.error("[dashboard] newBacklinks error:", e);
-          return null;
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error("[dashboard] newBacklinks error:", msg);
+          return { __error: msg };
         },
       ),
     ]);
