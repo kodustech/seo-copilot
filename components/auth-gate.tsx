@@ -20,7 +20,6 @@ import {
   Radar,
   Settings,
   Sparkles,
-  Star,
   Wrench,
 } from "lucide-react";
 
@@ -95,12 +94,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         label: "Automation",
         items: [
           { href: "/jobs", label: "Scheduled Jobs", icon: Clock },
-        ],
-      },
-      {
-        label: "Personal",
-        items: [
-          { href: "/favoritos", label: "Favorites", icon: Star },
         ],
       },
     ],
