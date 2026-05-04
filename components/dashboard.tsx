@@ -80,6 +80,20 @@ function formatPosition(n: number): string {
   return n.toFixed(1);
 }
 
+// Section divider with a small uppercase label — Vercel/Linear style.
+// Use sparingly to give the dashboard hierarchy without tabs.
+function SectionHeader({ label, hint }: { label: string; hint?: string }) {
+  return (
+    <div className="flex items-baseline gap-3 pb-1 pt-3 first:pt-0">
+      <h2 className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
+        {label}
+      </h2>
+      {hint && <p className="text-[11px] text-neutral-600">{hint}</p>}
+      <div className="h-px flex-1 bg-white/[0.06]" />
+    </div>
+  );
+}
+
 // Strip protocol/host so the page column reads as a path. Falls back to the
 // raw value if it's not a valid URL.
 function shortenUrlPath(raw: string): string {
@@ -135,19 +149,19 @@ export function Dashboard() {
     : [];
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-6 space-y-6">
+    <div className="mx-auto w-full max-w-screen-2xl px-6 py-5 space-y-5">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-end justify-between gap-4 pb-1">
         <div>
-          <h1 className="text-2xl font-semibold text-white">Dashboard</h1>
+          <h1 className="text-xl font-semibold tracking-tight text-white">Overview</h1>
           {data && (
-            <p className="mt-1 text-xs text-neutral-500">
+            <p className="mt-0.5 text-[11px] text-neutral-500">
               {data.compare.periodLabel}
             </p>
           )}
         </div>
         <Select value={period} onValueChange={setPeriod}>
-          <SelectTrigger className="w-28 border-white/10 bg-neutral-900 text-neutral-200">
+          <SelectTrigger className="h-8 w-24 border-white/[0.08] bg-neutral-900 text-xs text-neutral-200">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -162,8 +176,59 @@ export function Dashboard() {
         <p className="text-sm text-red-400">{error}</p>
       )}
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+      {/* ── Growth KPIs (5 canonical from GROWTH_PLAN section 3) ─────────── */}
+      <SectionHeader
+        label="Growth KPIs"
+        hint="The 5 metrics from GROWTH_PLAN section 3"
+      />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <KpiCard
+          title="Activated users / mo"
+          loading={loading}
+          placeholder="—"
+          hint="PostHog `first_review_completed` — needs MCP integration"
+        />
+        <KpiCard
+          title="Backlinks DR 50+ / mo"
+          loading={loading}
+          placeholder="—"
+          hint="Manual entry from Semrush > New > DR ≥ 50"
+        />
+        <KpiCard
+          title="Authority Score"
+          loading={loading}
+          placeholder="—"
+          hint="Manual entry from Semrush — currently 24"
+        />
+        <KpiCard
+          title="Top 10 commercial pages"
+          value={
+            data
+              ? String(
+                  data.search.topQueries.filter((q) => q.position <= 10).length,
+                )
+              : undefined
+          }
+          loading={loading}
+          hint="Queries on page 1 (proxy)"
+        />
+        <KpiCard
+          title="LLM citations"
+          value={
+            data
+              ? String(
+                  data.llmMentions.reduce((sum, s) => sum + s.mentions, 0),
+                )
+              : undefined
+          }
+          loading={loading}
+          hint="Sum across Google AI + ChatGPT"
+        />
+      </div>
+
+      {/* ── Traffic (secondary GA4 + Search Console metrics) ─────────────── */}
+      <SectionHeader label="Traffic" />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <KpiCard
           title="Users"
           value={data ? formatNumber(data.traffic.overview.users) : undefined}
@@ -195,13 +260,17 @@ export function Dashboard() {
         />
       </div>
 
-      {/* AI Visibility (LLM Mentions) */}
+      {/* ── AI Visibility (LLM Mentions) ─────────────────────────────────── */}
       {!loading && data && data.llmMentions.length > 0 && (
-        <AIVisibilitySection snapshots={data.llmMentions} />
+        <>
+          <SectionHeader label="AI Visibility" />
+          <AIVisibilitySection snapshots={data.llmMentions} />
+        </>
       )}
 
-      {/* Daily Trend Chart */}
-      <Card className="border-white/10 bg-neutral-900">
+      {/* ── Daily Trend Chart ────────────────────────────────────────────── */}
+      <SectionHeader label="Daily trend" />
+      <Card className="border-white/[0.06] bg-neutral-900/50">
         <CardHeader>
           <CardTitle className="text-sm font-medium text-neutral-300">
             Daily Visits (Users)
@@ -249,11 +318,17 @@ export function Dashboard() {
       </Card>
 
       {/* Opportunities */}
+      {!loading && data && (data.opportunities.strikingDistance.length > 0 || data.opportunities.lowCtr.length > 0 || data.decay.decaying.length > 0) && (
+        <SectionHeader
+          label="Pontos de melhoria"
+          hint="Cards acionáveis — clique pra criar task no Kanban"
+        />
+      )}
       {!loading && data && (data.opportunities.strikingDistance.length > 0 || data.opportunities.lowCtr.length > 0) && (
-        <div className="grid gap-6 lg:grid-cols-2">
+        <div className="grid gap-4 lg:grid-cols-2">
           {/* Striking Distance */}
           {data.opportunities.strikingDistance.length > 0 && (
-            <Card className="border-amber-500/20 bg-neutral-900">
+            <Card className="border-white/[0.06] bg-neutral-900/50">
               <CardHeader>
                 <div className="flex items-center gap-2">
                   <CardTitle className="text-sm font-medium text-amber-400">
@@ -268,7 +343,7 @@ export function Dashboard() {
                 </p>
               </CardHeader>
               <CardContent>
-                <div className="overflow-x-auto">
+                <div>
                   <Table>
                     <TableHeader>
                       <TableRow className="border-white/10">
@@ -307,7 +382,7 @@ export function Dashboard() {
 
           {/* Low CTR */}
           {data.opportunities.lowCtr.length > 0 && (
-            <Card className="border-orange-500/20 bg-neutral-900">
+            <Card className="border-white/[0.06] bg-neutral-900/50">
               <CardHeader>
                 <div className="flex items-center gap-2">
                   <CardTitle className="text-sm font-medium text-orange-400">
@@ -323,7 +398,7 @@ export function Dashboard() {
                 </p>
               </CardHeader>
               <CardContent>
-                <div className="overflow-x-auto">
+                <div>
                   <Table>
                     <TableHeader>
                       <TableRow className="border-white/10">
@@ -364,7 +439,7 @@ export function Dashboard() {
 
       {/* Content Decay */}
       {!loading && data && data.decay.decaying.length > 0 && (
-        <Card className="border-red-500/20 bg-neutral-900">
+        <Card className="border-white/[0.06] bg-neutral-900/50">
           <CardHeader>
             <div className="flex items-center gap-2">
               <CardTitle className="text-sm font-medium text-red-400">
@@ -379,7 +454,7 @@ export function Dashboard() {
             </p>
           </CardHeader>
           <CardContent>
-            <div className="overflow-x-auto">
+            <div>
               <Table>
                 <TableHeader>
                   <TableRow className="border-white/10">
@@ -417,10 +492,11 @@ export function Dashboard() {
         </Card>
       )}
 
-      {/* Tables side by side */}
-      <div className="grid gap-6 lg:grid-cols-2">
+      {/* ── Content performance ─────────────────────────────────────────── */}
+      <SectionHeader label="Content performance" />
+      <div className="grid gap-4 lg:grid-cols-2">
         {/* Top Pages (GA4) */}
-        <Card className="border-white/10 bg-neutral-900">
+        <Card className="border-white/[0.06] bg-neutral-900/50">
           <CardHeader>
             <CardTitle className="text-sm font-medium text-neutral-300">
               Top Pages
@@ -430,7 +506,7 @@ export function Dashboard() {
             {loading ? (
               <TableSkeleton rows={5} cols={3} />
             ) : (
-              <div className="overflow-x-auto">
+              <div>
                 <Table>
                   <TableHeader>
                     <TableRow className="border-white/10">
@@ -461,7 +537,7 @@ export function Dashboard() {
         </Card>
 
         {/* Top Queries (Search Console) */}
-        <Card className="border-white/10 bg-neutral-900">
+        <Card className="border-white/[0.06] bg-neutral-900/50">
           <CardHeader>
             <CardTitle className="text-sm font-medium text-neutral-300">
               Top Queries
@@ -471,7 +547,7 @@ export function Dashboard() {
             {loading ? (
               <TableSkeleton rows={5} cols={4} />
             ) : (
-              <div className="overflow-x-auto">
+              <div>
                 <Table>
                   <TableHeader>
                     <TableRow className="border-white/10">
@@ -506,8 +582,9 @@ export function Dashboard() {
         </Card>
       </div>
 
-      {/* Traffic Sources */}
-      <Card className="border-white/10 bg-neutral-900">
+      {/* ── Acquisition ─────────────────────────────────────────────────── */}
+      <SectionHeader label="Acquisition" />
+      <Card className="border-white/[0.06] bg-neutral-900/50">
         <CardHeader>
           <CardTitle className="text-sm font-medium text-neutral-300">
             Traffic Sources
@@ -517,7 +594,7 @@ export function Dashboard() {
           {loading ? (
             <TableSkeleton rows={5} cols={3} />
           ) : (
-            <div className="overflow-x-auto">
+            <div>
               <Table>
                 <TableHeader>
                   <TableRow className="border-white/10">
@@ -619,7 +696,7 @@ function AIVisibilitySection({ snapshots }: { snapshots: LLMMentionsSnapshot[] }
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Top AI Questions */}
         {allQuestions.length > 0 && (
-          <Card className="border-violet-500/20 bg-neutral-900">
+          <Card className="border-white/[0.06] bg-neutral-900/50">
             <CardHeader>
               <div className="flex items-center gap-2">
                 <CardTitle className="text-sm font-medium text-violet-400">
@@ -634,7 +711,7 @@ function AIVisibilitySection({ snapshots }: { snapshots: LLMMentionsSnapshot[] }
               </p>
             </CardHeader>
             <CardContent>
-              <div className="overflow-x-auto">
+              <div>
                 <Table>
                   <TableHeader>
                     <TableRow className="border-white/10">
@@ -662,7 +739,7 @@ function AIVisibilitySection({ snapshots }: { snapshots: LLMMentionsSnapshot[] }
 
         {/* Top Co-Mentioned Sources */}
         {topSources.length > 0 && (
-          <Card className="border-white/10 bg-neutral-900">
+          <Card className="border-white/[0.06] bg-neutral-900/50">
             <CardHeader>
               <CardTitle className="text-sm font-medium text-neutral-300">
                 Co-Mentioned Sources
@@ -672,7 +749,7 @@ function AIVisibilitySection({ snapshots }: { snapshots: LLMMentionsSnapshot[] }
               </p>
             </CardHeader>
             <CardContent>
-              <div className="overflow-x-auto">
+              <div>
                 <Table>
                   <TableHeader>
                     <TableRow className="border-white/10">
@@ -716,7 +793,7 @@ function AiKpiCard({
   compact?: boolean;
 }) {
   return (
-    <Card className="border-white/10 bg-neutral-900">
+    <Card className="border-white/[0.06] bg-neutral-900/50">
       <CardHeader className="pb-2">
         <div className="flex items-center gap-1.5">
           {icon}
@@ -739,31 +816,44 @@ function KpiCard({
   value,
   change,
   loading,
+  placeholder,
+  hint,
 }: {
   title: string;
   value?: string;
   change?: number;
-  loading: boolean;
+  loading?: boolean;
+  // When the metric isn't computed yet, show this in muted style.
+  placeholder?: string;
+  hint?: string;
 }) {
   const isPositive = change !== undefined && change > 0;
   const isNegative = change !== undefined && change < 0;
+  const showPlaceholder = !loading && !value && !!placeholder;
 
   return (
-    <Card className="border-white/10 bg-neutral-900">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-xs font-medium text-neutral-400">
-          {title}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
+    <div className="rounded-lg border border-white/[0.06] bg-neutral-900/40 p-4">
+      <p className="text-[11px] font-medium uppercase tracking-wider text-neutral-500">
+        {title}
+      </p>
+      <div className="mt-1.5">
         {loading ? (
           <Skeleton className="h-7 w-20 bg-neutral-800" />
+        ) : showPlaceholder ? (
+          <div>
+            <p className="text-xl font-semibold tracking-tight text-neutral-600">
+              {placeholder}
+            </p>
+            {hint && (
+              <p className="mt-1 text-[10px] text-neutral-600">{hint}</p>
+            )}
+          </div>
         ) : (
           <div>
-            <p className="text-2xl font-semibold text-white">{value}</p>
+            <p className="text-xl font-semibold tracking-tight text-white">{value}</p>
             {change !== undefined && (
               <div
-                className={`mt-1 flex items-center gap-1 text-xs ${
+                className={`mt-1 flex items-center gap-1 text-[11px] ${
                   isPositive
                     ? "text-emerald-400"
                     : isNegative
@@ -777,10 +867,13 @@ function KpiCard({
                 <span className="text-neutral-600">vs previous</span>
               </div>
             )}
+            {!change && hint && (
+              <p className="mt-1 text-[10px] text-neutral-600">{hint}</p>
+            )}
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 
