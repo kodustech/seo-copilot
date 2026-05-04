@@ -1153,6 +1153,14 @@ type TypeFilter = "all" | "content" | "update" | "task";
 // Responsible filter: "all" = everyone, "__unassigned__" = no responsible set,
 // otherwise = email string
 type ResponsibleFilter = "all" | "__unassigned__" | string;
+type PriorityFilter = "all" | WorkItemPriority;
+type SortMode = "position" | "priority";
+
+const PRIORITY_RANK: Record<WorkItemPriority, number> = {
+  high: 0,
+  medium: 1,
+  low: 2,
+};
 
 export function KanbanPage() {
   const token = useAuthToken();
@@ -1167,6 +1175,8 @@ export function KanbanPage() {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [responsibleFilter, setResponsibleFilter] =
     useState<ResponsibleFilter>("all");
+  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>("all");
+  const [sortMode, setSortMode] = useState<SortMode>("position");
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -1217,8 +1227,12 @@ export function KanbanPage() {
       result = result.filter((i) => i.responsibleEmail === responsibleFilter);
     }
 
+    if (priorityFilter !== "all") {
+      result = result.filter((i) => i.priority === priorityFilter);
+    }
+
     return result;
-  }, [items, typeFilter, responsibleFilter]);
+  }, [items, typeFilter, responsibleFilter, priorityFilter]);
 
   const itemsByColumn = useMemo(() => {
     const map = new Map<string, GrowthWorkItem[]>();
@@ -1234,11 +1248,20 @@ export function KanbanPage() {
     }
 
     for (const [, list] of map) {
-      list.sort((a, b) => a.position - b.position);
+      if (sortMode === "priority") {
+        list.sort((a, b) => {
+          const rankA = PRIORITY_RANK[a.priority] ?? 99;
+          const rankB = PRIORITY_RANK[b.priority] ?? 99;
+          if (rankA !== rankB) return rankA - rankB;
+          return a.position - b.position;
+        });
+      } else {
+        list.sort((a, b) => a.position - b.position);
+      }
     }
 
     return map;
-  }, [columns, filteredItems]);
+  }, [columns, filteredItems, sortMode]);
 
   // ---- Column CRUD ----
 
@@ -1548,6 +1571,42 @@ export function KanbanPage() {
                 ))}
               </SelectContent>
             </Select>
+
+            {/* Priority filter */}
+            <Select
+              value={priorityFilter}
+              onValueChange={(v) => setPriorityFilter(v as PriorityFilter)}
+            >
+              <SelectTrigger className="h-9 w-32 border-white/10 bg-neutral-900 text-xs text-neutral-200 hover:bg-neutral-800">
+                <SelectValue placeholder="Priority" />
+              </SelectTrigger>
+              <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+                <SelectItem value="all">Any priority</SelectItem>
+                <SelectItem value="high">High only</SelectItem>
+                <SelectItem value="medium">Medium only</SelectItem>
+                <SelectItem value="low">Low only</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {/* Sort mode toggle */}
+            <button
+              className={cn(
+                "flex h-9 items-center gap-1.5 rounded-md border px-3 text-xs transition",
+                sortMode === "priority"
+                  ? "border-violet-500/40 bg-violet-500/10 text-violet-200"
+                  : "border-white/10 bg-neutral-900 text-neutral-300 hover:bg-neutral-800",
+              )}
+              title={
+                sortMode === "priority"
+                  ? "Sorted by priority (high → low). Click to switch back to manual order."
+                  : "Sorted by manual position. Click to sort by priority."
+              }
+              onClick={() =>
+                setSortMode((m) => (m === "priority" ? "position" : "priority"))
+              }
+            >
+              {sortMode === "priority" ? "↓ Priority" : "↕ Position"}
+            </button>
 
             <Button
               variant="outline"
