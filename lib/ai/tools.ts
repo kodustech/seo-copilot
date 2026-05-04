@@ -221,14 +221,64 @@ export const generateKeywords = createGenerateKeywordsTool();
 
 export const getKeywordHistory = tool({
   description:
-    "Fetches keyword history researched previously. Fast operation.",
-  inputSchema: z.object({}),
-  execute: async () => {
+    "Fetches keyword research history with pagination. Returns up to `limit` items starting at `offset`, optionally filtered by phrase substring. Default limit is 50 — full history can exceed 4000+ keywords (>100KB), so always paginate. Use `phraseContains` to find a specific topic without dumping everything.",
+  inputSchema: z.object({
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(500)
+      .optional()
+      .default(50)
+      .describe("Max items per page (default 50, hard cap 500)"),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .default(0)
+      .describe("Starting offset (default 0)"),
+    phraseContains: z
+      .string()
+      .optional()
+      .describe(
+        "Case-insensitive substring filter on the keyword phrase. Apply BEFORE pagination.",
+      ),
+  }),
+  execute: async ({
+    limit,
+    offset,
+    phraseContains,
+  }: {
+    limit?: number;
+    offset?: number;
+    phraseContains?: string;
+  }) => {
     try {
-      const keywords = await fetchKeywordsHistory();
+      const allKeywords = await fetchKeywordsHistory();
+      const safeLimit = Math.min(Math.max(limit ?? 50, 1), 500);
+      const safeOffset = Math.max(offset ?? 0, 0);
+
+      const needle = phraseContains?.trim().toLowerCase();
+      const filtered = needle
+        ? allKeywords.filter((kw) =>
+            (kw.phrase ?? "").toLowerCase().includes(needle),
+          )
+        : allKeywords;
+
+      const page = filtered.slice(safeOffset, safeOffset + safeLimit);
+      const nextOffset = safeOffset + page.length;
+      const hasMore = nextOffset < filtered.length;
+
       return {
         success: true as const,
-        keywords: keywords.map((kw) => ({
+        total: filtered.length,
+        offset: safeOffset,
+        limit: safeLimit,
+        returned: page.length,
+        hasMore,
+        nextOffset: hasMore ? nextOffset : null,
+        keywords: page.map((kw) => ({
           id: kw.id,
           phrase: kw.phrase,
           volume: kw.volume,

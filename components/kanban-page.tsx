@@ -134,10 +134,9 @@ const TEAM_MEMBERS: { email: string; label: string }[] = [
 // across all types (intake column). "Review" is shared between content + updates.
 // Names are matched case-insensitively against existing column names.
 const CANONICAL_COLUMNS_BY_FILTER: Record<
-  "all" | "content" | "update" | "task",
+  "content" | "update" | "task",
   string[]
 > = {
-  all: [], // empty = show all columns regardless
   content: [
     "Backlog",
     "Research",
@@ -151,6 +150,81 @@ const CANONICAL_COLUMNS_BY_FILTER: Record<
   update: ["Backlog", "Editing", "Review", "Live"],
   task: ["Backlog", "Next", "Doing", "Blocked", "Done"],
 };
+
+// Macro stages used in the "All" view. Each card is bucketed into one of these
+// 4 buckets based on its current stage (column slug). Maps every type's flow to
+// a unified universe so cards can sit side by side without forcing the same
+// column set on different types.
+type MacroStage = "backlog" | "in_progress" | "review" | "done";
+
+const MACRO_STAGES: { id: MacroStage; label: string; help: string }[] = [
+  { id: "backlog", label: "Backlog", help: "Intake / not started" },
+  {
+    id: "in_progress",
+    label: "In Progress",
+    help: "Research / drafting / editing / next / doing",
+  },
+  { id: "review", label: "Review", help: "Pending review or blocked" },
+  {
+    id: "done",
+    label: "Done",
+    help: "Scheduled / published / live / done",
+  },
+];
+
+// Map a stage slug (column.slug, lowercased) to a macro stage. Unknown slugs
+// fall through to "backlog" as a safe default.
+function macroStageFor(slug: string | null | undefined): MacroStage {
+  const s = (slug ?? "").toLowerCase();
+  if (s === "backlog" || s === "ready_to_do" || s === "ready to do") {
+    // ready_to_do is an intake-ish column in the existing content board
+    if (s === "backlog") return "backlog";
+    return "backlog";
+  }
+  if (
+    s === "research" ||
+    s === "seo_ready" ||
+    s === "drafting" ||
+    s === "editing" ||
+    s === "next" ||
+    s === "doing"
+  ) {
+    return "in_progress";
+  }
+  if (s === "review" || s === "blocked") return "review";
+  if (
+    s === "scheduled" ||
+    s === "published" ||
+    s === "live" ||
+    s === "done"
+  ) {
+    return "done";
+  }
+  return "backlog";
+}
+
+// When dragging a card to a macro column in "All" view, we need to pick a real
+// stage to write back. Use a per-type canonical mapping so each card keeps its
+// flow's semantics.
+function canonicalStageForMacro(
+  type: WorkItemType,
+  macro: MacroStage,
+): string {
+  if (macro === "backlog") return "backlog";
+  if (macro === "review") return "review";
+  if (type === "task") {
+    if (macro === "in_progress") return "doing";
+    if (macro === "done") return "done";
+  }
+  if (type === "update") {
+    if (macro === "in_progress") return "editing";
+    if (macro === "done") return "live";
+  }
+  // content types (idea/keyword/title/article/social)
+  if (macro === "in_progress") return "drafting";
+  if (macro === "done") return "published";
+  return "backlog";
+}
 
 function typeBadgeClass(t: WorkItemType) {
   if (t === "article") return "border-blue-500/40 bg-blue-500/10 text-blue-200";
@@ -1177,6 +1251,7 @@ export function KanbanPage() {
     useState<ResponsibleFilter>("all");
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>("all");
   const [sortMode, setSortMode] = useState<SortMode>("position");
+  const [searchQuery, setSearchQuery] = useState("");
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -1231,37 +1306,23 @@ export function KanbanPage() {
       result = result.filter((i) => i.priority === priorityFilter);
     }
 
+    const q = searchQuery.trim().toLowerCase();
+    if (q) {
+      result = result.filter((i) => {
+        const haystack = [
+          i.title,
+          i.description ?? "",
+          i.responsibleEmail ?? "",
+          i.userEmail,
+        ]
+          .join("\n")
+          .toLowerCase();
+        return haystack.includes(q);
+      });
+    }
+
     return result;
-  }, [items, typeFilter, responsibleFilter, priorityFilter]);
-
-  const itemsByColumn = useMemo(() => {
-    const map = new Map<string, GrowthWorkItem[]>();
-    for (const col of columns) map.set(col.id, []);
-
-    for (const item of filteredItems) {
-      const colId = item.columnId;
-      if (colId && map.has(colId)) {
-        map.get(colId)!.push(item);
-      } else if (columns.length > 0) {
-        map.get(columns[0].id)!.push(item);
-      }
-    }
-
-    for (const [, list] of map) {
-      if (sortMode === "priority") {
-        list.sort((a, b) => {
-          const rankA = PRIORITY_RANK[a.priority] ?? 99;
-          const rankB = PRIORITY_RANK[b.priority] ?? 99;
-          if (rankA !== rankB) return rankA - rankB;
-          return a.position - b.position;
-        });
-      } else {
-        list.sort((a, b) => a.position - b.position);
-      }
-    }
-
-    return map;
-  }, [columns, filteredItems, sortMode]);
+  }, [items, typeFilter, responsibleFilter, priorityFilter, searchQuery]);
 
   // ---- Column CRUD ----
 
@@ -1281,10 +1342,10 @@ export function KanbanPage() {
     }
   }
 
-  // Visible columns based on the active type filter. When filter is "all", show
-  // every column. Otherwise, show only columns whose name matches the canonical
-  // set for that filter (case-insensitive). Cards still live in the same column
-  // table — this is a presentation-only filter.
+  // Visible columns based on the active type filter. When filter is "all", we
+  // render synthetic macro columns instead (handled in displayColumns below).
+  // For type-specific filters, show only columns whose name matches the
+  // canonical set (case-insensitive).
   const visibleColumns = useMemo(() => {
     if (typeFilter === "all") return columns;
     const allowed = CANONICAL_COLUMNS_BY_FILTER[typeFilter].map((n) =>
@@ -1294,8 +1355,75 @@ export function KanbanPage() {
     return columns.filter((c) => allowed.includes(c.name.toLowerCase()));
   }, [columns, typeFilter]);
 
+  // What we actually render. In "all" mode, synthetic macro columns. Otherwise,
+  // the type-filtered real columns.
+  type DisplayColumn = {
+    id: string;
+    name: string;
+    isMacro: boolean;
+    macroId?: MacroStage;
+    realColumn?: KanbanColumn;
+    helpText?: string;
+  };
+
+  const displayColumns = useMemo<DisplayColumn[]>(() => {
+    if (typeFilter === "all") {
+      return MACRO_STAGES.map((m) => ({
+        id: `macro:${m.id}`,
+        name: m.label,
+        isMacro: true,
+        macroId: m.id,
+        helpText: m.help,
+      }));
+    }
+    return visibleColumns.map((c) => ({
+      id: c.id,
+      name: c.name,
+      isMacro: false,
+      realColumn: c,
+    }));
+  }, [typeFilter, visibleColumns]);
+
+  const itemsByDisplayColumn = useMemo(() => {
+    const map = new Map<string, GrowthWorkItem[]>();
+    for (const dc of displayColumns) map.set(dc.id, []);
+
+    if (typeFilter === "all") {
+      for (const item of filteredItems) {
+        const macro = macroStageFor(item.stage);
+        const dcId = `macro:${macro}`;
+        const bucket = map.get(dcId);
+        if (bucket) bucket.push(item);
+      }
+    } else {
+      for (const item of filteredItems) {
+        const colId = item.columnId;
+        if (colId && map.has(colId)) {
+          map.get(colId)!.push(item);
+        } else if (displayColumns.length > 0) {
+          map.get(displayColumns[0].id)!.push(item);
+        }
+      }
+    }
+
+    for (const [, list] of map) {
+      if (sortMode === "priority") {
+        list.sort((a, b) => {
+          const rankA = PRIORITY_RANK[a.priority] ?? 99;
+          const rankB = PRIORITY_RANK[b.priority] ?? 99;
+          if (rankA !== rankB) return rankA - rankB;
+          return a.position - b.position;
+        });
+      } else {
+        list.sort((a, b) => a.position - b.position);
+      }
+    }
+
+    return map;
+  }, [displayColumns, filteredItems, typeFilter, sortMode]);
+
   // Canonical columns for the current filter that don't exist yet — shown as a
-  // "create missing" hint when user enters a type filter for the first time.
+  // "create missing" hint. Only meaningful when filter is type-specific.
   const missingCanonicalColumns = useMemo(() => {
     if (typeFilter === "all") return [];
     const expected = CANONICAL_COLUMNS_BY_FILTER[typeFilter];
@@ -1306,7 +1434,6 @@ export function KanbanPage() {
 
   async function setupCanonicalColumnsForFilter() {
     if (typeFilter === "all" || !missingCanonicalColumns.length) return;
-    // Create sequentially to keep "position" assignment server-side stable.
     for (const name of missingCanonicalColumns) {
       await handleAddColumn(name);
     }
@@ -1472,6 +1599,31 @@ export function KanbanPage() {
     if (!item) return;
 
     const overId = over.id as string;
+
+    // Macro view drop: target id is "macro:<id>". Update stage to the canonical
+    // value for that card's type + macro, and pick the real column whose slug
+    // matches that stage (creating the column is out of scope here — assume the
+    // user has set up the canonical columns for this type at least once).
+    if (overId.startsWith("macro:")) {
+      const macroId = overId.slice("macro:".length) as MacroStage;
+      const targetStage = canonicalStageForMacro(item.itemType, macroId);
+      // Find a column whose slug matches the canonical stage. If none, fall
+      // back to first column of the canonical set for the item's type.
+      const targetCol =
+        columns.find((c) => c.slug === targetStage) ??
+        columns.find((c) => c.name.toLowerCase() === targetStage);
+      if (!targetCol || !token) return;
+      await fetch(`/api/kanban/items/${activeId}`, {
+        method: "PATCH",
+        headers: authHeaders(token),
+        body: JSON.stringify({
+          columnId: targetCol.id,
+          stage: targetCol.slug ?? targetStage,
+        }),
+      });
+      return;
+    }
+
     const isOverColumn = columns.some((c) => c.id === overId);
     const destColId = isOverColumn
       ? overId
@@ -1527,7 +1679,27 @@ export function KanbanPage() {
               Shared board — all team members see every card.
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Search */}
+            <div className="relative">
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search title / description / owner..."
+                className="h-9 w-64 border-white/10 bg-neutral-900 pl-8 pr-7 text-xs text-neutral-200 placeholder:text-neutral-600"
+              />
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-neutral-500" />
+              {searchQuery && (
+                <button
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-neutral-200"
+                  onClick={() => setSearchQuery("")}
+                  aria-label="Clear search"
+                >
+                  <X className="size-3.5" />
+                </button>
+              )}
+            </div>
+
             {/* Type filter tabs */}
             <div className="flex items-center gap-1 rounded-md border border-white/10 bg-neutral-900 p-1">
               {(
@@ -1648,35 +1820,68 @@ export function KanbanPage() {
             </div>
           )}
 
+          {typeFilter === "all" && (
+            <div className="mb-3 flex items-center gap-2 rounded-md border border-violet-500/20 bg-violet-500/5 px-3 py-2 text-xs text-violet-200">
+              <span className="font-medium">Macro view</span>
+              <span className="text-violet-300/70">
+                · Cards bucketed by stage into 4 universal columns. Switch to a
+                type filter (Content/Updates/Tasks) to see real columns and drag
+                between them.
+              </span>
+            </div>
+          )}
+
           <div className="flex gap-4 overflow-x-auto pb-4">
-            {visibleColumns.map((col) => {
-              const colItems = itemsByColumn.get(col.id) ?? [];
+            {displayColumns.map((dc) => {
+              const colItems = itemsByDisplayColumn.get(dc.id) ?? [];
               return (
                 <div
-                  key={col.id}
+                  key={dc.id}
                   className="w-[300px] shrink-0 rounded-lg border border-white/10 bg-neutral-900/50 p-3"
                 >
-                  <ColumnHeader
-                    column={col}
-                    count={colItems.length}
-                    onRename={(name) => handleRenameColumn(col.id, name)}
-                    onDelete={() => handleDeleteColumn(col.id)}
-                  />
-
-                  {/* Add card — ALWAYS at the top */}
-                  <div className="mb-2">
-                    <QuickAddCard
-                      onAdd={(title) => handleAddCard(col.id, title)}
-                      loading={addingCardCol === col.id}
+                  {dc.isMacro ? (
+                    <div className="mb-3 flex items-center justify-between">
+                      <div>
+                        <h3 className="text-sm font-semibold text-neutral-100">
+                          {dc.name}
+                        </h3>
+                        <p className="text-[10px] text-neutral-500">
+                          {dc.helpText}
+                        </p>
+                      </div>
+                      <span className="rounded-full bg-white/5 px-2 py-0.5 text-[10px] font-medium text-neutral-400">
+                        {colItems.length}
+                      </span>
+                    </div>
+                  ) : (
+                    <ColumnHeader
+                      column={dc.realColumn!}
+                      count={colItems.length}
+                      onRename={(name) =>
+                        handleRenameColumn(dc.realColumn!.id, name)
+                      }
+                      onDelete={() => handleDeleteColumn(dc.realColumn!.id)}
                     />
-                  </div>
+                  )}
+
+                  {/* Add card — only in real columns. Macro columns are read-only. */}
+                  {!dc.isMacro && dc.realColumn && (
+                    <div className="mb-2">
+                      <QuickAddCard
+                        onAdd={(title) =>
+                          handleAddCard(dc.realColumn!.id, title)
+                        }
+                        loading={addingCardCol === dc.realColumn!.id}
+                      />
+                    </div>
+                  )}
 
                   <SortableContext
-                    id={col.id}
+                    id={dc.id}
                     items={colItems.map((i) => i.id)}
                     strategy={verticalListSortingStrategy}
                   >
-                    <DroppableColumn id={col.id}>
+                    <DroppableColumn id={dc.id}>
                       {colItems.map((item) => (
                         <SortableCard
                           key={item.id}
@@ -1697,7 +1902,7 @@ export function KanbanPage() {
               );
             })}
 
-            <AddColumnForm onAdd={handleAddColumn} />
+            {typeFilter !== "all" && <AddColumnForm onAdd={handleAddColumn} />}
           </div>
 
           <DragOverlay>
