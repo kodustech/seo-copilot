@@ -10,15 +10,24 @@ import {
   queryActivatedSignups,
 } from "@/lib/bigquery";
 import { fetchBlogPosts } from "@/lib/copilot";
-import { getLatestLLMMentions } from "@/lib/dataforseo";
+import {
+  getLatestLLMMentions,
+  fetchBacklinkSummary,
+  fetchNewBacklinksAboveRank,
+} from "@/lib/dataforseo";
 
-function periodToDates(period: string): { startDate: string; endDate: string } {
+function periodToDates(period: string): {
+  startDate: string;
+  endDate: string;
+  days: number;
+} {
   const days = period === "7d" ? 7 : period === "90d" ? 90 : 30;
   const end = new Date();
   const start = new Date(end.getTime() - days * 86_400_000);
   return {
     startDate: start.toISOString().slice(0, 10),
     endDate: end.toISOString().slice(0, 10),
+    days,
   };
 }
 
@@ -26,7 +35,7 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const period = searchParams.get("period") || "30d";
-    const { startDate, endDate } = periodToDates(period);
+    const { startDate, endDate, days } = periodToDates(period);
 
     const [
       traffic,
@@ -38,6 +47,8 @@ export async function GET(request: Request) {
       blogPosts,
       llmMentions,
       activatedSignups,
+      backlinkSummary,
+      newBacklinks,
     ] = await Promise.all([
       queryTrafficOverview({ startDate, endDate }),
       querySearchPerformance({ startDate, endDate }),
@@ -51,6 +62,16 @@ export async function GET(request: Request) {
         console.error("[dashboard] activatedSignups error:", e);
         return null;
       }),
+      fetchBacklinkSummary().catch((e) => {
+        console.error("[dashboard] backlinkSummary error:", e);
+        return null;
+      }),
+      fetchNewBacklinksAboveRank({ rankMin: 500, periodDays: days }).catch(
+        (e) => {
+          console.error("[dashboard] newBacklinks error:", e);
+          return null;
+        },
+      ),
     ]);
 
     return NextResponse.json({
@@ -66,6 +87,8 @@ export async function GET(request: Request) {
       blogPosts,
       llmMentions,
       activatedSignups,
+      backlinkSummary,
+      newBacklinks,
     });
   } catch (error) {
     console.error("Dashboard API error:", error);

@@ -41,7 +41,11 @@ import type {
   ActivatedSignupsResult,
 } from "@/lib/bigquery";
 import type { BlogPost } from "@/lib/copilot";
-import type { LLMMentionsSnapshot } from "@/lib/dataforseo";
+import type {
+  LLMMentionsSnapshot,
+  BacklinkSummary,
+  NewBacklinksAboveRank,
+} from "@/lib/dataforseo";
 
 type DashboardData = {
   period: string;
@@ -56,6 +60,8 @@ type DashboardData = {
   blogPosts: BlogPost[];
   llmMentions: LLMMentionsSnapshot[];
   activatedSignups: ActivatedSignupsResult | null;
+  backlinkSummary: BacklinkSummary | null;
+  newBacklinks: NewBacklinksAboveRank | null;
 };
 
 function formatGaDate(raw: string): string {
@@ -204,16 +210,34 @@ export function Dashboard() {
           }
         />
         <KpiCard
-          title="Backlinks DR 50+ / mo"
+          title="New backlinks (rank 500+)"
+          value={
+            data?.newBacklinks
+              ? formatNumber(data.newBacklinks.count)
+              : undefined
+          }
           loading={loading}
-          placeholder="manual"
-          hint="Semrush API requires Business plan — track manually monthly via Semrush UI > Backlinks > New > filter ASCORE ≥ 50"
+          placeholder={data?.newBacklinks === null ? "—" : undefined}
+          hint={
+            data?.newBacklinks
+              ? `DataForSEO rank ≥ 500 (≈ Semrush AS 50+) in last ${data.newBacklinks.periodDays}d, dofollow only`
+              : "DataForSEO Backlinks API"
+          }
         />
         <KpiCard
-          title="Authority Score"
+          title="Domain rank (DFS)"
+          value={
+            data?.backlinkSummary
+              ? `${data.backlinkSummary.rank} / 1000`
+              : undefined
+          }
           loading={loading}
-          placeholder="24"
-          hint="Manual entry from Semrush UI (last checked 30/abr) — same gating as backlinks"
+          placeholder={data?.backlinkSummary === null ? "—" : undefined}
+          hint={
+            data?.backlinkSummary
+              ? `${formatNumber(data.backlinkSummary.referringDomains)} ref domains · ${formatNumber(data.backlinkSummary.backlinks)} backlinks`
+              : "DataForSEO scale 0-1000 (≈ Semrush AS × 10)"
+          }
         />
         <KpiCard
           title="Top 10 commercial pages"
@@ -335,8 +359,8 @@ export function Dashboard() {
       {/* Opportunities */}
       {!loading && data && (data.opportunities.strikingDistance.length > 0 || data.opportunities.lowCtr.length > 0 || data.decay.decaying.length > 0) && (
         <SectionHeader
-          label="Pontos de melhoria"
-          hint="Cards acionáveis — clique pra criar task no Kanban"
+          label="Action items"
+          hint="Click to create a task on the Kanban"
         />
       )}
       {!loading && data && (data.opportunities.strikingDistance.length > 0 || data.opportunities.lowCtr.length > 0) && (

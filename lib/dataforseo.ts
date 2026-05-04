@@ -335,3 +335,114 @@ export async function fetchSerpResults(
       })),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Backlinks (Domain rank + new backlinks)
+// ---------------------------------------------------------------------------
+
+// DataForSEO uses its own rank scale 0-1000 (where ~500-700 ≈ Semrush AS 50+).
+// We expose the raw rank and let the UI label the scale clearly. Pricing is
+// pay-per-call (~$0.02-0.05 each), no plan gating, so this works on the basic
+// account used for keyword research.
+
+export type BacklinkSummary = {
+  rank: number; // DataForSEO domain rank, 0-1000 scale
+  backlinks: number; // total backlinks
+  referringDomains: number;
+  referringMainDomains: number;
+  brokenBacklinks: number;
+};
+
+export async function fetchBacklinkSummary(
+  domain: string = TARGET_DOMAIN,
+): Promise<BacklinkSummary | null> {
+  try {
+    const data = await dfsPostRaw<DfsResponse<{
+      rank: number;
+      backlinks: number;
+      referring_domains: number;
+      referring_main_domains: number;
+      broken_backlinks: number;
+    }>>(`${API_BASE}/backlinks/summary/live`, [
+      {
+        target: domain,
+        internal_list_limit: 10,
+        backlinks_status_type: "live",
+      },
+    ]);
+
+    const result = data.tasks?.[0]?.result?.[0];
+    if (!result) return null;
+
+    return {
+      rank: Number(result.rank ?? 0),
+      backlinks: Number(result.backlinks ?? 0),
+      referringDomains: Number(result.referring_domains ?? 0),
+      referringMainDomains: Number(result.referring_main_domains ?? 0),
+      brokenBacklinks: Number(result.broken_backlinks ?? 0),
+    };
+  } catch (error) {
+    console.error("[dataforseo] backlink summary error:", error);
+    return null;
+  }
+}
+
+export type NewBacklinksAboveRank = {
+  count: number;
+  rankMin: number; // raw DataForSEO rank cutoff used (0-1000)
+  rankMinAsApprox: number; // approximate Semrush AS-equivalent
+  periodDays: number;
+};
+
+// Counts backlinks first seen within the last `periodDays` whose REFERRING
+// page rank is at least `rankMin` (DataForSEO scale 0-1000). Defaults are
+// rankMin=500 (≈ Semrush AS 50) and periodDays=30. Each call costs roughly
+// $0.05 — fine for once-per-dashboard-load.
+export async function fetchNewBacklinksAboveRank({
+  domain = TARGET_DOMAIN,
+  rankMin = 500,
+  periodDays = 30,
+}: {
+  domain?: string;
+  rankMin?: number;
+  periodDays?: number;
+} = {}): Promise<NewBacklinksAboveRank | null> {
+  try {
+    const cutoff = new Date(Date.now() - periodDays * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+
+    const data = await dfsPostRaw<
+      DfsResponse<{ items_count: number; total_count: number }>
+    >(`${API_BASE}/backlinks/backlinks/live`, [
+      {
+        target: domain,
+        mode: "as_is",
+        filters: [
+          ["first_seen", ">=", cutoff],
+          "and",
+          ["rank", ">=", rankMin],
+          "and",
+          ["dofollow", "=", true],
+        ],
+        limit: 1, // we only need the count metadata
+        backlinks_status_type: "live",
+      },
+    ]);
+
+    const task = data.tasks?.[0];
+    if (!task || task.status_code !== 20000) return null;
+    const result = task.result?.[0];
+    if (!result) return null;
+
+    return {
+      count: Number(result.total_count ?? result.items_count ?? 0),
+      rankMin,
+      rankMinAsApprox: Math.round(rankMin / 10),
+      periodDays,
+    };
+  } catch (error) {
+    console.error("[dataforseo] new backlinks error:", error);
+    return null;
+  }
+}
