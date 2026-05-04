@@ -52,6 +52,7 @@ import {
 } from "@/lib/kanban";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
+import { MarkdownContent } from "@/components/markdown-content";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -638,12 +639,14 @@ function CardDetailModal({
 }) {
   const [title, setTitle] = useState(item.title);
   const [description, setDescription] = useState(item.description ?? "");
+  const [editingDescription, setEditingDescription] = useState(false);
   const titleRef = useRef<HTMLTextAreaElement>(null);
 
   // Sync when item changes
   useEffect(() => {
     setTitle(item.title);
     setDescription(item.description ?? "");
+    setEditingDescription(false);
   }, [item.id, item.title, item.description]);
 
   // Auto-resize title textarea
@@ -920,18 +923,48 @@ function CardDetailModal({
         {/* Divider */}
         <div className="mx-5 h-px bg-white/10" />
 
-        {/* Description — editable */}
+        {/* Description — editable; renders as Markdown when not editing */}
         <div className="px-5 py-3">
-          <p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">
-            Description
-          </p>
-          <Textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            onBlur={commitDescription}
-            placeholder="Add a description..."
-            className="min-h-[100px] resize-none border-none bg-transparent px-0 text-sm text-neutral-200 placeholder:text-neutral-600 focus-visible:ring-0"
-          />
+          <div className="mb-2 flex items-center gap-2">
+            <p className="text-[11px] font-medium uppercase tracking-wider text-neutral-500">
+              Description
+            </p>
+            {description && !editingDescription && (
+              <button
+                className="text-[10px] text-neutral-500 underline-offset-2 hover:text-neutral-300 hover:underline"
+                onClick={() => setEditingDescription(true)}
+              >
+                edit
+              </button>
+            )}
+            {editingDescription && (
+              <span className="text-[10px] text-neutral-600">
+                Markdown supported (headings, lists, code, tables, links)
+              </span>
+            )}
+          </div>
+          {editingDescription || !description ? (
+            <Textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              onBlur={() => {
+                commitDescription();
+                if (description.trim()) setEditingDescription(false);
+              }}
+              autoFocus={editingDescription}
+              placeholder="Add a description... (Markdown supported)"
+              className="min-h-[140px] resize-y border-none bg-transparent px-0 font-mono text-sm text-neutral-200 placeholder:text-neutral-600 focus-visible:ring-0"
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => setEditingDescription(true)}
+              className="block w-full cursor-text rounded text-left transition hover:bg-white/[0.02]"
+              title="Click to edit"
+            >
+              <MarkdownContent text={description} />
+            </button>
+          )}
         </div>
 
         {/* Divider */}
