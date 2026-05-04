@@ -4,7 +4,23 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { Session } from "@supabase/supabase-js";
-import { Calendar, ChevronDown, Clock, Loader2, LogOut, MessageSquare, Settings, Star } from "lucide-react";
+import {
+  BarChart3,
+  Calendar,
+  ChevronRight,
+  Clock,
+  KanbanSquare,
+  Lightbulb,
+  Loader2,
+  LogOut,
+  MessageCircle,
+  MessageSquare,
+  Radar,
+  Settings,
+  Sparkles,
+  Star,
+  Wrench,
+} from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
@@ -48,21 +64,43 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const pathname = usePathname();
   const [manualToolParam, setManualToolParam] = useState<string | null>(null);
-  const primaryLinks = useMemo(
+  const navSections = useMemo(
     () => [
-      { href: "/", label: "Content Canvas" },
-      { href: "/kanban", label: "Kanban" },
-      { href: "/dashboard", label: "Dashboard" },
-      { href: "/social-monitoring", label: "Social Monitor" },
-      { href: "/reply-radar", label: "Reply Radar" },
-    ],
-    [],
-  );
-  const userMenuLinks = useMemo(
-    () => [
-      { href: "/favoritos", label: "Favorites", icon: Star },
-      { href: "/calendario", label: "Calendar", icon: Calendar },
-      { href: "/jobs", label: "Scheduled Jobs", icon: Clock },
+      {
+        label: "Workspace",
+        items: [
+          { href: "/", label: "Content Canvas", icon: Sparkles },
+          { href: "/kanban", label: "Kanban", icon: KanbanSquare },
+          { href: "/dashboard", label: "Dashboard", icon: BarChart3 },
+        ],
+      },
+      {
+        label: "Discovery",
+        items: [
+          { href: "/social-monitoring", label: "Social Monitor", icon: Radar },
+          { href: "/reply-radar", label: "Reply Radar", icon: MessageCircle },
+          { href: "/calendario", label: "Calendar", icon: Calendar },
+          { href: "/ideas", label: "Ideas", icon: Lightbulb },
+        ],
+      },
+      {
+        label: "Production",
+        items: [
+          { href: "/manual", label: "Manual Mode", icon: Wrench, hasSubmenu: true },
+        ],
+      },
+      {
+        label: "Automation",
+        items: [
+          { href: "/jobs", label: "Scheduled Jobs", icon: Clock },
+        ],
+      },
+      {
+        label: "Personal",
+        items: [
+          { href: "/favoritos", label: "Favorites", icon: Star },
+        ],
+      },
     ],
     [],
   );
@@ -372,291 +410,205 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  const isDarkPage = true;
   const manualSectionActive = pathname === "/manual";
   const activeManualTool = manualSectionActive ? (manualToolParam ?? "all") : null;
-  const allMainLinks = [...primaryLinks, { href: "/manual", label: "Manual Mode" }];
 
-  const headerShellClass = isDarkPage
-    ? "border-white/10 bg-neutral-950/95"
-    : "border-neutral-200/80 bg-white/95";
+  // Find current page label from nav for the topbar breadcrumb.
+  const currentNavLabel = useMemo(() => {
+    for (const section of navSections) {
+      for (const item of section.items) {
+        if (item.href === "/" ? pathname === "/" : pathname === item.href) {
+          return item.label;
+        }
+      }
+    }
+    if (pathname === "/settings") return "Settings";
+    if (pathname.startsWith("/manual")) return "Manual Mode";
+    return "";
+  }, [navSections, pathname]);
 
-  const topNavItemClass = (active: boolean) =>
+  const sidebarItemClass = (active: boolean) =>
     cn(
-      "inline-flex h-9 items-center rounded-md px-3 text-sm font-medium transition-colors",
+      "group flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors",
       active
-        ? isDarkPage
-          ? "bg-white text-neutral-900"
-          : "bg-neutral-900 text-white"
-        : isDarkPage
-          ? "text-neutral-300 hover:bg-white/10 hover:text-white"
-          : "text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900",
-    );
-
-  const manualToolItemClass = (active: boolean) =>
-    cn(
-      "inline-flex h-8 items-center rounded-md px-3 text-sm font-medium transition-colors",
-      active
-        ? isDarkPage
-          ? "bg-neutral-800 text-white"
-          : "bg-neutral-900 text-white"
-        : isDarkPage
-          ? "text-neutral-400 hover:bg-white/10 hover:text-neutral-200"
-          : "text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900",
+        ? "bg-white/[0.06] text-white"
+        : "text-neutral-400 hover:bg-white/[0.04] hover:text-neutral-100",
     );
 
   return (
-    <div className={cn("min-h-screen", isDarkPage ? "bg-neutral-950" : "bg-neutral-50")}>
-      <header className={cn("sticky top-0 z-20 border-b backdrop-blur", headerShellClass)}>
-        <div className="mx-auto max-w-7xl px-4 sm:px-6">
-          <div className="flex h-16 items-center gap-3">
-            <div className="min-w-0 shrink-0">
-              <p
-                className={cn(
-                  "text-balance text-sm font-semibold leading-none",
-                  isDarkPage ? "text-neutral-200" : "text-neutral-900",
-                )}
-              >
-                SEO Copilot
+    <div className="flex h-screen min-h-screen overflow-hidden bg-neutral-950 text-neutral-100">
+      {/* ── Sidebar ─────────────────────────────────────────────────────── */}
+      <aside className="flex h-full w-60 shrink-0 flex-col border-r border-white/[0.06] bg-neutral-950">
+        {/* Logo */}
+        <div className="flex h-14 shrink-0 items-center gap-2 border-b border-white/[0.06] px-4">
+          <div className="flex size-7 items-center justify-center rounded-md bg-gradient-to-br from-violet-500 to-fuchsia-600 text-[11px] font-bold text-white">
+            K
+          </div>
+          <div className="min-w-0 leading-tight">
+            <p className="truncate text-sm font-semibold text-white">Kodus</p>
+            <p className="truncate text-[10px] text-neutral-500">Growth workspace</p>
+          </div>
+        </div>
+
+        {/* Nav sections */}
+        <nav className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
+          {navSections.map((section) => (
+            <div key={section.label} className="mb-3 last:mb-0">
+              <p className="mb-1.5 px-2 text-[10px] font-semibold uppercase tracking-wider text-neutral-600">
+                {section.label}
               </p>
-              <p
-                className={cn(
-                  "mt-1 text-pretty text-xs",
-                  isDarkPage ? "text-neutral-500" : "text-neutral-500",
-                )}
-              >
-                Growth workspace
-              </p>
+              <div className="space-y-0.5">
+                {section.items.map((item) => {
+                  const Icon = item.icon;
+                  const isManual = item.href === "/manual";
+                  const active = isManual
+                    ? manualSectionActive
+                    : pathname === item.href;
+                  return (
+                    <div key={item.href}>
+                      <Link
+                        href={item.href}
+                        className={sidebarItemClass(active)}
+                      >
+                        <Icon
+                          className={cn(
+                            "size-4 shrink-0",
+                            active ? "text-violet-300" : "text-neutral-500 group-hover:text-neutral-300",
+                          )}
+                        />
+                        <span className="truncate">{item.label}</span>
+                        {isManual && manualSectionActive && (
+                          <ChevronRight className="ml-auto size-3 rotate-90 text-neutral-500" />
+                        )}
+                      </Link>
+                      {/* Manual sub-items, expanded inline when manual is active */}
+                      {isManual && manualSectionActive && (
+                        <div className="mt-0.5 ml-4 space-y-0.5 border-l border-white/[0.06] pl-2">
+                          {manualSubLinks.map((sub) => {
+                            const subActive = activeManualTool === sub.tool;
+                            return (
+                              <Link
+                                key={sub.href}
+                                href={sub.href}
+                                onClick={() => setManualToolParam(sub.tool)}
+                                className={cn(
+                                  "flex h-7 items-center rounded-md px-2 text-xs transition-colors",
+                                  subActive
+                                    ? "bg-white/[0.06] text-white"
+                                    : "text-neutral-500 hover:bg-white/[0.04] hover:text-neutral-200",
+                                )}
+                              >
+                                {sub.label}
+                              </Link>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
+          ))}
+        </nav>
 
-            <nav className="hidden min-w-0 flex-1 items-center justify-center gap-1 lg:flex">
-              {allMainLinks.map((item) => {
-                const active = item.href === "/manual"
-                  ? manualSectionActive
-                  : pathname === item.href;
-                return (
-                  <Button
-                    key={item.href}
-                    variant="ghost"
-                    size="sm"
-                    className={topNavItemClass(active)}
-                    asChild
-                  >
-                    <Link href={item.href}>{item.label}</Link>
-                  </Button>
-                );
-              })}
-            </nav>
-
-            <div className="ml-auto flex shrink-0 items-center gap-2 text-sm">
+        {/* User footer */}
+        <div className="shrink-0 border-t border-white/[0.06] p-2">
+          <Popover>
+            <PopoverTrigger asChild>
+              <button className="group flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-sm transition hover:bg-white/[0.04]">
+                <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-white/10 text-[11px] font-semibold text-neutral-200">
+                  {(session.user.email ?? "?").slice(0, 2).toUpperCase()}
+                </div>
+                <div className="min-w-0 flex-1 text-left">
+                  <p className="truncate text-xs font-medium text-neutral-200">
+                    {session.user.email?.split("@")[0]}
+                  </p>
+                  <p className="truncate text-[10px] text-neutral-500">
+                    {session.user.email?.split("@")[1]}
+                  </p>
+                </div>
+                <ChevronRight className="size-3.5 text-neutral-500 group-hover:text-neutral-300" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              side="top"
+              className="w-56 border-white/10 bg-neutral-950 p-1 text-neutral-100"
+            >
+              <Badge
+                variant="outline"
+                className="mb-1 inline-flex w-full justify-center rounded-md border-white/10 bg-white/[0.03] px-2 py-1.5 text-[11px] text-neutral-400"
+              >
+                {session.user.email}
+              </Badge>
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => setAgentOpen((v) => !v)}
-                className={cn(
-                  "h-8 gap-1.5 rounded-lg px-2.5",
-                  agentOpen
-                    ? isDarkPage
-                      ? "bg-violet-600/20 text-violet-300"
-                      : "bg-violet-100 text-violet-700"
-                    : isDarkPage
-                      ? "text-neutral-400 hover:bg-white/10 hover:text-white"
-                      : "text-neutral-500 hover:bg-neutral-100",
-                )}
+                className="w-full justify-start text-neutral-300 hover:bg-white/10 hover:text-white"
+                asChild
               >
-                <MessageSquare className="h-4 w-4" />
-                <span className="hidden sm:inline">Agent</span>
+                <Link href="/settings">
+                  <Settings className="mr-2 size-4" />
+                  Settings
+                </Link>
               </Button>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className={cn(
-                      "h-8 rounded-lg px-3",
-                      isDarkPage
-                        ? "border-white/10 bg-white/[0.03] text-neutral-300 hover:bg-white/10 hover:text-white"
-                        : "border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-100",
-                    )}
-                  >
-                    <span className="hidden max-w-[220px] truncate sm:inline">
-                      {session.user.email}
-                    </span>
-                    <span className="sm:hidden">Account</span>
-                    <ChevronDown className="ml-1.5 h-3.5 w-3.5" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent
-                  align="end"
-                  className={cn(
-                    "w-64 p-2",
-                    isDarkPage
-                      ? "border-white/10 bg-neutral-950 text-neutral-100"
-                      : "border-neutral-200 bg-white text-neutral-900",
-                  )}
-                >
-                  <Badge
-                    variant="outline"
-                    className={cn(
-                      "mb-2 inline-flex w-full justify-center rounded-md px-2 py-1.5 text-xs",
-                      isDarkPage
-                        ? "border-white/10 bg-white/[0.03] text-neutral-300"
-                        : "border-neutral-300 bg-neutral-50 text-neutral-600",
-                    )}
-                  >
-                    {session.user.email}
-                  </Badge>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start text-neutral-300 hover:bg-white/10 hover:text-white"
+                onClick={handleSignOut}
+              >
+                <LogOut className="mr-2 size-4" />
+                Sign out
+              </Button>
+            </PopoverContent>
+          </Popover>
+        </div>
+      </aside>
 
-                  {userMenuLinks.map((item) => {
-                    const Icon = item.icon;
-                    const active = pathname === item.href;
-                    return (
-                      <Button
-                        key={item.href}
-                        variant="ghost"
-                        size="sm"
-                        className={cn(
-                          "w-full justify-start",
-                          active
-                            ? isDarkPage
-                              ? "bg-white/10 text-white"
-                              : "bg-neutral-100 text-neutral-900"
-                            : isDarkPage
-                              ? "text-neutral-300 hover:bg-white/10 hover:text-white"
-                              : "text-neutral-700 hover:bg-neutral-100 hover:text-neutral-900",
-                        )}
-                        asChild
-                      >
-                        <Link href={item.href}>
-                          <Icon className="mr-2 h-4 w-4" />
-                          {item.label}
-                        </Link>
-                      </Button>
-                    );
-                  })}
-
-                  <div
-                    className={cn(
-                      "my-1 h-px",
-                      isDarkPage ? "bg-white/10" : "bg-neutral-200",
-                    )}
-                  />
-
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className={cn(
-                      "w-full justify-start",
-                      isDarkPage
-                        ? "text-neutral-300 hover:bg-white/10 hover:text-white"
-                        : "text-neutral-700 hover:bg-neutral-100 hover:text-neutral-900",
-                    )}
-                    asChild
-                  >
-                    <Link href="/settings">
-                      <Settings className="mr-2 h-4 w-4" />
-                      Settings
-                    </Link>
-                  </Button>
-
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className={cn(
-                      "w-full justify-start",
-                      isDarkPage
-                        ? "text-neutral-300 hover:bg-white/10 hover:text-white"
-                        : "text-neutral-700 hover:bg-neutral-100 hover:text-neutral-900",
-                    )}
-                    onClick={handleSignOut}
-                  >
-                    <LogOut className="mr-2 h-4 w-4" />
-                    Sign out
-                  </Button>
-                </PopoverContent>
-              </Popover>
-            </div>
+      {/* ── Main column ─────────────────────────────────────────────────── */}
+      <div className="flex h-full min-w-0 flex-1 flex-col">
+        {/* Top bar (slim) */}
+        <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] bg-neutral-950 px-5">
+          <div className="min-w-0">
+            <h1 className="truncate text-sm font-semibold text-neutral-200">
+              {currentNavLabel}
+            </h1>
           </div>
-
-          <nav className="flex items-center gap-1 overflow-x-auto pb-3 lg:hidden [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-            {allMainLinks.map((item) => {
-              const active = item.href === "/manual"
-                ? manualSectionActive
-                : pathname === item.href;
-              return (
-                <Button
-                  key={`mobile-${item.href}`}
-                  variant="ghost"
-                  size="sm"
-                  className={topNavItemClass(active)}
-                  asChild
-                >
-                  <Link href={item.href}>{item.label}</Link>
-                </Button>
-              );
-            })}
-          </nav>
-
-          {manualSectionActive && (
-            <div
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setAgentOpen((v) => !v)}
               className={cn(
-                "flex items-center gap-2 border-t py-2",
-                isDarkPage ? "border-white/10" : "border-neutral-200",
+                "h-8 gap-1.5 rounded-md px-2.5 text-xs",
+                agentOpen
+                  ? "bg-violet-500/15 text-violet-200 hover:bg-violet-500/20"
+                  : "text-neutral-400 hover:bg-white/[0.04] hover:text-neutral-200",
               )}
             >
-              <p
-                className={cn(
-                  "hidden text-xs font-medium sm:block",
-                  isDarkPage ? "text-neutral-500" : "text-neutral-500",
-                )}
-              >
-                Manual tools
-              </p>
-              <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                {manualSubLinks.map((item) => {
-                  const active = activeManualTool === item.tool;
-                  return (
-                    <Button
-                      key={item.href}
-                      variant="ghost"
-                      size="sm"
-                      className={manualToolItemClass(active)}
-                      asChild
-                    >
-                      <Link
-                        href={item.href}
-                        onClick={() => setManualToolParam(item.tool)}
-                      >
-                        {item.label}
-                      </Link>
-                    </Button>
-                  );
-                })}
-              </nav>
-            </div>
-          )}
-        </div>
-      </header>
-      <div className="flex h-[calc(100vh-65px)]">
-        <main className={cn("min-w-0 flex-1 overflow-auto", agentOpen && "mr-[420px]")}>
+              <MessageSquare className="size-3.5" />
+              <span className="hidden sm:inline">Agent</span>
+            </Button>
+          </div>
+        </header>
+
+        {/* Page content */}
+        <main className={cn("min-h-0 flex-1 overflow-auto", agentOpen && "mr-[420px]")}>
           {children}
         </main>
+      </div>
 
-        {/* Agent sidebar */}
-        <div
-          className={cn(
-            "fixed right-0 top-[65px] z-30 h-[calc(100vh-65px)] w-[420px] border-l transition-transform duration-300",
-            isDarkPage
-              ? "border-white/[0.06] bg-neutral-950"
-              : "border-neutral-200 bg-white",
-            agentOpen ? "translate-x-0" : "translate-x-full",
-          )}
-        >
-          <div className="flex h-full flex-col">
-            <div className="min-h-0 flex-1">
-              {agentOpen && <AgentChat compact />}
-            </div>
-          </div>
+      {/* ── Agent panel (slide-in right) ─────────────────────────────────── */}
+      <div
+        className={cn(
+          "fixed right-0 top-0 z-30 h-screen w-[420px] border-l border-white/[0.06] bg-neutral-950 transition-transform duration-300",
+          agentOpen ? "translate-x-0" : "translate-x-full",
+        )}
+      >
+        <div className="flex h-full flex-col">
+          <div className="min-h-0 flex-1">{agentOpen && <AgentChat compact />}</div>
         </div>
       </div>
     </div>
