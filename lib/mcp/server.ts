@@ -11,7 +11,7 @@
  *   - mcp-server/src/index.ts     (stdio, local dev)
  */
 
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { z } from "zod";
 import { createAgentTools } from "@/lib/ai/tools";
 
 type AnyTool = {
@@ -65,12 +65,8 @@ export function buildMcpTools(options: BuildToolsOptions = {}): BuildToolsResult
 
     let inputSchema: Record<string, unknown>;
     try {
-      inputSchema = zodToJsonSchema(
-        schemaSource as Parameters<typeof zodToJsonSchema>[0],
-        {
-          target: "openApi3",
-          $refStrategy: "none",
-        }
+      inputSchema = z.toJSONSchema(
+        schemaSource as Parameters<typeof z.toJSONSchema>[0]
       ) as Record<string, unknown>;
     } catch {
       skipped++;
