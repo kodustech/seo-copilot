@@ -16,7 +16,7 @@
  * HTTP and stdio transports stay in sync (single source of truth).
  */
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { buildMcpTools, SERVER_INFO } from "@/lib/mcp/server";
 
