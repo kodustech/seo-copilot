@@ -41,11 +41,7 @@ import type {
   ActivatedSignupsResult,
 } from "@/lib/bigquery";
 import type { BlogPost } from "@/lib/copilot";
-import type {
-  LLMMentionsSnapshot,
-  BacklinkSummary,
-  NewBacklinksAboveRank,
-} from "@/lib/dataforseo";
+import type { LLMMentionsSnapshot } from "@/lib/dataforseo";
 
 type DashboardData = {
   period: string;
@@ -60,8 +56,6 @@ type DashboardData = {
   blogPosts: BlogPost[];
   llmMentions: LLMMentionsSnapshot[];
   activatedSignups: ActivatedSignupsResult | null;
-  backlinkSummary: BacklinkSummary | null;
-  newBacklinks: NewBacklinksAboveRank | null;
 };
 
 function formatGaDate(raw: string): string {
@@ -210,34 +204,16 @@ export function Dashboard() {
           }
         />
         <KpiCard
-          title="New backlinks (rank 500+)"
-          value={
-            data?.newBacklinks
-              ? formatNumber(data.newBacklinks.count)
-              : undefined
-          }
+          title="Backlinks DR 50+ / mo"
           loading={loading}
-          placeholder={data?.newBacklinks === null ? "—" : undefined}
-          hint={
-            data?.newBacklinks
-              ? `DataForSEO rank ≥ 500 (≈ Semrush AS 50+) in last ${data.newBacklinks.periodDays}d, dofollow only`
-              : "DataForSEO Backlinks API"
-          }
+          placeholder="manual"
+          hint="Both Semrush + DataForSEO Backlinks APIs gated to higher plans — track manually monthly"
         />
         <KpiCard
-          title="Domain rank (DFS)"
-          value={
-            data?.backlinkSummary
-              ? `${data.backlinkSummary.rank} / 1000`
-              : undefined
-          }
+          title="Authority Score"
           loading={loading}
-          placeholder={data?.backlinkSummary === null ? "—" : undefined}
-          hint={
-            data?.backlinkSummary
-              ? `${formatNumber(data.backlinkSummary.referringDomains)} ref domains · ${formatNumber(data.backlinkSummary.backlinks)} backlinks`
-              : "DataForSEO scale 0-1000 (≈ Semrush AS × 10)"
-          }
+          placeholder="24"
+          hint="Manual entry from Semrush UI (last checked 30/abr)"
         />
         <KpiCard
           title="Top 10 commercial pages"

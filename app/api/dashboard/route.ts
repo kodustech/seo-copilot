@@ -10,11 +10,7 @@ import {
   queryActivatedSignups,
 } from "@/lib/bigquery";
 import { fetchBlogPosts } from "@/lib/copilot";
-import {
-  getLatestLLMMentions,
-  fetchBacklinkSummary,
-  fetchNewBacklinksAboveRank,
-} from "@/lib/dataforseo";
+import { getLatestLLMMentions } from "@/lib/dataforseo";
 
 function periodToDates(period: string): {
   startDate: string;
@@ -35,7 +31,7 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const period = searchParams.get("period") || "30d";
-    const { startDate, endDate, days } = periodToDates(period);
+    const { startDate, endDate } = periodToDates(period);
 
     const [
       traffic,
@@ -47,8 +43,6 @@ export async function GET(request: Request) {
       blogPosts,
       llmMentions,
       activatedSignups,
-      backlinkSummary,
-      newBacklinks,
     ] = await Promise.all([
       queryTrafficOverview({ startDate, endDate }),
       querySearchPerformance({ startDate, endDate }),
@@ -62,18 +56,6 @@ export async function GET(request: Request) {
         console.error("[dashboard] activatedSignups error:", e);
         return null;
       }),
-      fetchBacklinkSummary().catch((e) => {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.error("[dashboard] backlinkSummary error:", msg);
-        return { __error: msg };
-      }),
-      fetchNewBacklinksAboveRank({ rankMin: 500, periodDays: days }).catch(
-        (e) => {
-          const msg = e instanceof Error ? e.message : String(e);
-          console.error("[dashboard] newBacklinks error:", msg);
-          return { __error: msg };
-        },
-      ),
     ]);
 
     return NextResponse.json({
@@ -89,8 +71,6 @@ export async function GET(request: Request) {
       blogPosts,
       llmMentions,
       activatedSignups,
-      backlinkSummary,
-      newBacklinks,
     });
   } catch (error) {
     console.error("Dashboard API error:", error);
