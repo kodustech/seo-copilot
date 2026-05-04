@@ -465,31 +465,37 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         )}
       >
         {/* Logo + collapse toggle */}
-        <div className="flex h-14 shrink-0 items-center gap-2 border-b border-white/[0.06] px-3">
-          <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-violet-500 to-fuchsia-600 text-[11px] font-bold text-white">
-            K
-          </div>
-          {!sidebarCollapsed && (
-            <div className="min-w-0 flex-1 leading-tight">
-              <p className="truncate text-sm font-semibold text-white">Kodus</p>
-              <p className="truncate text-[10px] text-neutral-500">Growth workspace</p>
+        <div className="flex h-14 shrink-0 items-center border-b border-white/[0.06]">
+          {sidebarCollapsed ? (
+            // Collapsed: only the expand button, centered, with a clear border
+            // so it reads as a button (not an icon lost in the chrome).
+            <button
+              onClick={toggleSidebar}
+              className="mx-auto flex size-9 items-center justify-center rounded-md border border-white/10 bg-white/[0.04] text-neutral-300 transition hover:border-white/20 hover:bg-white/10 hover:text-white"
+              title="Expand sidebar"
+              aria-label="Expand sidebar"
+            >
+              <PanelLeftOpen className="size-4" />
+            </button>
+          ) : (
+            <div className="flex w-full items-center gap-2 px-3">
+              <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-violet-500 to-fuchsia-600 text-[11px] font-bold text-white">
+                K
+              </div>
+              <div className="min-w-0 flex-1 leading-tight">
+                <p className="truncate text-sm font-semibold text-white">Kodus</p>
+                <p className="truncate text-[10px] text-neutral-500">Growth workspace</p>
+              </div>
+              <button
+                onClick={toggleSidebar}
+                className="flex size-7 shrink-0 items-center justify-center rounded-md text-neutral-500 transition hover:bg-white/[0.06] hover:text-neutral-200"
+                title="Collapse sidebar"
+                aria-label="Collapse sidebar"
+              >
+                <PanelLeftClose className="size-4" />
+              </button>
             </div>
           )}
-          <button
-            onClick={toggleSidebar}
-            className={cn(
-              "flex size-7 shrink-0 items-center justify-center rounded-md text-neutral-500 transition hover:bg-white/[0.04] hover:text-neutral-200",
-              sidebarCollapsed && "ml-0",
-            )}
-            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          >
-            {sidebarCollapsed ? (
-              <PanelLeftOpen className="size-4" />
-            ) : (
-              <PanelLeftClose className="size-4" />
-            )}
-          </button>
         </div>
 
         {/* Nav sections */}
