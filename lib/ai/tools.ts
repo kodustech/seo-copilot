@@ -47,6 +47,7 @@ import {
   listWorkItems,
   createWorkItem,
   updateWorkItem,
+  deleteWorkItem,
 } from "@/lib/kanban";
 import { getModel } from "@/lib/ai/provider";
 import { CONTENT_PLAN_SYNTHESIS_PROMPT } from "@/lib/ai/system-prompt";
@@ -2139,6 +2140,82 @@ function createUpdateKanbanCardTool(userEmail?: string) {
   });
 }
 
+function createDeleteKanbanCardTool(_userEmail?: string) {
+  return tool({
+    description:
+      "Delete a Kanban card permanently. Find by exact card id (UUID) or by partial title match. Destructive — there is no undo. Use only when the card is genuinely no longer needed (e.g. completed cleanup tasks, duplicates, mistakes). Prefer moveKanbanCard to a 'Done' column for normal completion.",
+    inputSchema: z.object({
+      cardId: z
+        .string()
+        .optional()
+        .describe(
+          "Exact UUID of the card. Preferred over cardTitle for precision. If both provided, cardId wins.",
+        ),
+      cardTitle: z
+        .string()
+        .optional()
+        .describe(
+          "Title or partial title (case-insensitive). Used only when cardId is not provided. If multiple cards match, returns an error listing matches — refusing to delete any to avoid wrong target.",
+        ),
+    }),
+    execute: async ({
+      cardId,
+      cardTitle,
+    }: {
+      cardId?: string;
+      cardTitle?: string;
+    }) => {
+      try {
+        const client = getSupabaseServiceClient();
+        let id = cardId;
+        let resolvedTitle: string | undefined;
+
+        if (!id) {
+          if (!cardTitle) {
+            return {
+              success: false as const,
+              message: "Provide either cardId or cardTitle.",
+            };
+          }
+          const all = await listWorkItems(client);
+          const needle = cardTitle.toLowerCase();
+          const matches = all.filter((i) =>
+            i.title.toLowerCase().includes(needle),
+          );
+          if (!matches.length) {
+            return {
+              success: false as const,
+              message: `No card matched title "${cardTitle}".`,
+            };
+          }
+          if (matches.length > 1) {
+            return {
+              success: false as const,
+              message: `Multiple cards matched "${cardTitle}". Refusing to delete; pass cardId to disambiguate.`,
+              matches: matches.map((m) => ({ id: m.id, title: m.title })),
+            };
+          }
+          id = matches[0].id;
+          resolvedTitle = matches[0].title;
+        }
+
+        await deleteWorkItem(client, id);
+
+        return {
+          success: true as const,
+          deleted: { id, title: resolvedTitle },
+        };
+      } catch (error) {
+        return {
+          success: false as const,
+          message:
+            error instanceof Error ? error.message : "Error deleting card.",
+        };
+      }
+    },
+  });
+}
+
 const listKanbanCards = tool({
   description:
     "List cards on the shared Kanban board, optionally filtered by column name.",
@@ -2234,6 +2311,7 @@ export function createAgentTools(userEmail?: string) {
     createKanbanCard: createKanbanCardTool(userEmail),
     moveKanbanCard: createMoveKanbanCardTool(userEmail),
     updateKanbanCard: createUpdateKanbanCardTool(userEmail),
+    deleteKanbanCard: createDeleteKanbanCardTool(userEmail),
     listKanbanCards,
   };
 }
