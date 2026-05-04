@@ -1094,6 +1094,9 @@ function QuickAddCard({
 // ---------------------------------------------------------------------------
 
 type TypeFilter = "all" | "content" | "update" | "task";
+// Responsible filter: "all" = everyone, "__unassigned__" = no responsible set,
+// otherwise = email string
+type ResponsibleFilter = "all" | "__unassigned__" | string;
 
 export function KanbanPage() {
   const token = useAuthToken();
@@ -1106,6 +1109,8 @@ export function KanbanPage() {
   const [activeItem, setActiveItem] = useState<GrowthWorkItem | null>(null);
   const [selectedCard, setSelectedCard] = useState<GrowthWorkItem | null>(null);
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+  const [responsibleFilter, setResponsibleFilter] =
+    useState<ResponsibleFilter>("all");
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -1139,12 +1144,25 @@ export function KanbanPage() {
   // ---- Group items by column ----
 
   const filteredItems = useMemo(() => {
-    if (typeFilter === "all") return items;
-    if (typeFilter === "update") return items.filter((i) => i.itemType === "update");
-    if (typeFilter === "task") return items.filter((i) => i.itemType === "task");
-    // "content" = the original content-pipeline types
-    return items.filter((i) => CONTENT_PIPELINE_TYPES.includes(i.itemType));
-  }, [items, typeFilter]);
+    let result = items;
+    if (typeFilter === "update") {
+      result = result.filter((i) => i.itemType === "update");
+    } else if (typeFilter === "task") {
+      result = result.filter((i) => i.itemType === "task");
+    } else if (typeFilter === "content") {
+      // "content" = the original content-pipeline types
+      result = result.filter((i) => CONTENT_PIPELINE_TYPES.includes(i.itemType));
+    }
+    // typeFilter === "all" → no type filter applied
+
+    if (responsibleFilter === "__unassigned__") {
+      result = result.filter((i) => !i.responsibleEmail);
+    } else if (responsibleFilter !== "all") {
+      result = result.filter((i) => i.responsibleEmail === responsibleFilter);
+    }
+
+    return result;
+  }, [items, typeFilter, responsibleFilter]);
 
   const itemsByColumn = useMemo(() => {
     const map = new Map<string, GrowthWorkItem[]>();
@@ -1424,6 +1442,26 @@ export function KanbanPage() {
                 </button>
               ))}
             </div>
+
+            {/* Responsible filter */}
+            <Select
+              value={responsibleFilter}
+              onValueChange={(v) => setResponsibleFilter(v as ResponsibleFilter)}
+            >
+              <SelectTrigger className="h-9 w-40 border-white/10 bg-neutral-900 text-xs text-neutral-200 hover:bg-neutral-800">
+                <SelectValue placeholder="Responsible" />
+              </SelectTrigger>
+              <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+                <SelectItem value="all">Everyone</SelectItem>
+                <SelectItem value="__unassigned__">Unassigned</SelectItem>
+                {TEAM_MEMBERS.map((m) => (
+                  <SelectItem key={m.email} value={m.email}>
+                    {m.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
             <Button
               variant="outline"
               size="sm"
