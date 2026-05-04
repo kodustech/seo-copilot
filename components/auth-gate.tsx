@@ -15,6 +15,8 @@ import {
   LogOut,
   MessageCircle,
   MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
   Radar,
   Settings,
   Sparkles,
@@ -132,6 +134,24 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     return "";
   }, [navSections, pathname]);
   const [agentOpen, setAgentOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // Hydrate sidebar collapse state from localStorage on mount.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = window.localStorage.getItem("sidebar_collapsed");
+    if (stored === "1") setSidebarCollapsed(true);
+  }, []);
+
+  function toggleSidebar() {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("sidebar_collapsed", next ? "1" : "0");
+      }
+      return next;
+    });
+  }
   const [session, setSession] = useState<Session | null>(null);
   const [initializing, setInitializing] = useState(true);
   const [mode, setMode] = useState<AuthMode>("signin");
@@ -438,25 +458,52 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-screen min-h-screen overflow-hidden bg-neutral-950 text-neutral-100">
       {/* ── Sidebar ─────────────────────────────────────────────────────── */}
-      <aside className="flex h-full w-60 shrink-0 flex-col border-r border-white/[0.06] bg-neutral-950">
-        {/* Logo */}
-        <div className="flex h-14 shrink-0 items-center gap-2 border-b border-white/[0.06] px-4">
-          <div className="flex size-7 items-center justify-center rounded-md bg-gradient-to-br from-violet-500 to-fuchsia-600 text-[11px] font-bold text-white">
+      <aside
+        className={cn(
+          "flex h-full shrink-0 flex-col border-r border-white/[0.06] bg-neutral-950 transition-[width] duration-200",
+          sidebarCollapsed ? "w-14" : "w-60",
+        )}
+      >
+        {/* Logo + collapse toggle */}
+        <div className="flex h-14 shrink-0 items-center gap-2 border-b border-white/[0.06] px-3">
+          <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-violet-500 to-fuchsia-600 text-[11px] font-bold text-white">
             K
           </div>
-          <div className="min-w-0 leading-tight">
-            <p className="truncate text-sm font-semibold text-white">Kodus</p>
-            <p className="truncate text-[10px] text-neutral-500">Growth workspace</p>
-          </div>
+          {!sidebarCollapsed && (
+            <div className="min-w-0 flex-1 leading-tight">
+              <p className="truncate text-sm font-semibold text-white">Kodus</p>
+              <p className="truncate text-[10px] text-neutral-500">Growth workspace</p>
+            </div>
+          )}
+          <button
+            onClick={toggleSidebar}
+            className={cn(
+              "flex size-7 shrink-0 items-center justify-center rounded-md text-neutral-500 transition hover:bg-white/[0.04] hover:text-neutral-200",
+              sidebarCollapsed && "ml-0",
+            )}
+            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {sidebarCollapsed ? (
+              <PanelLeftOpen className="size-4" />
+            ) : (
+              <PanelLeftClose className="size-4" />
+            )}
+          </button>
         </div>
 
         {/* Nav sections */}
         <nav className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
           {navSections.map((section) => (
             <div key={section.label} className="mb-3 last:mb-0">
-              <p className="mb-1.5 px-2 text-[10px] font-semibold uppercase tracking-wider text-neutral-600">
-                {section.label}
-              </p>
+              {!sidebarCollapsed && (
+                <p className="mb-1.5 px-2 text-[10px] font-semibold uppercase tracking-wider text-neutral-600">
+                  {section.label}
+                </p>
+              )}
+              {sidebarCollapsed && (
+                <div className="mx-2 mb-1.5 h-px bg-white/[0.04]" />
+              )}
               <div className="space-y-0.5">
                 {section.items.map((item) => {
                   const Icon = item.icon;
@@ -468,21 +515,36 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
                     <div key={item.href}>
                       <Link
                         href={item.href}
-                        className={sidebarItemClass(active)}
+                        title={sidebarCollapsed ? item.label : undefined}
+                        className={cn(
+                          "group flex h-8 items-center rounded-md text-sm transition-colors",
+                          sidebarCollapsed
+                            ? "w-full justify-center px-0"
+                            : "w-full gap-2.5 px-2.5",
+                          active
+                            ? "bg-white/[0.06] text-white"
+                            : "text-neutral-400 hover:bg-white/[0.04] hover:text-neutral-100",
+                        )}
                       >
                         <Icon
                           className={cn(
                             "size-4 shrink-0",
-                            active ? "text-violet-300" : "text-neutral-500 group-hover:text-neutral-300",
+                            active
+                              ? "text-violet-300"
+                              : "text-neutral-500 group-hover:text-neutral-300",
                           )}
                         />
-                        <span className="truncate">{item.label}</span>
-                        {isManual && manualSectionActive && (
-                          <ChevronRight className="ml-auto size-3 rotate-90 text-neutral-500" />
+                        {!sidebarCollapsed && (
+                          <>
+                            <span className="truncate">{item.label}</span>
+                            {isManual && manualSectionActive && (
+                              <ChevronRight className="ml-auto size-3 rotate-90 text-neutral-500" />
+                            )}
+                          </>
                         )}
                       </Link>
-                      {/* Manual sub-items, expanded inline when manual is active */}
-                      {isManual && manualSectionActive && (
+                      {/* Manual sub-items — only shown when sidebar is expanded */}
+                      {!sidebarCollapsed && isManual && manualSectionActive && (
                         <div className="mt-0.5 ml-4 space-y-0.5 border-l border-white/[0.06] pl-2">
                           {manualSubLinks.map((sub) => {
                             const subActive = activeManualTool === sub.tool;
@@ -516,19 +578,31 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         <div className="shrink-0 border-t border-white/[0.06] p-2">
           <Popover>
             <PopoverTrigger asChild>
-              <button className="group flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-sm transition hover:bg-white/[0.04]">
+              <button
+                className={cn(
+                  "group flex w-full items-center rounded-md text-sm transition hover:bg-white/[0.04]",
+                  sidebarCollapsed
+                    ? "justify-center px-1 py-2"
+                    : "gap-2.5 px-2 py-2",
+                )}
+                title={sidebarCollapsed ? session.user.email ?? "Account" : undefined}
+              >
                 <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-white/10 text-[11px] font-semibold text-neutral-200">
                   {(session.user.email ?? "?").slice(0, 2).toUpperCase()}
                 </div>
-                <div className="min-w-0 flex-1 text-left">
-                  <p className="truncate text-xs font-medium text-neutral-200">
-                    {session.user.email?.split("@")[0]}
-                  </p>
-                  <p className="truncate text-[10px] text-neutral-500">
-                    {session.user.email?.split("@")[1]}
-                  </p>
-                </div>
-                <ChevronRight className="size-3.5 text-neutral-500 group-hover:text-neutral-300" />
+                {!sidebarCollapsed && (
+                  <>
+                    <div className="min-w-0 flex-1 text-left">
+                      <p className="truncate text-xs font-medium text-neutral-200">
+                        {session.user.email?.split("@")[0]}
+                      </p>
+                      <p className="truncate text-[10px] text-neutral-500">
+                        {session.user.email?.split("@")[1]}
+                      </p>
+                    </div>
+                    <ChevronRight className="size-3.5 text-neutral-500 group-hover:text-neutral-300" />
+                  </>
+                )}
               </button>
             </PopoverTrigger>
             <PopoverContent
