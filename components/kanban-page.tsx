@@ -133,12 +133,15 @@ const TEAM_MEMBERS: { email: string; label: string }[] = [
 // name is in the canonical set for that type are rendered. "Backlog" is shared
 // across all types (intake column). "Review" is shared between content + updates.
 // Names are matched case-insensitively against existing column names.
+// "Backlog" and "Next" are universal lanes (intake + prioritized) — appear in
+// every type filter. Other columns are type-specific.
 const CANONICAL_COLUMNS_BY_FILTER: Record<
   "content" | "update" | "task",
   string[]
 > = {
   content: [
     "Backlog",
+    "Next",
     "Research",
     "SEO Ready",
     "Drafting",
@@ -147,7 +150,7 @@ const CANONICAL_COLUMNS_BY_FILTER: Record<
     "Published",
     "Ready To Do",
   ],
-  update: ["Backlog", "Editing", "Review", "Live"],
+  update: ["Backlog", "Next", "Editing", "Review", "Live"],
   task: ["Backlog", "Next", "Doing", "Blocked", "Done"],
 };
 
