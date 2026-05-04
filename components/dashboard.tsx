@@ -178,12 +178,13 @@ export function Dashboard() {
         <p className="text-sm text-red-400">{error}</p>
       )}
 
-      {/* ── Growth KPIs (5 canonical from GROWTH_PLAN section 3) ─────────── */}
+      {/* ── Growth KPIs (subset — Semrush AS + Backlinks DR50+ tracked
+            manually elsewhere until API gating resolves) ───────────────────── */}
       <SectionHeader
         label="Growth KPIs"
-        hint="The 5 metrics from GROWTH_PLAN section 3"
+        hint="From GROWTH_PLAN section 3 — Authority Score + Backlinks DR50+ tracked manually for now"
       />
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <KpiCard
           title="Activated signups"
           value={
@@ -202,18 +203,6 @@ export function Dashboard() {
               ? `${data.activatedSignups.current.organizations} orgs · ${data.activatedSignups.current.users} personal`
               : "Orgs with Automated Code Review enabled"
           }
-        />
-        <KpiCard
-          title="Backlinks DR 50+ / mo"
-          loading={loading}
-          placeholder="manual"
-          hint="Both Semrush + DataForSEO Backlinks APIs gated to higher plans — track manually monthly"
-        />
-        <KpiCard
-          title="Authority Score"
-          loading={loading}
-          placeholder="24"
-          hint="Manual entry from Semrush UI (last checked 30/abr)"
         />
         <KpiCard
           title="Top 10 commercial pages"
