@@ -246,6 +246,7 @@ export async function reorderColumns(
 export type GrowthWorkItem = {
   id: string;
   userEmail: string;
+  responsibleEmail: string | null; // assignee — person responsible for the card
   title: string;
   description: string | null;
   itemType: WorkItemType;
@@ -265,6 +266,7 @@ export type GrowthWorkItem = {
 type GrowthWorkItemRow = {
   id: string;
   user_email: string;
+  responsible_email: string | null;
   title: string;
   description: string | null;
   item_type: string;
@@ -293,6 +295,7 @@ export type CreateWorkItemInput = {
   link?: string | null;
   dueAt?: string | null;
   payload?: Record<string, unknown>;
+  responsibleEmail?: string | null;
 };
 
 export type UpdateWorkItemInput = Partial<CreateWorkItemInput>;
@@ -351,6 +354,7 @@ function rowToWorkItem(row: GrowthWorkItemRow): GrowthWorkItem {
   return {
     id: row.id,
     userEmail: row.user_email,
+    responsibleEmail: row.responsible_email ?? null,
     title: row.title,
     description: row.description,
     itemType: normalizeWorkItemType(row.item_type),
@@ -400,6 +404,7 @@ export async function createWorkItem(
 
   const row: Record<string, unknown> = {
     user_email: userEmail,
+    responsible_email: sanitizeText(input.responsibleEmail),
     title,
     description: sanitizeText(input.description),
     item_type: normalizeWorkItemType(input.itemType),
@@ -477,6 +482,9 @@ export async function updateWorkItem(
   }
   if (typeof updates.payload !== "undefined") {
     patch.payload = normalizePayload(updates.payload);
+  }
+  if (typeof updates.responsibleEmail !== "undefined") {
+    patch.responsible_email = sanitizeText(updates.responsibleEmail);
   }
 
   if (!Object.keys(patch).length) {
@@ -560,6 +568,7 @@ export async function createWorkItemsBatch(
       if (!title) return null;
       return {
         user_email: userEmail,
+        responsible_email: sanitizeText(input.responsibleEmail),
         title,
         description: sanitizeText(input.description),
         item_type: normalizeWorkItemType(input.itemType),

@@ -82,6 +82,12 @@ export async function PATCH(req: Request, { params }: Params) {
           ? (body.payload as Record<string, unknown>)
           : {};
     }
+    if (Object.prototype.hasOwnProperty.call(body, "responsibleEmail")) {
+      updates.responsibleEmail =
+        typeof body.responsibleEmail === "string" && body.responsibleEmail.trim()
+          ? body.responsibleEmail
+          : null;
+    }
 
     if (!Object.keys(updates).length) {
       return NextResponse.json(

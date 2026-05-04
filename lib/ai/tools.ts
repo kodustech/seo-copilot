@@ -1811,6 +1811,12 @@ function createKanbanCardTool(userEmail?: string) {
           "Type of work item. 'update' = improving an existing page (CTR/schema/rewrite). 'task' = ops/dev/decision (no content generation). Content types follow the gen pipeline.",
         ),
       link: z.string().optional().describe("Reference URL"),
+      responsible: z
+        .string()
+        .optional()
+        .describe(
+          "Email of the person responsible for this card (assignee). Distinct from creator. Use the team member's full email (e.g. 'gabriel@kodus.io', 'edvaldo.freitas@kodus.io', 'junior.sartori@kodus.io').",
+        ),
     }),
     execute: async ({
       title,
@@ -1819,6 +1825,7 @@ function createKanbanCardTool(userEmail?: string) {
       priority,
       itemType,
       link,
+      responsible,
     }: {
       title: string;
       description?: string;
@@ -1833,6 +1840,7 @@ function createKanbanCardTool(userEmail?: string) {
         | "update"
         | "task";
       link?: string;
+      responsible?: string;
     }) => {
       try {
         const client = getSupabaseServiceClient();
@@ -1858,6 +1866,7 @@ function createKanbanCardTool(userEmail?: string) {
           itemType: itemType ?? "idea",
           source: "agent",
           link,
+          responsibleEmail: responsible ?? null,
         });
 
         return {
@@ -1947,6 +1956,139 @@ function createMoveKanbanCardTool(userEmail?: string) {
   });
 }
 
+function createUpdateKanbanCardTool(userEmail?: string) {
+  return tool({
+    description:
+      "Update an existing Kanban card. Find by exact card id (UUID) or by partial title match. Use to set/change the responsible person (assignee), priority, item type, link, description, or to rename. Does not move columns — use moveKanbanCard for that.",
+    inputSchema: z.object({
+      cardId: z
+        .string()
+        .optional()
+        .describe(
+          "Exact UUID of the card. Preferred over cardTitle for precision. If both provided, cardId wins.",
+        ),
+      cardTitle: z
+        .string()
+        .optional()
+        .describe(
+          "Title or partial title (case-insensitive). Used only when cardId is not provided. If multiple cards match, returns an error listing matches.",
+        ),
+      responsible: z
+        .string()
+        .nullable()
+        .optional()
+        .describe(
+          "Assignee email (e.g. 'gabriel@kodus.io'). Pass null to unassign.",
+        ),
+      title: z.string().optional().describe("New title"),
+      description: z.string().optional().describe("New description"),
+      priority: z.enum(["low", "medium", "high"]).optional(),
+      itemType: z
+        .enum(["idea", "keyword", "title", "article", "social", "update", "task"])
+        .optional(),
+      link: z.string().optional().describe("Reference URL"),
+    }),
+    execute: async ({
+      cardId,
+      cardTitle,
+      responsible,
+      title,
+      description,
+      priority,
+      itemType,
+      link,
+    }: {
+      cardId?: string;
+      cardTitle?: string;
+      responsible?: string | null;
+      title?: string;
+      description?: string;
+      priority?: "low" | "medium" | "high";
+      itemType?:
+        | "idea"
+        | "keyword"
+        | "title"
+        | "article"
+        | "social"
+        | "update"
+        | "task";
+      link?: string;
+    }) => {
+      try {
+        const client = getSupabaseServiceClient();
+        let id = cardId;
+
+        if (!id) {
+          if (!cardTitle) {
+            return {
+              success: false as const,
+              message: "Provide either cardId or cardTitle.",
+            };
+          }
+          const all = await listWorkItems(client);
+          const needle = cardTitle.toLowerCase();
+          const matches = all.filter((i) =>
+            i.title.toLowerCase().includes(needle),
+          );
+          if (!matches.length) {
+            return {
+              success: false as const,
+              message: `No card matched title "${cardTitle}".`,
+            };
+          }
+          if (matches.length > 1) {
+            return {
+              success: false as const,
+              message: `Multiple cards matched "${cardTitle}". Use cardId.`,
+              matches: matches.map((m) => ({ id: m.id, title: m.title })),
+            };
+          }
+          id = matches[0].id;
+        }
+
+        const updates: Parameters<typeof updateWorkItem>[3] = {};
+        if (typeof responsible !== "undefined") updates.responsibleEmail = responsible;
+        if (typeof title !== "undefined") updates.title = title;
+        if (typeof description !== "undefined") updates.description = description;
+        if (typeof priority !== "undefined") updates.priority = priority;
+        if (typeof itemType !== "undefined") updates.itemType = itemType;
+        if (typeof link !== "undefined") updates.link = link;
+
+        if (!Object.keys(updates).length) {
+          return {
+            success: false as const,
+            message: "No fields to update. Provide at least one.",
+          };
+        }
+
+        const item = await updateWorkItem(
+          client,
+          userEmail ?? "agent@kodus.io",
+          id,
+          updates,
+        );
+
+        return {
+          success: true as const,
+          card: {
+            id: item.id,
+            title: item.title,
+            responsible: item.responsibleEmail,
+            priority: item.priority,
+            itemType: item.itemType,
+          },
+        };
+      } catch (error) {
+        return {
+          success: false as const,
+          message:
+            error instanceof Error ? error.message : "Error updating card.",
+        };
+      }
+    },
+  });
+}
+
 const listKanbanCards = tool({
   description:
     "List cards on the shared Kanban board, optionally filtered by column name.",
@@ -1993,6 +2135,7 @@ const listKanbanCards = tool({
           column: colMap.get(i.columnId ?? "") ?? "Unknown",
           priority: i.priority,
           type: i.itemType,
+          responsible: i.responsibleEmail,
           createdBy: i.userEmail,
           createdAt: i.createdAt,
         })),
@@ -2040,6 +2183,7 @@ export function createAgentTools(userEmail?: string) {
     runBigQuery,
     createKanbanCard: createKanbanCardTool(userEmail),
     moveKanbanCard: createMoveKanbanCardTool(userEmail),
+    updateKanbanCard: createUpdateKanbanCardTool(userEmail),
     listKanbanCards,
   };
 }

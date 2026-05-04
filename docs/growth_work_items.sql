@@ -20,6 +20,10 @@ create table if not exists public.growth_work_items (
   link text,
   due_at timestamptz,
   payload jsonb not null default '{}'::jsonb,
+  -- Person responsible for this card (assignee). Distinct from user_email
+  -- which records the creator. Nullable: not every card has a single owner
+  -- (e.g. team-wide tasks).
+  responsible_email text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

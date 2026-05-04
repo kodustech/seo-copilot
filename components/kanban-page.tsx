@@ -121,6 +121,13 @@ function priorityBadgeClass(p: WorkItemPriority) {
   return "border-sky-500/40 bg-sky-500/10 text-sky-200";
 }
 
+// Known team members for assignee picker. Extend here as the team grows.
+const TEAM_MEMBERS: { email: string; label: string }[] = [
+  { email: "gabriel@kodus.io", label: "Gabriel" },
+  { email: "junior.sartori@kodus.io", label: "Junior" },
+  { email: "edvaldo.freitas@kodus.io", label: "Ed" },
+];
+
 function typeBadgeClass(t: WorkItemType) {
   if (t === "article") return "border-blue-500/40 bg-blue-500/10 text-blue-200";
   if (t === "social") return "border-cyan-500/40 bg-cyan-500/10 text-cyan-200";
@@ -420,8 +427,19 @@ function SortableCard({
         <Badge variant="outline" className={cn("text-[10px]", priorityBadgeClass(item.priority))}>
           {priorityLabel(item.priority)}
         </Badge>
-        <span className="ml-auto flex items-center gap-1 text-[10px] text-neutral-500" title={item.userEmail}>
-          <span className="flex size-5 items-center justify-center rounded-full bg-white/10 text-[9px] font-semibold text-neutral-300">
+        <span className="ml-auto flex items-center gap-1 text-[10px] text-neutral-500">
+          {item.responsibleEmail && (
+            <span
+              className="flex size-5 items-center justify-center rounded-full bg-sky-500/20 text-[9px] font-semibold text-sky-200 ring-1 ring-sky-500/40"
+              title={`Responsible: ${item.responsibleEmail}`}
+            >
+              {creatorInitials(item.responsibleEmail)}
+            </span>
+          )}
+          <span
+            className="flex size-5 items-center justify-center rounded-full bg-white/10 text-[9px] font-semibold text-neutral-300"
+            title={`Created by: ${item.userEmail}`}
+          >
             {creatorInitials(item.userEmail)}
           </span>
         </span>
@@ -776,6 +794,29 @@ function CardDetailModal({
                 {WORK_ITEM_TYPES.map((t) => (
                   <SelectItem key={t} value={t}>
                     {typeLabel(t)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Responsible (assignee) — editable */}
+          <div className="flex items-center gap-3 rounded py-1.5">
+            <span className="w-24 shrink-0 text-xs text-neutral-500">Responsible</span>
+            <Select
+              value={item.responsibleEmail ?? "__unassigned__"}
+              onValueChange={(v) =>
+                onUpdate({ responsibleEmail: v === "__unassigned__" ? null : v })
+              }
+            >
+              <SelectTrigger className="h-7 border-none bg-transparent px-2 text-xs text-neutral-200 hover:bg-white/5 focus:ring-0">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+                <SelectItem value="__unassigned__">Unassigned</SelectItem>
+                {TEAM_MEMBERS.map((m) => (
+                  <SelectItem key={m.email} value={m.email}>
+                    {m.label}
                   </SelectItem>
                 ))}
               </SelectContent>
