@@ -465,6 +465,15 @@ export async function queryContentOpportunities({
 } = {}): Promise<ContentOpportunitiesResult> {
   const { start, end } = resolveDateRange(startDate, endDate);
 
+  // Brand-search queries are excluded from CTR/striking-distance opportunities —
+  // they need a different fix (block app.kodus.io indexation, see GROWTH_PLAN
+  // P0.3) and pollute the list otherwise. Also exclude queries shorter than 3
+  // chars (single-letter noise from scraping).
+  const brandFilter = `
+       AND LOWER(query) NOT LIKE '%kodus%'
+       AND LOWER(query) NOT LIKE '%kody%'
+       AND LENGTH(query) >= 3`;
+
   const [lowCtrRows, strikingRows] = await Promise.all([
     runQuery<{
       query: string;
@@ -481,6 +490,7 @@ export async function queryContentOpportunities({
          AVG(position) AS position
        FROM \`kody-408918.kodus_search_console.search_analytics_all_fields\`
        WHERE date BETWEEN @start AND @end
+         ${brandFilter}
        GROUP BY query, page
        HAVING impressions > 100 AND ctr < 0.02
        ORDER BY impressions DESC
@@ -502,6 +512,7 @@ export async function queryContentOpportunities({
          AVG(position) AS position
        FROM \`kody-408918.kodus_search_console.search_analytics_all_fields\`
        WHERE date BETWEEN @start AND @end
+         ${brandFilter}
        GROUP BY query, page
        HAVING position BETWEEN 5 AND 20
        ORDER BY impressions DESC

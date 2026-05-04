@@ -80,6 +80,22 @@ function formatPosition(n: number): string {
   return n.toFixed(1);
 }
 
+// Strip protocol/host so the page column reads as a path. Falls back to the
+// raw value if it's not a valid URL.
+function shortenUrlPath(raw: string): string {
+  if (!raw) return "";
+  try {
+    const u = new URL(raw);
+    const path = u.pathname || "/";
+    // Add subdomain hint when it's not the main www host (helps distinguish
+    // app.kodus.io vs kodus.io).
+    const subdomain = u.hostname.split(".").slice(0, -2).join(".");
+    return subdomain && subdomain !== "www" ? `${subdomain}:${path}` : path;
+  } catch {
+    return raw;
+  }
+}
+
 export function Dashboard() {
   const [period, setPeriod] = useState("30d");
   const [data, setData] = useState<DashboardData | null>(null);
@@ -257,6 +273,7 @@ export function Dashboard() {
                     <TableHeader>
                       <TableRow className="border-white/10">
                         <TableHead className="text-neutral-400">Query</TableHead>
+                        <TableHead className="text-neutral-400">Page</TableHead>
                         <TableHead className="text-right text-neutral-400">Impressions</TableHead>
                         <TableHead className="text-right text-neutral-400">Position</TableHead>
                       </TableRow>
@@ -264,8 +281,14 @@ export function Dashboard() {
                     <TableBody>
                       {data.opportunities.strikingDistance.slice(0, 8).map((r) => (
                         <TableRow key={`${r.query}-${r.page}`} className="border-white/5">
-                          <TableCell className="max-w-[200px] truncate text-neutral-200" title={r.query}>
+                          <TableCell className="max-w-[180px] truncate text-neutral-200" title={r.query}>
                             {r.query}
+                          </TableCell>
+                          <TableCell
+                            className="max-w-[200px] truncate text-[11px] text-neutral-500"
+                            title={r.page}
+                          >
+                            {shortenUrlPath(r.page)}
                           </TableCell>
                           <TableCell className="text-right text-neutral-300">
                             {formatNumber(r.impressions)}
@@ -295,7 +318,8 @@ export function Dashboard() {
                   </Badge>
                 </div>
                 <p className="text-xs text-neutral-500">
-                  High impressions but low clicks — improve titles and meta descriptions
+                  High impressions but low clicks — improve titles and meta descriptions.
+                  Brand queries (kodus, kody) excluded — see P0.3 (block app.kodus.io).
                 </p>
               </CardHeader>
               <CardContent>
@@ -304,6 +328,7 @@ export function Dashboard() {
                     <TableHeader>
                       <TableRow className="border-white/10">
                         <TableHead className="text-neutral-400">Query</TableHead>
+                        <TableHead className="text-neutral-400">Page</TableHead>
                         <TableHead className="text-right text-neutral-400">Impressions</TableHead>
                         <TableHead className="text-right text-neutral-400">CTR</TableHead>
                       </TableRow>
@@ -311,8 +336,14 @@ export function Dashboard() {
                     <TableBody>
                       {data.opportunities.lowCtr.slice(0, 8).map((r) => (
                         <TableRow key={`${r.query}-${r.page}`} className="border-white/5">
-                          <TableCell className="max-w-[200px] truncate text-neutral-200" title={r.query}>
+                          <TableCell className="max-w-[180px] truncate text-neutral-200" title={r.query}>
                             {r.query}
+                          </TableCell>
+                          <TableCell
+                            className="max-w-[200px] truncate text-[11px] text-neutral-500"
+                            title={r.page}
+                          >
+                            {shortenUrlPath(r.page)}
                           </TableCell>
                           <TableCell className="text-right text-neutral-300">
                             {formatNumber(r.impressions)}
