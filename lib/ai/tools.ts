@@ -1795,19 +1795,21 @@ export const runBigQuery = tool({
 function createKanbanCardTool(userEmail?: string) {
   return tool({
     description:
-      "Create a new card on the shared Kanban board. Use when the user wants to track an idea, task, or content piece.",
+      "Create a new card on the shared Kanban board. Use for content pieces (article/idea/keyword/title/social), content updates (update — CTR fix, schema sweep, page rewrite), or generic tasks (task — build endpoint, rotate token, decide subscription, write spec).",
     inputSchema: z.object({
       title: z.string().describe("Card title"),
       description: z.string().optional().describe("Card description"),
       columnName: z
         .string()
         .optional()
-        .describe("Column name to place the card in (e.g. 'Backlog', 'Research'). Defaults to first column."),
+        .describe("Column name to place the card in (e.g. 'Backlog', 'Doing'). Defaults to first column."),
       priority: z.enum(["low", "medium", "high"]).optional().describe("Priority level"),
       itemType: z
-        .enum(["idea", "keyword", "title", "article", "social"])
+        .enum(["idea", "keyword", "title", "article", "social", "update", "task"])
         .optional()
-        .describe("Type of work item"),
+        .describe(
+          "Type of work item. 'update' = improving an existing page (CTR/schema/rewrite). 'task' = ops/dev/decision (no content generation). Content types follow the gen pipeline.",
+        ),
       link: z.string().optional().describe("Reference URL"),
     }),
     execute: async ({
@@ -1822,7 +1824,14 @@ function createKanbanCardTool(userEmail?: string) {
       description?: string;
       columnName?: string;
       priority?: "low" | "medium" | "high";
-      itemType?: "idea" | "keyword" | "title" | "article" | "social";
+      itemType?:
+        | "idea"
+        | "keyword"
+        | "title"
+        | "article"
+        | "social"
+        | "update"
+        | "task";
       link?: string;
     }) => {
       try {

@@ -4,10 +4,14 @@ create table if not exists public.growth_work_items (
   user_email text not null,
   title text not null,
   description text,
+  -- 'update' and 'task' added 2026-05-04 to track non-content work on the same
+  -- board (CTR fixes, schema sweeps, ops/dev tasks, decisions). See migrations/.
   item_type text not null default 'idea'
-    check (item_type in ('idea', 'keyword', 'title', 'article', 'social')),
-  stage text not null default 'backlog'
-    check (stage in ('backlog', 'research', 'seo_ready', 'drafting', 'review', 'scheduled', 'published')),
+    check (item_type in ('idea', 'keyword', 'title', 'article', 'social', 'update', 'task')),
+  -- Stage is intentionally loose: it gets set to the column slug when a card moves
+  -- between user-configured columns. Any non-empty string is valid; 'backlog' is
+  -- the default fallback.
+  stage text not null default 'backlog',
   source text not null default 'manual'
     check (source in ('manual', 'blog', 'changelog', 'agent', 'n8n')),
   source_ref text,

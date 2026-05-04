@@ -4,17 +4,34 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 // Types
 // ---------------------------------------------------------------------------
 
-export type WorkItemType = "idea" | "keyword" | "title" | "article" | "social";
+export type WorkItemType =
+  | "idea"
+  | "keyword"
+  | "title"
+  | "article"
+  | "social"
+  // Non-content work tracked on the same board:
+  | "update" // existing-page improvement (CTR fix, schema, refresh, rewrite)
+  | "task"; // generic ops/dev/decision (build endpoint, rotate token, write spec)
 export type WorkItemSource = "manual" | "blog" | "changelog" | "agent" | "n8n";
 export type WorkItemPriority = "low" | "medium" | "high";
 export type WorkItemStage =
+  // Content creation lifecycle (default):
   | "backlog"
   | "research"
   | "seo_ready"
   | "drafting"
   | "review"
   | "scheduled"
-  | "published";
+  | "published"
+  // Content update lifecycle:
+  | "editing"
+  | "live"
+  // Generic task lifecycle:
+  | "next"
+  | "doing"
+  | "blocked"
+  | "done";
 
 export type StageDefinition = {
   id: WorkItemStage;
@@ -22,6 +39,9 @@ export type StageDefinition = {
   help: string;
 };
 
+// Default stages = content creation flow (preserved for backward compat).
+// Columns are user-configurable in the UI; stage values are slug-derived from
+// column names, so any new column slug works as a stage value.
 export const KANBAN_STAGES: StageDefinition[] = [
   { id: "backlog", label: "Backlog", help: "Raw opportunities and ideas." },
   { id: "research", label: "Research", help: "Keywords, context, and references." },
@@ -33,6 +53,20 @@ export const KANBAN_STAGES: StageDefinition[] = [
 ];
 
 export const WORK_ITEM_TYPES: WorkItemType[] = [
+  "idea",
+  "keyword",
+  "title",
+  "article",
+  "social",
+  "update",
+  "task",
+];
+
+// Item types that follow the content-creation gen pipeline (research → write → publish).
+// UI uses this to decide whether to show pipeline actions ("Generate keywords",
+// "Generate article", etc.). 'update' and 'task' are intentionally excluded — they
+// don't need content generation.
+export const CONTENT_PIPELINE_TYPES: WorkItemType[] = [
   "idea",
   "keyword",
   "title",
@@ -281,9 +315,12 @@ export function normalizeWorkItemPriority(value: unknown): WorkItemPriority {
     : "medium";
 }
 
+// Stage is loose-coupled to columns (slug-derived). Accept any non-empty string,
+// fall back to "backlog" when missing or empty. The previous strict whitelist
+// rejected user-configured columns like "Doing"/"Blocked"/"Live".
 export function normalizeWorkItemStage(value: unknown): WorkItemStage {
-  const stage = value as WorkItemStage;
-  return KANBAN_STAGES.some((item) => item.id === stage) ? stage : "backlog";
+  if (typeof value !== "string" || !value.trim()) return "backlog";
+  return value.trim() as WorkItemStage;
 }
 
 function normalizePayload(value: unknown): Record<string, unknown> {

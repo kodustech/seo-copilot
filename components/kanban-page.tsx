@@ -46,6 +46,7 @@ import type {
   WorkItemSource,
 } from "@/lib/kanban";
 import {
+  CONTENT_PIPELINE_TYPES,
   WORK_ITEM_TYPES,
   WORK_ITEM_PRIORITIES,
 } from "@/lib/kanban";
@@ -103,6 +104,8 @@ function typeLabel(t: WorkItemType) {
     title: "Title",
     article: "Article",
     social: "Social",
+    update: "Update",
+    task: "Task",
   };
   return m[t] ?? t;
 }
@@ -123,6 +126,8 @@ function typeBadgeClass(t: WorkItemType) {
   if (t === "social") return "border-cyan-500/40 bg-cyan-500/10 text-cyan-200";
   if (t === "title") return "border-emerald-500/40 bg-emerald-500/10 text-emerald-200";
   if (t === "keyword") return "border-amber-500/40 bg-amber-500/10 text-amber-200";
+  if (t === "update") return "border-violet-500/40 bg-violet-500/10 text-violet-200";
+  if (t === "task") return "border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-200";
   return "border-neutral-500/40 bg-neutral-500/10 text-neutral-200";
 }
 
@@ -359,7 +364,7 @@ function SortableCard({
               side="bottom"
               className="w-48 border-white/10 bg-neutral-950 p-1 text-neutral-100"
             >
-              {onAction && (
+              {onAction && CONTENT_PIPELINE_TYPES.includes(item.itemType) && (
                 <>
                   <p className="px-2 py-1.5 text-[10px] font-medium uppercase tracking-wider text-neutral-500">
                     Pipeline
@@ -383,7 +388,9 @@ function SortableCard({
               )}
               {onDelete && (
                 <>
-                  <div className={cn("my-1 h-px", "bg-white/10")} />
+                  {CONTENT_PIPELINE_TYPES.includes(item.itemType) && (
+                    <div className={cn("my-1 h-px", "bg-white/10")} />
+                  )}
                   <Button
                     variant="ghost"
                     size="sm"
@@ -889,7 +896,9 @@ function CardDetailModal({
         {/* Divider */}
         <div className="mx-5 h-px bg-white/10" />
 
-        {/* Actions footer */}
+        {/* Actions footer — only for content types (article/idea/keyword/title/social).
+            'update' and 'task' are non-content; pipeline gen actions are not relevant. */}
+        {CONTENT_PIPELINE_TYPES.includes(item.itemType) && (
         <div className="flex flex-wrap items-center gap-2 px-5 py-4">
           <p className="text-[10px] font-medium uppercase tracking-wider text-neutral-600">
             Pipeline
@@ -912,21 +921,23 @@ function CardDetailModal({
               </Button>
             );
           })}
+        </div>
+        )}
 
-          <div className="ml-auto">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-xs text-red-500/70 hover:bg-red-500/10 hover:text-red-400"
-              onClick={() => {
-                onClose();
-                onDelete();
-              }}
-            >
-              <Trash2 className="mr-1.5 size-3" />
-              Delete
-            </Button>
-          </div>
+        {/* Delete footer — always visible regardless of type */}
+        <div className="flex justify-end px-5 py-3">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs text-red-500/70 hover:bg-red-500/10 hover:text-red-400"
+            onClick={() => {
+              onClose();
+              onDelete();
+            }}
+          >
+            <Trash2 className="mr-1.5 size-3" />
+            Delete
+          </Button>
         </div>
       </DialogContent>
     </Dialog>
@@ -1041,6 +1052,8 @@ function QuickAddCard({
 // Main Kanban Page
 // ---------------------------------------------------------------------------
 
+type TypeFilter = "all" | "content" | "update" | "task";
+
 export function KanbanPage() {
   const token = useAuthToken();
   const router = useRouter();
@@ -1051,6 +1064,7 @@ export function KanbanPage() {
   const [addingCardCol, setAddingCardCol] = useState<string | null>(null);
   const [activeItem, setActiveItem] = useState<GrowthWorkItem | null>(null);
   const [selectedCard, setSelectedCard] = useState<GrowthWorkItem | null>(null);
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -1083,11 +1097,19 @@ export function KanbanPage() {
 
   // ---- Group items by column ----
 
+  const filteredItems = useMemo(() => {
+    if (typeFilter === "all") return items;
+    if (typeFilter === "update") return items.filter((i) => i.itemType === "update");
+    if (typeFilter === "task") return items.filter((i) => i.itemType === "task");
+    // "content" = the original content-pipeline types
+    return items.filter((i) => CONTENT_PIPELINE_TYPES.includes(i.itemType));
+  }, [items, typeFilter]);
+
   const itemsByColumn = useMemo(() => {
     const map = new Map<string, GrowthWorkItem[]>();
     for (const col of columns) map.set(col.id, []);
 
-    for (const item of items) {
+    for (const item of filteredItems) {
       const colId = item.columnId;
       if (colId && map.has(colId)) {
         map.get(colId)!.push(item);
@@ -1101,7 +1123,7 @@ export function KanbanPage() {
     }
 
     return map;
-  }, [columns, items]);
+  }, [columns, filteredItems]);
 
   // ---- Column CRUD ----
 
@@ -1336,15 +1358,41 @@ export function KanbanPage() {
               Shared board — all team members see every card.
             </p>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="border-white/15 bg-transparent text-neutral-300 hover:bg-white/10"
-            onClick={() => void loadBoard()}
-          >
-            <RefreshCcw className="mr-1.5 size-4" />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            {/* Type filter tabs */}
+            <div className="flex items-center gap-1 rounded-md border border-white/10 bg-neutral-900 p-1">
+              {(
+                [
+                  { id: "all", label: "All" },
+                  { id: "content", label: "Content" },
+                  { id: "update", label: "Updates" },
+                  { id: "task", label: "Tasks" },
+                ] as { id: TypeFilter; label: string }[]
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  className={cn(
+                    "rounded px-2.5 py-1 text-xs transition",
+                    typeFilter === opt.id
+                      ? "bg-white/10 text-white"
+                      : "text-neutral-400 hover:text-neutral-200",
+                  )}
+                  onClick={() => setTypeFilter(opt.id)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-white/15 bg-transparent text-neutral-300 hover:bg-white/10"
+              onClick={() => void loadBoard()}
+            >
+              <RefreshCcw className="mr-1.5 size-4" />
+              Refresh
+            </Button>
+          </div>
         </header>
 
         <DndContext
