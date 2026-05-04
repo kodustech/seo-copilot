@@ -117,6 +117,20 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     ],
     [],
   );
+  // Page title derived from active nav. Computed up here (before early returns)
+  // so the hook count stays stable across signed-in / signed-out renders.
+  const currentNavLabel = useMemo(() => {
+    for (const section of navSections) {
+      for (const item of section.items) {
+        if (item.href === "/" ? pathname === "/" : pathname === item.href) {
+          return item.label;
+        }
+      }
+    }
+    if (pathname === "/settings") return "Settings";
+    if (pathname.startsWith("/manual")) return "Manual Mode";
+    return "";
+  }, [navSections, pathname]);
   const [agentOpen, setAgentOpen] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [initializing, setInitializing] = useState(true);
@@ -412,20 +426,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   const manualSectionActive = pathname === "/manual";
   const activeManualTool = manualSectionActive ? (manualToolParam ?? "all") : null;
-
-  // Find current page label from nav for the topbar breadcrumb.
-  const currentNavLabel = useMemo(() => {
-    for (const section of navSections) {
-      for (const item of section.items) {
-        if (item.href === "/" ? pathname === "/" : pathname === item.href) {
-          return item.label;
-        }
-      }
-    }
-    if (pathname === "/settings") return "Settings";
-    if (pathname.startsWith("/manual")) return "Manual Mode";
-    return "";
-  }, [navSections, pathname]);
 
   const sidebarItemClass = (active: boolean) =>
     cn(
