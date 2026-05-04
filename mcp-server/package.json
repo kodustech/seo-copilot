@@ -1,0 +1,25 @@
+{
+  "name": "@kodus/seo-copilot-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP server exposing seo-copilot tools to Claude Code (and other MCP clients)",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "seo-copilot-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "zod-to-json-schema": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "tsx": "^4.7.0",
+    "typescript": "^5"
+  }
+}

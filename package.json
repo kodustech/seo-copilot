@@ -6,7 +6,10 @@
     "dev": "next dev --port 3737",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "mcp": "tsx mcp-server/src/index.ts",
+    "mcp:install": "cd mcp-server && npm install",
+    "mcp:build": "cd mcp-server && npm run build"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.43",
