@@ -129,6 +129,29 @@ const TEAM_MEMBERS: { email: string; label: string }[] = [
   { email: "edvaldo.freitas@kodus.io", label: "Ed" },
 ];
 
+// Canonical columns per type filter. When filter is active, only columns whose
+// name is in the canonical set for that type are rendered. "Backlog" is shared
+// across all types (intake column). "Review" is shared between content + updates.
+// Names are matched case-insensitively against existing column names.
+const CANONICAL_COLUMNS_BY_FILTER: Record<
+  "all" | "content" | "update" | "task",
+  string[]
+> = {
+  all: [], // empty = show all columns regardless
+  content: [
+    "Backlog",
+    "Research",
+    "SEO Ready",
+    "Drafting",
+    "Review",
+    "Scheduled",
+    "Published",
+    "Ready To Do",
+  ],
+  update: ["Backlog", "Editing", "Review", "Live"],
+  task: ["Backlog", "Next", "Doing", "Blocked", "Done"],
+};
+
 function typeBadgeClass(t: WorkItemType) {
   if (t === "article") return "border-blue-500/40 bg-blue-500/10 text-blue-200";
   if (t === "social") return "border-cyan-500/40 bg-cyan-500/10 text-cyan-200";
@@ -1235,6 +1258,37 @@ export function KanbanPage() {
     }
   }
 
+  // Visible columns based on the active type filter. When filter is "all", show
+  // every column. Otherwise, show only columns whose name matches the canonical
+  // set for that filter (case-insensitive). Cards still live in the same column
+  // table — this is a presentation-only filter.
+  const visibleColumns = useMemo(() => {
+    if (typeFilter === "all") return columns;
+    const allowed = CANONICAL_COLUMNS_BY_FILTER[typeFilter].map((n) =>
+      n.toLowerCase(),
+    );
+    if (!allowed.length) return columns;
+    return columns.filter((c) => allowed.includes(c.name.toLowerCase()));
+  }, [columns, typeFilter]);
+
+  // Canonical columns for the current filter that don't exist yet — shown as a
+  // "create missing" hint when user enters a type filter for the first time.
+  const missingCanonicalColumns = useMemo(() => {
+    if (typeFilter === "all") return [];
+    const expected = CANONICAL_COLUMNS_BY_FILTER[typeFilter];
+    if (!expected.length) return [];
+    const existingLower = new Set(columns.map((c) => c.name.toLowerCase()));
+    return expected.filter((n) => !existingLower.has(n.toLowerCase()));
+  }, [columns, typeFilter]);
+
+  async function setupCanonicalColumnsForFilter() {
+    if (typeFilter === "all" || !missingCanonicalColumns.length) return;
+    // Create sequentially to keep "position" assignment server-side stable.
+    for (const name of missingCanonicalColumns) {
+      await handleAddColumn(name);
+    }
+  }
+
   async function handleRenameColumn(colId: string, name: string) {
     if (!token) return;
     setColumns((prev) =>
@@ -1514,8 +1568,29 @@ export function KanbanPage() {
           onDragOver={handleDragOver}
           onDragEnd={handleDragEnd}
         >
+          {missingCanonicalColumns.length > 0 && (
+            <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm">
+              <div className="text-amber-200">
+                <strong className="font-semibold">
+                  Missing columns for "{typeFilter}" view:
+                </strong>{" "}
+                <span className="text-amber-300/80">
+                  {missingCanonicalColumns.join(" · ")}
+                </span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-amber-500/40 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20"
+                onClick={() => void setupCanonicalColumnsForFilter()}
+              >
+                Create columns
+              </Button>
+            </div>
+          )}
+
           <div className="flex gap-4 overflow-x-auto pb-4">
-            {columns.map((col) => {
+            {visibleColumns.map((col) => {
               const colItems = itemsByColumn.get(col.id) ?? [];
               return (
                 <div
