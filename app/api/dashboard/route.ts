@@ -7,6 +7,7 @@ import {
   queryComparePerformance,
   queryContentDecay,
   queryContentOpportunities,
+  queryActivatedSignups,
 } from "@/lib/bigquery";
 import { fetchBlogPosts } from "@/lib/copilot";
 import { getLatestLLMMentions } from "@/lib/dataforseo";
@@ -27,17 +28,30 @@ export async function GET(request: Request) {
     const period = searchParams.get("period") || "30d";
     const { startDate, endDate } = periodToDates(period);
 
-    const [traffic, search, topContent, compare, decay, opportunities, blogPosts, llmMentions] =
-      await Promise.all([
-        queryTrafficOverview({ startDate, endDate }),
-        querySearchPerformance({ startDate, endDate }),
-        queryTopContent({ startDate, endDate }),
-        queryComparePerformance({ startDate, endDate }),
-        queryContentDecay({ startDate, endDate }),
-        queryContentOpportunities({ startDate, endDate }),
-        fetchBlogPosts(100),
-        getLatestLLMMentions().catch(() => []),
-      ]);
+    const [
+      traffic,
+      search,
+      topContent,
+      compare,
+      decay,
+      opportunities,
+      blogPosts,
+      llmMentions,
+      activatedSignups,
+    ] = await Promise.all([
+      queryTrafficOverview({ startDate, endDate }),
+      querySearchPerformance({ startDate, endDate }),
+      queryTopContent({ startDate, endDate }),
+      queryComparePerformance({ startDate, endDate }),
+      queryContentDecay({ startDate, endDate }),
+      queryContentOpportunities({ startDate, endDate }),
+      fetchBlogPosts(100),
+      getLatestLLMMentions().catch(() => []),
+      queryActivatedSignups({ startDate, endDate }).catch((e) => {
+        console.error("[dashboard] activatedSignups error:", e);
+        return null;
+      }),
+    ]);
 
     return NextResponse.json({
       period,
@@ -51,6 +65,7 @@ export async function GET(request: Request) {
       opportunities,
       blogPosts,
       llmMentions,
+      activatedSignups,
     });
   } catch (error) {
     console.error("Dashboard API error:", error);

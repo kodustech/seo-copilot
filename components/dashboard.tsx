@@ -38,6 +38,7 @@ import type {
   ComparePerformanceResult,
   ContentDecayResult,
   ContentOpportunitiesResult,
+  ActivatedSignupsResult,
 } from "@/lib/bigquery";
 import type { BlogPost } from "@/lib/copilot";
 import type { LLMMentionsSnapshot } from "@/lib/dataforseo";
@@ -54,6 +55,7 @@ type DashboardData = {
   opportunities: ContentOpportunitiesResult;
   blogPosts: BlogPost[];
   llmMentions: LLMMentionsSnapshot[];
+  activatedSignups: ActivatedSignupsResult | null;
 };
 
 function formatGaDate(raw: string): string {
@@ -183,22 +185,35 @@ export function Dashboard() {
       />
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <KpiCard
-          title="Activated users / mo"
+          title="Activated signups"
+          value={
+            data?.activatedSignups
+              ? formatNumber(data.activatedSignups.current.total)
+              : undefined
+          }
+          change={
+            data?.activatedSignups
+              ? data.activatedSignups.change.total
+              : undefined
+          }
           loading={loading}
-          placeholder="—"
-          hint="PostHog `first_review_completed` — needs MCP integration"
+          hint={
+            data?.activatedSignups
+              ? `${data.activatedSignups.current.organizations} orgs · ${data.activatedSignups.current.users} personal`
+              : "Orgs with Automated Code Review enabled"
+          }
         />
         <KpiCard
           title="Backlinks DR 50+ / mo"
           loading={loading}
-          placeholder="—"
-          hint="Manual entry from Semrush > New > DR ≥ 50"
+          placeholder="manual"
+          hint="Semrush API requires Business plan — track manually monthly via Semrush UI > Backlinks > New > filter ASCORE ≥ 50"
         />
         <KpiCard
           title="Authority Score"
           loading={loading}
-          placeholder="—"
-          hint="Manual entry from Semrush — currently 24"
+          placeholder="24"
+          hint="Manual entry from Semrush UI (last checked 30/abr) — same gating as backlinks"
         />
         <KpiCard
           title="Top 10 commercial pages"

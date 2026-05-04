@@ -687,6 +687,111 @@ export async function queryComparePerformance({
 }
 
 // ---------------------------------------------------------------------------
+// Activated Users (kodus_postgres mirror)
+// ---------------------------------------------------------------------------
+
+// "Activated signup" = organization with at least one team_automation linked
+// to the "Automated Code Review" automation set to status=TRUE. Counted at
+// the org level. authDetails.accountType discriminates personal "user" orgs
+// (single-person GitHub/GitLab accounts) from real multi-user "organization"
+// orgs. Matches the same definition Junior tracks in PostHog Insights.
+//
+// Total = count of orgs activated in the period.
+// users = orgs whose latest auth_integration has accountType='user'.
+// organizations = the rest.
+export type ActivatedSignupsResult = {
+  current: { total: number; organizations: number; users: number };
+  previous: { total: number; organizations: number; users: number };
+  change: { total: number; organizations: number; users: number };
+};
+
+export async function queryActivatedSignups({
+  startDate,
+  endDate,
+}: {
+  startDate?: string;
+  endDate?: string;
+} = {}): Promise<ActivatedSignupsResult> {
+  const { start, end } = resolveDateRange(startDate, endDate);
+  const { start: prevStart, end: prevEnd } = computePreviousPeriod(start, end);
+
+  const sql = `
+    WITH org_types AS (
+      SELECT
+        organization_id AS org_uuid,
+        CASE
+          WHEN LOWER(JSON_VALUE(authDetails, '$.accountType')) = 'user' THEN 'user'
+          ELSE 'organization'
+        END AS org_type
+      FROM (
+        SELECT
+          organization_id,
+          authDetails,
+          ROW_NUMBER() OVER (
+            PARTITION BY organization_id
+            ORDER BY createdAt DESC
+          ) AS rn
+        FROM \`kody-408918.kodus_postgres.auth_integrations\`
+      )
+      WHERE rn = 1
+    ),
+    activated AS (
+      SELECT DISTINCT o.uuid AS org_uuid, o.createdAt
+      FROM \`kody-408918.kodus_postgres.organizations\` o
+      JOIN \`kody-408918.kodus_postgres.teams\` t
+        ON o.uuid = t.organization_id
+      JOIN \`kody-408918.kodus_postgres.team_automations\` ta
+        ON t.uuid = ta.teamUuid
+      JOIN \`kody-408918.kodus_postgres.automation\` a
+        ON ta.automationUuid = a.uuid
+      WHERE a.name = 'Automated Code Review' AND ta.status = TRUE
+    )
+    SELECT
+      COUNT(DISTINCT activated.org_uuid) AS total,
+      COUNTIF(COALESCE(ot.org_type, 'organization') = 'organization') AS organizations,
+      COUNTIF(ot.org_type = 'user') AS users
+    FROM activated
+    LEFT JOIN org_types ot ON ot.org_uuid = activated.org_uuid
+    WHERE DATE(activated.createdAt) BETWEEN @start AND @end
+  `;
+
+  const [currentRows, previousRows] = await Promise.all([
+    runQuery<{ total: number; organizations: number; users: number }>(sql, {
+      start,
+      end,
+    }),
+    runQuery<{ total: number; organizations: number; users: number }>(sql, {
+      start: prevStart,
+      end: prevEnd,
+    }),
+  ]);
+
+  const cur = currentRows[0] ?? { total: 0, organizations: 0, users: 0 };
+  const prev = previousRows[0] ?? { total: 0, organizations: 0, users: 0 };
+
+  return {
+    current: {
+      total: Number(cur.total),
+      organizations: Number(cur.organizations),
+      users: Number(cur.users),
+    },
+    previous: {
+      total: Number(prev.total),
+      organizations: Number(prev.organizations),
+      users: Number(prev.users),
+    },
+    change: {
+      total: computeChange(Number(cur.total), Number(prev.total)),
+      organizations: computeChange(
+        Number(cur.organizations),
+        Number(prev.organizations),
+      ),
+      users: computeChange(Number(cur.users), Number(prev.users)),
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 6. Content Decay (GA4 pages)
 // ---------------------------------------------------------------------------
 
