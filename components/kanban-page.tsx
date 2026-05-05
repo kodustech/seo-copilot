@@ -288,8 +288,15 @@ const LLM_BRAND_PREAMBLE =
   `**Audience:** senior engineers, eng leads, CTOs at SaaS companies.\n` +
   `**Differentiators:** IDE-native, multi-agent code review, customizable Kody Rules, MCP integrations, open-source.\n`;
 
-const LLM_TASKS_BY_TYPE: Record<WorkItemType, string> = {
-  content:
+const LLM_TASK_GENERIC =
+  `Help me execute this card. Produce:\n\n` +
+  `1. **Step-by-step plan** — concrete steps in order\n` +
+  `2. **Decisions to make** — what choices need to be made and the rationale for each\n` +
+  `3. **Risks / pitfalls** — what could go wrong\n` +
+  `4. **What "done" looks like** — measurable criteria`;
+
+const LLM_TASKS_BY_TYPE: Partial<Record<WorkItemType, string>> = {
+  article:
     `Help me execute this content brief. Produce:\n\n` +
     `1. **Outline** (H2 / H3 structure)\n` +
     `2. **Opening 2 paragraphs** (≤200 words total) — establish intent fit, no marketing fluff\n` +
@@ -303,16 +310,39 @@ const LLM_TASKS_BY_TYPE: Record<WorkItemType, string> = {
     `3. **Schema or meta updates** if any (with sample JSON-LD)\n` +
     `4. **Internal-link sweep** — 3 inbound link sources with anchor text and paragraph context\n` +
     `5. **Validation step** — what to check in GSC after 14d to confirm the fix worked`,
-  task:
-    `Help me execute this task. Produce:\n\n` +
-    `1. **Step-by-step plan** — concrete steps in order\n` +
-    `2. **Decisions to make** — what choices need to be made and the rationale for each\n` +
-    `3. **Risks / pitfalls** — what could go wrong\n` +
-    `4. **What "done" looks like** — measurable criteria`,
+  keyword:
+    `Help me work this keyword card. Produce:\n\n` +
+    `1. **Intent classification** — informational / commercial / transactional / navigational, with rationale\n` +
+    `2. **Cluster** — 5-10 related queries that should live on the same page\n` +
+    `3. **3 angle ideas** — distinct content angles for the cluster, each with a 1-line hook\n` +
+    `4. **Existing fit** — does kodus.io already cover this? If yes, suggest update; if no, suggest new page slug`,
+  title:
+    `Help me draft titles for this card. Produce:\n\n` +
+    `1. **5 title variants** (≤60 chars) — each testing a different angle (informational / comparative / commercial / contrarian / direct)\n` +
+    `2. **Recommendation** — pick 1, explain why it's strongest for the target query / audience\n` +
+    `3. **One H1** aligned with the chosen title\n` +
+    `4. **Meta description** (≤155 chars) that pairs with the chosen title`,
+  social:
+    `Help me draft social posts for this card. Produce:\n\n` +
+    `1. **LinkedIn post** (~150-250 words) — narrative angle, no marketing fluff, ends with a clear CTA\n` +
+    `2. **Twitter/X thread** (3-5 tweets) — punchy, one idea per tweet, last tweet links out\n` +
+    `3. **HN Show HN draft** if applicable — title + 2-paragraph post body with the technical angle\n` +
+    `4. **Hashtags + handles** — relevant only, no spam`,
+  idea:
+    `Help me develop this idea. Produce:\n\n` +
+    `1. **Problem-fit check** — what pain does it actually solve, who exactly\n` +
+    `2. **3 distinct angles** to develop the idea, each with a 1-line hook\n` +
+    `3. **Recommended next step** — research / spike / brief / kill, with rationale\n` +
+    `4. **Risks** — what makes this idea unlikely to work`,
+  task: LLM_TASK_GENERIC,
 };
 
 const TYPE_ISSUE_LABEL: Record<WorkItemType, string> = {
-  content: "Content brief",
+  idea: "Idea",
+  keyword: "Keyword research",
+  title: "Title drafting",
+  article: "Article brief",
+  social: "Social post",
   update: "Page update",
   task: "Task",
 };
@@ -331,7 +361,7 @@ function buildKanbanLlmPrompt(
   columns: KanbanColumn[],
 ): string {
   const stage = stageLabelFromColumn(columns, item.columnId);
-  const taskSpec = LLM_TASKS_BY_TYPE[item.itemType] ?? LLM_TASKS_BY_TYPE.task;
+  const taskSpec = LLM_TASKS_BY_TYPE[item.itemType] ?? LLM_TASK_GENERIC;
 
   // Custom fields (the payload Map). Render as bullet list when present.
   const payloadEntries = Object.entries(item.payload ?? {}).filter(
