@@ -21,6 +21,7 @@ import {
   Send,
   Settings,
   Sparkles,
+  Target,
   Wrench,
 } from "lucide-react";
 
@@ -72,6 +73,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         label: "Workspace",
         items: [
           { href: "/", label: "Content Canvas", icon: Sparkles },
+          { href: "/goals", label: "Goals", icon: Target },
           { href: "/kanban", label: "Kanban", icon: KanbanSquare },
           { href: "/dashboard", label: "Dashboard", icon: BarChart3 },
         ],
