@@ -916,6 +916,22 @@ function AddColumnForm({ onAdd }: { onAdd: (name: string) => void }) {
   );
 }
 
+// Compact two-column property row used inside the CardDetailModal grid.
+function PropertyRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-3 py-0.5">
+      <span className="w-20 shrink-0 text-[11px] text-neutral-500">{label}</span>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Card Detail Modal (Notion-style)
 // ---------------------------------------------------------------------------
@@ -996,34 +1012,55 @@ function CardDetailModal({
     onUpdate({ payload: { ...item.payload, [key]: value } });
   }
 
+  // Pretty creator label + relative timestamp for the top bar so the
+  // properties grid can drop the "Created by" / "Created" rows.
+  const createdAt = new Date(item.createdAt);
+  const createdAgo = (() => {
+    const days = Math.floor((Date.now() - createdAt.getTime()) / 86_400_000);
+    if (days <= 0) return "today";
+    if (days === 1) return "1d ago";
+    if (days < 30) return `${days}d ago`;
+    if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+    return `${Math.floor(days / 365)}y ago`;
+  })();
+
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent
         showCloseButton={false}
         className="max-h-[85vh] overflow-y-auto border-white/10 bg-neutral-950 p-0 text-neutral-100 sm:max-w-2xl"
       >
-        {/* Top bar */}
-        <div className="flex items-center gap-2 border-b border-white/10 px-5 py-3">
+        {/* Top bar — type / priority / creator+date / actions */}
+        <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-white/10 bg-neutral-950/95 px-5 py-2.5 backdrop-blur">
           <Badge variant="outline" className={cn("text-[10px]", typeBadgeClass(item.itemType))}>
             {typeLabel(item.itemType)}
           </Badge>
           <Badge variant="outline" className={cn("text-[10px]", priorityBadgeClass(item.priority))}>
             {priorityLabel(item.priority)}
           </Badge>
-          <span className="ml-auto text-[11px] text-neutral-500">
-            by {item.userEmail.split("@")[0]}
-          </span>
+          <div
+            className="ml-auto flex items-center gap-1.5 text-[11px] text-neutral-500"
+            title={`Created ${createdAt.toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}`}
+          >
+            <span className="flex size-5 items-center justify-center rounded-full bg-white/10 text-[9px] font-semibold text-neutral-300">
+              {creatorInitials(item.userEmail)}
+            </span>
+            <span>{item.userEmail.split("@")[0]}</span>
+            <span className="text-neutral-700">·</span>
+            <span>{createdAgo}</span>
+          </div>
           <CardCopyLlmButton item={item} columns={columns} />
           <button
             className="rounded p-1 text-neutral-500 hover:bg-white/10 hover:text-neutral-200"
             onClick={onClose}
+            aria-label="Close"
           >
             <X className="size-4" />
           </button>
         </div>
 
-        {/* Title — editable, Notion-style */}
-        <div className="px-5 pt-4">
+        {/* Title — editable, no scrollbar even on long titles */}
+        <div className="px-5 pb-1 pt-5">
           <textarea
             ref={titleRef}
             value={title}
@@ -1036,16 +1073,26 @@ function CardDetailModal({
               }
             }}
             rows={1}
-            className="w-full resize-none border-none bg-transparent text-xl font-semibold text-neutral-100 placeholder:text-neutral-600 focus:outline-none"
+            className="w-full resize-none overflow-hidden break-words border-none bg-transparent p-0 text-2xl font-semibold leading-tight tracking-tight text-white placeholder:text-neutral-600 focus:outline-none"
             placeholder="Untitled"
+            style={{ wordBreak: "break-word" }}
           />
+          {item.link && (
+            <a
+              href={item.link}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-1 inline-flex max-w-full items-center gap-1 truncate text-[11px] text-neutral-500 hover:text-neutral-300"
+              title={item.link}
+            >
+              {item.link.replace(/^https?:\/\//, "")}
+            </a>
+          )}
         </div>
 
-        {/* Properties grid — Notion-style */}
-        <div className="space-y-1 px-5 pb-2">
-          {/* Column */}
-          <div className="flex items-center gap-3 rounded py-1.5">
-            <span className="w-24 shrink-0 text-xs text-neutral-500">Column</span>
+        {/* Properties — compact 2-col grid */}
+        <div className="grid grid-cols-2 gap-x-6 gap-y-0.5 px-5 pb-3">
+          <PropertyRow label="Column">
             <Select
               value={item.columnId ?? ""}
               onValueChange={(v) => {
@@ -1053,7 +1100,7 @@ function CardDetailModal({
                 onUpdate({ columnId: v, stage: col?.slug });
               }}
             >
-              <SelectTrigger className="h-7 border-none bg-transparent px-2 text-xs text-neutral-200 hover:bg-white/5 focus:ring-0">
+              <SelectTrigger className="h-6 border-none bg-transparent px-1.5 text-xs text-neutral-200 hover:bg-white/5 focus:ring-0">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
@@ -1064,36 +1111,13 @@ function CardDetailModal({
                 ))}
               </SelectContent>
             </Select>
-          </div>
-
-          {/* Priority */}
-          <div className="flex items-center gap-3 rounded py-1.5">
-            <span className="w-24 shrink-0 text-xs text-neutral-500">Priority</span>
-            <Select
-              value={item.priority}
-              onValueChange={(v) => onUpdate({ priority: v })}
-            >
-              <SelectTrigger className="h-7 border-none bg-transparent px-2 text-xs text-neutral-200 hover:bg-white/5 focus:ring-0">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
-                {WORK_ITEM_PRIORITIES.map((p) => (
-                  <SelectItem key={p} value={p}>
-                    {priorityLabel(p)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Type */}
-          <div className="flex items-center gap-3 rounded py-1.5">
-            <span className="w-24 shrink-0 text-xs text-neutral-500">Type</span>
+          </PropertyRow>
+          <PropertyRow label="Type">
             <Select
               value={item.itemType}
               onValueChange={(v) => onUpdate({ itemType: v })}
             >
-              <SelectTrigger className="h-7 border-none bg-transparent px-2 text-xs text-neutral-200 hover:bg-white/5 focus:ring-0">
+              <SelectTrigger className="h-6 border-none bg-transparent px-1.5 text-xs text-neutral-200 hover:bg-white/5 focus:ring-0">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
@@ -1104,18 +1128,32 @@ function CardDetailModal({
                 ))}
               </SelectContent>
             </Select>
-          </div>
-
-          {/* Responsible (assignee) — editable */}
-          <div className="flex items-center gap-3 rounded py-1.5">
-            <span className="w-24 shrink-0 text-xs text-neutral-500">Responsible</span>
+          </PropertyRow>
+          <PropertyRow label="Priority">
+            <Select
+              value={item.priority}
+              onValueChange={(v) => onUpdate({ priority: v })}
+            >
+              <SelectTrigger className="h-6 border-none bg-transparent px-1.5 text-xs text-neutral-200 hover:bg-white/5 focus:ring-0">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+                {WORK_ITEM_PRIORITIES.map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {priorityLabel(p)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </PropertyRow>
+          <PropertyRow label="Responsible">
             <Select
               value={item.responsibleEmail ?? "__unassigned__"}
               onValueChange={(v) =>
                 onUpdate({ responsibleEmail: v === "__unassigned__" ? null : v })
               }
             >
-              <SelectTrigger className="h-7 border-none bg-transparent px-2 text-xs text-neutral-200 hover:bg-white/5 focus:ring-0">
+              <SelectTrigger className="h-6 border-none bg-transparent px-1.5 text-xs text-neutral-200 hover:bg-white/5 focus:ring-0">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
@@ -1127,100 +1165,87 @@ function CardDetailModal({
                 ))}
               </SelectContent>
             </Select>
-          </div>
+          </PropertyRow>
 
-          {/* Creator (read-only) */}
-          <div className="flex items-center gap-3 rounded py-1.5">
-            <span className="w-24 shrink-0 text-xs text-neutral-500">Created by</span>
-            <div className="flex items-center gap-1.5 px-2 text-xs text-neutral-300">
-              <span className="flex size-5 items-center justify-center rounded-full bg-white/10 text-[9px] font-semibold">
-                {creatorInitials(item.userEmail)}
-              </span>
-              {item.userEmail.split("@")[0]}
+          {/* Custom fields — span both columns since values can be long */}
+          {customFields.length > 0 && (
+            <div className="col-span-2 mt-1 space-y-0.5">
+              {customFields.map(([key, value]) => (
+                <div key={key} className="group flex items-center gap-3 rounded py-0.5">
+                  <span
+                    className="w-24 shrink-0 truncate text-[11px] text-neutral-500"
+                    title={key}
+                  >
+                    {key}
+                  </span>
+                  <input
+                    className="min-w-0 flex-1 border-none bg-transparent px-1.5 text-xs text-neutral-300 placeholder:text-neutral-600 focus:outline-none focus:ring-0"
+                    defaultValue={String(value)}
+                    onBlur={(e) => handleFieldValueChange(key, e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                    }}
+                  />
+                  <button
+                    className="shrink-0 text-neutral-700 opacity-0 transition group-hover:opacity-100 hover:text-red-400"
+                    onClick={() => handleRemoveField(key)}
+                    aria-label={`Remove ${key}`}
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+              ))}
             </div>
-          </div>
-
-          {/* Created at */}
-          <div className="flex items-center gap-3 rounded py-1.5">
-            <span className="w-24 shrink-0 text-xs text-neutral-500">Created</span>
-            <span className="px-2 text-xs text-neutral-400">
-              {new Date(item.createdAt).toLocaleDateString("en-US", {
-                month: "short",
-                day: "numeric",
-                year: "numeric",
-              })}
-            </span>
-          </div>
-
-          {/* Custom fields */}
-          {customFields.map(([key, value]) => (
-            <div key={key} className="group flex items-center gap-3 rounded py-1.5">
-              <span className="w-24 shrink-0 truncate text-xs text-neutral-500" title={key}>
-                {key}
-              </span>
-              <input
-                className="min-w-0 flex-1 border-none bg-transparent px-2 text-xs text-neutral-300 placeholder:text-neutral-600 focus:outline-none focus:ring-0"
-                defaultValue={String(value)}
-                onBlur={(e) => handleFieldValueChange(key, e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                }}
-              />
-              <button
-                className="shrink-0 text-neutral-700 opacity-0 transition group-hover:opacity-100 hover:text-red-400"
-                onClick={() => handleRemoveField(key)}
-              >
-                <X className="size-3" />
-              </button>
-            </div>
-          ))}
-
-          {/* Add field */}
-          {addingField ? (
-            <form
-              className="flex items-center gap-2 py-1.5"
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleAddField();
-              }}
-            >
-              <input
-                autoFocus
-                value={newFieldKey}
-                onChange={(e) => setNewFieldKey(e.target.value)}
-                placeholder="Property name"
-                className="w-24 shrink-0 border-none bg-transparent text-xs text-neutral-400 placeholder:text-neutral-600 focus:outline-none"
-              />
-              <input
-                value={newFieldValue}
-                onChange={(e) => setNewFieldValue(e.target.value)}
-                placeholder="Value"
-                className="min-w-0 flex-1 border-none bg-transparent px-2 text-xs text-neutral-300 placeholder:text-neutral-600 focus:outline-none"
-              />
-              <button type="submit" className="text-emerald-400 hover:text-emerald-300">
-                <Plus className="size-3.5" />
-              </button>
-              <button
-                type="button"
-                className="text-neutral-600 hover:text-neutral-400"
-                onClick={() => {
-                  setAddingField(false);
-                  setNewFieldKey("");
-                  setNewFieldValue("");
-                }}
-              >
-                <X className="size-3.5" />
-              </button>
-            </form>
-          ) : (
-            <button
-              className="flex items-center gap-1.5 py-1.5 text-[11px] text-neutral-600 transition hover:text-neutral-400"
-              onClick={() => setAddingField(true)}
-            >
-              <Plus className="size-3" />
-              Add property
-            </button>
           )}
+
+          {/* Add field — full width */}
+          <div className="col-span-2 pt-1">
+            {addingField ? (
+              <form
+                className="flex items-center gap-2 py-0.5"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleAddField();
+                }}
+              >
+                <input
+                  autoFocus
+                  value={newFieldKey}
+                  onChange={(e) => setNewFieldKey(e.target.value)}
+                  placeholder="Property name"
+                  className="w-24 shrink-0 border-none bg-transparent text-xs text-neutral-400 placeholder:text-neutral-600 focus:outline-none"
+                />
+                <input
+                  value={newFieldValue}
+                  onChange={(e) => setNewFieldValue(e.target.value)}
+                  placeholder="Value"
+                  className="min-w-0 flex-1 border-none bg-transparent px-1.5 text-xs text-neutral-300 placeholder:text-neutral-600 focus:outline-none"
+                />
+                <button type="submit" className="text-emerald-400 hover:text-emerald-300">
+                  <Plus className="size-3.5" />
+                </button>
+                <button
+                  type="button"
+                  className="text-neutral-600 hover:text-neutral-400"
+                  onClick={() => {
+                    setAddingField(false);
+                    setNewFieldKey("");
+                    setNewFieldValue("");
+                  }}
+                >
+                  <X className="size-3.5" />
+                </button>
+              </form>
+            ) : (
+              <button
+                className="flex items-center gap-1.5 text-[11px] text-neutral-600 transition hover:text-neutral-400"
+                onClick={() => setAddingField(true)}
+              >
+                <Plus className="size-3" />
+                Add property
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Divider */}
