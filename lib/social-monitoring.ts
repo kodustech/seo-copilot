@@ -617,6 +617,10 @@ export async function collectWeb(): Promise<RawSocialResult[]> {
     results.push(r);
   }
 
+  // Track upstream errors per query so a quota/API failure is visible in
+  // logs instead of silently producing zero results.
+  let exaErrors = 0;
+
   // Listicles — broad, year-old still useful
   await batchParallel(
     WEB_LISTICLE_QUERIES,
@@ -641,8 +645,12 @@ export async function collectWeb(): Promise<RawSocialResult[]> {
             publishedDate: r.publishedDate ?? null,
           });
         }
-      } catch {
-        // Skip on error
+      } catch (err) {
+        exaErrors++;
+        console.error(
+          `[social-monitoring] collectWeb listicle "${query}" failed:`,
+          err instanceof Error ? err.message : err,
+        );
       }
     },
     3,
@@ -672,12 +680,22 @@ export async function collectWeb(): Promise<RawSocialResult[]> {
             publishedDate: r.publishedDate ?? null,
           });
         }
-      } catch {
-        // Skip on error
+      } catch (err) {
+        exaErrors++;
+        console.error(
+          `[social-monitoring] collectWeb experience "${query}" failed:`,
+          err instanceof Error ? err.message : err,
+        );
       }
     },
     3,
   );
+
+  if (exaErrors > 0) {
+    console.warn(
+      `[social-monitoring] collectWeb saw ${exaErrors} upstream Exa errors — likely quota/credits issue`,
+    );
+  }
 
   return results;
 }
@@ -1096,8 +1114,40 @@ export async function getMentionStats(
 
 export async function syncSocialMentions(
   client: SupabaseClient,
-): Promise<{ collected: number; qualified: number; saved: number }> {
+): Promise<{
+  collected: number;
+  qualified: number;
+  saved: number;
+  byPlatform: Record<string, number>;
+}> {
   const collected = await collectAll();
+
+  const byPlatform: Record<string, number> = {};
+  for (const r of collected) {
+    byPlatform[r.platform] = (byPlatform[r.platform] || 0) + 1;
+  }
+  console.log(
+    `[social-monitoring] collected ${collected.length} raw — by platform:`,
+    byPlatform,
+  );
+  // If a platform we expected to populate returned zero, surface it loudly.
+  // Most common cause: upstream API quota (Exa credits exhausted, GitHub rate
+  // limit, Algolia outage). Silent zeros are the worst kind of failure.
+  for (const expected of [
+    "reddit",
+    "twitter",
+    "linkedin",
+    "hackernews",
+    "web",
+    "github",
+  ]) {
+    if (!byPlatform[expected]) {
+      console.warn(
+        `[social-monitoring] platform "${expected}" returned 0 raw results — check upstream quota / API errors`,
+      );
+    }
+  }
+
   const qualified = await qualifyMentions(collected);
   const saved = await saveMentions(client, qualified);
 
@@ -1105,5 +1155,6 @@ export async function syncSocialMentions(
     collected: collected.length,
     qualified: qualified.length,
     saved,
+    byPlatform,
   };
 }
