@@ -9,6 +9,8 @@ import {
   Search,
   Send,
   RefreshCw,
+  Sparkles,
+  CheckCircle2,
 } from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
@@ -612,6 +614,61 @@ function ProspectFormDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Contact discovery — scrapes the domain + article URL via the LLM and
+  // surfaces a ranked list of candidate contacts (name + email).
+  type ContactCandidate = {
+    name: string;
+    role: string | null;
+    email: string | null;
+    emailConfidence: "verified" | "high" | "medium" | "low" | null;
+    emailSource: "scraped" | "guessed";
+    profileUrl: string | null;
+    source: string;
+    notes: string | null;
+  };
+  const [candidates, setCandidates] = useState<ContactCandidate[]>([]);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const [hasMx, setHasMx] = useState<boolean | null>(null);
+
+  const runDiscovery = async () => {
+    if (!token || discovering || !domain.trim()) return;
+    setDiscovering(true);
+    setDiscoveryError(null);
+    try {
+      const res = await fetch("/api/outreach/discover-contacts", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          domain: domain.trim(),
+          articleUrl: url.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Failed");
+      setCandidates(data.contacts ?? []);
+      setHasMx(data.hasMx ?? null);
+      if ((data.contacts ?? []).length === 0) {
+        setDiscoveryError(
+          "No contacts found on /about, /team, or the article page.",
+        );
+      }
+    } catch (err) {
+      setDiscoveryError(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setDiscovering(false);
+    }
+  };
+
+  const applyCandidate = (c: ContactCandidate) => {
+    if (c.name && c.name !== c.email?.split("@")[0]) setContactName(c.name);
+    if (c.email) setContactEmail(c.email);
+    if (c.profileUrl) setContactUrl(c.profileUrl);
+  };
+
   const handleSubmit = async () => {
     if (!token) return;
     if (!domain.trim()) {
@@ -741,6 +798,110 @@ function ProspectFormDialog({
               />
             </Field>
           </div>
+
+          {/* Find contacts — scrape /about, /team, the article URL, then
+              extract people + likely emails via LLM. Click any suggestion
+              to apply name / email / profile URL to the form. */}
+          <div className="-mt-1 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={runDiscovery}
+              disabled={!domain.trim() || discovering}
+              className="inline-flex items-center gap-1.5 rounded-md border border-violet-500/30 bg-violet-500/10 px-2.5 py-1 text-[11px] font-medium text-violet-300 transition hover:bg-violet-500/20 disabled:opacity-50"
+              title={
+                domain.trim()
+                  ? "Scrape /about, /team, the article URL and extract contacts via LLM"
+                  : "Enter a domain first"
+              }
+            >
+              {discovering ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : (
+                <Sparkles className="size-3" />
+              )}
+              {discovering ? "Searching…" : "Find contacts"}
+            </button>
+            {hasMx === false && (
+              <span
+                className="text-[10px] text-amber-400"
+                title="No MX record — domain doesn't accept email"
+              >
+                no MX record
+              </span>
+            )}
+            {discoveryError && (
+              <span className="text-[11px] text-red-400">{discoveryError}</span>
+            )}
+            {candidates.length > 0 && !discovering && (
+              <span className="ml-auto text-[10px] text-neutral-500">
+                {candidates.length} candidate
+                {candidates.length === 1 ? "" : "s"} · click to apply
+              </span>
+            )}
+          </div>
+
+          {candidates.length > 0 && (
+            <div className="max-h-64 space-y-1 overflow-y-auto rounded-lg border border-white/[0.06] bg-neutral-900/40 p-1.5">
+              {candidates.map((c, i) => (
+                <button
+                  key={`${c.email ?? c.name}-${i}`}
+                  type="button"
+                  onClick={() => applyCandidate(c)}
+                  className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-left transition hover:bg-white/[0.04]"
+                >
+                  <span className="mt-0.5">
+                    {c.emailSource === "scraped" ? (
+                      <CheckCircle2
+                        className="size-3.5 text-emerald-400"
+                        aria-label="Visible on page"
+                      />
+                    ) : (
+                      <Sparkles
+                        className="size-3.5 text-violet-400"
+                        aria-label="Pattern guess"
+                      />
+                    )}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-baseline gap-x-1.5 text-xs text-neutral-200">
+                      <span className="font-medium">{c.name}</span>
+                      {c.role && (
+                        <span className="text-[10px] text-neutral-500">
+                          {c.role}
+                        </span>
+                      )}
+                    </div>
+                    {c.email && (
+                      <div className="font-mono text-[11px] text-neutral-300">
+                        {c.email}
+                      </div>
+                    )}
+                    {c.notes && (
+                      <div className="text-[10px] text-neutral-600">
+                        {c.notes}
+                      </div>
+                    )}
+                  </div>
+                  <span
+                    className={cn(
+                      "shrink-0 rounded px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide",
+                      c.emailConfidence === "high" ||
+                        c.emailConfidence === "verified"
+                        ? "bg-emerald-500/15 text-emerald-300"
+                        : c.emailConfidence === "medium"
+                          ? "bg-amber-500/15 text-amber-300"
+                          : c.emailConfidence === "low"
+                            ? "bg-neutral-500/15 text-neutral-400"
+                            : "bg-neutral-700/30 text-neutral-500",
+                    )}
+                  >
+                    {c.emailConfidence ?? "no email"}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
           <Field label="Contact URL">
             <Input
               value={contactUrl}
