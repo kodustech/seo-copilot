@@ -754,8 +754,13 @@ function GoalCard({
           token={token}
           existingIds={new Set(links.map((l) => l.id))}
           onClose={() => setPicking(false)}
-          onSelect={async (id) => {
-            await linkTask(id);
+          onConfirm={async (ids) => {
+            // Sequential to keep recalc / state mutations consistent.
+            // Cheap for small selections; if the team starts batching 50+
+            // we can swap to a server-side batch endpoint.
+            for (const id of ids) {
+              await linkTask(id);
+            }
             setPicking(false);
           }}
         />
@@ -764,23 +769,25 @@ function GoalCard({
   );
 }
 
-// Picker dialog — search the kanban board and link a task to the current
-// goal. Existing links are filtered out so the same task can't be linked
-// twice.
+// Picker dialog — search the kanban board and link one or more tasks to
+// the current goal. Multi-select with checkboxes; existing links are
+// filtered out so the same task can't be linked twice.
 function TaskPickerDialog({
   token,
   existingIds,
   onClose,
-  onSelect,
+  onConfirm,
 }: {
   token: string | null;
   existingIds: Set<string>;
   onClose: () => void;
-  onSelect: (workItemId: string) => Promise<void>;
+  onConfirm: (workItemIds: string[]) => Promise<void>;
 }) {
   const [items, setItems] = useState<WorkItemSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (!token) return;
@@ -820,11 +827,30 @@ function TaskPickerDialog({
     });
   }, [items, query, existingIds]);
 
+  function toggle(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function handleConfirm() {
+    if (selected.size === 0 || submitting) return;
+    setSubmitting(true);
+    try {
+      await onConfirm(Array.from(selected));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-h-[70vh] max-w-lg overflow-hidden border-white/10 bg-neutral-950 p-0 text-neutral-100">
+      <DialogContent className="max-h-[80vh] max-w-lg overflow-hidden border-white/10 bg-neutral-950 p-0 text-neutral-100">
         <DialogHeader className="border-b border-white/10 px-4 py-3">
-          <DialogTitle className="text-sm">Link a task to this goal</DialogTitle>
+          <DialogTitle className="text-sm">Link tasks to this goal</DialogTitle>
         </DialogHeader>
         <div className="border-b border-white/10 px-3 py-2">
           <div className="relative">
@@ -852,20 +878,64 @@ function TaskPickerDialog({
                   : "All tasks are already linked."}
             </p>
           ) : (
-            filtered.slice(0, 80).map((i) => (
-              <button
-                key={i.id}
-                onClick={() => onSelect(i.id)}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-neutral-200 transition hover:bg-white/5"
-              >
-                <span className="min-w-0 flex-1 truncate">{i.title}</span>
-                <span className="shrink-0 text-[10px] text-neutral-500">
-                  {i.itemType}
-                  {i.stage ? ` · ${i.stage}` : ""}
-                </span>
-              </button>
-            ))
+            filtered.slice(0, 200).map((i) => {
+              const checked = selected.has(i.id);
+              return (
+                <button
+                  key={i.id}
+                  onClick={() => toggle(i.id)}
+                  className={cn(
+                    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition",
+                    checked
+                      ? "bg-violet-500/10 text-white hover:bg-violet-500/15"
+                      : "text-neutral-200 hover:bg-white/5",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "flex size-3.5 shrink-0 items-center justify-center rounded-sm border",
+                      checked
+                        ? "border-violet-400 bg-violet-500 text-white"
+                        : "border-white/15 bg-transparent",
+                    )}
+                  >
+                    {checked && <Check className="size-2.5" />}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{i.title}</span>
+                  <span className="shrink-0 text-[10px] text-neutral-500">
+                    {i.itemType}
+                    {i.stage ? ` · ${i.stage}` : ""}
+                  </span>
+                </button>
+              );
+            })
           )}
+        </div>
+        <div className="flex items-center justify-between gap-2 border-t border-white/10 px-3 py-2.5">
+          <span className="text-[11px] text-neutral-500">
+            {selected.size === 0
+              ? "Select tasks to link"
+              : `${selected.size} selected`}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onClose}
+              className="rounded-md border border-white/10 bg-white/5 px-3 py-1 text-xs text-neutral-300 hover:bg-white/10"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleConfirm}
+              disabled={selected.size === 0 || submitting}
+              className="rounded-md bg-violet-600 px-3 py-1 text-xs font-medium text-white transition hover:bg-violet-500 disabled:opacity-50"
+            >
+              {submitting
+                ? "Linking…"
+                : selected.size > 0
+                  ? `Link ${selected.size}`
+                  : "Link"}
+            </button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

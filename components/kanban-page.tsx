@@ -21,6 +21,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  Check,
   Clipboard,
   ClipboardCheck,
   FileText,
@@ -60,6 +61,8 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -932,6 +935,138 @@ function PropertyRow({
   );
 }
 
+// Multi-select goal picker — shared by GoalLinksControl. Mirrors the
+// TaskPickerDialog UX on the goals page so users see the same select-many
+// pattern in both directions.
+function GoalMultiPicker({
+  goals,
+  onClose,
+  onConfirm,
+}: {
+  goals: { id: string; title: string; status: string; periodEnd: string }[];
+  onClose: () => void;
+  onConfirm: (ids: string[]) => Promise<void>;
+}) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [submitting, setSubmitting] = useState(false);
+  const [query, setQuery] = useState("");
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return goals;
+    return goals.filter((g) => g.title.toLowerCase().includes(q));
+  }, [goals, query]);
+
+  function toggle(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function handleConfirm() {
+    if (selected.size === 0 || submitting) return;
+    setSubmitting(true);
+    try {
+      await onConfirm(Array.from(selected));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-h-[70vh] max-w-md overflow-hidden border-white/10 bg-neutral-950 p-0 text-neutral-100">
+        <DialogHeader className="border-b border-white/10 px-4 py-3">
+          <DialogTitle className="text-sm">Link this card to goals</DialogTitle>
+        </DialogHeader>
+        {goals.length > 8 && (
+          <div className="border-b border-white/10 px-3 py-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-neutral-500" />
+              <Input
+                autoFocus
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search goals…"
+                className="h-9 border-white/10 bg-neutral-900 pl-7 text-sm"
+              />
+            </div>
+          </div>
+        )}
+        <div className="max-h-[45vh] overflow-y-auto py-1">
+          {filtered.length === 0 ? (
+            <p className="px-4 py-6 text-center text-xs text-neutral-500">
+              {goals.length === 0
+                ? "No goals available — create one in /goals first."
+                : "No goals match that search."}
+            </p>
+          ) : (
+            filtered.map((g) => {
+              const checked = selected.has(g.id);
+              return (
+                <button
+                  key={g.id}
+                  onClick={() => toggle(g.id)}
+                  className={cn(
+                    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition",
+                    checked
+                      ? "bg-violet-500/10 text-white hover:bg-violet-500/15"
+                      : "text-neutral-200 hover:bg-white/5",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "flex size-3.5 shrink-0 items-center justify-center rounded-sm border",
+                      checked
+                        ? "border-violet-400 bg-violet-500 text-white"
+                        : "border-white/15 bg-transparent",
+                    )}
+                  >
+                    {checked && <Check className="size-2.5" />}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{g.title}</span>
+                  <span className="shrink-0 text-[10px] text-neutral-500">
+                    {g.status} · {g.periodEnd}
+                  </span>
+                </button>
+              );
+            })
+          )}
+        </div>
+        <div className="flex items-center justify-between gap-2 border-t border-white/10 px-3 py-2.5">
+          <span className="text-[11px] text-neutral-500">
+            {selected.size === 0
+              ? "Select goals to link"
+              : `${selected.size} selected`}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onClose}
+              className="rounded-md border border-white/10 bg-white/5 px-3 py-1 text-xs text-neutral-300 hover:bg-white/10"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleConfirm}
+              disabled={selected.size === 0 || submitting}
+              className="rounded-md bg-violet-600 px-3 py-1 text-xs font-medium text-white transition hover:bg-violet-500 disabled:opacity-50"
+            >
+              {submitting
+                ? "Linking…"
+                : selected.size > 0
+                  ? `Link ${selected.size}`
+                  : "Link"}
+            </button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // Inline display + picker for goals linked to a Kanban card. Renders inside
 // the CardDetailModal property grid.
 type LinkedGoalRef = { id: string; title: string; status: string };
@@ -1069,38 +1204,16 @@ function GoalLinksControl({
       </button>
 
       {picking && (
-        <Dialog open onOpenChange={(o) => !o && setPicking(false)}>
-          <DialogContent className="max-h-[60vh] max-w-md overflow-hidden border-white/10 bg-neutral-950 p-0 text-neutral-100">
-            <div className="border-b border-white/10 px-4 py-3 text-sm font-semibold">
-              Link this card to a goal
-            </div>
-            <div className="max-h-[40vh] overflow-y-auto py-1">
-              {allGoals.length === 0 ? (
-                <p className="px-4 py-6 text-center text-xs text-neutral-500">
-                  No goals yet. Create one in /goals first.
-                </p>
-              ) : (
-                allGoals
-                  .filter((g) => !linkedIds.has(g.id))
-                  .map((g) => (
-                    <button
-                      key={g.id}
-                      onClick={async () => {
-                        await linkGoal(g.id);
-                        setPicking(false);
-                      }}
-                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-neutral-200 transition hover:bg-white/5"
-                    >
-                      <span className="min-w-0 flex-1 truncate">{g.title}</span>
-                      <span className="shrink-0 text-[10px] text-neutral-500">
-                        {g.status} · ends {g.periodEnd}
-                      </span>
-                    </button>
-                  ))
-              )}
-            </div>
-          </DialogContent>
-        </Dialog>
+        <GoalMultiPicker
+          goals={allGoals.filter((g) => !linkedIds.has(g.id))}
+          onClose={() => setPicking(false)}
+          onConfirm={async (ids) => {
+            for (const id of ids) {
+              await linkGoal(id);
+            }
+            setPicking(false);
+          }}
+        />
       )}
     </div>
   );
