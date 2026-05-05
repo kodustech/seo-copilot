@@ -616,6 +616,14 @@ function ProspectFormDialog({
 
   // Contact discovery — scrapes the domain + article URL via the LLM and
   // surfaces a ranked list of candidate contacts (name + email).
+  type VerificationStatus =
+    | "valid"
+    | "invalid"
+    | "disposable"
+    | "catchall"
+    | "unknown"
+    | "error"
+    | "config_missing";
   type ContactCandidate = {
     name: string;
     role: string | null;
@@ -625,11 +633,106 @@ function ProspectFormDialog({
     profileUrl: string | null;
     source: string;
     notes: string | null;
+    verification?: {
+      status: VerificationStatus;
+      flags: string[];
+      suggestedCorrection: string | null;
+      error: string | null;
+    };
   };
   const [candidates, setCandidates] = useState<ContactCandidate[]>([]);
   const [discovering, setDiscovering] = useState(false);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [hasMx, setHasMx] = useState<boolean | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+
+  const verifyAllCandidates = async () => {
+    if (!token || verifying) return;
+    const emails = Array.from(
+      new Set(
+        candidates
+          .filter((c) => c.email && !c.verification)
+          .map((c) => c.email!.toLowerCase()),
+      ),
+    );
+    if (emails.length === 0) return;
+    setVerifying(true);
+    setVerifyError(null);
+    try {
+      const res = await fetch("/api/outreach/verify-emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ emails }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Verification failed");
+
+      type ApiResult = {
+        email: string;
+        status: VerificationStatus;
+        flags: string[];
+        suggestedCorrection: string | null;
+        error: string | null;
+      };
+      const map = new Map<string, ApiResult>();
+      for (const r of (data.results ?? []) as ApiResult[]) {
+        map.set(r.email.toLowerCase(), r);
+      }
+
+      // Special-case the missing-config error so the user knows what to do.
+      const firstResult = (data.results ?? [])[0] as ApiResult | undefined;
+      if (firstResult?.status === "config_missing") {
+        setVerifyError(
+          firstResult.error ?? "NEVERBOUNCE_API_KEY not configured.",
+        );
+      }
+
+      setCandidates((prev) => {
+        const next = prev.map((c) => {
+          const v = c.email
+            ? map.get(c.email.toLowerCase())
+            : undefined;
+          if (!v) return c;
+          return {
+            ...c,
+            verification: {
+              status: v.status,
+              flags: v.flags,
+              suggestedCorrection: v.suggestedCorrection,
+              error: v.error,
+            },
+          };
+        });
+        // Re-sort: valid → catchall/unknown → invalid/disposable.
+        const order: Record<string, number> = {
+          valid: 0,
+          unknown: 1,
+          catchall: 2,
+          disposable: 3,
+          invalid: 4,
+          error: 5,
+          config_missing: 6,
+        };
+        return [...next].sort((a, b) => {
+          const ar = a.verification?.status
+            ? order[a.verification.status] ?? 7
+            : 7;
+          const br = b.verification?.status
+            ? order[b.verification.status] ?? 7
+            : 7;
+          return ar - br;
+        });
+      });
+    } catch (err) {
+      setVerifyError(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setVerifying(false);
+    }
+  };
 
   const runDiscovery = async () => {
     if (!token || discovering || !domain.trim()) return;
@@ -909,73 +1012,184 @@ function ProspectFormDialog({
             {discoveryError && (
               <span className="text-[11px] text-red-400">{discoveryError}</span>
             )}
-            {candidates.length > 0 && !discovering && (
-              <span className="ml-auto text-[10px] text-neutral-500">
-                {candidates.length} candidate
-                {candidates.length === 1 ? "" : "s"} · click to apply
-              </span>
-            )}
           </div>
 
           {candidates.length > 0 && (
-            <div className="max-h-64 space-y-1 overflow-y-auto rounded-lg border border-white/[0.06] bg-neutral-900/40 p-1.5">
-              {candidates.map((c, i) => (
-                <button
-                  key={`${c.email ?? c.name}-${i}`}
-                  type="button"
-                  onClick={() => applyCandidate(c)}
-                  className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-left transition hover:bg-white/[0.04]"
-                >
-                  <span className="mt-0.5">
-                    {c.emailSource === "scraped" ? (
-                      <CheckCircle2
-                        className="size-3.5 text-emerald-400"
-                        aria-label="Visible on page"
-                      />
-                    ) : (
-                      <Sparkles
-                        className="size-3.5 text-violet-400"
-                        aria-label="Pattern guess"
-                      />
-                    )}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-baseline gap-x-1.5 text-xs text-neutral-200">
-                      <span className="font-medium">{c.name}</span>
-                      {c.role && (
-                        <span className="text-[10px] text-neutral-500">
-                          {c.role}
-                        </span>
-                      )}
-                    </div>
-                    {c.email && (
-                      <div className="font-mono text-[11px] text-neutral-300">
-                        {c.email}
-                      </div>
-                    )}
-                    {c.notes && (
-                      <div className="text-[10px] text-neutral-600">
-                        {c.notes}
-                      </div>
-                    )}
-                  </div>
-                  <span
-                    className={cn(
-                      "shrink-0 rounded px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide",
-                      c.emailConfidence === "high" ||
-                        c.emailConfidence === "verified"
-                        ? "bg-emerald-500/15 text-emerald-300"
-                        : c.emailConfidence === "medium"
-                          ? "bg-amber-500/15 text-amber-300"
-                          : c.emailConfidence === "low"
-                            ? "bg-neutral-500/15 text-neutral-400"
-                            : "bg-neutral-700/30 text-neutral-500",
-                    )}
+            <div className="rounded-lg border border-white/[0.06] bg-neutral-900/40">
+              {/* Verify-all toolbar */}
+              <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] px-2 py-1.5">
+                <span className="text-[10px] text-neutral-500">
+                  {candidates.length} candidate
+                  {candidates.length === 1 ? "" : "s"} · click to apply
+                </span>
+                <div className="flex items-center gap-2">
+                  {verifyError && (
+                    <span
+                      className="text-[10px] text-red-400"
+                      title={verifyError}
+                    >
+                      {verifyError.slice(0, 50)}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={verifyAllCandidates}
+                    disabled={
+                      verifying ||
+                      candidates.every(
+                        (c) => !c.email || !!c.verification,
+                      )
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-300 transition hover:bg-emerald-500/20 disabled:opacity-40"
+                    title="Run NeverBounce verification on every candidate (1 credit each)"
                   >
-                    {c.emailConfidence ?? "no email"}
-                  </span>
-                </button>
-              ))}
+                    {verifying ? (
+                      <Loader2 className="size-3 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="size-3" />
+                    )}
+                    {verifying ? "Verifying…" : "Verify all"}
+                  </button>
+                </div>
+              </div>
+              <div className="max-h-64 space-y-1 overflow-y-auto p-1.5">
+                {candidates.map((c, i) => {
+                  const v = c.verification;
+                  const verifyBadge = v
+                    ? (() => {
+                        const map: Record<
+                          VerificationStatus,
+                          { label: string; className: string; title?: string }
+                        > = {
+                          valid: {
+                            label: "valid",
+                            className:
+                              "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
+                            title: "Mailbox exists — safe to send",
+                          },
+                          invalid: {
+                            label: "invalid",
+                            className:
+                              "bg-red-500/15 text-red-300 border-red-500/30",
+                            title: "Mailbox does not exist — will bounce",
+                          },
+                          catchall: {
+                            label: "catchall",
+                            className:
+                              "bg-amber-500/15 text-amber-300 border-amber-500/30",
+                            title:
+                              "Domain accepts all mail — can't confirm specific mailbox",
+                          },
+                          disposable: {
+                            label: "disposable",
+                            className:
+                              "bg-orange-500/15 text-orange-300 border-orange-500/30",
+                            title: "Disposable email provider",
+                          },
+                          unknown: {
+                            label: "unknown",
+                            className:
+                              "bg-neutral-500/15 text-neutral-400 border-neutral-500/30",
+                            title:
+                              "NeverBounce couldn't determine — try sending and watch bounces",
+                          },
+                          error: {
+                            label: "error",
+                            className:
+                              "bg-neutral-700/30 text-neutral-500 border-white/10",
+                            title: v.error ?? "Verification error",
+                          },
+                          config_missing: {
+                            label: "no api key",
+                            className:
+                              "bg-neutral-700/30 text-neutral-500 border-white/10",
+                            title:
+                              "Set NEVERBOUNCE_API_KEY in Railway env vars",
+                          },
+                        };
+                        return map[v.status];
+                      })()
+                    : null;
+                  return (
+                    <button
+                      key={`${c.email ?? c.name}-${i}`}
+                      type="button"
+                      onClick={() => applyCandidate(c)}
+                      className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-left transition hover:bg-white/[0.04]"
+                    >
+                      <span className="mt-0.5">
+                        {c.emailSource === "scraped" ? (
+                          <CheckCircle2
+                            className="size-3.5 text-emerald-400"
+                            aria-label="Visible on page"
+                          />
+                        ) : (
+                          <Sparkles
+                            className="size-3.5 text-violet-400"
+                            aria-label="Pattern guess"
+                          />
+                        )}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-baseline gap-x-1.5 text-xs text-neutral-200">
+                          <span className="font-medium">{c.name}</span>
+                          {c.role && (
+                            <span className="text-[10px] text-neutral-500">
+                              {c.role}
+                            </span>
+                          )}
+                        </div>
+                        {c.email && (
+                          <div className="font-mono text-[11px] text-neutral-300">
+                            {c.email}
+                          </div>
+                        )}
+                        {c.notes && (
+                          <div className="text-[10px] text-neutral-600">
+                            {c.notes}
+                          </div>
+                        )}
+                        {v?.suggestedCorrection && (
+                          <div
+                            className="text-[10px] text-amber-400"
+                            title="NeverBounce suggested correction"
+                          >
+                            → {v.suggestedCorrection}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-1">
+                        {verifyBadge && (
+                          <span
+                            className={cn(
+                              "rounded border px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide",
+                              verifyBadge.className,
+                            )}
+                            title={verifyBadge.title}
+                          >
+                            {verifyBadge.label}
+                          </span>
+                        )}
+                        <span
+                          className={cn(
+                            "rounded px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide",
+                            c.emailConfidence === "high" ||
+                              c.emailConfidence === "verified"
+                              ? "bg-emerald-500/15 text-emerald-300"
+                              : c.emailConfidence === "medium"
+                                ? "bg-amber-500/15 text-amber-300"
+                                : c.emailConfidence === "low"
+                                  ? "bg-neutral-500/15 text-neutral-400"
+                                  : "bg-neutral-700/30 text-neutral-500",
+                          )}
+                        >
+                          {c.emailConfidence ?? "no email"}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
 
