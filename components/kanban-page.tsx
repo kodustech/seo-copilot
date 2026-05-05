@@ -122,12 +122,41 @@ function priorityBadgeClass(p: WorkItemPriority) {
   return "border-sky-500/40 bg-sky-500/10 text-sky-200";
 }
 
-// Known team members for assignee picker. Extend here as the team grows.
-const TEAM_MEMBERS: { email: string; label: string }[] = [
+// Team members come from Supabase Auth — fetched live via /api/team/members
+// so the assignee picker stays in sync as the team grows. The hardcoded list
+// below is only used as a fallback while the request is in flight or if it
+// fails (e.g. offline dev).
+type TeamMember = { email: string; label: string };
+
+const TEAM_MEMBERS_FALLBACK: TeamMember[] = [
   { email: "gabriel@kodus.io", label: "Gabriel" },
   { email: "junior.sartori@kodus.io", label: "Junior" },
   { email: "edvaldo.freitas@kodus.io", label: "Ed" },
 ];
+
+function useTeamMembers(token: string | null): TeamMember[] {
+  const [members, setMembers] = useState<TeamMember[]>(TEAM_MEMBERS_FALLBACK);
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    fetch("/api/team/members", {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled) return;
+        const fetched = data?.members as TeamMember[] | undefined;
+        if (fetched && fetched.length > 0) setMembers(fetched);
+      })
+      .catch(() => {
+        // Keep fallback on error
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+  return members;
+}
 
 // Canonical columns per type filter. When filter is active, only columns whose
 // name is in the canonical set for that type are rendered. "Backlog" is shared
@@ -723,6 +752,7 @@ function AddColumnForm({ onAdd }: { onAdd: (name: string) => void }) {
 function CardDetailModal({
   item,
   columns,
+  teamMembers,
   open,
   onClose,
   onUpdate,
@@ -731,6 +761,7 @@ function CardDetailModal({
 }: {
   item: GrowthWorkItem;
   columns: KanbanColumn[];
+  teamMembers: TeamMember[];
   open: boolean;
   onClose: () => void;
   onUpdate: (updates: Record<string, unknown>) => void;
@@ -917,7 +948,7 @@ function CardDetailModal({
               </SelectTrigger>
               <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
                 <SelectItem value="__unassigned__">Unassigned</SelectItem>
-                {TEAM_MEMBERS.map((m) => (
+                {teamMembers.map((m) => (
                   <SelectItem key={m.email} value={m.email}>
                     {m.label}
                   </SelectItem>
@@ -1241,6 +1272,7 @@ const PRIORITY_RANK: Record<WorkItemPriority, number> = {
 
 export function KanbanPage() {
   const token = useAuthToken();
+  const teamMembers = useTeamMembers(token);
   const router = useRouter();
   const [columns, setColumns] = useState<KanbanColumn[]>([]);
   const [items, setItems] = useState<GrowthWorkItem[]>([]);
@@ -1749,7 +1781,7 @@ export function KanbanPage() {
               <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
                 <SelectItem value="all">Everyone</SelectItem>
                 <SelectItem value="__unassigned__">Unassigned</SelectItem>
-                {TEAM_MEMBERS.map((m) => (
+                {teamMembers.map((m) => (
                   <SelectItem key={m.email} value={m.email}>
                     {m.label}
                   </SelectItem>
@@ -1928,6 +1960,7 @@ export function KanbanPage() {
           <CardDetailModal
             item={selectedCard}
             columns={columns}
+            teamMembers={teamMembers}
             open
             onClose={() => setSelectedCard(null)}
             onUpdate={(updates) => handleUpdateCard(selectedCard.id, updates)}
