@@ -45,6 +45,14 @@ const PLATFORM_BADGES: Record<
     label: "HN",
     className: "bg-orange-600/20 text-orange-200",
   },
+  web: {
+    label: "Web",
+    className: "bg-emerald-500/20 text-emerald-300",
+  },
+  github: {
+    label: "GitHub",
+    className: "bg-neutral-500/20 text-neutral-200",
+  },
 };
 
 const RELEVANCE_BADGES: Record<Relevance, { label: string; className: string }> =
@@ -241,7 +249,7 @@ export function SocialMonitoringPage() {
           </h1>
           <p className="mt-1 text-sm text-neutral-500">
             {stats
-              ? `${newCount} new ${newCount === 1 ? "opportunity" : "opportunities"} — ${stats.byPlatform["reddit"] || 0} Reddit · ${stats.byPlatform["twitter"] || 0} Twitter · ${stats.byPlatform["linkedin"] || 0} LinkedIn · ${stats.byPlatform["hackernews"] || 0} HN`
+              ? `${newCount} new ${newCount === 1 ? "opportunity" : "opportunities"} — ${stats.byPlatform["reddit"] || 0} Reddit · ${stats.byPlatform["twitter"] || 0} Twitter · ${stats.byPlatform["linkedin"] || 0} LinkedIn · ${stats.byPlatform["hackernews"] || 0} HN · ${stats.byPlatform["web"] || 0} Web · ${stats.byPlatform["github"] || 0} GitHub`
               : "Loading..."}
           </p>
         </div>
@@ -273,7 +281,7 @@ export function SocialMonitoringPage() {
       <div className="mb-6 space-y-3">
         {/* Platform */}
         <div className="flex flex-wrap gap-2">
-          {(["all", "reddit", "twitter", "linkedin", "hackernews"] as const).map((p) => (
+          {(["all", "reddit", "twitter", "linkedin", "hackernews", "web", "github"] as const).map((p) => (
             <button
               key={p}
               onClick={() => setPlatformFilter(p)}
@@ -352,7 +360,7 @@ export function SocialMonitoringPage() {
           <Radar className="h-12 w-12 text-neutral-800" />
           <p className="text-neutral-500">No mentions found with current filters.</p>
           <p className="text-xs text-neutral-600">
-            Click "Sync Now" to collect mentions from Reddit, LinkedIn, Twitter, and Hacker News.
+            Click "Sync Now" to collect mentions from Reddit, LinkedIn, Twitter, Hacker News, Web (listicles), and GitHub awesome-lists.
           </p>
         </div>
       ) : (

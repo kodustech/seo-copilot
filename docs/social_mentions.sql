@@ -3,7 +3,14 @@
 
 create table if not exists social_mentions (
   id uuid primary key default gen_random_uuid(),
-  platform text not null check (platform in ('reddit', 'twitter', 'linkedin', 'hackernews')),
+  platform text not null check (platform in (
+    'reddit',
+    'twitter',
+    'linkedin',
+    'hackernews',
+    'web',
+    'github'
+  )),
   url text not null unique,
   author text,
   author_profile_url text,

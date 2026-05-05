@@ -8,7 +8,13 @@ import { getModel } from "@/lib/ai/provider";
 // Types
 // ---------------------------------------------------------------------------
 
-export type SocialPlatform = "reddit" | "twitter" | "linkedin" | "hackernews";
+export type SocialPlatform =
+  | "reddit"
+  | "twitter"
+  | "linkedin"
+  | "hackernews"
+  | "web"
+  | "github";
 export type Relevance = "high" | "medium" | "low";
 export type Intent =
   | "asking_help"
@@ -555,15 +561,245 @@ export async function collectHackerNews(): Promise<RawSocialResult[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Collection: Web (listicles + experience posts on dev.to / medium / blogs)
+// ---------------------------------------------------------------------------
+
+// Listicle queries — broad, no domain restriction. Catches "Best AI Code
+// Review Tools 2026" style roundups across any blog. The qualifier decides if
+// each is competitor_listicle (no Kodus mention) or backlink_opportunity
+// (mentioned without link) or noise.
+const WEB_LISTICLE_QUERIES = [
+  "best AI code review tools 2026",
+  "best code review tools 2026",
+  "automated code review tool comparison",
+  "CodeRabbit alternatives",
+  "AI pull request review tools",
+  "best automated PR review tools",
+  "GitHub code review automation tools",
+  "top code review tools developers",
+];
+
+// Experience-post queries — narrower domain, fresher window. Catches
+// developer-written reviews ("My experience with CodeRabbit") that often
+// mention Kodus in passing without a link.
+const WEB_EXPERIENCE_QUERIES = [
+  "my experience with CodeRabbit",
+  "AI code review tool review",
+  "switched from manual code review to AI",
+  "automated code review changed our team",
+  "code review tool I tried",
+];
+
+const WEB_EXPERIENCE_DOMAINS = [
+  "dev.to",
+  "medium.com",
+  "hashnode.com",
+  "hashnode.dev",
+  "substack.com",
+];
+
+// Exclude our own properties + obvious non-articles.
+const WEB_EXCLUDE_DOMAINS = [
+  "kodus.io",
+  "aicodereviews.io",
+  "codereviewbench.com",
+  "youtube.com",
+  "github.com",
+];
+
+export async function collectWeb(): Promise<RawSocialResult[]> {
+  const results: RawSocialResult[] = [];
+  const seen = new Set<string>();
+
+  function add(r: RawSocialResult) {
+    if (seen.has(r.url)) return;
+    seen.add(r.url);
+    results.push(r);
+  }
+
+  // Listicles — broad, year-old still useful
+  await batchParallel(
+    WEB_LISTICLE_QUERIES,
+    async (query) => {
+      try {
+        const { results: exaResults } = await searchWebContent({
+          query,
+          excludeDomains: WEB_EXCLUDE_DOMAINS,
+          numResults: 10,
+          daysBack: 365,
+          textMaxCharacters: 3000,
+        });
+        for (const r of exaResults) {
+          if (!r.url || !r.title) continue;
+          add({
+            platform: "web",
+            url: r.url,
+            author: null,
+            authorProfileUrl: null,
+            title: r.title,
+            content: r.text || r.summary || r.title,
+            publishedDate: r.publishedDate ?? null,
+          });
+        }
+      } catch {
+        // Skip on error
+      }
+    },
+    3,
+  );
+
+  // Experience posts — narrower, fresher
+  await batchParallel(
+    WEB_EXPERIENCE_QUERIES,
+    async (query) => {
+      try {
+        const { results: exaResults } = await searchWebContent({
+          query,
+          domains: WEB_EXPERIENCE_DOMAINS,
+          numResults: 10,
+          daysBack: 90,
+          textMaxCharacters: 3000,
+        });
+        for (const r of exaResults) {
+          if (!r.url || !r.title) continue;
+          add({
+            platform: "web",
+            url: r.url,
+            author: null,
+            authorProfileUrl: null,
+            title: r.title,
+            content: r.text || r.summary || r.title,
+            publishedDate: r.publishedDate ?? null,
+          });
+        }
+      } catch {
+        // Skip on error
+      }
+    },
+    3,
+  );
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Collection: GitHub awesome lists (free Search API, optional auth)
+// ---------------------------------------------------------------------------
+
+type GhRepo = {
+  full_name: string;
+  html_url: string;
+  description: string | null;
+  stargazers_count: number;
+  archived: boolean;
+  owner: { login: string; html_url: string };
+};
+
+type GhSearchResponse = { items?: GhRepo[] };
+type GhReadmeResponse = { content: string; encoding: string; html_url: string };
+
+const GITHUB_AWESOME_QUERIES = [
+  "awesome-code-review",
+  "awesome-ai-code-review",
+  "awesome-ai-tools",
+  "awesome-developer-tools",
+  "awesome-code-quality",
+  "awesome-devtools",
+  "awesome-static-analysis",
+  "awesome-ai-developer-tools",
+];
+
+// Repos we own and shouldn't pitch to.
+const GITHUB_OWNED_LISTS = new Set([
+  "kodustech/awesome-ai-code-review",
+]);
+
+const GITHUB_MIN_STARS = 50;
+
+export async function collectGitHubAwesome(): Promise<RawSocialResult[]> {
+  const results: RawSocialResult[] = [];
+  const seen = new Set<string>();
+  const token = process.env.GITHUB_TOKEN?.trim();
+
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "seo-copilot:backlink-discovery/1.0",
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  for (const query of GITHUB_AWESOME_QUERIES) {
+    try {
+      const searchUrl =
+        `https://api.github.com/search/repositories?` +
+        `q=${encodeURIComponent(query)}` +
+        `&sort=stars&per_page=10`;
+      const searchRes = await fetch(searchUrl, { headers, cache: "no-store" });
+      if (!searchRes.ok) continue;
+      const searchData = (await searchRes.json()) as GhSearchResponse;
+
+      for (const repo of searchData.items ?? []) {
+        if (seen.has(repo.html_url)) continue;
+        if (repo.archived) continue;
+        if (repo.stargazers_count < GITHUB_MIN_STARS) continue;
+        if (GITHUB_OWNED_LISTS.has(repo.full_name.toLowerCase())) continue;
+        seen.add(repo.html_url);
+
+        try {
+          const readmeRes = await fetch(
+            `https://api.github.com/repos/${repo.full_name}/readme`,
+            { headers, cache: "no-store" },
+          );
+          if (!readmeRes.ok) continue;
+          const readmeData = (await readmeRes.json()) as GhReadmeResponse;
+          if (readmeData.encoding !== "base64") continue;
+          const readme = Buffer.from(readmeData.content, "base64").toString(
+            "utf-8",
+          );
+
+          // Skip lists that already include us — we want gaps, not duplicates.
+          if (/\bkodus(\.io)?\b/i.test(readme)) continue;
+
+          // Skip lists that don't mention code review at all — qualifier
+          // would reject as low relevance anyway, but cheaper to filter early.
+          if (!/code\s*review|pull\s*request|pr\s*review/i.test(readme)) {
+            continue;
+          }
+
+          results.push({
+            platform: "github",
+            url: repo.html_url,
+            author: repo.owner.login,
+            authorProfileUrl: repo.owner.html_url,
+            title: `${repo.full_name} — ${repo.description ?? "(awesome list)"}`,
+            content: readme.slice(0, 3000),
+            publishedDate: null,
+          });
+        } catch {
+          // Skip this repo
+        }
+
+        await delay(400); // be polite to GitHub API
+      }
+    } catch {
+      // Skip query
+    }
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // Collection: All platforms
 // ---------------------------------------------------------------------------
 
 export async function collectAll(): Promise<RawSocialResult[]> {
-  const [reddit, twitter, linkedin, hn] = await Promise.allSettled([
+  const [reddit, twitter, linkedin, hn, web, gh] = await Promise.allSettled([
     collectReddit(),
     collectTwitter(),
     collectLinkedIn(),
     collectHackerNews(),
+    collectWeb(),
+    collectGitHubAwesome(),
   ]);
 
   const all = [
@@ -571,6 +807,8 @@ export async function collectAll(): Promise<RawSocialResult[]> {
     ...(twitter.status === "fulfilled" ? twitter.value : []),
     ...(linkedin.status === "fulfilled" ? linkedin.value : []),
     ...(hn.status === "fulfilled" ? hn.value : []),
+    ...(web.status === "fulfilled" ? web.value : []),
+    ...(gh.status === "fulfilled" ? gh.value : []),
   ];
 
   // Dedup by URL
@@ -607,10 +845,14 @@ Evaluate social media posts and ONLY flag ones where someone is clearly experien
 - Posts about developer experience where code review is mentioned as a pain point
 
 ## Backlink-specific HIGH relevance (flag even when engagement isn't the point)
-- "competitor_listicle": post is a listicle/roundup of code review or AI dev tools (e.g., "Best AI Code Review Tools 2026", "10 CodeRabbit alternatives") that does NOT include Kodus. We want to request inclusion.
+- "competitor_listicle": post is a listicle/roundup of code review or AI dev tools (e.g., "Best AI Code Review Tools 2026", "10 CodeRabbit alternatives") that does NOT include Kodus. We want to request inclusion. Also applies to GitHub "awesome-*" lists where Kodus is missing — in that case, suggestedApproach should outline the PR (the entry to add, in the list's existing format).
 - "backlink_opportunity": post mentions Kodus, kodus.io, or describes our product without linking back to us. We want to ask for a backlink.
 
-These two intents apply mostly to Hacker News stories and external articles. For these, suggestedApproach should describe the *outreach* (who to email, what to say, what proof points), not a comment reply.
+For platforms = "web" or "github", these intents are the default expectation:
+- "web": review/listicle/experience post on a blog, dev.to, medium, etc. Almost always either competitor_listicle (no Kodus) or backlink_opportunity (Kodus mentioned, no link).
+- "github": awesome-list repo. competitor_listicle is the right intent if the README is on-topic for code review / AI dev tools but doesn't include Kodus.
+
+For "web" + "github" results, suggestedApproach should describe the *outreach* (who to email, what to say, what proof points to mention) or the *PR draft* — not a comment reply. Ed will execute these manually, so include the concrete next action.
 
 ## What counts as LOW relevance (DO NOT flag):
 - General programming questions unrelated to code review or team workflow

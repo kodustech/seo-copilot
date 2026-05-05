@@ -16,7 +16,14 @@ function getSupabaseUserClient(authHeader: string | null) {
   });
 }
 
-const validPlatforms = new Set(["reddit", "twitter", "linkedin", "hackernews"]);
+const validPlatforms = new Set([
+  "reddit",
+  "twitter",
+  "linkedin",
+  "hackernews",
+  "web",
+  "github",
+]);
 const validRelevance = new Set(["high", "medium", "low"]);
 const validStatus = new Set(["new", "contacted", "replied", "dismissed"]);
 
