@@ -9,7 +9,16 @@ import {
   Sparkles,
   Plus,
   Check,
+  Clipboard,
+  ClipboardCheck,
+  MoreHorizontal,
 } from "lucide-react";
+
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
@@ -165,46 +174,203 @@ function useCardCreator() {
   return { createCard, actioned, pending, ready: !!token, email };
 }
 
-// Reusable "Create card" button — flips to a check icon once the card has been
-// created in this session. Disabled while pending or after actioned.
-function CreateCardButton({
-  rowKey,
+// Per-section "Now produce" instructions used by the Copy-LLM button. Kept
+// here (not in lib/) because they are tightly coupled to which dashboard rows
+// surface a given action.
+type LlmTaskKind =
+  | "striking"
+  | "lowctr"
+  | "decay"
+  | "cannibalization"
+  | "linkgap";
+
+const LLM_TASK_LABELS: Record<LlmTaskKind, string> = {
+  striking: "Striking distance keyword",
+  lowctr: "Low CTR query",
+  decay: "Decaying page",
+  cannibalization: "Keyword cannibalization",
+  linkgap: "Internal link gap",
+};
+
+const LLM_TASKS: Record<LlmTaskKind, string> = {
+  striking:
+    `Produce a recovery plan to push this page from page 2 into the top 10:\n\n` +
+    `1. **3 title options** (≤60 chars) — each variant tests a different angle (informational / comparative / commercial)\n` +
+    `2. **One H1** aligned with the query intent\n` +
+    `3. **5 internal-link sources** — list 5 existing kodus.io pages that should link here, with the suggested anchor text and a 1-sentence paragraph context for each\n` +
+    `4. **3 on-page improvements** — sections to add, reorder, or rewrite\n` +
+    `5. **Schema recommendations** — pick the 1-2 schema types that best fit (FAQPage, HowTo, Article, Product, etc.) and emit sample JSON-LD`,
+  lowctr:
+    `Rewrite the SEO surface to lift CTR. Produce:\n\n` +
+    `1. **3 title variants** (≤60 chars) — test angle, urgency, specificity\n` +
+    `2. **3 meta-description variants** (≤155 chars)\n` +
+    `3. **5 FAQ Q&As** suitable for FAQPage schema, with answers (50-80 words each)\n` +
+    `4. **One opening paragraph** (≤80 words) that should appear right after the H1 to confirm intent fit\n` +
+    `5. **Brand-vs-generic check** — flag if the query is informational vs commercial and recommend whether to keep or restructure the page`,
+  decay:
+    `Recommend a recovery action for this decaying page. Produce:\n\n` +
+    `1. **Decision**: rewrite / 301 / 410 — and a 2-3 sentence rationale\n` +
+    `2. **If rewrite**: outline the new structure (H1 + 5-7 sections), what to keep, what to drop, and why\n` +
+    `3. **If 301**: suggest the best target page on kodus.io with rationale\n` +
+    `4. **3 internal-link sources** that should point to whatever the recovered page becomes\n` +
+    `5. **Risk callout** — what could go wrong (loss of long-tail rankings, etc.) and how to mitigate`,
+  cannibalization:
+    `Resolve cannibalization between competing pages. Produce:\n\n` +
+    `1. **Canonical pick**: which page to keep, with rationale comparing engagement, position, and intent fit\n` +
+    `2. **301 plan**: which other pages should redirect, target slugs, and order of execution\n` +
+    `3. **Internal-link sweep**: 5 inbound link sources to lift the canonical (anchor + paragraph context)\n` +
+    `4. **On-page tweaks** for the canonical so it owns this query (title, H1, intro paragraph)\n` +
+    `5. **Validation step** — what to check in GSC after 14d to confirm the fix worked`,
+  linkgap:
+    `Lift this page via internal links. Produce:\n\n` +
+    `1. **5 inbound internal-link sources** from existing kodus.io pages — for each:\n` +
+    `   - Source URL\n` +
+    `   - Suggested anchor text (≤6 words)\n` +
+    `   - Paragraph context (1-2 sentences) showing where the link naturally fits\n` +
+    `2. **2 structurally-valuable links** from microsites or external assets (aicodereviews.io, codereviewbench.com, awesome-ai-code-review)\n` +
+    `3. **One on-page tweak** that signals topical authority on the target query\n` +
+    `4. **Anchor-text diversity check** — confirm the 5 anchors don't all repeat the same phrase`,
+};
+
+const LLM_BRAND_PREAMBLE =
+  `# Context\n\n` +
+  `You are assisting the growth team at **Kodus** (open-source AI code review for engineering teams, https://kodus.io).\n\n` +
+  `**Brand voice:** technical, direct, no marketing fluff.\n` +
+  `**Audience:** senior engineers, eng leads, CTOs at SaaS companies.\n` +
+  `**Differentiators:** IDE-native, multi-agent code review, customizable Kody Rules, MCP integrations, open-source.\n`;
+
+function buildLlmPrompt({
+  kind,
+  startDate,
+  endDate,
+  body,
+}: {
+  kind: LlmTaskKind;
+  startDate: string;
+  endDate: string;
+  body: string;
+}): string {
+  return (
+    `${LLM_BRAND_PREAMBLE}\n` +
+    `**Period analyzed:** ${startDate} → ${endDate}\n` +
+    `**Issue type:** ${LLM_TASK_LABELS[kind]}\n\n` +
+    `${body}\n\n` +
+    `---\n\n` +
+    `# Now produce\n\n${LLM_TASKS[kind]}\n\n` +
+    `Output as markdown with clear H2/H3 sections. Be concrete (no "consider X") — make decisions and explain why.`
+  );
+}
+
+// Single three-dot menu shown at the end of every actionable row. Opens a
+// popover with two actions: copy a fully contextualized LLM prompt, or create
+// a card on the Kanban. Replaces the inline two-button row to keep the table
+// dense.
+function RowActionsMenu({
+  llmPrompt,
   pending,
   actioned,
-  onClick,
+  canCreateCard,
+  onCreate,
 }: {
-  rowKey: string;
+  llmPrompt: string;
   pending: boolean;
   actioned: boolean;
-  onClick: () => void;
+  canCreateCard: boolean;
+  onCreate: () => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(llmPrompt);
+      setCopied(true);
+      setTimeout(() => {
+        setCopied(false);
+        setOpen(false);
+      }, 900);
+    } catch (err) {
+      console.error("[dashboard] copy LLM prompt error:", err);
+    }
+  }, [llmPrompt]);
+
+  const handleCreate = useCallback(() => {
+    if (!canCreateCard || pending || actioned) return;
+    onCreate();
+    setOpen(false);
+  }, [canCreateCard, pending, actioned, onCreate]);
+
   return (
-    <button
-      onClick={onClick}
-      disabled={pending || actioned}
-      className={cn(
-        "ml-auto inline-flex h-6 items-center gap-1 rounded-md border px-2 text-[11px] transition",
-        actioned
-          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-          : pending
-            ? "border-white/10 bg-white/[0.04] text-neutral-500"
-            : "border-white/10 bg-white/[0.04] text-neutral-300 hover:border-white/20 hover:bg-white/[0.08] hover:text-white",
-      )}
-      title={actioned ? "Card created" : "Create card on Kanban"}
-      aria-label={actioned ? "Card created" : "Create card"}
-    >
-      {actioned ? (
-        <>
-          <Check className="size-3" /> Created
-        </>
-      ) : pending ? (
-        <>...</>
-      ) : (
-        <>
-          <Plus className="size-3" /> Card
-        </>
-      )}
-    </button>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          className={cn(
+            "inline-flex size-6 items-center justify-center rounded-md border transition",
+            "border-white/10 bg-white/[0.04] text-neutral-400 hover:border-white/20 hover:bg-white/[0.08] hover:text-white",
+            actioned && "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+          )}
+          title="More actions"
+          aria-label="Row actions"
+        >
+          {actioned ? (
+            <Check className="size-3.5" />
+          ) : (
+            <MoreHorizontal className="size-3.5" />
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        sideOffset={4}
+        className="w-60 rounded-md border-white/10 bg-neutral-950/95 p-1 shadow-xl backdrop-blur"
+      >
+        <button
+          onClick={handleCopy}
+          className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-left text-[12px] text-neutral-200 transition hover:bg-white/[0.06] hover:text-white"
+        >
+          <span className="mt-0.5">
+            {copied ? (
+              <ClipboardCheck className="size-3.5 text-sky-300" />
+            ) : (
+              <Clipboard className="size-3.5" />
+            )}
+          </span>
+          <div className="flex flex-1 flex-col">
+            <span>{copied ? "Copied — paste in your LLM" : "Copy LLM prompt"}</span>
+            {!copied && (
+              <span className="text-[10px] text-neutral-500">
+                Brand context + row data + task spec
+              </span>
+            )}
+          </div>
+        </button>
+        <button
+          onClick={handleCreate}
+          disabled={!canCreateCard || pending || actioned}
+          className={cn(
+            "flex w-full items-start gap-2 rounded px-2 py-1.5 text-left text-[12px] transition",
+            !canCreateCard || pending || actioned
+              ? "text-neutral-500"
+              : "text-neutral-200 hover:bg-white/[0.06] hover:text-white",
+          )}
+        >
+          <span className="mt-0.5">
+            {actioned ? (
+              <Check className="size-3.5 text-emerald-300" />
+            ) : (
+              <Plus className="size-3.5" />
+            )}
+          </span>
+          <span>
+            {actioned
+              ? "Card created"
+              : pending
+                ? "Creating..."
+                : "Create card on Kanban"}
+          </span>
+        </button>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -489,6 +655,26 @@ export function Dashboard() {
                     <TableBody>
                       {data.opportunities.strikingDistance.slice(0, 8).map((r) => {
                         const rowKey = `striking:${r.query}:${r.page}`;
+                        const description =
+                          `## Striking distance opportunity\n\n` +
+                          `- **Query**: \`${r.query}\`\n` +
+                          `- **Page**: ${r.page}\n` +
+                          `- **Position**: ${r.position.toFixed(1)} (page 1 = top 10)\n` +
+                          `- **Impressions (period)**: ${formatNumber(r.impressions)}\n` +
+                          `- **CTR**: ${formatPercent(r.ctr)}\n\n` +
+                          `## What to do\n\n` +
+                          `Optimize on-page for this query — title, H1, internal links pointing here. Often a small position bump (e.g. 12 → 8) unlocks 3-5x clicks.\n\n` +
+                          `## Done when\n\n` +
+                          `- [ ] Page revisited; H1/title aligned with the query\n` +
+                          `- [ ] At least 3 internal links from related pages added\n` +
+                          `- [ ] GSC URL Inspection submitted\n` +
+                          `- [ ] Re-check position in 14d`;
+                        const llmPrompt = buildLlmPrompt({
+                          kind: "striking",
+                          startDate: data.startDate,
+                          endDate: data.endDate,
+                          body: description,
+                        });
                         return (
                           <TableRow key={rowKey} className="border-white/5">
                             <TableCell
@@ -510,31 +696,18 @@ export function Dashboard() {
                               {formatPosition(r.position)}
                             </TableCell>
                             <TableCell className="text-right">
-                              <CreateCardButton
-                                rowKey={rowKey}
+                              <RowActionsMenu
+                                llmPrompt={llmPrompt}
                                 pending={pending.has(rowKey)}
                                 actioned={actioned.has(rowKey)}
-                                onClick={() =>
-                                  canCreateCard &&
+                                canCreateCard={canCreateCard}
+                                onCreate={() =>
                                   createCard(rowKey, {
                                     title: `[Push to top 10] ${shortenUrlPath(r.page)} — "${r.query}"`,
                                     itemType: "update",
                                     priority: r.impressions > 1000 ? "high" : "medium",
                                     link: r.page,
-                                    description:
-                                      `## Striking distance opportunity\n\n` +
-                                      `- **Query**: \`${r.query}\`\n` +
-                                      `- **Page**: ${r.page}\n` +
-                                      `- **Position**: ${r.position.toFixed(1)} (page 1 = top 10)\n` +
-                                      `- **Impressions (period)**: ${formatNumber(r.impressions)}\n` +
-                                      `- **CTR**: ${formatPercent(r.ctr)}\n\n` +
-                                      `## What to do\n\n` +
-                                      `Optimize on-page for this query — title, H1, internal links pointing here. Often a small position bump (e.g. 12 → 8) unlocks 3-5x clicks.\n\n` +
-                                      `## Done when\n\n` +
-                                      `- [ ] Page revisited; H1/title aligned with the query\n` +
-                                      `- [ ] At least 3 internal links from related pages added\n` +
-                                      `- [ ] GSC URL Inspection submitted\n` +
-                                      `- [ ] Re-check position in 14d`,
+                                    description,
                                   })
                                 }
                               />
@@ -581,6 +754,26 @@ export function Dashboard() {
                     <TableBody>
                       {data.opportunities.lowCtr.slice(0, 8).map((r) => {
                         const rowKey = `lowctr:${r.query}:${r.page}`;
+                        const description =
+                          `## CTR fix opportunity\n\n` +
+                          `- **Query**: \`${r.query}\`\n` +
+                          `- **Page**: ${r.page}\n` +
+                          `- **Impressions (period)**: ${formatNumber(r.impressions)}\n` +
+                          `- **CTR**: ${formatPercent(r.ctr)} (target: ≥2%)\n` +
+                          `- **Position**: ${formatPosition(r.position)}\n\n` +
+                          `## What to do\n\n` +
+                          `Rewrite **title** (<60 chars), **meta description** (<155 chars), and add **FAQ schema** (5+ Q&As). Run \`/ctr-fix ${r.page}\` for an AI-assisted draft.\n\n` +
+                          `## Done when\n\n` +
+                          `- [ ] Title + meta updated in WordPress\n` +
+                          `- [ ] FAQPage schema validated in [Rich Results Test](https://search.google.com/test/rich-results)\n` +
+                          `- [ ] GSC URL Inspection submitted\n` +
+                          `- [ ] Re-measure CTR after 30d (target ≥1.5%)`;
+                        const llmPrompt = buildLlmPrompt({
+                          kind: "lowctr",
+                          startDate: data.startDate,
+                          endDate: data.endDate,
+                          body: description,
+                        });
                         return (
                           <TableRow key={rowKey} className="border-white/5">
                             <TableCell
@@ -602,31 +795,18 @@ export function Dashboard() {
                               {formatPercent(r.ctr)}
                             </TableCell>
                             <TableCell className="text-right">
-                              <CreateCardButton
-                                rowKey={rowKey}
+                              <RowActionsMenu
+                                llmPrompt={llmPrompt}
                                 pending={pending.has(rowKey)}
                                 actioned={actioned.has(rowKey)}
-                                onClick={() =>
-                                  canCreateCard &&
+                                canCreateCard={canCreateCard}
+                                onCreate={() =>
                                   createCard(rowKey, {
                                     title: `[CTR fix] ${shortenUrlPath(r.page)} — "${r.query}"`,
                                     itemType: "update",
                                     priority: r.impressions > 1000 ? "high" : "medium",
                                     link: r.page,
-                                    description:
-                                      `## CTR fix opportunity\n\n` +
-                                      `- **Query**: \`${r.query}\`\n` +
-                                      `- **Page**: ${r.page}\n` +
-                                      `- **Impressions (period)**: ${formatNumber(r.impressions)}\n` +
-                                      `- **CTR**: ${formatPercent(r.ctr)} (target: ≥2%)\n` +
-                                      `- **Position**: ${formatPosition(r.position)}\n\n` +
-                                      `## What to do\n\n` +
-                                      `Rewrite **title** (<60 chars), **meta description** (<155 chars), and add **FAQ schema** (5+ Q&As). Run \`/ctr-fix ${r.page}\` for an AI-assisted draft.\n\n` +
-                                      `## Done when\n\n` +
-                                      `- [ ] Title + meta updated in WordPress\n` +
-                                      `- [ ] FAQPage schema validated in [Rich Results Test](https://search.google.com/test/rich-results)\n` +
-                                      `- [ ] GSC URL Inspection submitted\n` +
-                                      `- [ ] Re-measure CTR after 30d (target ≥1.5%)`,
+                                    description,
                                   })
                                 }
                               />
@@ -675,6 +855,28 @@ export function Dashboard() {
                 <TableBody>
                   {data.decay.decaying.slice(0, 10).map((d) => {
                     const rowKey = `decay:${d.page}`;
+                    const description =
+                      `## Content decay\n\n` +
+                      `- **Page**: ${d.page}\n` +
+                      `- **Pageviews (previous period)**: ${formatNumber(d.previousPageviews)}\n` +
+                      `- **Pageviews (current period)**: ${formatNumber(d.currentPageviews)}\n` +
+                      `- **Change**: ${formatChangePercent(d.changePercent)}\n\n` +
+                      `## Decision\n\n` +
+                      `Pick one path:\n\n` +
+                      `- **Rewrite** if topic is strategic + recoverable. Use \`/brief-listicle-2026\` or \`/brief-alternative\` if applicable.\n` +
+                      `- **301 to closer hub** if topic is off-brand or covered better by another page.\n` +
+                      `- **410 / deprecate** if no recovery angle.\n\n` +
+                      `## Done when\n\n` +
+                      `- [ ] Decision documented (rewrite / 301 / 410)\n` +
+                      `- [ ] Action shipped\n` +
+                      `- [ ] GSC URL Inspection submitted\n` +
+                      `- [ ] Re-check pageviews in 30d`;
+                    const llmPrompt = buildLlmPrompt({
+                      kind: "decay",
+                      startDate: data.startDate,
+                      endDate: data.endDate,
+                      body: description,
+                    });
                     return (
                       <TableRow key={rowKey} className="border-white/5">
                         <TableCell
@@ -696,12 +898,12 @@ export function Dashboard() {
                           {formatChangePercent(d.changePercent)}
                         </TableCell>
                         <TableCell className="text-right">
-                          <CreateCardButton
-                            rowKey={rowKey}
+                          <RowActionsMenu
+                            llmPrompt={llmPrompt}
                             pending={pending.has(rowKey)}
                             actioned={actioned.has(rowKey)}
-                            onClick={() =>
-                              canCreateCard &&
+                            canCreateCard={canCreateCard}
+                            onCreate={() =>
                               createCard(rowKey, {
                                 title: `[Decay ${formatChangePercent(d.changePercent)}] ${shortenUrlPath(d.page)}`,
                                 itemType: "update",
@@ -710,22 +912,7 @@ export function Dashboard() {
                                     ? "high"
                                     : "medium",
                                 link: d.page,
-                                description:
-                                  `## Content decay\n\n` +
-                                  `- **Page**: ${d.page}\n` +
-                                  `- **Pageviews (previous period)**: ${formatNumber(d.previousPageviews)}\n` +
-                                  `- **Pageviews (current period)**: ${formatNumber(d.currentPageviews)}\n` +
-                                  `- **Change**: ${formatChangePercent(d.changePercent)}\n\n` +
-                                  `## Decision\n\n` +
-                                  `Pick one path:\n\n` +
-                                  `- **Rewrite** if topic is strategic + recoverable. Use \`/brief-listicle-2026\` or \`/brief-alternative\` if applicable.\n` +
-                                  `- **301 to closer hub** if topic is off-brand or covered better by another page.\n` +
-                                  `- **410 / deprecate** if no recovery angle.\n\n` +
-                                  `## Done when\n\n` +
-                                  `- [ ] Decision documented (rewrite / 301 / 410)\n` +
-                                  `- [ ] Action shipped\n` +
-                                  `- [ ] GSC URL Inspection submitted\n` +
-                                  `- [ ] Re-check pageviews in 30d`,
+                                description,
                               })
                             }
                           />
@@ -775,6 +962,30 @@ export function Dashboard() {
                 <TableBody>
                   {data.cannibalization.items.slice(0, 10).map((c) => {
                     const rowKey = `cann:${c.query}`;
+                    const description =
+                      `## Cannibalization\n\n` +
+                      `- **Query**: \`${c.query}\`\n` +
+                      `- **Pages competing (${c.numPages})**:\n` +
+                      c.pages.map((p) => `  - ${p}`).join("\n") +
+                      `\n- **Combined impressions (period)**: ${formatNumber(c.totalImpressions)}\n` +
+                      `- **Combined clicks**: ${formatNumber(c.totalClicks)}\n` +
+                      `- **Avg position**: ${formatPosition(c.avgPosition)}\n\n` +
+                      `## Decision\n\n` +
+                      `Pick one path:\n\n` +
+                      `- **Canonical + 301**: pick the strongest page (highest engagement / clicks / position) and 301 the others to it\n` +
+                      `- **Lift the chosen page**: keep all but ensure target page has the most internal links + best on-page for this query\n` +
+                      `- **Differentiate**: rewrite competing pages to target distinct intents (rare — usually canonical wins)\n\n` +
+                      `## Done when\n\n` +
+                      `- [ ] Decision documented\n` +
+                      `- [ ] 301s applied OR internal-link sweep done\n` +
+                      `- [ ] GSC URL Inspection submitted on chosen canonical\n` +
+                      `- [ ] Re-check SERP for query in 14d`;
+                    const llmPrompt = buildLlmPrompt({
+                      kind: "cannibalization",
+                      startDate: data.startDate,
+                      endDate: data.endDate,
+                      body: description,
+                    });
                     return (
                       <TableRow key={rowKey} className="border-white/5">
                         <TableCell
@@ -793,35 +1004,18 @@ export function Dashboard() {
                           {formatPosition(c.avgPosition)}
                         </TableCell>
                         <TableCell className="text-right">
-                          <CreateCardButton
-                            rowKey={rowKey}
+                          <RowActionsMenu
+                            llmPrompt={llmPrompt}
                             pending={pending.has(rowKey)}
                             actioned={actioned.has(rowKey)}
-                            onClick={() =>
-                              canCreateCard &&
+                            canCreateCard={canCreateCard}
+                            onCreate={() =>
                               createCard(rowKey, {
                                 title: `[Cannibalization] "${c.query}" — ${c.numPages} pages competing`,
                                 itemType: "task",
                                 priority:
                                   c.totalImpressions > 1000 ? "high" : "medium",
-                                description:
-                                  `## Cannibalization\n\n` +
-                                  `- **Query**: \`${c.query}\`\n` +
-                                  `- **Pages competing (${c.numPages})**:\n` +
-                                  c.pages.map((p) => `  - ${p}`).join("\n") +
-                                  `\n- **Combined impressions (period)**: ${formatNumber(c.totalImpressions)}\n` +
-                                  `- **Combined clicks**: ${formatNumber(c.totalClicks)}\n` +
-                                  `- **Avg position**: ${formatPosition(c.avgPosition)}\n\n` +
-                                  `## Decision\n\n` +
-                                  `Pick one path:\n\n` +
-                                  `- **Canonical + 301**: pick the strongest page (highest engagement / clicks / position) and 301 the others to it\n` +
-                                  `- **Lift the chosen page**: keep all but ensure target page has the most internal links + best on-page for this query\n` +
-                                  `- **Differentiate**: rewrite competing pages to target distinct intents (rare — usually canonical wins)\n\n` +
-                                  `## Done when\n\n` +
-                                  `- [ ] Decision documented\n` +
-                                  `- [ ] 301s applied OR internal-link sweep done\n` +
-                                  `- [ ] GSC URL Inspection submitted on chosen canonical\n` +
-                                  `- [ ] Re-check SERP for query in 14d`,
+                                description,
                               })
                             }
                           />
@@ -872,6 +1066,29 @@ export function Dashboard() {
                 <TableBody>
                   {data.internalLinkGaps.candidates.slice(0, 10).map((g) => {
                     const rowKey = `linkgap:${g.page}`;
+                    const description =
+                      `## Internal link gap\n\n` +
+                      `- **Page**: ${g.page}\n` +
+                      `- **Impressions (period)**: ${formatNumber(g.impressions)}\n` +
+                      `- **Clicks**: ${formatNumber(g.clicks)}\n` +
+                      `- **Avg position**: ${formatPosition(g.avgPosition)} (target: top 10)\n\n` +
+                      `## What to do\n\n` +
+                      `Add 3-5 inbound internal links from related pages. Run \`/internal-link-suggest ${g.page}\` for AI-suggested anchors + paragraph context.\n\n` +
+                      `Likely sources for inbound links:\n` +
+                      `- Other \`/alternative\` pages in the same niche\n` +
+                      `- The home page or \`/ai-code-review\` landing\n` +
+                      `- The relevant microsite (aicodereviews.io / codereviewbench.com)\n` +
+                      `- The awesome-ai-code-review README\n\n` +
+                      `## Done when\n\n` +
+                      `- [ ] 3+ inbound internal links added\n` +
+                      `- [ ] GSC URL Inspection re-submitted\n` +
+                      `- [ ] Re-check position in 14d`;
+                    const llmPrompt = buildLlmPrompt({
+                      kind: "linkgap",
+                      startDate: data.startDate,
+                      endDate: data.endDate,
+                      body: description,
+                    });
                     return (
                       <TableRow key={rowKey} className="border-white/5">
                         <TableCell
@@ -890,34 +1107,18 @@ export function Dashboard() {
                           {formatPosition(g.avgPosition)}
                         </TableCell>
                         <TableCell className="text-right">
-                          <CreateCardButton
-                            rowKey={rowKey}
+                          <RowActionsMenu
+                            llmPrompt={llmPrompt}
                             pending={pending.has(rowKey)}
                             actioned={actioned.has(rowKey)}
-                            onClick={() =>
-                              canCreateCard &&
+                            canCreateCard={canCreateCard}
+                            onCreate={() =>
                               createCard(rowKey, {
                                 title: `[Internal links] ${shortenUrlPath(g.page)}`,
                                 itemType: "task",
                                 priority: "medium",
                                 link: g.page,
-                                description:
-                                  `## Internal link gap\n\n` +
-                                  `- **Page**: ${g.page}\n` +
-                                  `- **Impressions (period)**: ${formatNumber(g.impressions)}\n` +
-                                  `- **Clicks**: ${formatNumber(g.clicks)}\n` +
-                                  `- **Avg position**: ${formatPosition(g.avgPosition)} (target: top 10)\n\n` +
-                                  `## What to do\n\n` +
-                                  `Add 3-5 inbound internal links from related pages. Run \`/internal-link-suggest ${g.page}\` for AI-suggested anchors + paragraph context.\n\n` +
-                                  `Likely sources for inbound links:\n` +
-                                  `- Other \`/alternative\` pages in the same niche\n` +
-                                  `- The home page or \`/ai-code-review\` landing\n` +
-                                  `- The relevant microsite (aicodereviews.io / codereviewbench.com)\n` +
-                                  `- The awesome-ai-code-review README\n\n` +
-                                  `## Done when\n\n` +
-                                  `- [ ] 3+ inbound internal links added\n` +
-                                  `- [ ] GSC URL Inspection re-submitted\n` +
-                                  `- [ ] Re-check position in 14d`,
+                                description,
                               })
                             }
                           />
