@@ -8,15 +8,27 @@ import { getModel } from "@/lib/ai/provider";
 // Types
 // ---------------------------------------------------------------------------
 
-export type SocialPlatform = "reddit" | "twitter" | "linkedin";
+export type SocialPlatform = "reddit" | "twitter" | "linkedin" | "hackernews";
 export type Relevance = "high" | "medium" | "low";
 export type Intent =
   | "asking_help"
   | "complaining"
   | "comparing_tools"
   | "discussing"
-  | "sharing_experience";
+  | "sharing_experience"
+  | "backlink_opportunity"
+  | "competitor_listicle";
 export type MentionStatus = "new" | "contacted" | "replied" | "dismissed";
+
+const VALID_INTENTS: ReadonlySet<Intent> = new Set<Intent>([
+  "asking_help",
+  "complaining",
+  "comparing_tools",
+  "discussing",
+  "sharing_experience",
+  "backlink_opportunity",
+  "competitor_listicle",
+]);
 
 export type RawSocialResult = {
   platform: SocialPlatform;
@@ -419,20 +431,146 @@ export async function collectLinkedIn(): Promise<RawSocialResult[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Collection: Hacker News (Algolia search API — free, no key)
+// ---------------------------------------------------------------------------
+
+// HN Algolia returns a flat hit shape covering both stories and comments.
+// We treat both as social mentions: stories are listicle/competitor candidates,
+// comments are where Kodus is most often mentioned without a link.
+type HnHit = {
+  objectID: string;
+  title: string | null;
+  url: string | null;
+  story_url?: string | null;
+  story_title?: string | null;
+  comment_text?: string | null;
+  story_text?: string | null;
+  author: string | null;
+  created_at: string;
+  _tags?: string[];
+};
+
+const HACKERNEWS_QUERIES = [
+  "ai code review",
+  "automated code review",
+  "code review tool",
+  "best code review tools",
+  "coderabbit",
+  "kodus",
+  "kody review",
+  "pull request review automation",
+];
+
+const HN_LOOKBACK_DAYS = 30;
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&[a-z]+;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeHnHit(hit: HnHit): RawSocialResult | null {
+  const isComment = hit._tags?.includes("comment") ?? false;
+  const authorProfileUrl = hit.author
+    ? `https://news.ycombinator.com/user?id=${hit.author}`
+    : null;
+
+  if (isComment) {
+    if (!hit.comment_text) return null;
+    return {
+      platform: "hackernews",
+      url: `https://news.ycombinator.com/item?id=${hit.objectID}`,
+      author: hit.author,
+      authorProfileUrl,
+      title: hit.story_title || "(comment on HN thread)",
+      content: stripHtml(hit.comment_text).slice(0, 1500),
+      publishedDate: hit.created_at ?? null,
+    };
+  }
+
+  if (!hit.title) return null;
+  const externalUrl = hit.url ?? null;
+  const url = externalUrl
+    ? externalUrl
+    : `https://news.ycombinator.com/item?id=${hit.objectID}`;
+  const baseContent = hit.story_text
+    ? stripHtml(hit.story_text)
+    : hit.title;
+  return {
+    platform: "hackernews",
+    url,
+    author: hit.author,
+    authorProfileUrl,
+    title: hit.title,
+    content: baseContent.slice(0, 1500),
+    publishedDate: hit.created_at ?? null,
+  };
+}
+
+export async function collectHackerNews(): Promise<RawSocialResult[]> {
+  const results: RawSocialResult[] = [];
+  const seen = new Set<string>();
+  const cutoff = Math.floor(
+    (Date.now() - HN_LOOKBACK_DAYS * 86_400_000) / 1000,
+  );
+
+  function add(r: RawSocialResult | null) {
+    if (!r || seen.has(r.url)) return;
+    seen.add(r.url);
+    results.push(r);
+  }
+
+  await batchParallel(
+    HACKERNEWS_QUERIES,
+    async (query) => {
+      // Stories AND comments — both are useful for backlink discovery. Stories
+      // catch listicles + brand mentions in articles; comments catch
+      // user-written competitor comparisons that often name Kodus without a
+      // link.
+      for (const tag of ["story", "comment"] as const) {
+        try {
+          const url =
+            `https://hn.algolia.com/api/v1/search?` +
+            `query=${encodeURIComponent(query)}` +
+            `&tags=${tag}` +
+            `&numericFilters=created_at_i>${cutoff}` +
+            `&hitsPerPage=30`;
+          const res = await fetch(url, { cache: "no-store" });
+          if (!res.ok) continue;
+          const data = (await res.json()) as { hits: HnHit[] };
+          for (const hit of data.hits ?? []) {
+            add(normalizeHnHit(hit));
+          }
+        } catch {
+          // Skip on error — Algolia is occasionally rate limited
+        }
+      }
+    },
+    3,
+  );
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // Collection: All platforms
 // ---------------------------------------------------------------------------
 
 export async function collectAll(): Promise<RawSocialResult[]> {
-  const [reddit, twitter, linkedin] = await Promise.allSettled([
+  const [reddit, twitter, linkedin, hn] = await Promise.allSettled([
     collectReddit(),
     collectTwitter(),
     collectLinkedIn(),
+    collectHackerNews(),
   ]);
 
   const all = [
     ...(reddit.status === "fulfilled" ? reddit.value : []),
     ...(twitter.status === "fulfilled" ? twitter.value : []),
     ...(linkedin.status === "fulfilled" ? linkedin.value : []),
+    ...(hn.status === "fulfilled" ? hn.value : []),
   ];
 
   // Dedup by URL
@@ -468,6 +606,12 @@ Evaluate social media posts and ONLY flag ones where someone is clearly experien
 - Someone talking about improving their team's PR workflow or engineering culture around reviews
 - Posts about developer experience where code review is mentioned as a pain point
 
+## Backlink-specific HIGH relevance (flag even when engagement isn't the point)
+- "competitor_listicle": post is a listicle/roundup of code review or AI dev tools (e.g., "Best AI Code Review Tools 2026", "10 CodeRabbit alternatives") that does NOT include Kodus. We want to request inclusion.
+- "backlink_opportunity": post mentions Kodus, kodus.io, or describes our product without linking back to us. We want to ask for a backlink.
+
+These two intents apply mostly to Hacker News stories and external articles. For these, suggestedApproach should describe the *outreach* (who to email, what to say, what proof points), not a comment reply.
+
 ## What counts as LOW relevance (DO NOT flag):
 - General programming questions unrelated to code review or team workflow
 - People sharing code for review (like r/codereview posts asking "review my code")
@@ -478,9 +622,12 @@ Evaluate social media posts and ONLY flag ones where someone is clearly experien
 
 ## Classification
 - relevance: "high" | "medium" | "low"
-- intent: "asking_help" | "complaining" | "comparing_tools" | "discussing" | "sharing_experience"
-- suggestedApproach: a brief, natural message (2-3 sentences). MUST reference their specific content. Be genuinely helpful, not promotional. For Reddit: suggest a comment that adds value first, mentions Kodus naturally. For Twitter/LinkedIn: suggest a reply or DM.
-- worthEngaging: true if relevance is "high" or "medium" AND there's a natural way to engage
+- intent: one of "asking_help" | "complaining" | "comparing_tools" | "discussing" | "sharing_experience" | "backlink_opportunity" | "competitor_listicle"
+- suggestedApproach: a brief, natural message (2-3 sentences). MUST reference their specific content. Be genuinely helpful, not promotional.
+  - For Reddit/HN comments: suggest a reply that adds value first, mentions Kodus naturally
+  - For Twitter/LinkedIn: suggest a reply or DM
+  - For "competitor_listicle" / "backlink_opportunity": describe the outreach — what email/DM to send and the proof points to mention (open-source, Kody Rules, MCP, IDE-native multi-agent)
+- worthEngaging: true if relevance is "high" or "medium" AND there's a natural way to engage or pitch
 - keywordsMatched: relevant keywords
 
 When in doubt between medium and low, prefer medium. When in doubt between high and medium, prefer medium.
@@ -565,19 +712,12 @@ function parseQualificationResponse(text: string): QualificationItem[] {
     if (!Array.isArray(parsed)) return [];
 
     const validRelevance = new Set(["high", "medium", "low"]);
-    const validIntent = new Set([
-      "asking_help",
-      "complaining",
-      "comparing_tools",
-      "discussing",
-      "sharing_experience",
-    ]);
 
     return parsed.filter(
       (item): item is QualificationItem =>
         typeof item.index === "number" &&
         validRelevance.has(item.relevance) &&
-        validIntent.has(item.intent) &&
+        VALID_INTENTS.has(item.intent) &&
         typeof item.suggestedApproach === "string" &&
         typeof item.worthEngaging === "boolean" &&
         Array.isArray(item.keywordsMatched),

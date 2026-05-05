@@ -3,7 +3,7 @@
 
 create table if not exists social_mentions (
   id uuid primary key default gen_random_uuid(),
-  platform text not null check (platform in ('reddit', 'twitter', 'linkedin')),
+  platform text not null check (platform in ('reddit', 'twitter', 'linkedin', 'hackernews')),
   url text not null unique,
   author text,
   author_profile_url text,
@@ -11,7 +11,15 @@ create table if not exists social_mentions (
   content text not null,
   published_at timestamp with time zone,
   relevance text not null check (relevance in ('high', 'medium', 'low')),
-  intent text not null check (intent in ('asking_help', 'complaining', 'comparing_tools', 'discussing', 'sharing_experience')),
+  intent text not null check (intent in (
+    'asking_help',
+    'complaining',
+    'comparing_tools',
+    'discussing',
+    'sharing_experience',
+    'backlink_opportunity',
+    'competitor_listicle'
+  )),
   suggested_approach text not null,
   status text not null default 'new' check (status in ('new', 'contacted', 'replied', 'dismissed')),
   keywords_matched text[] not null default '{}',

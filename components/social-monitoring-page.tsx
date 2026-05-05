@@ -41,6 +41,10 @@ const PLATFORM_BADGES: Record<
     label: "LinkedIn",
     className: "bg-blue-600/20 text-blue-300",
   },
+  hackernews: {
+    label: "HN",
+    className: "bg-orange-600/20 text-orange-200",
+  },
 };
 
 const RELEVANCE_BADGES: Record<Relevance, { label: string; className: string }> =
@@ -65,6 +69,8 @@ const INTENT_LABELS: Record<string, string> = {
   comparing_tools: "Comparing tools",
   discussing: "Discussion",
   sharing_experience: "Sharing experience",
+  backlink_opportunity: "Backlink opportunity",
+  competitor_listicle: "Listicle missing Kodus",
 };
 
 const STATUS_LABELS: Record<MentionStatus, { label: string; className: string }> = {
@@ -235,7 +241,7 @@ export function SocialMonitoringPage() {
           </h1>
           <p className="mt-1 text-sm text-neutral-500">
             {stats
-              ? `${newCount} new ${newCount === 1 ? "opportunity" : "opportunities"} — ${stats.byPlatform["reddit"] || 0} Reddit, ${stats.byPlatform["twitter"] || 0} Twitter, ${stats.byPlatform["linkedin"] || 0} LinkedIn`
+              ? `${newCount} new ${newCount === 1 ? "opportunity" : "opportunities"} — ${stats.byPlatform["reddit"] || 0} Reddit · ${stats.byPlatform["twitter"] || 0} Twitter · ${stats.byPlatform["linkedin"] || 0} LinkedIn · ${stats.byPlatform["hackernews"] || 0} HN`
               : "Loading..."}
           </p>
         </div>
@@ -267,7 +273,7 @@ export function SocialMonitoringPage() {
       <div className="mb-6 space-y-3">
         {/* Platform */}
         <div className="flex flex-wrap gap-2">
-          {(["all", "reddit", "twitter", "linkedin"] as const).map((p) => (
+          {(["all", "reddit", "twitter", "linkedin", "hackernews"] as const).map((p) => (
             <button
               key={p}
               onClick={() => setPlatformFilter(p)}
@@ -346,7 +352,7 @@ export function SocialMonitoringPage() {
           <Radar className="h-12 w-12 text-neutral-800" />
           <p className="text-neutral-500">No mentions found with current filters.</p>
           <p className="text-xs text-neutral-600">
-            Click "Sync Now" to collect mentions from Reddit, LinkedIn, and Twitter.
+            Click "Sync Now" to collect mentions from Reddit, LinkedIn, Twitter, and Hacker News.
           </p>
         </div>
       ) : (
