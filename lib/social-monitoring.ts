@@ -1072,6 +1072,14 @@ export async function saveMentions(
     throw new Error(`Failed to save mentions: ${error.message}`);
   }
 
+  // Log success too — without this, a successful upsert produces no log
+  // entry, making it impossible to tell from logs whether save ran. We
+  // already saw a case where the qualifier finished and saveMentions logged
+  // its input but no follow-up appeared, leaving the question open.
+  console.log(
+    `[social-monitoring] saveMentions ok — inserted ${data?.length ?? 0} new rows (input was ${rows.length}; duplicates ignored)`,
+  );
+
   return data?.length ?? 0;
 }
 
