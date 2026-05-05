@@ -795,15 +795,16 @@ export async function queryActivatedSignups({
 // Internal link gaps (commercial pages with weak post-publish traction)
 // ---------------------------------------------------------------------------
 
-// Proxy heuristic: list commercial-pattern pages (slug matches /alternative/,
-// /vs/, /best-, language hubs) with non-zero impressions but very low clicks
-// (CTR < 1.5%) AND low average position (>10) AND low total impressions
-// (<200) — i.e., they exist but get no compounding from internal links yet.
+// Proxy heuristic for "page exists but isn't getting authority from internal
+// links yet". A commercial-pattern page (slug like /alternative, /vs, /best-,
+// /-code-review, language hubs) is flagged if it ranks outside top 10 OR has
+// fewer than 5 clicks in the period — both are reliable signals that the
+// page isn't compounding via internal links.
 //
 // We don't have direct internal-link-count data in BigQuery; this is a
-// behavioral proxy that reliably surfaces under-linked pages. Confirmed
-// false-positive rate is low because successful pages on kodus.io always
-// rank top 10 within 30d when properly interlinked.
+// behavioral proxy. Successful pages on kodus.io rank top 10 within 30d when
+// properly interlinked, so anything below page 1 with measurable impressions
+// is a candidate.
 export type InternalLinkGapResult = {
   candidates: {
     page: string;
@@ -841,16 +842,16 @@ export async function queryInternalLinkGaps({
      FROM \`kody-408918.kodus_search_console.search_analytics_all_fields\`
      WHERE date BETWEEN @start AND @end
        AND (
-         REGEXP_CONTAINS(page, r'/en/[^/]+-alternative/?$')
+         REGEXP_CONTAINS(page, r'/en/[^/]+-alternatives?/?$')
          OR REGEXP_CONTAINS(page, r'/(en/)?kodus-vs-')
-         OR REGEXP_CONTAINS(page, r'/en/best-[^/]+/?$')
-         OR REGEXP_CONTAINS(page, r'/en/[a-z]+-code-review(-[a-z]+)?/?$')
+         OR REGEXP_CONTAINS(page, r'/en/best-')
+         OR REGEXP_CONTAINS(page, r'-code-review')
+         OR REGEXP_CONTAINS(page, r'/en/.*-vs-')
        )
      GROUP BY page
-     HAVING impressions BETWEEN 1 AND 200
-        AND position > 10
-        AND SAFE_DIVIDE(SUM(clicks), SUM(impressions)) < 0.015
-     ORDER BY position DESC, impressions DESC
+     HAVING impressions >= 1
+        AND (position > 10 OR clicks < 5)
+     ORDER BY clicks ASC, position DESC
      LIMIT @limit`,
     { start, end, limit },
   );
