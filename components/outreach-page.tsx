@@ -669,6 +669,67 @@ function ProspectFormDialog({
     if (c.profileUrl) setContactUrl(c.profileUrl);
   };
 
+  // Pure client-side email pattern generator — no scraping, no LLM. Used
+  // when the user already knows the contact name + domain and just wants
+  // the most likely email patterns to try (or to feed into a paid email
+  // verifier later).
+  const guessEmailsFromName = () => {
+    const name = contactName.trim();
+    const cleanDomain = domain
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, "")
+      .replace(/\/.*$/, "")
+      .replace(/^www\./, "");
+    if (!name || !cleanDomain) return;
+
+    setDiscoveryError(null);
+    setHasMx(null);
+
+    const parts = name
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[̀-ͯ]/g, "")
+      .replace(/[^a-z\s-]/g, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+
+    if (parts.length === 0) return;
+    const first = parts[0];
+    const last = parts[parts.length - 1];
+    const fInitial = first[0];
+    const lInitial = last[0];
+
+    const patterns =
+      parts.length === 1 || first === last
+        ? [`${first}@${cleanDomain}`]
+        : Array.from(
+            new Set([
+              `${first}@${cleanDomain}`,
+              `${first}.${last}@${cleanDomain}`,
+              `${fInitial}${last}@${cleanDomain}`,
+              `${first}${last}@${cleanDomain}`,
+              `${first}_${last}@${cleanDomain}`,
+              `${fInitial}.${last}@${cleanDomain}`,
+              `${first}.${lInitial}@${cleanDomain}`,
+              `${last}@${cleanDomain}`,
+            ]),
+          );
+
+    setCandidates(
+      patterns.map((email, i) => ({
+        name,
+        role: null,
+        email,
+        emailConfidence: i === 0 ? "medium" : "low",
+        emailSource: "guessed",
+        profileUrl: null,
+        source: `pattern from "${name}" + ${cleanDomain}`,
+        notes: null,
+      })),
+    );
+  };
+
   const handleSubmit = async () => {
     if (!token) return;
     if (!domain.trim()) {
@@ -801,7 +862,9 @@ function ProspectFormDialog({
 
           {/* Find contacts — scrape /about, /team, the article URL, then
               extract people + likely emails via LLM. Click any suggestion
-              to apply name / email / profile URL to the form. */}
+              to apply name / email / profile URL to the form.
+              "Guess from name" is a pure client-side fallback when scraping
+              finds nothing or you already know the contact name. */}
           <div className="-mt-1 flex flex-wrap items-center gap-2">
             <button
               type="button"
@@ -820,6 +883,20 @@ function ProspectFormDialog({
                 <Sparkles className="size-3" />
               )}
               {discovering ? "Searching…" : "Find contacts"}
+            </button>
+            <button
+              type="button"
+              onClick={guessEmailsFromName}
+              disabled={!domain.trim() || !contactName.trim() || discovering}
+              className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-medium text-neutral-300 transition hover:bg-white/10 hover:text-white disabled:opacity-50"
+              title={
+                contactName.trim()
+                  ? `Generate likely email patterns for "${contactName}" @ ${domain}`
+                  : "Type a contact name first"
+              }
+            >
+              <Sparkles className="size-3" />
+              Guess from name
             </button>
             {hasMx === false && (
               <span
