@@ -21,6 +21,8 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  Clipboard,
+  ClipboardCheck,
   FileText,
   GripVertical,
   Hash,
@@ -273,6 +275,145 @@ function creatorInitials(email: string) {
   const parts = name.split(/[._-]/);
   if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
   return name.slice(0, 2).toUpperCase();
+}
+
+// ---------------------------------------------------------------------------
+// Copy to LLM — bundles the card into a paste-ready prompt
+// ---------------------------------------------------------------------------
+
+const LLM_BRAND_PREAMBLE =
+  `# Context\n\n` +
+  `You are assisting the growth team at **Kodus** (open-source AI code review for engineering teams, https://kodus.io).\n\n` +
+  `**Brand voice:** technical, direct, no marketing fluff.\n` +
+  `**Audience:** senior engineers, eng leads, CTOs at SaaS companies.\n` +
+  `**Differentiators:** IDE-native, multi-agent code review, customizable Kody Rules, MCP integrations, open-source.\n`;
+
+const LLM_TASKS_BY_TYPE: Record<WorkItemType, string> = {
+  content:
+    `Help me execute this content brief. Produce:\n\n` +
+    `1. **Outline** (H2 / H3 structure)\n` +
+    `2. **Opening 2 paragraphs** (≤200 words total) — establish intent fit, no marketing fluff\n` +
+    `3. **3 internal-link suggestions** — for each: target kodus.io URL, anchor text (≤6 words), 1-line context where the link fits\n` +
+    `4. **Title + meta** — 3 title variants (≤60 chars) + meta description (≤155 chars)\n` +
+    `5. **Schema recommendation** — 1-2 schema types with sample JSON-LD`,
+  update:
+    `Help me ship this update. Produce:\n\n` +
+    `1. **Decision** — what to change and why (be concrete)\n` +
+    `2. **Before / after copy diffs** for the affected sections\n` +
+    `3. **Schema or meta updates** if any (with sample JSON-LD)\n` +
+    `4. **Internal-link sweep** — 3 inbound link sources with anchor text and paragraph context\n` +
+    `5. **Validation step** — what to check in GSC after 14d to confirm the fix worked`,
+  task:
+    `Help me execute this task. Produce:\n\n` +
+    `1. **Step-by-step plan** — concrete steps in order\n` +
+    `2. **Decisions to make** — what choices need to be made and the rationale for each\n` +
+    `3. **Risks / pitfalls** — what could go wrong\n` +
+    `4. **What "done" looks like** — measurable criteria`,
+};
+
+const TYPE_ISSUE_LABEL: Record<WorkItemType, string> = {
+  content: "Content brief",
+  update: "Page update",
+  task: "Task",
+};
+
+function stageLabelFromColumn(
+  columns: KanbanColumn[],
+  columnId: string | null,
+): string {
+  if (!columnId) return "Unassigned";
+  const col = columns.find((c) => c.id === columnId);
+  return col?.name ?? "Unassigned";
+}
+
+function buildKanbanLlmPrompt(
+  item: GrowthWorkItem,
+  columns: KanbanColumn[],
+): string {
+  const stage = stageLabelFromColumn(columns, item.columnId);
+  const taskSpec = LLM_TASKS_BY_TYPE[item.itemType] ?? LLM_TASKS_BY_TYPE.task;
+
+  // Custom fields (the payload Map). Render as bullet list when present.
+  const payloadEntries = Object.entries(item.payload ?? {}).filter(
+    ([, v]) =>
+      v !== null && v !== undefined && String(v).toString().trim().length > 0,
+  );
+  const customFieldsBlock =
+    payloadEntries.length > 0
+      ? `\n\n## Custom fields\n\n` +
+        payloadEntries.map(([k, v]) => `- **${k}**: ${String(v)}`).join("\n")
+      : "";
+
+  const linkLine = item.link ? `**Link:** ${item.link}\n` : "";
+  const responsibleLine = item.responsibleEmail
+    ? `**Responsible:** ${item.responsibleEmail}\n`
+    : "";
+
+  const description =
+    item.description?.trim() ||
+    `_(no description on this card — infer the goal from the title and custom fields)_`;
+
+  return (
+    `${LLM_BRAND_PREAMBLE}\n` +
+    `**Issue type:** ${TYPE_ISSUE_LABEL[item.itemType]} — ${priorityLabel(item.priority)} priority, in stage "${stage}"\n\n` +
+    `# Card\n\n` +
+    `**Title:** ${item.title}\n` +
+    linkLine +
+    responsibleLine +
+    `\n## Description\n\n${description}` +
+    customFieldsBlock +
+    `\n\n---\n\n` +
+    `# Now produce\n\n${taskSpec}\n\n` +
+    `Output as markdown with clear H2/H3 sections. Be concrete (no "consider X") — make decisions and explain why.`
+  );
+}
+
+// Compact button that copies the bundled card prompt to clipboard. Sits in
+// the CardDetailModal top bar.
+function CardCopyLlmButton({
+  item,
+  columns,
+}: {
+  item: GrowthWorkItem;
+  columns: KanbanColumn[];
+}) {
+  const [copied, setCopied] = useState(false);
+  const onClick = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(buildKanbanLlmPrompt(item, columns));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (err) {
+      console.error("[kanban] copy LLM prompt error:", err);
+    }
+  }, [item, columns]);
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "inline-flex h-6 items-center gap-1 rounded-md border px-2 text-[11px] transition",
+        copied
+          ? "border-sky-500/30 bg-sky-500/10 text-sky-300"
+          : "border-white/10 bg-white/[0.04] text-neutral-300 hover:border-white/20 hover:bg-white/[0.08] hover:text-white",
+      )}
+      title={
+        copied
+          ? "Card copied — paste in your LLM"
+          : "Copy a fully contextualized LLM prompt to clipboard"
+      }
+      aria-label={copied ? "Card copied" : "Copy LLM prompt"}
+    >
+      {copied ? (
+        <>
+          <ClipboardCheck className="size-3" /> Copied
+        </>
+      ) : (
+        <>
+          <Clipboard className="size-3" /> LLM
+        </>
+      )}
+    </button>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -842,6 +983,7 @@ function CardDetailModal({
           <span className="ml-auto text-[11px] text-neutral-500">
             by {item.userEmail.split("@")[0]}
           </span>
+          <CardCopyLlmButton item={item} columns={columns} />
           <button
             className="rounded p-1 text-neutral-500 hover:bg-white/10 hover:text-neutral-200"
             onClick={onClose}
