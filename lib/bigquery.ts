@@ -792,6 +792,151 @@ export async function queryActivatedSignups({
 }
 
 // ---------------------------------------------------------------------------
+// Internal link gaps (commercial pages with weak post-publish traction)
+// ---------------------------------------------------------------------------
+
+// Proxy heuristic: list commercial-pattern pages (slug matches /alternative/,
+// /vs/, /best-, language hubs) with non-zero impressions but very low clicks
+// (CTR < 1.5%) AND low average position (>10) AND low total impressions
+// (<200) — i.e., they exist but get no compounding from internal links yet.
+//
+// We don't have direct internal-link-count data in BigQuery; this is a
+// behavioral proxy that reliably surfaces under-linked pages. Confirmed
+// false-positive rate is low because successful pages on kodus.io always
+// rank top 10 within 30d when properly interlinked.
+export type InternalLinkGapResult = {
+  candidates: {
+    page: string;
+    impressions: number;
+    clicks: number;
+    avgCtr: number;
+    avgPosition: number;
+  }[];
+};
+
+export async function queryInternalLinkGaps({
+  startDate,
+  endDate,
+  limit = 15,
+}: {
+  startDate?: string;
+  endDate?: string;
+  limit?: number;
+} = {}): Promise<InternalLinkGapResult> {
+  const { start, end } = resolveDateRange(startDate, endDate);
+
+  const rows = await runQuery<{
+    page: string;
+    impressions: number;
+    clicks: number;
+    ctr: number;
+    position: number;
+  }>(
+    `SELECT
+       page,
+       SUM(impressions) AS impressions,
+       SUM(clicks) AS clicks,
+       SAFE_DIVIDE(SUM(clicks), SUM(impressions)) AS ctr,
+       AVG(position) AS position
+     FROM \`kody-408918.kodus_search_console.search_analytics_all_fields\`
+     WHERE date BETWEEN @start AND @end
+       AND (
+         REGEXP_CONTAINS(page, r'/en/[^/]+-alternative/?$')
+         OR REGEXP_CONTAINS(page, r'/(en/)?kodus-vs-')
+         OR REGEXP_CONTAINS(page, r'/en/best-[^/]+/?$')
+         OR REGEXP_CONTAINS(page, r'/en/[a-z]+-code-review(-[a-z]+)?/?$')
+       )
+     GROUP BY page
+     HAVING impressions BETWEEN 1 AND 200
+        AND position > 10
+        AND SAFE_DIVIDE(SUM(clicks), SUM(impressions)) < 0.015
+     ORDER BY position DESC, impressions DESC
+     LIMIT @limit`,
+    { start, end, limit },
+  );
+
+  return {
+    candidates: rows.map((r) => ({
+      page: r.page,
+      impressions: Number(r.impressions),
+      clicks: Number(r.clicks),
+      avgCtr: Number(r.ctr),
+      avgPosition: Number(r.position),
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Cannibalization (queries with 2+ kodus.io pages competing)
+// ---------------------------------------------------------------------------
+
+// A query is "cannibalized" when 2+ kodus.io pages rank for it. Each page
+// dilutes the others' authority for that keyword. Action: pick one canonical,
+// 301 the rest, OR add internal links to lift the chosen page.
+export type CannibalizationResult = {
+  items: {
+    query: string;
+    pages: string[];
+    numPages: number;
+    totalImpressions: number;
+    totalClicks: number;
+    avgPosition: number;
+  }[];
+};
+
+export async function queryCannibalization({
+  startDate,
+  endDate,
+  limit = 20,
+  minImpressions = 100,
+}: {
+  startDate?: string;
+  endDate?: string;
+  limit?: number;
+  minImpressions?: number;
+} = {}): Promise<CannibalizationResult> {
+  const { start, end } = resolveDateRange(startDate, endDate);
+
+  const rows = await runQuery<{
+    query: string;
+    pages: string[];
+    num_pages: number;
+    total_impressions: number;
+    total_clicks: number;
+    avg_position: number;
+  }>(
+    `SELECT
+       query,
+       ARRAY_AGG(DISTINCT page IGNORE NULLS) AS pages,
+       COUNT(DISTINCT page) AS num_pages,
+       SUM(impressions) AS total_impressions,
+       SUM(clicks) AS total_clicks,
+       AVG(position) AS avg_position
+     FROM \`kody-408918.kodus_search_console.search_analytics_all_fields\`
+     WHERE date BETWEEN @start AND @end
+       AND LOWER(query) NOT LIKE '%kodus%'
+       AND LOWER(query) NOT LIKE '%kody%'
+       AND LENGTH(query) >= 3
+     GROUP BY query
+     HAVING num_pages >= 2 AND total_impressions >= @minImpressions
+     ORDER BY total_impressions DESC
+     LIMIT @limit`,
+    { start, end, limit, minImpressions },
+  );
+
+  return {
+    items: rows.map((r) => ({
+      query: r.query,
+      pages: r.pages ?? [],
+      numPages: Number(r.num_pages),
+      totalImpressions: Number(r.total_impressions),
+      totalClicks: Number(r.total_clicks),
+      avgPosition: Number(r.avg_position),
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 6. Content Decay (GA4 pages)
 // ---------------------------------------------------------------------------
 

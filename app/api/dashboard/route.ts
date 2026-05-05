@@ -8,6 +8,8 @@ import {
   queryContentDecay,
   queryContentOpportunities,
   queryActivatedSignups,
+  queryCannibalization,
+  queryInternalLinkGaps,
 } from "@/lib/bigquery";
 import { fetchBlogPosts } from "@/lib/copilot";
 import { getLatestLLMMentions } from "@/lib/dataforseo";
@@ -43,6 +45,8 @@ export async function GET(request: Request) {
       blogPosts,
       llmMentions,
       activatedSignups,
+      cannibalization,
+      internalLinkGaps,
     ] = await Promise.all([
       queryTrafficOverview({ startDate, endDate }),
       querySearchPerformance({ startDate, endDate }),
@@ -55,6 +59,14 @@ export async function GET(request: Request) {
       queryActivatedSignups({ startDate, endDate }).catch((e) => {
         console.error("[dashboard] activatedSignups error:", e);
         return null;
+      }),
+      queryCannibalization({ startDate, endDate }).catch((e) => {
+        console.error("[dashboard] cannibalization error:", e);
+        return { items: [] };
+      }),
+      queryInternalLinkGaps({ startDate, endDate }).catch((e) => {
+        console.error("[dashboard] internalLinkGaps error:", e);
+        return { candidates: [] };
       }),
     ]);
 
@@ -71,6 +83,8 @@ export async function GET(request: Request) {
       blogPosts,
       llmMentions,
       activatedSignups,
+      cannibalization,
+      internalLinkGaps,
     });
   } catch (error) {
     console.error("Dashboard API error:", error);

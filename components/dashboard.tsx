@@ -1,7 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { TrendingDown, TrendingUp, ArrowRight, Bot, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  TrendingDown,
+  TrendingUp,
+  ArrowRight,
+  Bot,
+  Sparkles,
+  Plus,
+  Check,
+} from "lucide-react";
+
+import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
+import { cn } from "@/lib/utils";
 import {
   LineChart,
   Line,
@@ -39,6 +50,8 @@ import type {
   ContentDecayResult,
   ContentOpportunitiesResult,
   ActivatedSignupsResult,
+  CannibalizationResult,
+  InternalLinkGapResult,
 } from "@/lib/bigquery";
 import type { BlogPost } from "@/lib/copilot";
 import type { LLMMentionsSnapshot } from "@/lib/dataforseo";
@@ -56,6 +69,8 @@ type DashboardData = {
   blogPosts: BlogPost[];
   llmMentions: LLMMentionsSnapshot[];
   activatedSignups: ActivatedSignupsResult | null;
+  cannibalization: CannibalizationResult;
+  internalLinkGaps: InternalLinkGapResult;
 };
 
 function formatGaDate(raw: string): string {
@@ -80,6 +95,117 @@ function formatChangePercent(n: number): string {
 
 function formatPosition(n: number): string {
   return n.toFixed(1);
+}
+
+// Auth token hook — reused across components that need to call authenticated
+// endpoints (the kanban API requires a Supabase JWT).
+function useAuthToken() {
+  const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const [token, setToken] = useState<string | null>(null);
+  const [email, setEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!supabase) return;
+    supabase.auth.getSession().then(({ data }) => {
+      setToken(data.session?.access_token ?? null);
+      setEmail(data.session?.user?.email ?? null);
+    });
+  }, [supabase]);
+
+  return { token, email };
+}
+
+type CreateCardInput = {
+  title: string;
+  description: string;
+  itemType?: "task" | "update";
+  priority?: "low" | "medium" | "high";
+  link?: string;
+};
+
+// Hook that posts a card to the kanban and tracks success per row key so the
+// UI can flip the button to a "Created" check state. Uses the user JWT via the
+// /api/kanban/items endpoint (service-role MCP path is server-only).
+function useCardCreator() {
+  const { token, email } = useAuthToken();
+  const [actioned, setActioned] = useState<Set<string>>(new Set());
+  const [pending, setPending] = useState<Set<string>>(new Set());
+
+  async function createCard(rowKey: string, input: CreateCardInput) {
+    if (!token || pending.has(rowKey) || actioned.has(rowKey)) return;
+    setPending((s) => new Set(s).add(rowKey));
+    try {
+      const res = await fetch("/api/kanban/items", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: input.title,
+          description: input.description,
+          itemType: input.itemType ?? "update",
+          priority: input.priority ?? "medium",
+          link: input.link,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setActioned((s) => new Set(s).add(rowKey));
+    } catch (err) {
+      console.error("[dashboard] createCard error:", err);
+    } finally {
+      setPending((p) => {
+        const next = new Set(p);
+        next.delete(rowKey);
+        return next;
+      });
+    }
+  }
+
+  return { createCard, actioned, pending, ready: !!token, email };
+}
+
+// Reusable "Create card" button — flips to a check icon once the card has been
+// created in this session. Disabled while pending or after actioned.
+function CreateCardButton({
+  rowKey,
+  pending,
+  actioned,
+  onClick,
+}: {
+  rowKey: string;
+  pending: boolean;
+  actioned: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={pending || actioned}
+      className={cn(
+        "ml-auto inline-flex h-6 items-center gap-1 rounded-md border px-2 text-[11px] transition",
+        actioned
+          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+          : pending
+            ? "border-white/10 bg-white/[0.04] text-neutral-500"
+            : "border-white/10 bg-white/[0.04] text-neutral-300 hover:border-white/20 hover:bg-white/[0.08] hover:text-white",
+      )}
+      title={actioned ? "Card created" : "Create card on Kanban"}
+      aria-label={actioned ? "Card created" : "Create card"}
+    >
+      {actioned ? (
+        <>
+          <Check className="size-3" /> Created
+        </>
+      ) : pending ? (
+        <>...</>
+      ) : (
+        <>
+          <Plus className="size-3" /> Card
+        </>
+      )}
+    </button>
+  );
 }
 
 // Section divider with a small uppercase label — Vercel/Linear style.
@@ -117,6 +243,8 @@ export function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { createCard, actioned, pending, ready: canCreateCard } =
+    useCardCreator();
 
   const fetchData = useCallback(async (p: string) => {
     setLoading(true);
@@ -353,30 +481,67 @@ export function Dashboard() {
                       <TableRow className="border-white/10">
                         <TableHead className="text-neutral-400">Query</TableHead>
                         <TableHead className="text-neutral-400">Page</TableHead>
-                        <TableHead className="text-right text-neutral-400">Impressions</TableHead>
-                        <TableHead className="text-right text-neutral-400">Position</TableHead>
+                        <TableHead className="text-right text-neutral-400">Impr</TableHead>
+                        <TableHead className="text-right text-neutral-400">Pos</TableHead>
+                        <TableHead className="text-right text-neutral-400 w-20" />
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {data.opportunities.strikingDistance.slice(0, 8).map((r) => (
-                        <TableRow key={`${r.query}-${r.page}`} className="border-white/5">
-                          <TableCell className="max-w-[180px] truncate text-neutral-200" title={r.query}>
-                            {r.query}
-                          </TableCell>
-                          <TableCell
-                            className="max-w-[200px] truncate text-[11px] text-neutral-500"
-                            title={r.page}
-                          >
-                            {shortenUrlPath(r.page)}
-                          </TableCell>
-                          <TableCell className="text-right text-neutral-300">
-                            {formatNumber(r.impressions)}
-                          </TableCell>
-                          <TableCell className="text-right text-neutral-300">
-                            {formatPosition(r.position)}
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                      {data.opportunities.strikingDistance.slice(0, 8).map((r) => {
+                        const rowKey = `striking:${r.query}:${r.page}`;
+                        return (
+                          <TableRow key={rowKey} className="border-white/5">
+                            <TableCell
+                              className="max-w-[180px] truncate text-neutral-200"
+                              title={r.query}
+                            >
+                              {r.query}
+                            </TableCell>
+                            <TableCell
+                              className="max-w-[200px] truncate text-[11px] text-neutral-500"
+                              title={r.page}
+                            >
+                              {shortenUrlPath(r.page)}
+                            </TableCell>
+                            <TableCell className="text-right text-neutral-300">
+                              {formatNumber(r.impressions)}
+                            </TableCell>
+                            <TableCell className="text-right text-neutral-300">
+                              {formatPosition(r.position)}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <CreateCardButton
+                                rowKey={rowKey}
+                                pending={pending.has(rowKey)}
+                                actioned={actioned.has(rowKey)}
+                                onClick={() =>
+                                  canCreateCard &&
+                                  createCard(rowKey, {
+                                    title: `[Push to top 10] ${shortenUrlPath(r.page)} — "${r.query}"`,
+                                    itemType: "update",
+                                    priority: r.impressions > 1000 ? "high" : "medium",
+                                    link: r.page,
+                                    description:
+                                      `## Striking distance opportunity\n\n` +
+                                      `- **Query**: \`${r.query}\`\n` +
+                                      `- **Page**: ${r.page}\n` +
+                                      `- **Position**: ${r.position.toFixed(1)} (page 1 = top 10)\n` +
+                                      `- **Impressions (period)**: ${formatNumber(r.impressions)}\n` +
+                                      `- **CTR**: ${formatPercent(r.ctr)}\n\n` +
+                                      `## What to do\n\n` +
+                                      `Optimize on-page for this query — title, H1, internal links pointing here. Often a small position bump (e.g. 12 → 8) unlocks 3-5x clicks.\n\n` +
+                                      `## Done when\n\n` +
+                                      `- [ ] Page revisited; H1/title aligned with the query\n` +
+                                      `- [ ] At least 3 internal links from related pages added\n` +
+                                      `- [ ] GSC URL Inspection submitted\n` +
+                                      `- [ ] Re-check position in 14d`,
+                                  })
+                                }
+                              />
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>
@@ -408,30 +573,67 @@ export function Dashboard() {
                       <TableRow className="border-white/10">
                         <TableHead className="text-neutral-400">Query</TableHead>
                         <TableHead className="text-neutral-400">Page</TableHead>
-                        <TableHead className="text-right text-neutral-400">Impressions</TableHead>
+                        <TableHead className="text-right text-neutral-400">Impr</TableHead>
                         <TableHead className="text-right text-neutral-400">CTR</TableHead>
+                        <TableHead className="text-right text-neutral-400 w-20" />
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {data.opportunities.lowCtr.slice(0, 8).map((r) => (
-                        <TableRow key={`${r.query}-${r.page}`} className="border-white/5">
-                          <TableCell className="max-w-[180px] truncate text-neutral-200" title={r.query}>
-                            {r.query}
-                          </TableCell>
-                          <TableCell
-                            className="max-w-[200px] truncate text-[11px] text-neutral-500"
-                            title={r.page}
-                          >
-                            {shortenUrlPath(r.page)}
-                          </TableCell>
-                          <TableCell className="text-right text-neutral-300">
-                            {formatNumber(r.impressions)}
-                          </TableCell>
-                          <TableCell className="text-right text-neutral-300">
-                            {formatPercent(r.ctr)}
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                      {data.opportunities.lowCtr.slice(0, 8).map((r) => {
+                        const rowKey = `lowctr:${r.query}:${r.page}`;
+                        return (
+                          <TableRow key={rowKey} className="border-white/5">
+                            <TableCell
+                              className="max-w-[180px] truncate text-neutral-200"
+                              title={r.query}
+                            >
+                              {r.query}
+                            </TableCell>
+                            <TableCell
+                              className="max-w-[200px] truncate text-[11px] text-neutral-500"
+                              title={r.page}
+                            >
+                              {shortenUrlPath(r.page)}
+                            </TableCell>
+                            <TableCell className="text-right text-neutral-300">
+                              {formatNumber(r.impressions)}
+                            </TableCell>
+                            <TableCell className="text-right text-neutral-300">
+                              {formatPercent(r.ctr)}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <CreateCardButton
+                                rowKey={rowKey}
+                                pending={pending.has(rowKey)}
+                                actioned={actioned.has(rowKey)}
+                                onClick={() =>
+                                  canCreateCard &&
+                                  createCard(rowKey, {
+                                    title: `[CTR fix] ${shortenUrlPath(r.page)} — "${r.query}"`,
+                                    itemType: "update",
+                                    priority: r.impressions > 1000 ? "high" : "medium",
+                                    link: r.page,
+                                    description:
+                                      `## CTR fix opportunity\n\n` +
+                                      `- **Query**: \`${r.query}\`\n` +
+                                      `- **Page**: ${r.page}\n` +
+                                      `- **Impressions (period)**: ${formatNumber(r.impressions)}\n` +
+                                      `- **CTR**: ${formatPercent(r.ctr)} (target: ≥2%)\n` +
+                                      `- **Position**: ${formatPosition(r.position)}\n\n` +
+                                      `## What to do\n\n` +
+                                      `Rewrite **title** (<60 chars), **meta description** (<155 chars), and add **FAQ schema** (5+ Q&As). Run \`/ctr-fix ${r.page}\` for an AI-assisted draft.\n\n` +
+                                      `## Done when\n\n` +
+                                      `- [ ] Title + meta updated in WordPress\n` +
+                                      `- [ ] FAQPage schema validated in [Rich Results Test](https://search.google.com/test/rich-results)\n` +
+                                      `- [ ] GSC URL Inspection submitted\n` +
+                                      `- [ ] Re-measure CTR after 30d (target ≥1.5%)`,
+                                  })
+                                }
+                              />
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>
@@ -467,28 +669,262 @@ export function Dashboard() {
                     <TableHead className="text-right text-neutral-400" />
                     <TableHead className="text-right text-neutral-400">Now</TableHead>
                     <TableHead className="text-right text-neutral-400">Change</TableHead>
+                    <TableHead className="text-right text-neutral-400 w-20" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data.decay.decaying.slice(0, 10).map((d) => (
-                    <TableRow key={d.page} className="border-white/5">
-                      <TableCell className="max-w-[260px] truncate text-neutral-200" title={d.page}>
-                        {d.page}
-                      </TableCell>
-                      <TableCell className="text-right text-neutral-400">
-                        {formatNumber(d.previousPageviews)}
-                      </TableCell>
-                      <TableCell className="text-center text-neutral-600">
-                        <ArrowRight className="inline h-3 w-3" />
-                      </TableCell>
-                      <TableCell className="text-right text-neutral-300">
-                        {formatNumber(d.currentPageviews)}
-                      </TableCell>
-                      <TableCell className="text-right font-medium text-red-400">
-                        {formatChangePercent(d.changePercent)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {data.decay.decaying.slice(0, 10).map((d) => {
+                    const rowKey = `decay:${d.page}`;
+                    return (
+                      <TableRow key={rowKey} className="border-white/5">
+                        <TableCell
+                          className="max-w-[260px] truncate text-neutral-200"
+                          title={d.page}
+                        >
+                          {shortenUrlPath(d.page)}
+                        </TableCell>
+                        <TableCell className="text-right text-neutral-400">
+                          {formatNumber(d.previousPageviews)}
+                        </TableCell>
+                        <TableCell className="text-center text-neutral-600">
+                          <ArrowRight className="inline h-3 w-3" />
+                        </TableCell>
+                        <TableCell className="text-right text-neutral-300">
+                          {formatNumber(d.currentPageviews)}
+                        </TableCell>
+                        <TableCell className="text-right font-medium text-red-400">
+                          {formatChangePercent(d.changePercent)}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <CreateCardButton
+                            rowKey={rowKey}
+                            pending={pending.has(rowKey)}
+                            actioned={actioned.has(rowKey)}
+                            onClick={() =>
+                              canCreateCard &&
+                              createCard(rowKey, {
+                                title: `[Decay ${formatChangePercent(d.changePercent)}] ${shortenUrlPath(d.page)}`,
+                                itemType: "update",
+                                priority:
+                                  Math.abs(d.changePercent) > 50
+                                    ? "high"
+                                    : "medium",
+                                link: d.page,
+                                description:
+                                  `## Content decay\n\n` +
+                                  `- **Page**: ${d.page}\n` +
+                                  `- **Pageviews (previous period)**: ${formatNumber(d.previousPageviews)}\n` +
+                                  `- **Pageviews (current period)**: ${formatNumber(d.currentPageviews)}\n` +
+                                  `- **Change**: ${formatChangePercent(d.changePercent)}\n\n` +
+                                  `## Decision\n\n` +
+                                  `Pick one path:\n\n` +
+                                  `- **Rewrite** if topic is strategic + recoverable. Use \`/brief-listicle-2026\` or \`/brief-alternative\` if applicable.\n` +
+                                  `- **301 to closer hub** if topic is off-brand or covered better by another page.\n` +
+                                  `- **410 / deprecate** if no recovery angle.\n\n` +
+                                  `## Done when\n\n` +
+                                  `- [ ] Decision documented (rewrite / 301 / 410)\n` +
+                                  `- [ ] Action shipped\n` +
+                                  `- [ ] GSC URL Inspection submitted\n` +
+                                  `- [ ] Re-check pageviews in 30d`,
+                              })
+                            }
+                          />
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Cannibalization */}
+      {!loading && data && data.cannibalization.items.length > 0 && (
+        <Card className="border-white/[0.06] bg-neutral-900/50">
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-sm font-medium text-yellow-300">
+                Cannibalization
+              </CardTitle>
+              <Badge
+                variant="outline"
+                className="border-yellow-500/30 text-yellow-300 text-[10px]"
+              >
+                {data.cannibalization.items.length} queries
+              </Badge>
+            </div>
+            <p className="text-xs text-neutral-500">
+              Queries where 2+ kodus.io pages compete — pick a canonical, 301
+              the rest, or add internal links to lift the chosen page.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div>
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-white/10">
+                    <TableHead className="text-neutral-400">Query</TableHead>
+                    <TableHead className="text-right text-neutral-400">Pages</TableHead>
+                    <TableHead className="text-right text-neutral-400">Impr</TableHead>
+                    <TableHead className="text-right text-neutral-400">Avg pos</TableHead>
+                    <TableHead className="text-right text-neutral-400 w-20" />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data.cannibalization.items.slice(0, 10).map((c) => {
+                    const rowKey = `cann:${c.query}`;
+                    return (
+                      <TableRow key={rowKey} className="border-white/5">
+                        <TableCell
+                          className="max-w-[260px] truncate text-neutral-200"
+                          title={`${c.query}\n\n${c.pages.join("\n")}`}
+                        >
+                          {c.query}
+                        </TableCell>
+                        <TableCell className="text-right text-neutral-300">
+                          {c.numPages}
+                        </TableCell>
+                        <TableCell className="text-right text-neutral-300">
+                          {formatNumber(c.totalImpressions)}
+                        </TableCell>
+                        <TableCell className="text-right text-neutral-300">
+                          {formatPosition(c.avgPosition)}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <CreateCardButton
+                            rowKey={rowKey}
+                            pending={pending.has(rowKey)}
+                            actioned={actioned.has(rowKey)}
+                            onClick={() =>
+                              canCreateCard &&
+                              createCard(rowKey, {
+                                title: `[Cannibalization] "${c.query}" — ${c.numPages} pages competing`,
+                                itemType: "task",
+                                priority:
+                                  c.totalImpressions > 1000 ? "high" : "medium",
+                                description:
+                                  `## Cannibalization\n\n` +
+                                  `- **Query**: \`${c.query}\`\n` +
+                                  `- **Pages competing (${c.numPages})**:\n` +
+                                  c.pages.map((p) => `  - ${p}`).join("\n") +
+                                  `\n- **Combined impressions (period)**: ${formatNumber(c.totalImpressions)}\n` +
+                                  `- **Combined clicks**: ${formatNumber(c.totalClicks)}\n` +
+                                  `- **Avg position**: ${formatPosition(c.avgPosition)}\n\n` +
+                                  `## Decision\n\n` +
+                                  `Pick one path:\n\n` +
+                                  `- **Canonical + 301**: pick the strongest page (highest engagement / clicks / position) and 301 the others to it\n` +
+                                  `- **Lift the chosen page**: keep all but ensure target page has the most internal links + best on-page for this query\n` +
+                                  `- **Differentiate**: rewrite competing pages to target distinct intents (rare — usually canonical wins)\n\n` +
+                                  `## Done when\n\n` +
+                                  `- [ ] Decision documented\n` +
+                                  `- [ ] 301s applied OR internal-link sweep done\n` +
+                                  `- [ ] GSC URL Inspection submitted on chosen canonical\n` +
+                                  `- [ ] Re-check SERP for query in 14d`,
+                              })
+                            }
+                          />
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Internal link gap */}
+      {!loading && data && data.internalLinkGaps.candidates.length > 0 && (
+        <Card className="border-white/[0.06] bg-neutral-900/50">
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-sm font-medium text-cyan-300">
+                Internal link gaps
+              </CardTitle>
+              <Badge
+                variant="outline"
+                className="border-cyan-500/30 text-cyan-300 text-[10px]"
+              >
+                {data.internalLinkGaps.candidates.length} pages
+              </Badge>
+            </div>
+            <p className="text-xs text-neutral-500">
+              Commercial pages with low traffic — likely under-linked. Add 3-5
+              inbound internal links to lift them. (Heuristic: pos &gt; 10, CTR
+              &lt; 1.5%, &lt; 200 impressions in period.)
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div>
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-white/10">
+                    <TableHead className="text-neutral-400">Page</TableHead>
+                    <TableHead className="text-right text-neutral-400">Impr</TableHead>
+                    <TableHead className="text-right text-neutral-400">Clicks</TableHead>
+                    <TableHead className="text-right text-neutral-400">Pos</TableHead>
+                    <TableHead className="text-right text-neutral-400 w-20" />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data.internalLinkGaps.candidates.slice(0, 10).map((g) => {
+                    const rowKey = `linkgap:${g.page}`;
+                    return (
+                      <TableRow key={rowKey} className="border-white/5">
+                        <TableCell
+                          className="max-w-[300px] truncate text-neutral-200"
+                          title={g.page}
+                        >
+                          {shortenUrlPath(g.page)}
+                        </TableCell>
+                        <TableCell className="text-right text-neutral-300">
+                          {formatNumber(g.impressions)}
+                        </TableCell>
+                        <TableCell className="text-right text-neutral-300">
+                          {formatNumber(g.clicks)}
+                        </TableCell>
+                        <TableCell className="text-right text-neutral-300">
+                          {formatPosition(g.avgPosition)}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <CreateCardButton
+                            rowKey={rowKey}
+                            pending={pending.has(rowKey)}
+                            actioned={actioned.has(rowKey)}
+                            onClick={() =>
+                              canCreateCard &&
+                              createCard(rowKey, {
+                                title: `[Internal links] ${shortenUrlPath(g.page)}`,
+                                itemType: "task",
+                                priority: "medium",
+                                link: g.page,
+                                description:
+                                  `## Internal link gap\n\n` +
+                                  `- **Page**: ${g.page}\n` +
+                                  `- **Impressions (period)**: ${formatNumber(g.impressions)}\n` +
+                                  `- **Clicks**: ${formatNumber(g.clicks)}\n` +
+                                  `- **Avg position**: ${formatPosition(g.avgPosition)} (target: top 10)\n\n` +
+                                  `## What to do\n\n` +
+                                  `Add 3-5 inbound internal links from related pages. Run \`/internal-link-suggest ${g.page}\` for AI-suggested anchors + paragraph context.\n\n` +
+                                  `Likely sources for inbound links:\n` +
+                                  `- Other \`/alternative\` pages in the same niche\n` +
+                                  `- The home page or \`/ai-code-review\` landing\n` +
+                                  `- The relevant microsite (aicodereviews.io / codereviewbench.com)\n` +
+                                  `- The awesome-ai-code-review README\n\n` +
+                                  `## Done when\n\n` +
+                                  `- [ ] 3+ inbound internal links added\n` +
+                                  `- [ ] GSC URL Inspection re-submitted\n` +
+                                  `- [ ] Re-check position in 14d`,
+                              })
+                            }
+                          />
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </div>
