@@ -71,6 +71,8 @@ const TARGET_LABELS: Record<ProspectTargetType, string> = {
   awesome_list: "Awesome list",
   article: "Article",
   newsletter: "Newsletter",
+  partnership: "Partnership",
+  link_reclamation: "Link reclamation",
   other: "Other",
 };
 

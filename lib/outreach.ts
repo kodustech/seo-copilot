@@ -21,6 +21,8 @@ export type ProspectTargetType =
   | "awesome_list"
   | "article"
   | "newsletter"
+  | "partnership"
+  | "link_reclamation"
   | "other";
 
 export type ProspectPriority = "high" | "medium" | "low";
@@ -43,6 +45,8 @@ export const PROSPECT_TARGET_TYPES: ProspectTargetType[] = [
   "awesome_list",
   "article",
   "newsletter",
+  "partnership",
+  "link_reclamation",
   "other",
 ];
 

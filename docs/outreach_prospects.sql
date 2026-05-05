@@ -14,6 +14,8 @@ create table if not exists outreach_prospects (
     'awesome_list',
     'article',
     'newsletter',
+    'partnership',
+    'link_reclamation',
     'other'
   )),
   contact_name text,
