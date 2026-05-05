@@ -324,3 +324,189 @@ export async function getGoalStats(
   }
   return { total: (data ?? []).length, byStatus };
 }
+
+// ---------------------------------------------------------------------------
+// Linked work items (auto-progress)
+// ---------------------------------------------------------------------------
+
+// Stage slugs that count a linked work_item as "delivered" toward a goal.
+// Kept loose on purpose so custom columns the team adds (e.g. "shipped",
+// "live") still count if the slug matches one of these tokens.
+export const GOAL_DONE_STAGES: ReadonlySet<string> = new Set([
+  "published",
+  "done",
+  "completed",
+  "complete",
+  "shipped",
+  "live",
+]);
+
+export type LinkedWorkItem = {
+  id: string;
+  title: string;
+  itemType: string;
+  stage: string | null;
+  columnId: string | null;
+  priority: string;
+  link: string | null;
+  responsibleEmail: string | null;
+  isDone: boolean;
+};
+
+export async function listGoalLinks(
+  client: SupabaseClient,
+  goalId: string,
+): Promise<LinkedWorkItem[]> {
+  const { data, error } = await client
+    .from("goal_links")
+    .select(
+      "work_item_id, growth_work_items!inner(id, title, item_type, stage, column_id, priority, link, responsible_email)",
+    )
+    .eq("goal_id", goalId);
+  if (error) throw new Error(`Failed to list goal links: ${error.message}`);
+
+  return (data ?? []).map((row) => {
+    // Supabase returns the joined row as either an object or a 1-element
+    // array depending on the relationship cardinality; normalize.
+    const wi = (
+      Array.isArray((row as { growth_work_items: unknown }).growth_work_items)
+        ? (row as { growth_work_items: unknown[] }).growth_work_items[0]
+        : (row as { growth_work_items: unknown }).growth_work_items
+    ) as {
+      id: string;
+      title: string;
+      item_type: string;
+      stage: string | null;
+      column_id: string | null;
+      priority: string;
+      link: string | null;
+      responsible_email: string | null;
+    };
+    return {
+      id: wi.id,
+      title: wi.title,
+      itemType: wi.item_type,
+      stage: wi.stage,
+      columnId: wi.column_id,
+      priority: wi.priority,
+      link: wi.link,
+      responsibleEmail: wi.responsible_email,
+      isDone: !!wi.stage && GOAL_DONE_STAGES.has(wi.stage),
+    };
+  });
+}
+
+export async function listGoalsForWorkItem(
+  client: SupabaseClient,
+  workItemId: string,
+): Promise<{ id: string; title: string; status: GoalStatus }[]> {
+  const { data, error } = await client
+    .from("goal_links")
+    .select("goal_id, goals!inner(id, title, status)")
+    .eq("work_item_id", workItemId);
+  if (error) throw new Error(`Failed to list goals for item: ${error.message}`);
+
+  return (data ?? []).map((row) => {
+    const g = (
+      Array.isArray((row as { goals: unknown }).goals)
+        ? (row as { goals: unknown[] }).goals[0]
+        : (row as { goals: unknown }).goals
+    ) as { id: string; title: string; status: GoalStatus };
+    return { id: g.id, title: g.title, status: g.status };
+  });
+}
+
+export async function addGoalLink(
+  client: SupabaseClient,
+  goalId: string,
+  workItemId: string,
+  createdByEmail: string | null,
+): Promise<void> {
+  const { error } = await client.from("goal_links").upsert(
+    {
+      goal_id: goalId,
+      work_item_id: workItemId,
+      created_by_email: createdByEmail,
+    },
+    { onConflict: "goal_id,work_item_id", ignoreDuplicates: true },
+  );
+  if (error) throw new Error(`Failed to add goal link: ${error.message}`);
+}
+
+export async function removeGoalLink(
+  client: SupabaseClient,
+  goalId: string,
+  workItemId: string,
+): Promise<void> {
+  const { error } = await client
+    .from("goal_links")
+    .delete()
+    .eq("goal_id", goalId)
+    .eq("work_item_id", workItemId);
+  if (error) throw new Error(`Failed to remove goal link: ${error.message}`);
+}
+
+// Recompute current_count for a goal that has links: count linked items
+// whose stage is in GOAL_DONE_STAGES, set current_count, auto-flip status
+// between active and completed. No-op when the goal has no links (manual
+// progress mode).
+export async function recalculateGoalProgress(
+  client: SupabaseClient,
+  goalId: string,
+): Promise<Goal | null> {
+  const links = await listGoalLinks(client, goalId);
+  if (links.length === 0) return null;
+
+  const doneCount = links.filter((l) => l.isDone).length;
+
+  const { data: existing, error: readErr } = await client
+    .from("goals")
+    .select("*")
+    .eq("id", goalId)
+    .single();
+  if (readErr || !existing) return null;
+
+  const target = (existing as Row).target_count;
+  const prevStatus = (existing as Row).status as GoalStatus;
+  let nextStatus: GoalStatus = prevStatus;
+  if (
+    doneCount >= target &&
+    (prevStatus === "active" || prevStatus === "missed")
+  ) {
+    nextStatus = "completed";
+  } else if (doneCount < target && prevStatus === "completed") {
+    nextStatus = "active";
+  }
+
+  return updateGoal(client, goalId, {
+    currentCount: doneCount,
+    status: nextStatus,
+  });
+}
+
+// Recompute progress for every goal linked to a given work item. Best-effort:
+// individual failures are logged but don't abort the others. Used as a
+// side-effect after a kanban card stage change.
+export async function recalcGoalsForWorkItem(
+  client: SupabaseClient,
+  workItemId: string,
+): Promise<void> {
+  const { data, error } = await client
+    .from("goal_links")
+    .select("goal_id")
+    .eq("work_item_id", workItemId);
+  if (error) {
+    console.error("[goals] recalcGoalsForWorkItem list failed:", error.message);
+    return;
+  }
+  for (const row of (data ?? []) as { goal_id: string }[]) {
+    try {
+      await recalculateGoalProgress(client, row.goal_id);
+    } catch (err) {
+      console.error(
+        `[goals] recalc failed for goal ${row.goal_id}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+}

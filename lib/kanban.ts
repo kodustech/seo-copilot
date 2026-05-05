@@ -502,6 +502,21 @@ export async function updateWorkItem(
     throw new Error(`Error updating kanban item: ${error.message}`);
   }
 
+  // Side-effect: when the stage (or column) changes, any goal linked to
+  // this card needs its current_count recomputed. Best-effort — recalc
+  // failures are logged inside the helper and never block the update.
+  if (
+    typeof updates.stage !== "undefined" ||
+    typeof updates.columnId !== "undefined"
+  ) {
+    try {
+      const { recalcGoalsForWorkItem } = await import("@/lib/goals");
+      await recalcGoalsForWorkItem(client, itemId);
+    } catch (err) {
+      console.error("[kanban] recalcGoalsForWorkItem failed:", err);
+    }
+  }
+
   return rowToWorkItem(data as GrowthWorkItemRow);
 }
 

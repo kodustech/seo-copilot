@@ -932,6 +932,180 @@ function PropertyRow({
   );
 }
 
+// Inline display + picker for goals linked to a Kanban card. Renders inside
+// the CardDetailModal property grid.
+type LinkedGoalRef = { id: string; title: string; status: string };
+
+function GoalLinksControl({
+  itemId,
+  token,
+}: {
+  itemId: string;
+  token: string | null;
+}) {
+  const [linked, setLinked] = useState<LinkedGoalRef[]>([]);
+  const [allGoals, setAllGoals] = useState<
+    { id: string; title: string; status: string; periodEnd: string }[]
+  >([]);
+  const [picking, setPicking] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!token) return;
+    fetch(`/api/kanban/items/${itemId}/goals`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        setLinked((d?.goals ?? []) as LinkedGoalRef[]);
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
+  }, [itemId, token]);
+
+  // Lazy load the goals catalog when the user opens the picker — keeps the
+  // initial modal render cheap.
+  const loadAllGoals = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await fetch("/api/goals?periodScope=all", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setAllGoals(
+        (data.goals ?? []).map(
+          (g: { id: string; title: string; status: string; periodEnd: string }) => ({
+            id: g.id,
+            title: g.title,
+            status: g.status,
+            periodEnd: g.periodEnd,
+          }),
+        ),
+      );
+    } catch {
+      // ignore
+    }
+  }, [token]);
+
+  const linkGoal = async (goalId: string) => {
+    if (!token) return;
+    try {
+      const res = await fetch(`/api/goals/${goalId}/links`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ workItemId: itemId }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      // Refetch the linked list — easier than maintaining derived state.
+      const refetch = await fetch(`/api/kanban/items/${itemId}/goals`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (refetch.ok) {
+        const d = await refetch.json();
+        setLinked(d.goals ?? []);
+      }
+    } catch (err) {
+      console.error("[kanban] link goal failed:", err);
+    }
+  };
+
+  const unlinkGoal = async (goalId: string) => {
+    if (!token) return;
+    try {
+      const res = await fetch(`/api/goals/${goalId}/links/${itemId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setLinked((prev) => prev.filter((g) => g.id !== goalId));
+    } catch (err) {
+      console.error("[kanban] unlink goal failed:", err);
+    }
+  };
+
+  const linkedIds = new Set(linked.map((g) => g.id));
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {loaded && linked.length === 0 && (
+        <span className="text-[11px] text-neutral-600">No goals linked</span>
+      )}
+      {linked.map((g) => (
+        <span
+          key={g.id}
+          className={cn(
+            "group inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px]",
+            g.status === "completed"
+              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+              : g.status === "missed"
+                ? "border-red-500/30 bg-red-500/10 text-red-300"
+                : "border-violet-500/30 bg-violet-500/10 text-violet-300",
+          )}
+          title={`Goal · ${g.status}`}
+        >
+          <span className="max-w-[180px] truncate">{g.title}</span>
+          <button
+            onClick={() => unlinkGoal(g.id)}
+            className="text-current opacity-60 transition hover:opacity-100"
+            aria-label={`Unlink ${g.title}`}
+          >
+            <X className="size-2.5" />
+          </button>
+        </span>
+      ))}
+      <button
+        onClick={() => {
+          setPicking(true);
+          loadAllGoals();
+        }}
+        className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-neutral-400 transition hover:bg-white/10 hover:text-white"
+      >
+        <Plus className="size-2.5" />
+        Link goal
+      </button>
+
+      {picking && (
+        <Dialog open onOpenChange={(o) => !o && setPicking(false)}>
+          <DialogContent className="max-h-[60vh] max-w-md overflow-hidden border-white/10 bg-neutral-950 p-0 text-neutral-100">
+            <div className="border-b border-white/10 px-4 py-3 text-sm font-semibold">
+              Link this card to a goal
+            </div>
+            <div className="max-h-[40vh] overflow-y-auto py-1">
+              {allGoals.length === 0 ? (
+                <p className="px-4 py-6 text-center text-xs text-neutral-500">
+                  No goals yet. Create one in /goals first.
+                </p>
+              ) : (
+                allGoals
+                  .filter((g) => !linkedIds.has(g.id))
+                  .map((g) => (
+                    <button
+                      key={g.id}
+                      onClick={async () => {
+                        await linkGoal(g.id);
+                        setPicking(false);
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-neutral-200 transition hover:bg-white/5"
+                    >
+                      <span className="min-w-0 flex-1 truncate">{g.title}</span>
+                      <span className="shrink-0 text-[10px] text-neutral-500">
+                        {g.status} · ends {g.periodEnd}
+                      </span>
+                    </button>
+                  ))
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Card Detail Modal (Notion-style)
 // ---------------------------------------------------------------------------
@@ -940,6 +1114,7 @@ function CardDetailModal({
   item,
   columns,
   teamMembers,
+  token,
   open,
   onClose,
   onUpdate,
@@ -949,6 +1124,7 @@ function CardDetailModal({
   item: GrowthWorkItem;
   columns: KanbanColumn[];
   teamMembers: TeamMember[];
+  token: string | null;
   open: boolean;
   onClose: () => void;
   onUpdate: (updates: Record<string, unknown>) => void;
@@ -1166,6 +1342,17 @@ function CardDetailModal({
               </SelectContent>
             </Select>
           </PropertyRow>
+
+          {/* Goals — span both columns. Linked goals auto-progress when this
+              card moves into a done stage. */}
+          <div className="col-span-2 flex items-start gap-3 py-1">
+            <span className="w-20 shrink-0 pt-0.5 text-[11px] text-neutral-500">
+              Goals
+            </span>
+            <div className="min-w-0 flex-1">
+              <GoalLinksControl itemId={item.id} token={token} />
+            </div>
+          </div>
 
           {/* Custom fields — span both columns since values can be long */}
           {customFields.length > 0 && (
@@ -2158,6 +2345,7 @@ export function KanbanPage() {
             item={selectedCard}
             columns={columns}
             teamMembers={teamMembers}
+            token={token}
             open
             onClose={() => setSelectedCard(null)}
             onUpdate={(updates) => handleUpdateCard(selectedCard.id, updates)}

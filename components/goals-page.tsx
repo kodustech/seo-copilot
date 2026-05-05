@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Target,
   Plus,
@@ -9,6 +9,10 @@ import {
   RefreshCw,
   Trash2,
   Check,
+  ChevronDown,
+  Search,
+  Link2,
+  X,
 } from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
@@ -21,6 +25,7 @@ import {
   type Goal,
   type GoalPriority,
   type GoalStatus,
+  type LinkedWorkItem,
 } from "@/lib/goals";
 
 import {
@@ -353,10 +358,16 @@ export function GoalsPage() {
               key={g.id}
               goal={g}
               teamMembers={teamMembers}
+              token={token}
               onIncrement={(delta) => incrementGoal(g.id, delta)}
               onUpdate={(updates) => updateInline(g.id, updates)}
               onEdit={() => setEditing(g)}
               onDelete={() => removeGoal(g.id)}
+              onLinksChanged={(updated) =>
+                setGoals((prev) =>
+                  prev.map((it) => (it.id === updated.id ? updated : it)),
+                )
+              }
             />
           ))}
         </div>
@@ -396,20 +407,32 @@ export function GoalsPage() {
 // Goal card
 // ---------------------------------------------------------------------------
 
+type WorkItemSummary = {
+  id: string;
+  title: string;
+  itemType: string;
+  stage: string | null;
+  responsibleEmail: string | null;
+};
+
 function GoalCard({
   goal,
   teamMembers,
+  token,
   onIncrement,
   onUpdate,
   onEdit,
   onDelete,
+  onLinksChanged,
 }: {
   goal: Goal;
   teamMembers: TeamMember[];
+  token: string | null;
   onIncrement: (delta: number) => void;
   onUpdate: (updates: Partial<Goal>) => void;
   onEdit: () => void;
   onDelete: () => void;
+  onLinksChanged: (goal: Goal) => void;
 }) {
   const pct = Math.min(
     100,
@@ -428,6 +451,73 @@ function GoalCard({
           : pct >= 40
             ? "bg-violet-400"
             : "bg-violet-500/60";
+
+  const [links, setLinks] = useState<LinkedWorkItem[]>([]);
+  const [linksLoaded, setLinksLoaded] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [picking, setPicking] = useState(false);
+
+  const fetchLinks = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(`/api/goals/${goal.id}/links`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setLinks((data.links ?? []) as LinkedWorkItem[]);
+      setLinksLoaded(true);
+    } catch {
+      // ignore
+    }
+  }, [goal.id, token]);
+
+  useEffect(() => {
+    fetchLinks();
+  }, [fetchLinks]);
+
+  const isAuto = links.length > 0;
+  const linkedDone = links.filter((l) => l.isDone).length;
+
+  const linkTask = async (workItemId: string) => {
+    if (!token) return;
+    try {
+      const res = await fetch(`/api/goals/${goal.id}/links`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ workItemId }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setLinks(data.links ?? []);
+      if (data.goal) onLinksChanged(data.goal);
+      setExpanded(true);
+    } catch (err) {
+      console.error("[goals] link failed:", err);
+    }
+  };
+
+  const unlinkTask = async (workItemId: string) => {
+    if (!token) return;
+    try {
+      const res = await fetch(
+        `/api/goals/${goal.id}/links/${workItemId}`,
+        {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setLinks(data.links ?? []);
+      if (data.goal) onLinksChanged(data.goal);
+    } catch (err) {
+      console.error("[goals] unlink failed:", err);
+    }
+  };
 
   return (
     <div className="rounded-xl border border-white/[0.06] bg-neutral-900/60 p-4 transition hover:border-white/10">
@@ -450,6 +540,14 @@ function GoalCard({
             >
               {status.label}
             </span>
+            {isAuto && (
+              <span
+                className="rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-300"
+                title="Progress is auto-computed from linked tasks"
+              >
+                Auto · {linkedDone}/{links.length} done
+              </span>
+            )}
             <h3
               className="cursor-pointer text-sm font-semibold leading-snug text-white hover:underline"
               onClick={onEdit}
@@ -515,12 +613,22 @@ function GoalCard({
           </div>
         </div>
 
-        {/* Progress + counter */}
-        <div className="flex items-center gap-2">
+        {/* Progress + counter — manual when no links, auto-display when linked */}
+        <div
+          className={cn(
+            "flex items-center gap-2",
+            isAuto && "opacity-80",
+          )}
+          title={
+            isAuto
+              ? "Auto-computed from linked tasks. Unlink all to switch back to manual."
+              : ""
+          }
+        >
           <button
-            onClick={() => onIncrement(-1)}
-            disabled={goal.currentCount <= 0}
-            className="rounded-md border border-white/10 bg-white/5 p-1.5 text-neutral-400 transition hover:bg-white/10 hover:text-white disabled:opacity-40"
+            onClick={() => !isAuto && onIncrement(-1)}
+            disabled={isAuto || goal.currentCount <= 0}
+            className="rounded-md border border-white/10 bg-white/5 p-1.5 text-neutral-400 transition hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:hover:bg-white/5"
             aria-label="Decrement"
           >
             <Minus className="size-3.5" />
@@ -533,8 +641,9 @@ function GoalCard({
             <div className="text-[10px] text-neutral-600">{pct}%</div>
           </div>
           <button
-            onClick={() => onIncrement(1)}
-            className="rounded-md border border-violet-500/30 bg-violet-500/10 p-1.5 text-violet-300 transition hover:bg-violet-500/20"
+            onClick={() => !isAuto && onIncrement(1)}
+            disabled={isAuto}
+            className="rounded-md border border-violet-500/30 bg-violet-500/10 p-1.5 text-violet-300 transition hover:bg-violet-500/20 disabled:opacity-40 disabled:hover:bg-violet-500/10"
             aria-label="Increment"
           >
             <Plus className="size-3.5" />
@@ -564,14 +673,202 @@ function GoalCard({
       {/* Progress bar */}
       <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/[0.04]">
         <div
-          className={cn(
-            "h-full transition-all duration-300",
-            progressColor,
-          )}
+          className={cn("h-full transition-all duration-300", progressColor)}
           style={{ width: `${pct}%` }}
         />
       </div>
+
+      {/* Linked tasks */}
+      <div className="mt-3 border-t border-white/[0.04] pt-2">
+        <button
+          onClick={() => setExpanded((e) => !e)}
+          className="flex w-full items-center gap-1.5 text-[11px] text-neutral-500 hover:text-neutral-300"
+        >
+          <ChevronDown
+            className={cn(
+              "size-3 transition-transform",
+              expanded ? "rotate-0" : "-rotate-90",
+            )}
+          />
+          <Link2 className="size-3" />
+          <span>
+            {linksLoaded ? `${links.length} linked task${links.length === 1 ? "" : "s"}` : "Linked tasks"}
+          </span>
+          <span
+            className="ml-auto inline-flex items-center gap-1 rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-neutral-400 hover:bg-white/10 hover:text-white"
+            onClick={(e) => {
+              e.stopPropagation();
+              setPicking(true);
+              setExpanded(true);
+            }}
+          >
+            <Plus className="size-2.5" />
+            Link
+          </span>
+        </button>
+        {expanded && links.length > 0 && (
+          <div className="mt-2 space-y-1">
+            {links.map((l) => (
+              <div
+                key={l.id}
+                className="group flex items-center gap-2 rounded px-1.5 py-1 hover:bg-white/[0.03]"
+              >
+                <span
+                  className={cn(
+                    "flex size-3.5 shrink-0 items-center justify-center rounded-full border text-[8px]",
+                    l.isDone
+                      ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-300"
+                      : "border-white/10 bg-white/5 text-neutral-500",
+                  )}
+                  title={l.isDone ? "Done" : `Stage: ${l.stage ?? "—"}`}
+                >
+                  {l.isDone ? "✓" : ""}
+                </span>
+                <span
+                  className={cn(
+                    "min-w-0 flex-1 truncate text-[12px]",
+                    l.isDone ? "text-neutral-300" : "text-neutral-200",
+                  )}
+                  title={l.title}
+                >
+                  {l.title}
+                </span>
+                <span className="shrink-0 text-[10px] text-neutral-600">
+                  {l.itemType} · {l.stage ?? "—"}
+                </span>
+                <button
+                  onClick={() => unlinkTask(l.id)}
+                  className="opacity-0 transition group-hover:opacity-100 hover:text-red-400"
+                  aria-label="Unlink task"
+                >
+                  <X className="size-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {picking && (
+        <TaskPickerDialog
+          token={token}
+          existingIds={new Set(links.map((l) => l.id))}
+          onClose={() => setPicking(false)}
+          onSelect={async (id) => {
+            await linkTask(id);
+            setPicking(false);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+// Picker dialog — search the kanban board and link a task to the current
+// goal. Existing links are filtered out so the same task can't be linked
+// twice.
+function TaskPickerDialog({
+  token,
+  existingIds,
+  onClose,
+  onSelect,
+}: {
+  token: string | null;
+  existingIds: Set<string>;
+  onClose: () => void;
+  onSelect: (workItemId: string) => Promise<void>;
+}) {
+  const [items, setItems] = useState<WorkItemSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    if (!token) return;
+    setLoading(true);
+    fetch("/api/kanban/items", {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        const list = (data?.items ?? []) as Array<{
+          id: string;
+          title: string;
+          itemType: string;
+          stage?: string | null;
+          responsibleEmail?: string | null;
+        }>;
+        setItems(
+          list.map((i) => ({
+            id: i.id,
+            title: i.title,
+            itemType: i.itemType,
+            stage: i.stage ?? null,
+            responsibleEmail: i.responsibleEmail ?? null,
+          })),
+        );
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [token]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return items.filter((i) => {
+      if (existingIds.has(i.id)) return false;
+      if (!q) return true;
+      return i.title.toLowerCase().includes(q);
+    });
+  }, [items, query, existingIds]);
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-h-[70vh] max-w-lg overflow-hidden border-white/10 bg-neutral-950 p-0 text-neutral-100">
+        <DialogHeader className="border-b border-white/10 px-4 py-3">
+          <DialogTitle className="text-sm">Link a task to this goal</DialogTitle>
+        </DialogHeader>
+        <div className="border-b border-white/10 px-3 py-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-neutral-500" />
+            <Input
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search by title…"
+              className="h-9 border-white/10 bg-neutral-900 pl-7 text-sm"
+            />
+          </div>
+        </div>
+        <div className="max-h-[50vh] overflow-y-auto py-1">
+          {loading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="size-4 animate-spin text-neutral-500" />
+            </div>
+          ) : filtered.length === 0 ? (
+            <p className="px-4 py-6 text-center text-xs text-neutral-500">
+              {items.length === 0
+                ? "No tasks on the board yet."
+                : query
+                  ? "No tasks match that search."
+                  : "All tasks are already linked."}
+            </p>
+          ) : (
+            filtered.slice(0, 80).map((i) => (
+              <button
+                key={i.id}
+                onClick={() => onSelect(i.id)}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-neutral-200 transition hover:bg-white/5"
+              >
+                <span className="min-w-0 flex-1 truncate">{i.title}</span>
+                <span className="shrink-0 text-[10px] text-neutral-500">
+                  {i.itemType}
+                  {i.stage ? ` · ${i.stage}` : ""}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
