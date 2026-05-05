@@ -887,7 +887,7 @@ For "web" + "github" results, suggestedApproach should describe the *outreach* (
   - For Reddit/HN comments: suggest a reply that adds value first, mentions Kodus naturally
   - For Twitter/LinkedIn: suggest a reply or DM
   - For "competitor_listicle" / "backlink_opportunity": describe the outreach — what email/DM to send and the proof points to mention (open-source, Kody Rules, MCP, IDE-native multi-agent)
-- worthEngaging: true if relevance is "high" or "medium" AND there's a natural way to engage or pitch
+- worthEngaging: true if relevance is "high" or "medium" AND there's a way to act on it. ALWAYS set worthEngaging=true when intent is "competitor_listicle" or "backlink_opportunity" — for backlink intents, the action is outreach (email/PR), not a comment thread, so the lack of an engagement hook is irrelevant.
 - keywordsMatched: relevant keywords
 
 When in doubt between medium and low, prefer medium. When in doubt between high and medium, prefer medium.
@@ -901,6 +901,15 @@ export async function qualifyMentions(
 
   const qualified: QualifiedMention[] = [];
   const batchSize = 10;
+
+  // Track rejection reasons so silent zeros become diagnosable next time.
+  const rejections = {
+    parseFail: 0,
+    lowRelevance: 0,
+    notWorthEngaging: 0,
+    invalidIndex: 0,
+    byPlatform: {} as Record<string, number>,
+  };
 
   for (let i = 0; i < results.length; i += batchSize) {
     const batch = results.slice(i, i + batchSize);
@@ -922,18 +931,37 @@ export async function qualifyMentions(
       });
 
       const parsed = parseQualificationResponse(text);
+      if (parsed.length === 0) {
+        rejections.parseFail += batch.length;
+        continue;
+      }
 
       for (const item of parsed) {
-        if (
-          !item.worthEngaging ||
-          item.relevance === "low" ||
-          item.index < 0 ||
-          item.index >= batch.length
-        ) {
+        if (item.index < 0 || item.index >= batch.length) {
+          rejections.invalidIndex++;
+          continue;
+        }
+        const original = batch[item.index];
+        const isBacklinkIntent =
+          item.intent === "competitor_listicle" ||
+          item.intent === "backlink_opportunity";
+
+        if (item.relevance === "low") {
+          rejections.lowRelevance++;
+          rejections.byPlatform[original.platform] =
+            (rejections.byPlatform[original.platform] || 0) + 1;
+          continue;
+        }
+        // Backlink intents never need an engagement hook — outreach is the
+        // action. Bypass worthEngaging so listicles + awesome-list misses
+        // aren't dropped just because the LLM doesn't see a comment thread.
+        if (!item.worthEngaging && !isBacklinkIntent) {
+          rejections.notWorthEngaging++;
+          rejections.byPlatform[original.platform] =
+            (rejections.byPlatform[original.platform] || 0) + 1;
           continue;
         }
 
-        const original = batch[item.index];
         qualified.push({
           ...original,
           relevance: item.relevance,
@@ -949,6 +977,11 @@ export async function qualifyMentions(
       );
     }
   }
+
+  console.log(
+    `[social-monitoring] qualified ${qualified.length}/${results.length} — rejections:`,
+    rejections,
+  );
 
   return qualified;
 }
@@ -997,6 +1030,16 @@ export async function saveMentions(
 ): Promise<number> {
   if (mentions.length === 0) return 0;
 
+  // Log what we're about to save by platform — if the DB CHECK constraint
+  // rejects (e.g., migration not yet run), this trace makes it obvious which
+  // platform was the offender rather than blowing up the whole batch
+  // silently.
+  const inputByPlatform: Record<string, number> = {};
+  for (const m of mentions) {
+    inputByPlatform[m.platform] = (inputByPlatform[m.platform] || 0) + 1;
+  }
+  console.log("[social-monitoring] saveMentions input:", inputByPlatform);
+
   const rows = mentions.map((m) => ({
     platform: m.platform,
     url: m.url,
@@ -1018,6 +1061,14 @@ export async function saveMentions(
     .select("id");
 
   if (error) {
+    // Surface the platform breakdown so it's easy to see which CHECK
+    // constraint failed (e.g. "platform" or "intent").
+    console.error(
+      "[social-monitoring] saveMentions FAILED — input was:",
+      inputByPlatform,
+      "error:",
+      error.message,
+    );
     throw new Error(`Failed to save mentions: ${error.message}`);
   }
 
