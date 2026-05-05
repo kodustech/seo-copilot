@@ -18,6 +18,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Radar,
+  Send,
   Settings,
   Sparkles,
   Wrench,
@@ -80,6 +81,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         items: [
           { href: "/social-monitoring", label: "Social Monitor", icon: Radar },
           { href: "/reply-radar", label: "Reply Radar", icon: MessageCircle },
+          { href: "/outreach", label: "Outreach CRM", icon: Send },
           { href: "/calendario", label: "Calendar", icon: Calendar },
           { href: "/ideas", label: "Ideas", icon: Lightbulb },
         ],
