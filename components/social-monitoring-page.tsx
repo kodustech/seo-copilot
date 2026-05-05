@@ -134,7 +134,16 @@ export function SocialMonitoringPage() {
         headers: { Authorization: `Bearer ${token}` },
       });
 
-      if (!res.ok) throw new Error("Failed to fetch mentions");
+      if (!res.ok) {
+        // Read the API's error body so the UI surfaces the real cause
+        // (e.g. RLS denial, invalid filter, Supabase outage) instead of a
+        // generic "Failed to fetch".
+        const body = await res.json().catch(() => null);
+        throw new Error(
+          body?.error ||
+            `Failed to fetch mentions (${res.status} ${res.statusText})`,
+        );
+      }
 
       const data = await res.json();
       setMentions(data.mentions ?? []);

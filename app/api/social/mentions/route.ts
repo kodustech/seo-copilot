@@ -28,8 +28,19 @@ const validRelevance = new Set(["high", "medium", "low"]);
 const validStatus = new Set(["new", "contacted", "replied", "dismissed"]);
 
 export async function GET(req: Request) {
+  // Auth — distinct from runtime errors so the UI can show 401 vs 500
+  // separately. Previously every failure surfaced as 401, masking real bugs.
+  let client;
   try {
-    const client = getSupabaseUserClient(req.headers.get("authorization"));
+    client = getSupabaseUserClient(req.headers.get("authorization"));
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Unauthorized" },
+      { status: 401 },
+    );
+  }
+
+  try {
     const url = new URL(req.url);
 
     const platform = url.searchParams.get("platform");
@@ -59,9 +70,10 @@ export async function GET(req: Request) {
 
     return NextResponse.json({ mentions, stats });
   } catch (err) {
+    console.error("[api/social/mentions] GET failed:", err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Unauthorized" },
-      { status: 401 },
+      { error: err instanceof Error ? err.message : "Failed to fetch" },
+      { status: 500 },
     );
   }
 }
