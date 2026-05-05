@@ -208,7 +208,16 @@ export function SocialMonitoringPage() {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 290_000); // 4m50s
 
-      const res = await fetch("/api/social/mentions/sync", {
+      // When a single platform tab is active, sync only that platform — saves
+      // Exa credits + LLM time vs re-running the full collectAll. "All" tab
+      // syncs everything (legacy behavior).
+      const params = new URLSearchParams();
+      if (platformFilter !== "all") params.set("platforms", platformFilter);
+      const url = params.toString()
+        ? `/api/social/mentions/sync?${params}`
+        : "/api/social/mentions/sync";
+
+      const res = await fetch(url, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
         signal: controller.signal,
@@ -267,13 +276,22 @@ export function SocialMonitoringPage() {
             onClick={syncNow}
             disabled={syncing || loading}
             className="flex items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-2 text-sm font-medium text-violet-300 transition hover:bg-violet-500/20 disabled:opacity-50"
+            title={
+              platformFilter === "all"
+                ? "Sync every source — uses Exa credits for Reddit/Twitter/LinkedIn/Web"
+                : `Sync only ${PLATFORM_BADGES[platformFilter as SocialPlatform].label} to save credits`
+            }
           >
             {syncing ? (
               <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
               <Zap className="h-4 w-4" />
             )}
-            {syncing ? "Syncing..." : "Sync Now"}
+            {syncing
+              ? "Syncing..."
+              : platformFilter === "all"
+                ? "Sync all"
+                : `Sync ${PLATFORM_BADGES[platformFilter as SocialPlatform].label}`}
           </button>
           <button
             onClick={fetchMentions}

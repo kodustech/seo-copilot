@@ -810,24 +810,49 @@ export async function collectGitHubAwesome(): Promise<RawSocialResult[]> {
 // Collection: All platforms
 // ---------------------------------------------------------------------------
 
-export async function collectAll(): Promise<RawSocialResult[]> {
-  const [reddit, twitter, linkedin, hn, web, gh] = await Promise.allSettled([
-    collectReddit(),
-    collectTwitter(),
-    collectLinkedIn(),
-    collectHackerNews(),
-    collectWeb(),
-    collectGitHubAwesome(),
-  ]);
+// Per-tab sync support: callers can restrict which collectors run so syncing
+// a single tab in the UI doesn't re-spend credits on the others. When
+// `platforms` is undefined or "all", every collector runs (legacy behavior).
+export async function collectAll(
+  options: { platforms?: SocialPlatform[] } = {},
+): Promise<RawSocialResult[]> {
+  const filter = options.platforms?.length
+    ? new Set(options.platforms)
+    : null;
+  const want = (p: SocialPlatform) => filter === null || filter.has(p);
 
-  const all = [
-    ...(reddit.status === "fulfilled" ? reddit.value : []),
-    ...(twitter.status === "fulfilled" ? twitter.value : []),
-    ...(linkedin.status === "fulfilled" ? linkedin.value : []),
-    ...(hn.status === "fulfilled" ? hn.value : []),
-    ...(web.status === "fulfilled" ? web.value : []),
-    ...(gh.status === "fulfilled" ? gh.value : []),
-  ];
+  const tasks: Promise<RawSocialResult[]>[] = [];
+  const labels: SocialPlatform[] = [];
+  if (want("reddit")) {
+    tasks.push(collectReddit());
+    labels.push("reddit");
+  }
+  if (want("twitter")) {
+    tasks.push(collectTwitter());
+    labels.push("twitter");
+  }
+  if (want("linkedin")) {
+    tasks.push(collectLinkedIn());
+    labels.push("linkedin");
+  }
+  if (want("hackernews")) {
+    tasks.push(collectHackerNews());
+    labels.push("hackernews");
+  }
+  if (want("web")) {
+    tasks.push(collectWeb());
+    labels.push("web");
+  }
+  if (want("github")) {
+    tasks.push(collectGitHubAwesome());
+    labels.push("github");
+  }
+
+  const settled = await Promise.allSettled(tasks);
+  const all: RawSocialResult[] = [];
+  for (const result of settled) {
+    if (result.status === "fulfilled") all.push(...result.value);
+  }
 
   // Dedup by URL
   const seen = new Set<string>();
@@ -1173,13 +1198,15 @@ export async function getMentionStats(
 
 export async function syncSocialMentions(
   client: SupabaseClient,
+  options: { platforms?: SocialPlatform[] } = {},
 ): Promise<{
   collected: number;
   qualified: number;
   saved: number;
   byPlatform: Record<string, number>;
+  platformsSynced: SocialPlatform[] | "all";
 }> {
-  const collected = await collectAll();
+  const collected = await collectAll(options);
 
   const byPlatform: Record<string, number> = {};
   for (const r of collected) {
@@ -1191,15 +1218,12 @@ export async function syncSocialMentions(
   );
   // If a platform we expected to populate returned zero, surface it loudly.
   // Most common cause: upstream API quota (Exa credits exhausted, GitHub rate
-  // limit, Algolia outage). Silent zeros are the worst kind of failure.
-  for (const expected of [
-    "reddit",
-    "twitter",
-    "linkedin",
-    "hackernews",
-    "web",
-    "github",
-  ]) {
+  // limit, Algolia outage). Silent zeros are the worst kind of failure. Skip
+  // this warn for platforms the caller chose not to sync.
+  const expectedPlatforms: SocialPlatform[] = options.platforms?.length
+    ? options.platforms
+    : ["reddit", "twitter", "linkedin", "hackernews", "web", "github"];
+  for (const expected of expectedPlatforms) {
     if (!byPlatform[expected]) {
       console.warn(
         `[social-monitoring] platform "${expected}" returned 0 raw results — check upstream quota / API errors`,
@@ -1215,5 +1239,6 @@ export async function syncSocialMentions(
     qualified: qualified.length,
     saved,
     byPlatform,
+    platformsSynced: options.platforms?.length ? options.platforms : "all",
   };
 }
