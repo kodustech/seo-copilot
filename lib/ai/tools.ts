@@ -19,6 +19,7 @@ import {
   searchWebContent,
   scrapePageContent,
 } from "@/lib/exa";
+import { findUnlinkedBrandMentions } from "@/lib/brand-mentions";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 import {
   DEFAULT_SCHEDULE_TIME,
@@ -1468,6 +1469,80 @@ export const scrapePage = tool({
 });
 
 // ---------------------------------------------------------------------------
+// Link Reclamation
+// ---------------------------------------------------------------------------
+
+export const findUnlinkedBrandMentionsTool = tool({
+  description:
+    "Discovers web pages that mention a brand but don't link to its canonical domain. Returns ranked candidates for link reclamation outreach. Use when the user asks to 'find unlinked mentions', 'find link reclamation candidates', or 'who mentioned us without linking'.",
+  inputSchema: z.object({
+    brand: z
+      .string()
+      .min(1)
+      .describe(
+        "Brand name to search for (e.g. 'Kodus'). Strict quote-match used.",
+      ),
+    canonicalDomain: z
+      .string()
+      .min(1)
+      .describe(
+        "Canonical domain to detect existing links to (e.g. 'kodus.io').",
+      ),
+    daysBack: z
+      .number()
+      .int()
+      .min(1)
+      .max(365)
+      .optional()
+      .default(30)
+      .describe("Search window in days. Default 30."),
+    numResults: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .default(30)
+      .describe("Max Exa results to fetch and evaluate. Default 30, max 100."),
+    minRelevance: z
+      .number()
+      .min(0)
+      .max(1)
+      .optional()
+      .default(0.6)
+      .describe(
+        "Minimum LLM relevance score (0-1) to include in results. Default 0.6.",
+      ),
+  }),
+  execute: async ({
+    brand,
+    canonicalDomain,
+    daysBack,
+    numResults,
+    minRelevance,
+  }) => {
+    try {
+      const result = await findUnlinkedBrandMentions({
+        brand,
+        canonicalDomain,
+        daysBack,
+        numResults,
+        minRelevance,
+      });
+      return { success: true as const, ...result };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Error finding unlinked brand mentions.",
+      };
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Scheduled Jobs Tools
 // ---------------------------------------------------------------------------
 
@@ -2891,6 +2966,7 @@ export function createAgentTools(userEmail?: string) {
     analyzeCompetitor,
     searchWeb,
     scrapePage,
+    findUnlinkedBrandMentions: findUnlinkedBrandMentionsTool,
     scheduleJob,
     scheduleArticlePublication,
     listScheduledJobs,
