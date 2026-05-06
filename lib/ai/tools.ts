@@ -49,6 +49,21 @@ import {
   updateWorkItem,
   deleteWorkItem,
 } from "@/lib/kanban";
+import {
+  listGoals,
+  createGoal,
+  updateGoal,
+  deleteGoal,
+  incrementGoalProgress,
+  listGoalLinks,
+  addGoalLink,
+  removeGoalLink,
+  recalculateGoalProgress,
+  currentWeekRange,
+  currentMonthRange,
+  type Goal,
+} from "@/lib/goals";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { getModel } from "@/lib/ai/provider";
 import { CONTENT_PLAN_SYNTHESIS_PROMPT } from "@/lib/ai/system-prompt";
 import { fetchKeywordVolumes, fetchSerpResults } from "@/lib/dataforseo";
@@ -2276,6 +2291,583 @@ const listKanbanCards = tool({
   },
 });
 
+// ---------------------------------------------------------------------------
+// Goals tools (agent-driven goal management + Kanban links)
+// ---------------------------------------------------------------------------
+
+const GOAL_STATUS_ENUM = [
+  "active",
+  "completed",
+  "missed",
+  "paused",
+  "archived",
+] as const;
+const GOAL_PRIORITY_ENUM = ["high", "medium", "low"] as const;
+const GOAL_PERIOD_PRESETS = [
+  "this_week",
+  "next_week",
+  "this_month",
+  "next_month",
+  "custom",
+] as const;
+
+async function resolveGoalRef(
+  client: SupabaseClient,
+  args: { goalId?: string; goalTitle?: string },
+): Promise<
+  | { ok: true; goal: Goal }
+  | { ok: false; message: string; matches?: { id: string; title: string }[] }
+> {
+  if (args.goalId) {
+    const all = await listGoals(client, { periodScope: "all" });
+    const found = all.find((g) => g.id === args.goalId);
+    if (!found) {
+      return { ok: false, message: `Goal not found: ${args.goalId}` };
+    }
+    return { ok: true, goal: found };
+  }
+  if (args.goalTitle) {
+    const all = await listGoals(client, { periodScope: "all" });
+    const needle = args.goalTitle.toLowerCase();
+    const matches = all.filter((g) => g.title.toLowerCase().includes(needle));
+    if (matches.length === 0) {
+      return { ok: false, message: `No goal matched title "${args.goalTitle}".` };
+    }
+    if (matches.length > 1) {
+      return {
+        ok: false,
+        message: `Multiple goals matched "${args.goalTitle}". Pass goalId.`,
+        matches: matches.map((m) => ({ id: m.id, title: m.title })),
+      };
+    }
+    return { ok: true, goal: matches[0] };
+  }
+  return { ok: false, message: "Provide either goalId or goalTitle." };
+}
+
+async function resolveWorkItemRef(
+  client: SupabaseClient,
+  args: { taskId?: string; taskTitle?: string },
+): Promise<
+  | { ok: true; workItem: { id: string; title: string } }
+  | { ok: false; message: string; matches?: { id: string; title: string }[] }
+> {
+  const all = await listWorkItems(client);
+  if (args.taskId) {
+    const found = all.find((i) => i.id === args.taskId);
+    if (!found) return { ok: false, message: `Task not found: ${args.taskId}` };
+    return { ok: true, workItem: { id: found.id, title: found.title } };
+  }
+  if (args.taskTitle) {
+    const needle = args.taskTitle.toLowerCase();
+    const matches = all.filter((i) => i.title.toLowerCase().includes(needle));
+    if (matches.length === 0) {
+      return { ok: false, message: `No task matched title "${args.taskTitle}".` };
+    }
+    if (matches.length > 1) {
+      return {
+        ok: false,
+        message: `Multiple tasks matched "${args.taskTitle}". Pass taskId.`,
+        matches: matches.map((m) => ({ id: m.id, title: m.title })),
+      };
+    }
+    return { ok: true, workItem: matches[0] };
+  }
+  return { ok: false, message: "Provide either taskId or taskTitle." };
+}
+
+function resolvePeriod(
+  preset: (typeof GOAL_PERIOD_PRESETS)[number] | undefined,
+  periodStart: string | undefined,
+  periodEnd: string | undefined,
+): { start: string; end: string } | null {
+  if (periodStart && periodEnd) return { start: periodStart, end: periodEnd };
+  const effective = preset ?? "this_month";
+  if (effective === "custom") return null;
+  if (effective === "this_week") return currentWeekRange();
+  if (effective === "next_week") {
+    const next = new Date();
+    next.setDate(next.getDate() + 7);
+    return currentWeekRange(next);
+  }
+  if (effective === "this_month") return currentMonthRange();
+  if (effective === "next_month") {
+    const next = new Date();
+    next.setMonth(next.getMonth() + 1);
+    return currentMonthRange(next);
+  }
+  return null;
+}
+
+const listGoalsTool = tool({
+  description:
+    "List goals with optional filters (status, period scope, responsible). Default scope is 'current' (period contains today). Set includeLinks=true to include linked Kanban tasks per goal.",
+  inputSchema: z.object({
+    status: z.enum(GOAL_STATUS_ENUM).optional(),
+    periodScope: z
+      .enum(["current", "upcoming", "past", "all"])
+      .optional()
+      .describe("'current' = period contains today (default), 'all' = no period filter."),
+    responsibleEmail: z.string().optional(),
+    limit: z.number().optional().default(50),
+    includeLinks: z.boolean().optional().default(false),
+  }),
+  execute: async ({
+    status,
+    periodScope,
+    responsibleEmail,
+    limit,
+    includeLinks,
+  }: {
+    status?: (typeof GOAL_STATUS_ENUM)[number];
+    periodScope?: "current" | "upcoming" | "past" | "all";
+    responsibleEmail?: string;
+    limit?: number;
+    includeLinks?: boolean;
+  }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const goals = await listGoals(client, {
+        status,
+        periodScope: periodScope ?? "current",
+        responsibleEmail,
+        limit: limit ?? 50,
+      });
+      if (!includeLinks) {
+        return { success: true as const, count: goals.length, goals };
+      }
+      const withLinks = await Promise.all(
+        goals.map(async (g) => ({
+          ...g,
+          links: await listGoalLinks(client, g.id),
+        })),
+      );
+      return { success: true as const, count: withLinks.length, goals: withLinks };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Error listing goals.",
+      };
+    }
+  },
+});
+
+function createCreateGoalTool(userEmail?: string) {
+  return tool({
+    description:
+      "Create a new goal with target count and period. Optionally link existing Kanban cards (tasks) at creation — linked tasks in a 'done' stage auto-count toward the goal's target.",
+    inputSchema: z.object({
+      title: z.string().describe("Goal title"),
+      description: z.string().optional(),
+      unit: z
+        .string()
+        .optional()
+        .describe("Unit of measurement (e.g. 'articles', 'leads', 'posts')."),
+      targetCount: z.number().optional().default(1),
+      period: z
+        .enum(GOAL_PERIOD_PRESETS)
+        .optional()
+        .describe(
+          "Quick preset for period. Defaults to 'this_month' when periodStart/periodEnd are not provided. Use 'custom' with explicit dates.",
+        ),
+      periodStart: z.string().optional().describe("YYYY-MM-DD. Overrides preset."),
+      periodEnd: z.string().optional().describe("YYYY-MM-DD. Overrides preset."),
+      priority: z.enum(GOAL_PRIORITY_ENUM).optional().default("medium"),
+      status: z.enum(GOAL_STATUS_ENUM).optional().default("active"),
+      responsibleEmail: z
+        .string()
+        .optional()
+        .describe(
+          "Email of the person responsible for this goal (e.g. 'gabriel@kodus.io').",
+        ),
+      projectRef: z.string().optional(),
+      notes: z.string().optional(),
+      linkTaskIds: z
+        .array(z.string())
+        .optional()
+        .describe("UUIDs of Kanban cards to link at creation."),
+      linkTaskTitles: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Partial titles of Kanban cards to find and link. Each must resolve to exactly one card; ambiguous matches are skipped and reported.",
+        ),
+    }),
+    execute: async ({
+      title,
+      description,
+      unit,
+      targetCount,
+      period,
+      periodStart,
+      periodEnd,
+      priority,
+      status,
+      responsibleEmail,
+      projectRef,
+      notes,
+      linkTaskIds,
+      linkTaskTitles,
+    }: {
+      title: string;
+      description?: string;
+      unit?: string;
+      targetCount?: number;
+      period?: (typeof GOAL_PERIOD_PRESETS)[number];
+      periodStart?: string;
+      periodEnd?: string;
+      priority?: (typeof GOAL_PRIORITY_ENUM)[number];
+      status?: (typeof GOAL_STATUS_ENUM)[number];
+      responsibleEmail?: string;
+      projectRef?: string;
+      notes?: string;
+      linkTaskIds?: string[];
+      linkTaskTitles?: string[];
+    }) => {
+      try {
+        const client = getSupabaseServiceClient();
+        const range = resolvePeriod(period, periodStart, periodEnd);
+        if (!range) {
+          return {
+            success: false as const,
+            message:
+              "Provide either a period preset or both periodStart and periodEnd (YYYY-MM-DD).",
+          };
+        }
+
+        const goal = await createGoal(client, {
+          title,
+          description: description ?? null,
+          unit: unit ?? null,
+          targetCount,
+          periodStart: range.start,
+          periodEnd: range.end,
+          status,
+          priority,
+          responsibleEmail: responsibleEmail ?? null,
+          projectRef: projectRef ?? null,
+          notes: notes ?? null,
+          createdByEmail: userEmail ?? "agent@kodus.io",
+        });
+
+        const linked: { id: string; title: string }[] = [];
+        const failedLinks: { ref: string; reason: string }[] = [];
+
+        for (const id of linkTaskIds ?? []) {
+          const res = await resolveWorkItemRef(client, { taskId: id });
+          if (!res.ok) {
+            failedLinks.push({ ref: id, reason: res.message });
+            continue;
+          }
+          await addGoalLink(client, goal.id, res.workItem.id, userEmail ?? null);
+          linked.push(res.workItem);
+        }
+        for (const t of linkTaskTitles ?? []) {
+          const res = await resolveWorkItemRef(client, { taskTitle: t });
+          if (!res.ok) {
+            failedLinks.push({ ref: t, reason: res.message });
+            continue;
+          }
+          await addGoalLink(client, goal.id, res.workItem.id, userEmail ?? null);
+          linked.push(res.workItem);
+        }
+
+        let finalGoal = goal;
+        if (linked.length > 0) {
+          const recalced = await recalculateGoalProgress(client, goal.id);
+          if (recalced) finalGoal = recalced;
+        }
+
+        return {
+          success: true as const,
+          goal: finalGoal,
+          linkedTasks: linked,
+          ...(failedLinks.length ? { failedLinks } : {}),
+        };
+      } catch (error) {
+        return {
+          success: false as const,
+          message: error instanceof Error ? error.message : "Error creating goal.",
+        };
+      }
+    },
+  });
+}
+
+const updateGoalTool = tool({
+  description:
+    "Update goal fields (title, description, target/current count, period, status, priority, responsible, notes). Identify by goalId (UUID, preferred) or partial title.",
+  inputSchema: z.object({
+    goalId: z.string().optional(),
+    goalTitle: z.string().optional(),
+    title: z.string().optional(),
+    description: z.string().nullable().optional(),
+    unit: z.string().nullable().optional(),
+    targetCount: z.number().optional(),
+    currentCount: z.number().optional(),
+    periodStart: z.string().optional().describe("YYYY-MM-DD"),
+    periodEnd: z.string().optional().describe("YYYY-MM-DD"),
+    status: z.enum(GOAL_STATUS_ENUM).optional(),
+    priority: z.enum(GOAL_PRIORITY_ENUM).optional(),
+    responsibleEmail: z.string().nullable().optional(),
+    projectRef: z.string().nullable().optional(),
+    notes: z.string().nullable().optional(),
+  }),
+  execute: async ({
+    goalId,
+    goalTitle,
+    ...updates
+  }: {
+    goalId?: string;
+    goalTitle?: string;
+    title?: string;
+    description?: string | null;
+    unit?: string | null;
+    targetCount?: number;
+    currentCount?: number;
+    periodStart?: string;
+    periodEnd?: string;
+    status?: (typeof GOAL_STATUS_ENUM)[number];
+    priority?: (typeof GOAL_PRIORITY_ENUM)[number];
+    responsibleEmail?: string | null;
+    projectRef?: string | null;
+    notes?: string | null;
+  }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const ref = await resolveGoalRef(client, { goalId, goalTitle });
+      if (!ref.ok) return { success: false as const, ...ref };
+
+      const cleaned: Parameters<typeof updateGoal>[2] = {};
+      for (const [k, v] of Object.entries(updates)) {
+        if (typeof v !== "undefined") {
+          (cleaned as Record<string, unknown>)[k] = v;
+        }
+      }
+      if (!Object.keys(cleaned).length) {
+        return {
+          success: false as const,
+          message: "No fields to update. Provide at least one.",
+        };
+      }
+
+      const goal = await updateGoal(client, ref.goal.id, cleaned);
+      return { success: true as const, goal };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Error updating goal.",
+      };
+    }
+  },
+});
+
+const deleteGoalTool = tool({
+  description:
+    "Delete a goal permanently (also removes its goal_links). Identify by goalId (UUID) or partial title — if multiple goals match the title, returns an error listing them. Destructive, no undo.",
+  inputSchema: z.object({
+    goalId: z.string().optional(),
+    goalTitle: z.string().optional(),
+  }),
+  execute: async ({
+    goalId,
+    goalTitle,
+  }: {
+    goalId?: string;
+    goalTitle?: string;
+  }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const ref = await resolveGoalRef(client, { goalId, goalTitle });
+      if (!ref.ok) return { success: false as const, ...ref };
+      await deleteGoal(client, ref.goal.id);
+      return {
+        success: true as const,
+        deleted: { id: ref.goal.id, title: ref.goal.title },
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Error deleting goal.",
+      };
+    }
+  },
+});
+
+const incrementGoalProgressTool = tool({
+  description:
+    "Manually adjust a goal's current_count by delta (e.g. +1 to mark one more done, -1 to undo). Auto-flips status to 'completed' when target is reached. Note: goals with linked tasks recompute from links; prefer linkGoalToTask for auto-progress.",
+  inputSchema: z.object({
+    goalId: z.string().optional(),
+    goalTitle: z.string().optional(),
+    delta: z.number().describe("Integer delta. Use 1 for +1, -1 to undo."),
+  }),
+  execute: async ({
+    goalId,
+    goalTitle,
+    delta,
+  }: {
+    goalId?: string;
+    goalTitle?: string;
+    delta: number;
+  }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const ref = await resolveGoalRef(client, { goalId, goalTitle });
+      if (!ref.ok) return { success: false as const, ...ref };
+      const goal = await incrementGoalProgress(client, ref.goal.id, delta);
+      return { success: true as const, goal };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "Error updating progress.",
+      };
+    }
+  },
+});
+
+function createLinkGoalToTaskTool(userEmail?: string) {
+  return tool({
+    description:
+      "Link a Kanban card (task) to a goal for auto-progress. Each linked task in a 'done' stage (published/done/completed/shipped/live) counts toward the goal's target. Identify goal and task each by id (UUID) or partial title.",
+    inputSchema: z.object({
+      goalId: z.string().optional(),
+      goalTitle: z.string().optional(),
+      taskId: z.string().optional(),
+      taskTitle: z.string().optional(),
+    }),
+    execute: async ({
+      goalId,
+      goalTitle,
+      taskId,
+      taskTitle,
+    }: {
+      goalId?: string;
+      goalTitle?: string;
+      taskId?: string;
+      taskTitle?: string;
+    }) => {
+      try {
+        const client = getSupabaseServiceClient();
+        const goalRef = await resolveGoalRef(client, { goalId, goalTitle });
+        if (!goalRef.ok) return { success: false as const, ...goalRef };
+        const taskRef = await resolveWorkItemRef(client, { taskId, taskTitle });
+        if (!taskRef.ok) return { success: false as const, ...taskRef };
+
+        await addGoalLink(
+          client,
+          goalRef.goal.id,
+          taskRef.workItem.id,
+          userEmail ?? null,
+        );
+        const recalced = await recalculateGoalProgress(client, goalRef.goal.id);
+
+        return {
+          success: true as const,
+          linked: {
+            goal: { id: goalRef.goal.id, title: goalRef.goal.title },
+            task: taskRef.workItem,
+          },
+          goal: recalced ?? goalRef.goal,
+        };
+      } catch (error) {
+        return {
+          success: false as const,
+          message: error instanceof Error ? error.message : "Error linking goal.",
+        };
+      }
+    },
+  });
+}
+
+const unlinkGoalFromTaskTool = tool({
+  description:
+    "Remove the link between a goal and a Kanban card. Recomputes the goal's progress after unlinking.",
+  inputSchema: z.object({
+    goalId: z.string().optional(),
+    goalTitle: z.string().optional(),
+    taskId: z.string().optional(),
+    taskTitle: z.string().optional(),
+  }),
+  execute: async ({
+    goalId,
+    goalTitle,
+    taskId,
+    taskTitle,
+  }: {
+    goalId?: string;
+    goalTitle?: string;
+    taskId?: string;
+    taskTitle?: string;
+  }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const goalRef = await resolveGoalRef(client, { goalId, goalTitle });
+      if (!goalRef.ok) return { success: false as const, ...goalRef };
+      const taskRef = await resolveWorkItemRef(client, { taskId, taskTitle });
+      if (!taskRef.ok) return { success: false as const, ...taskRef };
+
+      await removeGoalLink(client, goalRef.goal.id, taskRef.workItem.id);
+      const recalced = await recalculateGoalProgress(client, goalRef.goal.id);
+
+      return {
+        success: true as const,
+        unlinked: {
+          goal: { id: goalRef.goal.id, title: goalRef.goal.title },
+          task: taskRef.workItem,
+        },
+        goal: recalced ?? goalRef.goal,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "Error unlinking goal.",
+      };
+    }
+  },
+});
+
+const listGoalLinksTool = tool({
+  description:
+    "List Kanban cards linked to a specific goal, including each card's stage, priority, and whether it currently counts as 'done' for goal progress.",
+  inputSchema: z.object({
+    goalId: z.string().optional(),
+    goalTitle: z.string().optional(),
+  }),
+  execute: async ({
+    goalId,
+    goalTitle,
+  }: {
+    goalId?: string;
+    goalTitle?: string;
+  }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const ref = await resolveGoalRef(client, { goalId, goalTitle });
+      if (!ref.ok) return { success: false as const, ...ref };
+      const links = await listGoalLinks(client, ref.goal.id);
+      return {
+        success: true as const,
+        goal: {
+          id: ref.goal.id,
+          title: ref.goal.title,
+          currentCount: ref.goal.currentCount,
+          targetCount: ref.goal.targetCount,
+          status: ref.goal.status,
+        },
+        links,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Error listing links.",
+      };
+    }
+  },
+});
+
 export function createAgentTools(userEmail?: string) {
   return {
     generateIdeas,
@@ -2313,6 +2905,14 @@ export function createAgentTools(userEmail?: string) {
     updateKanbanCard: createUpdateKanbanCardTool(userEmail),
     deleteKanbanCard: createDeleteKanbanCardTool(userEmail),
     listKanbanCards,
+    listGoals: listGoalsTool,
+    createGoal: createCreateGoalTool(userEmail),
+    updateGoal: updateGoalTool,
+    deleteGoal: deleteGoalTool,
+    incrementGoalProgress: incrementGoalProgressTool,
+    linkGoalToTask: createLinkGoalToTaskTool(userEmail),
+    unlinkGoalFromTask: unlinkGoalFromTaskTool,
+    listGoalLinks: listGoalLinksTool,
   };
 }
 
