@@ -14,6 +14,7 @@ import { searchWebContent, scrapePageContent } from "@/lib/exa";
 
 export type BrandMentionCandidate = {
   url: string;
+  finalUrlAfterRedirect: string | null;
   title: string;
   domain: string;
   snippet: string | null;
@@ -41,6 +42,7 @@ export type FindUnlinkedBrandMentionsOutput = {
   totalSkippedAlreadyLinked: number;
   totalSkippedLowRelevance: number;
   totalSkippedNoise: number;
+  totalSkippedSelfRedirect: number;
   candidates: BrandMentionCandidate[];
 };
 
@@ -108,6 +110,52 @@ export function isNoiseDomain(url: string): boolean {
   return NOISE_DOMAINS.some(
     (noise) => domain === noise || domain.endsWith(`.${noise}`),
   );
+}
+
+// True if `host` equals `root` or is a subdomain of `root`. Both inputs are
+// normalized (lowercased, www-stripped) before comparison so callers can pass
+// hostnames or full URLs interchangeably.
+export function isSameOrSubdomain(host: string, root: string): boolean {
+  const h = normalizeDomain(host);
+  const r = normalizeDomain(root);
+  if (!h || !r) return false;
+  return h === r || h.endsWith(`.${r}`);
+}
+
+// Resolve the final URL after following redirects. Used to detect candidates
+// that redirect to the canonical domain (self-mentions disguised as third
+// parties, e.g. legacy company domain 301 → kodus.io).
+//
+// Tries HEAD first (cheap); falls back to GET for servers that reject HEAD.
+// Returns the original URL if both fail so the caller can keep going rather
+// than dropping the candidate over a transient network blip.
+export async function resolveFinalUrl(url: string): Promise<string> {
+  const tryFetch = async (method: "HEAD" | "GET"): Promise<string | null> => {
+    try {
+      const res = await fetch(url, {
+        method,
+        redirect: "follow",
+        signal: AbortSignal.timeout(method === "HEAD" ? 8000 : 12000),
+      });
+      // Drain body for GET so the connection can close cleanly.
+      if (method === "GET") {
+        try {
+          await res.body?.cancel();
+        } catch {
+          // ignore
+        }
+      }
+      return res.url || null;
+    } catch {
+      return null;
+    }
+  };
+
+  const viaHead = await tryFetch("HEAD");
+  if (viaHead) return viaHead;
+  const viaGet = await tryFetch("GET");
+  if (viaGet) return viaGet;
+  return url;
 }
 
 // Detect if HTML/text contains a link to the canonical domain.
@@ -229,6 +277,7 @@ export async function findUnlinkedBrandMentions(
   let totalSkippedNoise = 0;
   let totalSkippedAlreadyLinked = 0;
   let totalSkippedLowRelevance = 0;
+  let totalSkippedSelfRedirect = 0;
   const candidates: BrandMentionCandidate[] = [];
 
   // Defense in depth: re-filter noise (Exa exclude is best-effort).
@@ -245,6 +294,23 @@ export async function findUnlinkedBrandMentions(
   // round (scrape + LLM), worst case is ~2.5min total. Acceptable for a tool
   // that runs on-demand.
   for (const r of filtered) {
+    // Pre-flight: resolve redirects. If the URL ultimately points back to the
+    // canonical domain (legacy property, marketing alias, etc.), it's a self-
+    // mention and not a reclamation target. Catches the ezdevs.com.br → kodus.io
+    // class of false positives without spending Exa+LLM budget.
+    const finalUrl = await resolveFinalUrl(r.url);
+    let finalHost = "";
+    try {
+      finalHost = new URL(finalUrl).hostname;
+    } catch {
+      finalHost = "";
+    }
+    if (finalHost && isSameOrSubdomain(finalHost, canonicalDomain)) {
+      totalSkippedSelfRedirect++;
+      continue;
+    }
+    const finalUrlAfterRedirect = finalUrl !== r.url ? finalUrl : null;
+
     let scraped: Awaited<ReturnType<typeof scrapePageContent>> | null = null;
     try {
       scraped = await scrapePageContent({
@@ -302,6 +368,7 @@ export async function findUnlinkedBrandMentions(
 
     candidates.push({
       url: r.url,
+      finalUrlAfterRedirect,
       title: r.title,
       domain,
       snippet: r.summary ?? null,
@@ -324,6 +391,7 @@ export async function findUnlinkedBrandMentions(
     totalSkippedAlreadyLinked,
     totalSkippedLowRelevance,
     totalSkippedNoise,
+    totalSkippedSelfRedirect,
     candidates,
   };
 }
