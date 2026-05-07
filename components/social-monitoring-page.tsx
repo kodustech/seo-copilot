@@ -10,6 +10,7 @@ import {
   Loader2,
   RefreshCw,
   Zap,
+  Send,
 } from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
@@ -196,6 +197,77 @@ export function SocialMonitoringPage() {
     } catch {
       // Refetch on error
       fetchMentions();
+    }
+  };
+
+  const [sentMentions, setSentMentions] = useState<Set<string>>(new Set());
+  const [sendingMention, setSendingMention] = useState<string | null>(null);
+
+  const sendToCrm = async (mention: SocialMention) => {
+    if (!token || sendingMention) return;
+    setSendingMention(mention.id);
+    setError(null);
+
+    let domain: string;
+    try {
+      domain = new URL(mention.url).hostname.replace(/^www\./, "");
+    } catch {
+      setSendingMention(null);
+      setError("Invalid mention URL — cannot derive domain");
+      return;
+    }
+
+    // Map social-monitor intent → outreach target type
+    const targetType =
+      mention.intent === "competitor_listicle"
+        ? "listicle"
+        : mention.intent === "backlink_opportunity"
+          ? "link_reclamation"
+          : "article";
+
+    const noteParts = [
+      mention.suggested_approach
+        ? `Suggested approach: ${mention.suggested_approach}`
+        : null,
+      mention.title ? `Title: ${mention.title}` : null,
+      mention.keywords_matched.length > 0
+        ? `Keywords: ${mention.keywords_matched.join(", ")}`
+        : null,
+    ].filter(Boolean);
+
+    try {
+      const res = await fetch("/api/outreach/prospects", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          domain,
+          url: mention.url,
+          targetType,
+          contactName: mention.author,
+          contactUrl: mention.author_profile_url,
+          status: "researching",
+          priority: mention.relevance === "high" ? "high" : "medium",
+          notes: noteParts.length > 0 ? noteParts.join("\n\n") : null,
+          source: `social_monitor:${mention.platform}`,
+          sourceMentionId: mention.id,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || `Failed to send (${res.status})`);
+      }
+
+      setSentMentions((prev) => new Set(prev).add(mention.id));
+      // Hand-off → mark contacted so we don't push twice and the badge updates
+      await updateStatus(mention.id, "contacted");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to send to CRM");
+    } finally {
+      setSendingMention(null);
     }
   };
 
@@ -399,6 +471,9 @@ export function SocialMonitoringPage() {
               expanded={expanded.has(mention.id)}
               onToggleExpand={() => toggleExpand(mention.id)}
               onUpdateStatus={(status) => updateStatus(mention.id, status)}
+              onSendToCrm={() => sendToCrm(mention)}
+              sending={sendingMention === mention.id}
+              alreadySent={sentMentions.has(mention.id)}
             />
           ))}
         </div>
@@ -416,11 +491,17 @@ function MentionCard({
   expanded,
   onToggleExpand,
   onUpdateStatus,
+  onSendToCrm,
+  sending,
+  alreadySent,
 }: {
   mention: SocialMention;
   expanded: boolean;
   onToggleExpand: () => void;
   onUpdateStatus: (status: MentionStatus) => void;
+  onSendToCrm: () => void;
+  sending: boolean;
+  alreadySent: boolean;
 }) {
   const platformBadge = PLATFORM_BADGES[mention.platform];
   const relevanceBadge = RELEVANCE_BADGES[mention.relevance];
@@ -511,6 +592,31 @@ function MentionCard({
 
           {/* Actions */}
           <div className="flex flex-wrap gap-2 pt-1">
+            {mention.platform === "web" && (
+              <button
+                onClick={onSendToCrm}
+                disabled={sending || alreadySent}
+                className="flex items-center gap-1.5 rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-300 transition hover:bg-violet-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                title={
+                  alreadySent
+                    ? "Already added as a prospect"
+                    : "Create an outreach prospect from this mention"
+                }
+              >
+                {sending ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : alreadySent ? (
+                  <Check className="h-3 w-3" />
+                ) : (
+                  <Send className="h-3 w-3" />
+                )}
+                {sending
+                  ? "Sending…"
+                  : alreadySent
+                    ? "Sent to CRM"
+                    : "Send to CRM"}
+              </button>
+            )}
             {mention.status !== "contacted" && (
               <button
                 onClick={() => onUpdateStatus("contacted")}
