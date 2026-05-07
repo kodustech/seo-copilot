@@ -11,7 +11,23 @@ import {
   RefreshCw,
   Sparkles,
   CheckCircle2,
+  LayoutGrid,
+  Rows3,
+  GripVertical,
 } from "lucide-react";
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  closestCorners,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import { CSS } from "@dnd-kit/utilities";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
@@ -140,6 +156,17 @@ export function OutreachPage() {
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<OutreachProspect | null>(null);
+  const [view, setView] = useState<"table" | "kanban">(() => {
+    if (typeof window === "undefined") return "table";
+    const saved = window.localStorage.getItem("outreach.view");
+    return saved === "kanban" ? "kanban" : "table";
+  });
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("outreach.view", view);
+    }
+  }, [view]);
 
   // Auth token
   useEffect(() => {
@@ -261,6 +288,34 @@ export function OutreachPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-neutral-900 p-1">
+            <button
+              onClick={() => setView("table")}
+              className={cn(
+                "flex items-center gap-1.5 rounded px-2.5 py-1 text-xs transition",
+                view === "table"
+                  ? "bg-white/10 text-white"
+                  : "text-neutral-400 hover:text-neutral-200",
+              )}
+              title="Table view"
+            >
+              <Rows3 className="h-3.5 w-3.5" />
+              Table
+            </button>
+            <button
+              onClick={() => setView("kanban")}
+              className={cn(
+                "flex items-center gap-1.5 rounded px-2.5 py-1 text-xs transition",
+                view === "kanban"
+                  ? "bg-white/10 text-white"
+                  : "text-neutral-400 hover:text-neutral-200",
+              )}
+              title="Kanban view"
+            >
+              <LayoutGrid className="h-3.5 w-3.5" />
+              Kanban
+            </button>
+          </div>
           <button
             onClick={() => setCreating(true)}
             className="flex items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-2 text-sm font-medium text-violet-300 transition hover:bg-violet-500/20"
@@ -342,7 +397,16 @@ export function OutreachPage() {
 
       {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
 
-      {/* Table */}
+      {view === "kanban" ? (
+        <OutreachKanbanBoard
+          prospects={prospects}
+          loading={loading}
+          teamMembers={teamMembers}
+          onUpdate={updateInline}
+          onOpen={(p) => setEditing(p)}
+        />
+      ) : (
+      /* Table */
       <div className="rounded-xl border border-white/[0.06] bg-neutral-900/40">
         <Table>
           <TableHeader>
@@ -525,6 +589,7 @@ export function OutreachPage() {
           </TableBody>
         </Table>
       </div>
+      )}
 
       {/* Total */}
       {!loading && total > 0 && (
@@ -1321,6 +1386,339 @@ function Field({
         {label}
       </label>
       {children}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Kanban view
+// ---------------------------------------------------------------------------
+
+function initials(email: string | null | undefined): string {
+  if (!email) return "?";
+  const local = email.split("@")[0] ?? email;
+  const parts = local.split(/[._-]/).filter(Boolean);
+  if (parts.length === 0) return local.slice(0, 2).toUpperCase();
+  return (
+    (parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? parts[0]?.[1] ?? "")
+  ).toUpperCase();
+}
+
+function OutreachKanbanBoard({
+  prospects,
+  loading,
+  teamMembers,
+  onUpdate,
+  onOpen,
+}: {
+  prospects: OutreachProspect[];
+  loading: boolean;
+  teamMembers: TeamMember[];
+  onUpdate: (id: string, updates: Partial<OutreachProspect>) => void;
+  onOpen: (p: OutreachProspect) => void;
+}) {
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+  );
+  const [activeId, setActiveId] = useState<string | null>(null);
+
+  const grouped = useMemo(() => {
+    const map: Record<ProspectStatus, OutreachProspect[]> = {
+      prospect: [],
+      researching: [],
+      drafted: [],
+      contacted: [],
+      replied: [],
+      won: [],
+      lost: [],
+      snoozed: [],
+    };
+    for (const p of prospects) {
+      (map[p.status] ?? map.prospect).push(p);
+    }
+    return map;
+  }, [prospects]);
+
+  const activeProspect = useMemo(
+    () => (activeId ? prospects.find((p) => p.id === activeId) ?? null : null),
+    [activeId, prospects],
+  );
+
+  function handleDragStart(event: DragStartEvent) {
+    setActiveId(event.active.id as string);
+  }
+
+  function handleDragEnd(event: DragEndEvent) {
+    setActiveId(null);
+    const { active, over } = event;
+    if (!over) return;
+
+    const activeIdStr = active.id as string;
+    const overId = over.id as string;
+
+    const card = prospects.find((p) => p.id === activeIdStr);
+    if (!card) return;
+
+    // Only column ids are registered as droppables → over.id is always a status
+    if (!(PROSPECT_STATUSES as string[]).includes(overId)) return;
+    const destStatus = overId as ProspectStatus;
+    if (destStatus === card.status) return;
+
+    const updates: Partial<OutreachProspect> = { status: destStatus };
+    if (destStatus === "contacted" || destStatus === "replied") {
+      updates.lastTouchAt = new Date().toISOString();
+    }
+    onUpdate(activeIdStr, updates);
+  }
+
+  if (loading && prospects.length === 0) {
+    return (
+      <div className="flex min-h-[40vh] items-center justify-center rounded-xl border border-white/[0.06] bg-neutral-900/40">
+        <Loader2 className="size-5 animate-spin text-neutral-500" />
+      </div>
+    );
+  }
+
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCorners}
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+    >
+      <div className="flex gap-3 overflow-x-auto pb-3">
+        {PROSPECT_STATUSES.map((status) => (
+          <KanbanColumn
+            key={status}
+            status={status}
+            prospects={grouped[status]}
+            teamMembers={teamMembers}
+            onUpdate={onUpdate}
+            onOpen={onOpen}
+          />
+        ))}
+      </div>
+      <DragOverlay>
+        {activeProspect ? (
+          <ProspectCard prospect={activeProspect} overlay />
+        ) : null}
+      </DragOverlay>
+    </DndContext>
+  );
+}
+
+function KanbanColumn({
+  status,
+  prospects,
+  teamMembers,
+  onUpdate,
+  onOpen,
+}: {
+  status: ProspectStatus;
+  prospects: OutreachProspect[];
+  teamMembers: TeamMember[];
+  onUpdate: (id: string, updates: Partial<OutreachProspect>) => void;
+  onOpen: (p: OutreachProspect) => void;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: status });
+  const meta = STATUS_LABELS[status];
+
+  return (
+    <div className="flex w-72 shrink-0 flex-col rounded-xl border border-white/[0.06] bg-neutral-900/40">
+      <div className="flex items-center justify-between border-b border-white/5 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <span
+            className={cn(
+              "rounded px-1.5 py-0.5 text-[10px] font-medium",
+              meta.className,
+            )}
+          >
+            {meta.label}
+          </span>
+          <span className="text-[11px] text-neutral-500">
+            {prospects.length}
+          </span>
+        </div>
+      </div>
+      <div
+        ref={setNodeRef}
+        className={cn(
+          "flex min-h-[120px] flex-1 flex-col gap-2 p-2 transition-colors",
+          isOver && "bg-white/[0.03] ring-1 ring-inset ring-sky-500/30",
+        )}
+      >
+        {prospects.length === 0 ? (
+          <p className="px-2 py-6 text-center text-[11px] text-neutral-600">
+            Drop here
+          </p>
+        ) : (
+          prospects.map((p) => (
+            <SortableProspectCard
+              key={p.id}
+              prospect={p}
+              teamMembers={teamMembers}
+              onUpdate={onUpdate}
+              onOpen={onOpen}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SortableProspectCard({
+  prospect,
+  teamMembers,
+  onUpdate,
+  onOpen,
+}: {
+  prospect: OutreachProspect;
+  teamMembers: TeamMember[];
+  onUpdate: (id: string, updates: Partial<OutreachProspect>) => void;
+  onOpen: (p: OutreachProspect) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } =
+    useDraggable({ id: prospect.id });
+
+  const style = transform
+    ? { transform: CSS.Translate.toString(transform) }
+    : undefined;
+
+  return (
+    <div ref={setNodeRef} style={style} className={cn(isDragging && "opacity-40")}>
+      <ProspectCard
+        prospect={prospect}
+        teamMembers={teamMembers}
+        onUpdate={onUpdate}
+        onOpen={onOpen}
+        dragHandleProps={{ ...attributes, ...listeners }}
+      />
+    </div>
+  );
+}
+
+function ProspectCard({
+  prospect,
+  teamMembers,
+  onUpdate,
+  onOpen,
+  dragHandleProps,
+  overlay,
+}: {
+  prospect: OutreachProspect;
+  teamMembers?: TeamMember[];
+  onUpdate?: (id: string, updates: Partial<OutreachProspect>) => void;
+  onOpen?: (p: OutreachProspect) => void;
+  dragHandleProps?: Record<string, unknown>;
+  overlay?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "group rounded-lg border border-white/10 bg-neutral-950 p-2.5",
+        overlay && "rotate-1 shadow-2xl ring-2 ring-sky-500/40",
+      )}
+    >
+      <div className="flex items-start gap-1.5">
+        <button
+          className="mt-0.5 shrink-0 cursor-grab text-neutral-600 hover:text-neutral-300 active:cursor-grabbing"
+          {...(dragHandleProps ?? {})}
+          aria-label="Drag prospect"
+        >
+          <GripVertical className="size-3.5" />
+        </button>
+        <button
+          onClick={() => onOpen?.(prospect)}
+          className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-neutral-100 hover:text-white"
+          title={prospect.url || prospect.domain}
+          disabled={overlay}
+        >
+          {prospect.domain}
+        </button>
+        {prospect.url && (
+          <a
+            href={prospect.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="shrink-0 text-neutral-600 hover:text-neutral-300"
+          >
+            <ExternalLink className="size-3" />
+          </a>
+        )}
+      </div>
+
+      {prospect.url && (
+        <p className="mt-0.5 truncate pl-5 text-[10px] text-neutral-600">
+          {shortenUrl(prospect.url)}
+        </p>
+      )}
+
+      {(prospect.contactName || prospect.contactEmail) && (
+        <p className="mt-1 truncate pl-5 text-[11px] text-neutral-400">
+          {prospect.contactName ?? prospect.contactEmail}
+        </p>
+      )}
+
+      <div className="mt-2 flex flex-wrap items-center gap-1.5 pl-5">
+        <Badge
+          variant="outline"
+          className={cn("border-none text-[9px]", PRIORITY_BADGE[prospect.priority])}
+        >
+          {prospect.priority}
+        </Badge>
+        <Badge
+          variant="outline"
+          className="border-white/10 bg-white/[0.03] text-[9px] text-neutral-400"
+        >
+          {TARGET_LABELS[prospect.targetType]}
+        </Badge>
+        {typeof prospect.dr === "number" && (
+          <Badge
+            variant="outline"
+            className="border-white/10 bg-white/[0.03] text-[9px] text-neutral-400"
+          >
+            DR {prospect.dr}
+          </Badge>
+        )}
+        <span className="ml-auto text-[10px] text-neutral-500">
+          {formatRelative(prospect.lastTouchAt)}
+        </span>
+      </div>
+
+      {!overlay && onUpdate && teamMembers && (
+        <div className="mt-2 flex items-center justify-between gap-1.5 pl-5">
+          <Select
+            value={prospect.responsibleEmail ?? "__unassigned__"}
+            onValueChange={(v) =>
+              onUpdate(prospect.id, {
+                responsibleEmail: v === "__unassigned__" ? null : v,
+              })
+            }
+          >
+            <SelectTrigger className="h-6 border-none bg-transparent px-1 text-[10px] text-neutral-400 hover:bg-white/5">
+              <SelectValue placeholder="Unassigned" />
+            </SelectTrigger>
+            <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+              <SelectItem value="__unassigned__">Unassigned</SelectItem>
+              {teamMembers.map((m) => (
+                <SelectItem key={m.email} value={m.email}>
+                  {m.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {prospect.responsibleEmail && (
+            <span
+              className="flex size-5 items-center justify-center rounded-full bg-sky-500/20 text-[9px] font-semibold text-sky-200 ring-1 ring-sky-500/40"
+              title={prospect.responsibleEmail}
+            >
+              {initials(prospect.responsibleEmail)}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
