@@ -110,6 +110,29 @@ export function SocialMonitoringPage() {
   const [relevanceFilter, setRelevanceFilter] = useState<FilterRelevance>("all");
   const [statusFilter, setStatusFilter] = useState<FilterStatus>("new");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Authority Score map: domain → ascore (null = unknown / Semrush not configured)
+  const [domainAuthority, setDomainAuthority] = useState<
+    Record<string, number | null>
+  >({});
+  const [hideLowDr, setHideLowDr] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("social.hideLowDr") === "1";
+  });
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("social.hideLowDr", hideLowDr ? "1" : "0");
+    }
+  }, [hideLowDr]);
+
+  // Helper: domain from a mention URL (without www).
+  function mentionDomain(url: string): string | null {
+    try {
+      return new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+    } catch {
+      return null;
+    }
+  }
 
   // Auth
   useEffect(() => {
@@ -160,6 +183,47 @@ export function SocialMonitoringPage() {
     fetchMentions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, platformFilter, relevanceFilter, statusFilter]);
+
+  // Authority Score fetch — only for web mentions, batched, with client-side
+  // memoization on top of the server cache so we don't refetch as the list
+  // gets filtered.
+  useEffect(() => {
+    if (!token) return;
+    const webDomains = new Set<string>();
+    for (const m of mentions) {
+      if (m.platform !== "web") continue;
+      const d = mentionDomain(m.url);
+      if (d && !(d in domainAuthority)) webDomains.add(d);
+    }
+    if (webDomains.size === 0) return;
+
+    const domains = Array.from(webDomains);
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/social/domain-authority", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ domains }),
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          scores?: Record<string, number | null>;
+        };
+        if (cancelled || !data.scores) return;
+        setDomainAuthority((prev) => ({ ...prev, ...data.scores }));
+      } catch {
+        // Silent — DR enrichment is best-effort.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mentions, token]);
 
   // Actions
   const updateStatus = async (id: string, status: MentionStatus) => {
@@ -225,11 +289,13 @@ export function SocialMonitoringPage() {
           ? "link_reclamation"
           : "article";
 
+    const opr = domainAuthority[domain] ?? null;
     const noteParts = [
       mention.suggested_approach
         ? `Suggested approach: ${mention.suggested_approach}`
         : null,
       mention.title ? `Title: ${mention.title}` : null,
+      opr !== null ? `Open PageRank: ${opr.toFixed(1)}/10` : null,
       mention.keywords_matched.length > 0
         ? `Keywords: ${mention.keywords_matched.join(", ")}`
         : null,
@@ -327,6 +393,40 @@ export function SocialMonitoringPage() {
   }
 
   const newCount = stats?.byStatus["new"] || 0;
+
+  // PR-aware filter + sort: web mentions with known PageRank rise to the top
+  // of the list (highest first), and PR<2 are hidden when the toggle is on.
+  // Scale is Open PageRank 0–10 (free alternative to Semrush DA).
+  const LOW_DR_THRESHOLD = 2;
+  const visibleMentions = useMemo(() => {
+    const drFor = (m: SocialMention): number | null => {
+      if (m.platform !== "web") return null;
+      const d = mentionDomain(m.url);
+      return d ? domainAuthority[d] ?? null : null;
+    };
+
+    let list = mentions;
+    if (hideLowDr) {
+      list = list.filter((m) => {
+        if (m.platform !== "web") return true;
+        const dr = drFor(m);
+        // Keep unknown DR (null) so users still see fresh mentions before
+        // the Semrush enrichment lands. Only hide when we have a low score.
+        return dr === null || dr >= LOW_DR_THRESHOLD;
+      });
+    }
+
+    // Stable sort: web mentions with DR first (descending), then everything
+    // else in original order.
+    return [...list].sort((a, b) => {
+      const da = drFor(a);
+      const db = drFor(b);
+      if (da === null && db === null) return 0;
+      if (da === null) return 1;
+      if (db === null) return -1;
+      return db - da;
+    });
+  }, [mentions, domainAuthority, hideLowDr]);
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-10">
@@ -436,6 +536,23 @@ export function SocialMonitoringPage() {
               </button>
             ),
           )}
+
+          {(platformFilter === "web" || platformFilter === "all") && (
+            <>
+              <span className="mx-1 self-center text-neutral-700">|</span>
+              <button
+                onClick={() => setHideLowDr((v) => !v)}
+                className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                  hideLowDr
+                    ? "bg-amber-500/20 text-amber-300"
+                    : "bg-white/[0.04] text-neutral-500 hover:text-neutral-300"
+                }`}
+                title="Hide web mentions with Open PageRank below 2 (likely scams or low-authority blogs)"
+              >
+                {hideLowDr ? "Hiding PR<2" : "Hide low-PR"}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -454,28 +571,38 @@ export function SocialMonitoringPage() {
             Try again
           </button>
         </div>
-      ) : mentions.length === 0 ? (
+      ) : visibleMentions.length === 0 ? (
         <div className="flex flex-col items-center gap-4 py-20 text-center">
           <Radar className="h-12 w-12 text-neutral-800" />
-          <p className="text-neutral-500">No mentions found with current filters.</p>
+          <p className="text-neutral-500">
+            {hideLowDr && mentions.length > 0
+              ? "All web mentions are below DR 20. Disable the low-DR filter to see them."
+              : "No mentions found with current filters."}
+          </p>
           <p className="text-xs text-neutral-600">
             Click "Sync Now" to collect mentions from Reddit, LinkedIn, Twitter, Hacker News, Web (listicles), and GitHub awesome-lists.
           </p>
         </div>
       ) : (
         <div className="space-y-3">
-          {mentions.map((mention) => (
-            <MentionCard
-              key={mention.id}
-              mention={mention}
-              expanded={expanded.has(mention.id)}
-              onToggleExpand={() => toggleExpand(mention.id)}
-              onUpdateStatus={(status) => updateStatus(mention.id, status)}
-              onSendToCrm={() => sendToCrm(mention)}
-              sending={sendingMention === mention.id}
-              alreadySent={sentMentions.has(mention.id)}
-            />
-          ))}
+          {visibleMentions.map((mention) => {
+            const d = mentionDomain(mention.url);
+            const dr =
+              mention.platform === "web" && d ? domainAuthority[d] ?? null : null;
+            return (
+              <MentionCard
+                key={mention.id}
+                mention={mention}
+                expanded={expanded.has(mention.id)}
+                onToggleExpand={() => toggleExpand(mention.id)}
+                onUpdateStatus={(status) => updateStatus(mention.id, status)}
+                onSendToCrm={() => sendToCrm(mention)}
+                sending={sendingMention === mention.id}
+                alreadySent={sentMentions.has(mention.id)}
+                domainAuthority={dr}
+              />
+            );
+          })}
         </div>
       )}
     </div>
@@ -494,6 +621,7 @@ function MentionCard({
   onSendToCrm,
   sending,
   alreadySent,
+  domainAuthority,
 }: {
   mention: SocialMention;
   expanded: boolean;
@@ -502,6 +630,7 @@ function MentionCard({
   onSendToCrm: () => void;
   sending: boolean;
   alreadySent: boolean;
+  domainAuthority: number | null;
 }) {
   const platformBadge = PLATFORM_BADGES[mention.platform];
   const relevanceBadge = RELEVANCE_BADGES[mention.relevance];
@@ -535,6 +664,22 @@ function MentionCard({
               >
                 {statusBadge.label}
               </span>
+              {mention.platform === "web" && domainAuthority !== null && (
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                    domainAuthority >= 6
+                      ? "bg-emerald-500/20 text-emerald-300"
+                      : domainAuthority >= 4
+                        ? "bg-sky-500/20 text-sky-300"
+                        : domainAuthority >= 2
+                          ? "bg-amber-500/20 text-amber-300"
+                          : "bg-red-500/20 text-red-300"
+                  }`}
+                  title="Open PageRank (0–10) — free alternative to Semrush DA"
+                >
+                  PR {domainAuthority.toFixed(1)}
+                </span>
+              )}
               {mention.author && (
                 <span className="text-[10px] text-neutral-600">
                   by {mention.author}

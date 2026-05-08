@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { searchWebContent } from "@/lib/exa";
 import { getModel } from "@/lib/ai/provider";
+import { getCompetitorDomains } from "@/lib/voice-policy";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -607,12 +608,72 @@ const WEB_EXCLUDE_DOMAINS = [
   "github.com",
 ];
 
-export async function collectWeb(): Promise<RawSocialResult[]> {
+// Direct AI-code-review competitors. Listicles hosted on these domains will
+// never include Kodus (the host won't link out to a competitor), so we drop
+// them from collection. Extend via voice_profile.competitor_domains for
+// company-specific additions.
+export const WEB_COMPETITOR_DOMAINS = [
+  "coderabbit.ai",
+  "coderabbit.com",
+  "qodo.ai",
+  "codium.ai",
+  "greptile.com",
+  "bito.ai",
+  "augmentcode.com",
+  "augment.com",
+  "sweep.dev",
+  "tabnine.com",
+  "codacy.com",
+  "sonarsource.com",
+  "sonarcloud.io",
+  "sonarqube.org",
+  "snyk.io",
+  "deepsource.com",
+  "deepsource.io",
+  "whatthediff.ai",
+  "pr-agent.codium.ai",
+  "graphite.dev",
+  "ellipsis.dev",
+  "codeball.ai",
+  "diamond.patched.codes",
+  "patched.codes",
+];
+
+export async function collectWeb(
+  options: { extraExcludeDomains?: string[] } = {},
+): Promise<RawSocialResult[]> {
   const results: RawSocialResult[] = [];
   const seen = new Set<string>();
+  const excludeDomains = Array.from(
+    new Set([
+      ...WEB_EXCLUDE_DOMAINS,
+      ...WEB_COMPETITOR_DOMAINS,
+      ...(options.extraExcludeDomains ?? []),
+    ]),
+  );
+  const competitorSet = new Set(
+    [...WEB_COMPETITOR_DOMAINS, ...(options.extraExcludeDomains ?? [])].map((d) =>
+      d.toLowerCase(),
+    ),
+  );
+
+  function isCompetitorUrl(url: string): boolean {
+    try {
+      const host = new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+      for (const c of competitorSet) {
+        if (host === c || host.endsWith(`.${c}`)) return true;
+      }
+    } catch {
+      /* ignore */
+    }
+    return false;
+  }
 
   function add(r: RawSocialResult) {
     if (seen.has(r.url)) return;
+    // Defense in depth: Exa sometimes returns excluded domains anyway
+    // (mirrored content, redirects). Drop them client-side too.
+    if (isCompetitorUrl(r.url)) return;
     seen.add(r.url);
     results.push(r);
   }
@@ -628,7 +689,7 @@ export async function collectWeb(): Promise<RawSocialResult[]> {
       try {
         const { results: exaResults } = await searchWebContent({
           query,
-          excludeDomains: WEB_EXCLUDE_DOMAINS,
+          excludeDomains,
           numResults: 10,
           daysBack: 365,
           textMaxCharacters: 3000,
@@ -814,7 +875,10 @@ export async function collectGitHubAwesome(): Promise<RawSocialResult[]> {
 // a single tab in the UI doesn't re-spend credits on the others. When
 // `platforms` is undefined or "all", every collector runs (legacy behavior).
 export async function collectAll(
-  options: { platforms?: SocialPlatform[] } = {},
+  options: {
+    platforms?: SocialPlatform[];
+    extraExcludeDomains?: string[];
+  } = {},
 ): Promise<RawSocialResult[]> {
   const filter = options.platforms?.length
     ? new Set(options.platforms)
@@ -840,7 +904,9 @@ export async function collectAll(
     labels.push("hackernews");
   }
   if (want("web")) {
-    tasks.push(collectWeb());
+    tasks.push(
+      collectWeb({ extraExcludeDomains: options.extraExcludeDomains }),
+    );
     labels.push("web");
   }
   if (want("github")) {
@@ -1206,7 +1272,20 @@ export async function syncSocialMentions(
   byPlatform: Record<string, number>;
   platformsSynced: SocialPlatform[] | "all";
 }> {
-  const collected = await collectAll(options);
+  // Pull configured competitor domains from the brand voice profile and pass
+  // them into web collection so listicles hosted on competitor blogs (which
+  // would never link to us) are dropped before they hit the LLM qualifier.
+  let extraExcludeDomains: string[] = [];
+  try {
+    extraExcludeDomains = await getCompetitorDomains(client);
+  } catch (err) {
+    console.warn(
+      "[social-monitoring] failed to load competitor_domains from voice profile:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  const collected = await collectAll({ ...options, extraExcludeDomains });
 
   const byPlatform: Record<string, number> = {};
   for (const r of collected) {
