@@ -11,6 +11,10 @@ import {
   RefreshCw,
   Zap,
   Send,
+  CheckSquare,
+  Square,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
@@ -20,6 +24,7 @@ import type {
   Relevance,
   MentionStatus,
   MentionStats,
+  Intent,
 } from "@/lib/social-monitoring";
 
 // ---------------------------------------------------------------------------
@@ -92,6 +97,20 @@ const STATUS_LABELS: Record<MentionStatus, { label: string; className: string }>
 type FilterPlatform = SocialPlatform | "all";
 type FilterRelevance = Relevance | "all";
 type FilterStatus = MentionStatus | "all";
+type FilterIntent = Intent | "all";
+
+const INTENT_OPTIONS: FilterIntent[] = [
+  "all",
+  "backlink_opportunity",
+  "competitor_listicle",
+  "asking_help",
+  "complaining",
+  "comparing_tools",
+  "sharing_experience",
+  "discussing",
+];
+
+const PAGE_SIZE = 50;
 
 // ---------------------------------------------------------------------------
 // Component
@@ -109,6 +128,12 @@ export function SocialMonitoringPage() {
   const [platformFilter, setPlatformFilter] = useState<FilterPlatform>("all");
   const [relevanceFilter, setRelevanceFilter] = useState<FilterRelevance>("all");
   const [statusFilter, setStatusFilter] = useState<FilterStatus>("new");
+  const [intentFilter, setIntentFilter] = useState<FilterIntent>("all");
+  const [dateFromFilter, setDateFromFilter] = useState<string>("");
+  const [dateToFilter, setDateToFilter] = useState<string>("");
+  const [page, setPage] = useState<number>(0);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchSubmitting, setBatchSubmitting] = useState<boolean>(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // Authority Score map: domain → ascore (null = unknown / Semrush not configured)
   const [domainAuthority, setDomainAuthority] = useState<
@@ -152,7 +177,16 @@ export function SocialMonitoringPage() {
       if (platformFilter !== "all") params.set("platform", platformFilter);
       if (relevanceFilter !== "all") params.set("relevance", relevanceFilter);
       if (statusFilter !== "all") params.set("status", statusFilter);
-      params.set("limit", "100");
+      if (intentFilter !== "all") params.set("intent", intentFilter);
+      if (dateFromFilter) params.set("dateFrom", dateFromFilter);
+      if (dateToFilter) {
+        // Treat the date-input value as "end of that day" so the inclusive
+        // upper bound covers everything published on the selected calendar
+        // day, not just the midnight start.
+        params.set("dateTo", `${dateToFilter}T23:59:59.999Z`);
+      }
+      params.set("limit", String(PAGE_SIZE));
+      params.set("offset", String(page * PAGE_SIZE));
 
       const res = await fetch(`/api/social/mentions?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -172,6 +206,9 @@ export function SocialMonitoringPage() {
       const data = await res.json();
       setMentions(data.mentions ?? []);
       setStats(data.stats ?? null);
+      // Drop selection between fetches — a checkbox referring to a hidden id
+      // would silently apply batch actions to off-screen rows.
+      setSelectedIds(new Set());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
     } finally {
@@ -179,10 +216,72 @@ export function SocialMonitoringPage() {
     }
   };
 
+  // Reset to page 0 whenever the filter set changes — paginating into a stale
+  // offset would either show an empty page or skip results.
+  useEffect(() => {
+    setPage(0);
+  }, [
+    platformFilter,
+    relevanceFilter,
+    statusFilter,
+    intentFilter,
+    dateFromFilter,
+    dateToFilter,
+  ]);
+
   useEffect(() => {
     fetchMentions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, platformFilter, relevanceFilter, statusFilter]);
+  }, [
+    token,
+    platformFilter,
+    relevanceFilter,
+    statusFilter,
+    intentFilter,
+    dateFromFilter,
+    dateToFilter,
+    page,
+  ]);
+
+  // Batch action: mark all selected mentions with a new status in one request.
+  const batchUpdateStatus = async (status: MentionStatus) => {
+    if (!token || selectedIds.size === 0 || batchSubmitting) return;
+    setBatchSubmitting(true);
+    setError(null);
+
+    const ids = Array.from(selectedIds);
+
+    try {
+      const res = await fetch("/api/social/mentions/batch", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ids, status }),
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(
+          body?.error || `Batch update failed (${res.status})`,
+        );
+      }
+
+      // Optimistic local update — avoid a full refetch for snappy feel.
+      setMentions((prev) =>
+        prev.map((m) => (selectedIds.has(m.id) ? { ...m, status } : m)),
+      );
+      setSelectedIds(new Set());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Batch update failed");
+      // On failure, refetch so the UI matches reality (some rows may have
+      // updated before the error).
+      fetchMentions();
+    } finally {
+      setBatchSubmitting(false);
+    }
+  };
 
   // Authority Score fetch — only for web mentions, batched, with client-side
   // memoization on top of the server cache so we don't refetch as the list
@@ -428,6 +527,33 @@ export function SocialMonitoringPage() {
     });
   }, [mentions, domainAuthority, hideLowDr]);
 
+  // Batch selection helpers
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const allVisibleSelected =
+    visibleMentions.length > 0 &&
+    visibleMentions.every((m) => selectedIds.has(m.id));
+
+  const toggleSelectAll = () => {
+    if (allVisibleSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(visibleMentions.map((m) => m.id)));
+    }
+  };
+
+  // Pagination: if the API returns a full page worth, assume there's at least
+  // one more page. The data layer doesn't return a total count.
+  const hasNextPage = mentions.length >= PAGE_SIZE;
+  const hasPrevPage = page > 0;
+
   return (
     <div className="mx-auto max-w-4xl px-6 py-10">
       {/* Header */}
@@ -554,7 +680,141 @@ export function SocialMonitoringPage() {
             </>
           )}
         </div>
+
+        {/* Intent — surfaces backlink_opportunity / competitor_listicle first,
+            which are the actionable buckets. Counts come from getMentionStats
+            so they reflect the full table, not the current page. */}
+        <div className="flex flex-wrap gap-2">
+          {INTENT_OPTIONS.map((i) => {
+            const count =
+              i === "all"
+                ? stats?.total ?? 0
+                : stats?.byIntent[i] ?? 0;
+            const active = intentFilter === i;
+            const label =
+              i === "all" ? "Any intent" : INTENT_LABELS[i] ?? i;
+            return (
+              <button
+                key={`intent-${i}`}
+                onClick={() => setIntentFilter(i)}
+                className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                  active
+                    ? "bg-violet-500/20 text-violet-200"
+                    : "bg-white/[0.04] text-neutral-500 hover:text-neutral-300"
+                }`}
+              >
+                {label} ({count})
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Date range — bounds on published_at. Empty input = no bound on
+            that side, so users can do "since X" or "until Y" without
+            filling both. */}
+        <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500">
+          <span>Published</span>
+          <input
+            type="date"
+            value={dateFromFilter}
+            onChange={(e) => setDateFromFilter(e.target.value)}
+            className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-xs text-neutral-200 focus:border-violet-500/50 focus:outline-none"
+            aria-label="Filter mentions published on or after"
+          />
+          <span>→</span>
+          <input
+            type="date"
+            value={dateToFilter}
+            onChange={(e) => setDateToFilter(e.target.value)}
+            className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-xs text-neutral-200 focus:border-violet-500/50 focus:outline-none"
+            aria-label="Filter mentions published on or before"
+          />
+          {(dateFromFilter || dateToFilter) && (
+            <button
+              onClick={() => {
+                setDateFromFilter("");
+                setDateToFilter("");
+              }}
+              className="text-xs text-neutral-500 underline-offset-2 hover:text-neutral-300 hover:underline"
+            >
+              clear
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Batch action bar — only renders when there's at least one selected
+          row. Sticky so it stays in reach while the user scrolls a long list. */}
+      {selectedIds.size > 0 && (
+        <div className="sticky top-2 z-10 mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-950/80 px-4 py-2 text-xs backdrop-blur">
+          <span className="font-medium text-violet-200">
+            {selectedIds.size} selected
+          </span>
+          <span className="text-neutral-500">·</span>
+          <button
+            onClick={() => batchUpdateStatus("contacted")}
+            disabled={batchSubmitting}
+            className="rounded-md bg-sky-500/20 px-2 py-1 font-medium text-sky-300 transition hover:bg-sky-500/30 disabled:opacity-50"
+          >
+            Mark contacted
+          </button>
+          <button
+            onClick={() => batchUpdateStatus("replied")}
+            disabled={batchSubmitting}
+            className="rounded-md bg-emerald-500/20 px-2 py-1 font-medium text-emerald-300 transition hover:bg-emerald-500/30 disabled:opacity-50"
+          >
+            Mark replied
+          </button>
+          <button
+            onClick={() => batchUpdateStatus("dismissed")}
+            disabled={batchSubmitting}
+            className="rounded-md bg-neutral-500/20 px-2 py-1 font-medium text-neutral-300 transition hover:bg-neutral-500/30 disabled:opacity-50"
+          >
+            Dismiss
+          </button>
+          <button
+            onClick={() => batchUpdateStatus("new")}
+            disabled={batchSubmitting}
+            className="rounded-md bg-violet-500/20 px-2 py-1 font-medium text-violet-300 transition hover:bg-violet-500/30 disabled:opacity-50"
+          >
+            Reset to new
+          </button>
+          <span className="text-neutral-500">·</span>
+          <button
+            onClick={() => setSelectedIds(new Set())}
+            className="rounded-md px-2 py-1 text-neutral-400 transition hover:text-neutral-200"
+          >
+            Clear
+          </button>
+          {batchSubmitting && (
+            <Loader2 className="ml-1 h-3 w-3 animate-spin text-violet-300" />
+          )}
+        </div>
+      )}
+
+      {/* Select-all bar — only renders when there are mentions to select.
+          Lives outside the conditional batch bar so the user can opt in. */}
+      {visibleMentions.length > 0 && (
+        <div className="mb-3 flex items-center justify-between text-xs text-neutral-500">
+          <button
+            onClick={toggleSelectAll}
+            className="flex items-center gap-1.5 transition hover:text-neutral-300"
+          >
+            {allVisibleSelected ? (
+              <CheckSquare className="h-3.5 w-3.5" />
+            ) : (
+              <Square className="h-3.5 w-3.5" />
+            )}
+            {allVisibleSelected
+              ? `Deselect ${visibleMentions.length}`
+              : `Select all ${visibleMentions.length} on page`}
+          </button>
+          <span>
+            Page {page + 1}
+            {hasNextPage ? "" : " (last)"}
+          </span>
+        </div>
+      )}
 
       {/* Content */}
       {loading && mentions.length === 0 ? (
@@ -580,30 +840,78 @@ export function SocialMonitoringPage() {
               : "No mentions found with current filters."}
           </p>
           <p className="text-xs text-neutral-600">
-            Click "Sync Now" to collect mentions from Reddit, LinkedIn, Twitter, Hacker News, Web (listicles), and GitHub awesome-lists.
+            Click &quot;Sync Now&quot; to collect mentions from Reddit, LinkedIn, Twitter, Hacker News, Web (listicles), and GitHub awesome-lists.
           </p>
         </div>
       ) : (
-        <div className="space-y-3">
-          {visibleMentions.map((mention) => {
-            const d = mentionDomain(mention.url);
-            const dr =
-              mention.platform === "web" && d ? domainAuthority[d] ?? null : null;
-            return (
-              <MentionCard
-                key={mention.id}
-                mention={mention}
-                expanded={expanded.has(mention.id)}
-                onToggleExpand={() => toggleExpand(mention.id)}
-                onUpdateStatus={(status) => updateStatus(mention.id, status)}
-                onSendToCrm={() => sendToCrm(mention)}
-                sending={sendingMention === mention.id}
-                alreadySent={sentMentions.has(mention.id)}
-                domainAuthority={dr}
-              />
-            );
-          })}
-        </div>
+        <>
+          <div className="space-y-3">
+            {visibleMentions.map((mention) => {
+              const d = mentionDomain(mention.url);
+              const dr =
+                mention.platform === "web" && d
+                  ? domainAuthority[d] ?? null
+                  : null;
+              const isSelected = selectedIds.has(mention.id);
+              return (
+                <div key={mention.id} className="flex items-start gap-2">
+                  <button
+                    onClick={() => toggleSelect(mention.id)}
+                    className="mt-4 flex-shrink-0 text-neutral-500 transition hover:text-violet-300"
+                    aria-label={
+                      isSelected ? "Deselect mention" : "Select mention"
+                    }
+                  >
+                    {isSelected ? (
+                      <CheckSquare className="h-4 w-4 text-violet-400" />
+                    ) : (
+                      <Square className="h-4 w-4" />
+                    )}
+                  </button>
+                  <div className="flex-1">
+                    <MentionCard
+                      mention={mention}
+                      expanded={expanded.has(mention.id)}
+                      onToggleExpand={() => toggleExpand(mention.id)}
+                      onUpdateStatus={(status) =>
+                        updateStatus(mention.id, status)
+                      }
+                      onSendToCrm={() => sendToCrm(mention)}
+                      sending={sendingMention === mention.id}
+                      alreadySent={sentMentions.has(mention.id)}
+                      domainAuthority={dr}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Pagination */}
+          {(hasPrevPage || hasNextPage) && (
+            <div className="mt-6 flex items-center justify-between gap-2 text-xs text-neutral-400">
+              <button
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={!hasPrevPage || loading}
+                className="flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.04] px-3 py-1.5 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+                Previous
+              </button>
+              <span className="text-neutral-500">
+                Page {page + 1} · showing {visibleMentions.length}
+              </span>
+              <button
+                onClick={() => setPage((p) => p + 1)}
+                disabled={!hasNextPage || loading}
+                className="flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.04] px-3 py-1.5 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Next
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

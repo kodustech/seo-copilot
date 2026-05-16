@@ -76,6 +76,11 @@ export type MentionFilters = {
   platform?: SocialPlatform;
   relevance?: Relevance;
   status?: MentionStatus;
+  intent?: Intent;
+  /** Inclusive lower bound on published_at (ISO 8601 timestamp or date). */
+  dateFrom?: string;
+  /** Inclusive upper bound on published_at (ISO 8601 timestamp or date). */
+  dateTo?: string;
   limit?: number;
   offset?: number;
 };
@@ -84,6 +89,7 @@ export type MentionStats = {
   total: number;
   byPlatform: Record<string, number>;
   byStatus: Record<string, number>;
+  byIntent: Record<string, number>;
 };
 
 // ---------------------------------------------------------------------------
@@ -1192,14 +1198,25 @@ export async function listMentions(
   if (filters.status) {
     query = query.eq("status", filters.status);
   }
-  if (filters.limit) {
-    query = query.limit(filters.limit);
+  if (filters.intent) {
+    query = query.eq("intent", filters.intent);
   }
+  if (filters.dateFrom) {
+    query = query.gte("published_at", filters.dateFrom);
+  }
+  if (filters.dateTo) {
+    query = query.lte("published_at", filters.dateTo);
+  }
+  // range() applies both LIMIT and OFFSET in one call (Postgres BETWEEN), so
+  // when an offset is provided we use range exclusively and skip the separate
+  // limit() — otherwise Supabase silently ignores the smaller bound.
   if (filters.offset) {
     query = query.range(
       filters.offset,
       filters.offset + (filters.limit || 50) - 1,
     );
+  } else if (filters.limit) {
+    query = query.limit(filters.limit);
   }
 
   const { data, error } = await query;
@@ -1235,27 +1252,59 @@ export async function getMentionStats(
 ): Promise<MentionStats> {
   const { data, error } = await client
     .from("social_mentions")
-    .select("platform, status");
+    .select("platform, status, intent");
 
   if (error) {
     throw new Error(`Failed to get mention stats: ${error.message}`);
   }
 
-  const rows = (data ?? []) as { platform: string; status: string }[];
+  const rows = (data ?? []) as {
+    platform: string;
+    status: string;
+    intent: string;
+  }[];
 
   const byPlatform: Record<string, number> = {};
   const byStatus: Record<string, number> = {};
+  const byIntent: Record<string, number> = {};
 
   for (const row of rows) {
     byPlatform[row.platform] = (byPlatform[row.platform] || 0) + 1;
     byStatus[row.status] = (byStatus[row.status] || 0) + 1;
+    byIntent[row.intent] = (byIntent[row.intent] || 0) + 1;
   }
 
   return {
     total: rows.length,
     byPlatform,
     byStatus,
+    byIntent,
   };
+}
+
+/**
+ * Bulk update status across multiple mentions in a single round-trip. Used by
+ * the batch-actions bar in the UI ("mark 12 selected as dismissed"). Returns
+ * the count actually updated (Postgres will silently skip ids it can't find).
+ */
+export async function batchUpdateMentionStatus(
+  client: SupabaseClient,
+  ids: string[],
+  status: MentionStatus,
+): Promise<number> {
+  if (ids.length === 0) return 0;
+
+  const { data, error } = await client
+    .from("social_mentions")
+    .update({ status })
+    .in("id", ids)
+    .select("id");
+
+  if (error) {
+    throw new Error(`Failed to batch-update mentions: ${error.message}`);
+  }
+
+  return data?.length ?? 0;
 }
 
 // ---------------------------------------------------------------------------
