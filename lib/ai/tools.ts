@@ -22,6 +22,11 @@ import {
 import { findUnlinkedBrandMentions } from "@/lib/brand-mentions";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 import {
+  listMentions,
+  getMentionStats,
+  type MentionFilters,
+} from "@/lib/social-monitoring";
+import {
   DEFAULT_SCHEDULE_TIME,
   buildCronExpressionForSchedule,
   createJob,
@@ -2943,6 +2948,174 @@ const listGoalLinksTool = tool({
   },
 });
 
+// ---------------------------------------------------------------------------
+// Social monitoring (read-only)
+// ---------------------------------------------------------------------------
+
+const SOCIAL_PLATFORMS = [
+  "reddit",
+  "twitter",
+  "linkedin",
+  "hackernews",
+  "web",
+  "github",
+] as const;
+const SOCIAL_RELEVANCES = ["high", "medium", "low"] as const;
+const SOCIAL_INTENTS = [
+  "asking_help",
+  "complaining",
+  "comparing_tools",
+  "discussing",
+  "sharing_experience",
+  "backlink_opportunity",
+  "competitor_listicle",
+] as const;
+const SOCIAL_STATUSES = [
+  "new",
+  "contacted",
+  "replied",
+  "dismissed",
+] as const;
+
+const listSocialMentions = tool({
+  description:
+    "List qualified social mentions captured by the social-monitor pipeline (Reddit, Twitter, LinkedIn, Hacker News, generic Web, GitHub awesome lists). Supports filtering by platform, relevance, status, intent, and a published-at date range. Returns the matching rows plus aggregate stats. Read-only.",
+  inputSchema: z.object({
+    platform: z
+      .enum(SOCIAL_PLATFORMS)
+      .optional()
+      .describe("Restrict to a single source platform."),
+    relevance: z
+      .enum(SOCIAL_RELEVANCES)
+      .optional()
+      .describe("Restrict to mentions of a given relevance tier."),
+    status: z
+      .enum(SOCIAL_STATUSES)
+      .optional()
+      .describe(
+        "Workflow status. 'new' = untouched, 'contacted' = outreach sent, 'replied' = engaged, 'dismissed' = ignored.",
+      ),
+    intent: z
+      .enum(SOCIAL_INTENTS)
+      .optional()
+      .describe(
+        "Intent classification. 'backlink_opportunity' and 'competitor_listicle' are the most actionable for outreach.",
+      ),
+    dateFrom: z
+      .string()
+      .optional()
+      .describe(
+        "Inclusive lower bound on published_at (ISO 8601 date or timestamp, e.g. '2026-05-01' or '2026-05-01T00:00:00Z').",
+      ),
+    dateTo: z
+      .string()
+      .optional()
+      .describe(
+        "Inclusive upper bound on published_at (ISO 8601 date or timestamp).",
+      ),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(200)
+      .optional()
+      .default(50)
+      .describe("Max mentions to return (1-200, default 50)."),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .default(0)
+      .describe("Pagination offset (default 0)."),
+  }),
+  execute: async ({
+    platform,
+    relevance,
+    status,
+    intent,
+    dateFrom,
+    dateTo,
+    limit,
+    offset,
+  }: {
+    platform?: (typeof SOCIAL_PLATFORMS)[number];
+    relevance?: (typeof SOCIAL_RELEVANCES)[number];
+    status?: (typeof SOCIAL_STATUSES)[number];
+    intent?: (typeof SOCIAL_INTENTS)[number];
+    dateFrom?: string;
+    dateTo?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const filters: MentionFilters = {
+        ...(platform ? { platform } : {}),
+        ...(relevance ? { relevance } : {}),
+        ...(status ? { status } : {}),
+        ...(intent ? { intent } : {}),
+        ...(dateFrom ? { dateFrom } : {}),
+        // For dateTo, expand a bare date ("2026-05-16") to end-of-day so it
+        // covers everything published on that calendar day. Mirrors the API
+        // route behavior.
+        ...(dateTo
+          ? {
+              dateTo: /^\d{4}-\d{2}-\d{2}$/.test(dateTo)
+                ? `${dateTo}T23:59:59.999Z`
+                : dateTo,
+            }
+          : {}),
+        limit: limit ?? 50,
+        offset: offset ?? 0,
+      };
+
+      const [mentions, stats] = await Promise.all([
+        listMentions(client, filters),
+        getMentionStats(client),
+      ]);
+
+      return {
+        success: true as const,
+        count: mentions.length,
+        // Project to a leaner shape — full content can be huge and a tool
+        // result that ships 50 raw posts blows the context budget.
+        mentions: mentions.map((m) => ({
+          id: m.id,
+          platform: m.platform,
+          url: m.url,
+          title: m.title,
+          author: m.author,
+          publishedAt: m.published_at,
+          relevance: m.relevance,
+          intent: m.intent,
+          status: m.status,
+          suggestedApproach: m.suggested_approach,
+          keywordsMatched: m.keywords_matched,
+          contentPreview:
+            m.content.length > 500 ? `${m.content.slice(0, 500)}...` : m.content,
+        })),
+        stats: {
+          total: stats.total,
+          byPlatform: stats.byPlatform,
+          byStatus: stats.byStatus,
+          byIntent: stats.byIntent,
+        },
+        nextOffset:
+          mentions.length === (limit ?? 50)
+            ? (offset ?? 0) + mentions.length
+            : null,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "Error listing mentions.",
+      };
+    }
+  },
+});
+
 export function createAgentTools(userEmail?: string) {
   return {
     generateIdeas,
@@ -2989,6 +3162,7 @@ export function createAgentTools(userEmail?: string) {
     linkGoalToTask: createLinkGoalToTaskTool(userEmail),
     unlinkGoalFromTask: unlinkGoalFromTaskTool,
     listGoalLinks: listGoalLinksTool,
+    listSocialMentions,
   };
 }
 
