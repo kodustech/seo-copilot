@@ -6,6 +6,7 @@ import {
   getDefaultYoloUsers,
   socialYoloTableMissingMessage,
 } from "@/lib/social-yolo";
+import { materializeDueRecurrences } from "@/lib/goal-recurrences";
 
 export const maxDuration = 300;
 
@@ -85,6 +86,28 @@ export async function GET(req: Request) {
     }
   }
 
+  // Materialize the current-period goal instance for every active recurrence
+  // rule. Idempotent (unique index on recurrence_id + period_start), so running
+  // hourly just no-ops until a new period rolls over.
+  let recurrenceSummary: {
+    rules: number;
+    created: number;
+    error?: string;
+  };
+  try {
+    const recurrenceResults = await materializeDueRecurrences(client, now);
+    recurrenceSummary = {
+      rules: recurrenceResults.length,
+      created: recurrenceResults.filter((r) => r.created).length,
+    };
+  } catch (err) {
+    recurrenceSummary = {
+      rules: 0,
+      created: 0,
+      error: err instanceof Error ? err.message : "Unknown error",
+    };
+  }
+
   return NextResponse.json({
     checked: allJobs.length,
     executed: dueJobs.length,
@@ -93,5 +116,6 @@ export async function GET(req: Request) {
       users: yoloUsers.length,
       results: yoloResults,
     },
+    recurrences: recurrenceSummary,
   });
 }
