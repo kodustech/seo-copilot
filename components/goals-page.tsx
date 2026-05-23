@@ -15,6 +15,7 @@ import {
   X,
   Repeat,
   Power,
+  Pencil,
 } from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
@@ -1431,6 +1432,7 @@ function RecurringPanel({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<GoalRecurrence | null>(null);
 
   const toggleActive = async (r: GoalRecurrence) => {
     if (!token) return;
@@ -1520,6 +1522,14 @@ function RecurringPanel({
                 {r.unit ? ` ${r.unit}` : ""} · {CADENCE_LABELS[r.cadence]}
               </span>
               <button
+                onClick={() => setEditing(r)}
+                disabled={busyId === r.id}
+                className="rounded p-1 text-neutral-500 transition hover:bg-white/10 hover:text-neutral-200 disabled:opacity-40"
+                title="Edit rule"
+              >
+                <Pencil className="size-3.5" />
+              </button>
+              <button
                 onClick={() => toggleActive(r)}
                 disabled={busyId === r.id}
                 className={cn(
@@ -1544,7 +1554,220 @@ function RecurringPanel({
           ))}
         </div>
       )}
+
+      {editing && (
+        <RecurrenceFormDialog
+          token={token}
+          initial={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            onChanged();
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+// Edit dialog for a recurrence rule. Changes apply to *future* periods; the
+// goal already created for the current period is independent — edit it on its
+// card if you need to adjust this period.
+function RecurrenceFormDialog({
+  token,
+  initial,
+  onClose,
+  onSaved,
+}: {
+  token: string | null;
+  initial: GoalRecurrence;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [title, setTitle] = useState(initial.title);
+  const [description, setDescription] = useState(initial.description ?? "");
+  const [unit, setUnit] = useState(initial.unit ?? "");
+  const [kind, setKind] = useState<GoalKind>(initial.kind);
+  const [target, setTarget] = useState<string>(String(initial.targetCount));
+  const [cadence, setCadence] = useState<GoalCadence>(initial.cadence);
+  const [priority, setPriority] = useState<GoalPriority>(initial.priority);
+  const [projectRef, setProjectRef] = useState(initial.projectRef ?? "");
+  const [notes, setNotes] = useState(initial.notes ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async () => {
+    if (!token) return;
+    if (!title.trim()) {
+      setError("Title is required");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/goals/recurrences/${initial.id}`, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: title.trim(),
+          description: description.trim() || null,
+          unit: unit.trim() || null,
+          kind,
+          targetCount: Math.max(1, Number(target) || 1),
+          cadence,
+          priority,
+          projectRef: projectRef.trim() || null,
+          notes: notes.trim() || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Failed");
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto border-white/10 bg-neutral-950 text-neutral-100">
+        <DialogHeader>
+          <DialogTitle>Edit recurring rule</DialogTitle>
+        </DialogHeader>
+
+        <p className="rounded-lg border border-amber-500/15 bg-amber-500/[0.04] px-3 py-2 text-[11px] text-amber-200/80">
+          Changes apply to goals created from now on. The goal for the current
+          period stays as-is — edit it on its card if needed.
+        </p>
+
+        <div className="space-y-3">
+          <Field label="Title *">
+            <Input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              className="border-white/10 bg-neutral-900 text-sm"
+            />
+          </Field>
+          <Field label="Description">
+            <Textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={2}
+              className="border-white/10 bg-neutral-900 text-sm"
+            />
+          </Field>
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="Target *">
+              <Input
+                value={target}
+                onChange={(e) => setTarget(e.target.value)}
+                inputMode="numeric"
+                className="border-white/10 bg-neutral-900 text-sm"
+              />
+            </Field>
+            <Field label="Unit">
+              <Input
+                value={unit}
+                onChange={(e) => setUnit(e.target.value)}
+                placeholder="reddits"
+                className="border-white/10 bg-neutral-900 text-sm"
+              />
+            </Field>
+            <Field label="Repeat">
+              <Select
+                value={cadence}
+                onValueChange={(v) => setCadence(v as GoalCadence)}
+              >
+                <SelectTrigger className="border-white/10 bg-neutral-900 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+                  {GOAL_CADENCES.map((c) => (
+                    <SelectItem key={c} value={c}>
+                      {CADENCE_LABELS[c]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Type">
+              <Select value={kind} onValueChange={(v) => setKind(v as GoalKind)}>
+                <SelectTrigger className="border-white/10 bg-neutral-900 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+                  {GOAL_KINDS.map((k) => (
+                    <SelectItem key={k} value={k}>
+                      {KIND_BADGE[k].label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[10px] leading-snug text-neutral-600">
+                {KIND_HINT[kind]}
+              </p>
+            </Field>
+            <Field label="Priority">
+              <Select
+                value={priority}
+                onValueChange={(v) => setPriority(v as GoalPriority)}
+              >
+                <SelectTrigger className="border-white/10 bg-neutral-900 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+                  {GOAL_PRIORITIES.map((p) => (
+                    <SelectItem key={p} value={p}>
+                      {p}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          </div>
+          <Field label="Project (optional)">
+            <Input
+              value={projectRef}
+              onChange={(e) => setProjectRef(e.target.value)}
+              placeholder="e.g. 12-guest-post-pipeline"
+              className="border-white/10 bg-neutral-900 text-sm"
+            />
+          </Field>
+          <Field label="Notes">
+            <Textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={3}
+              className="border-white/10 bg-neutral-900 text-sm"
+            />
+          </Field>
+          {error && <p className="text-sm text-red-400">{error}</p>}
+        </div>
+
+        <DialogFooter>
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-sm text-neutral-300 hover:bg-white/10"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={saving || !title.trim()}
+            className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-violet-500 disabled:opacity-50"
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
