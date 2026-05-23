@@ -13,20 +13,29 @@ import {
   Search,
   Link2,
   X,
+  Repeat,
+  Power,
 } from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
 import {
+  GOAL_KINDS,
   GOAL_PRIORITIES,
   GOAL_STATUSES,
   currentMonthRange,
   currentWeekRange,
   type Goal,
+  type GoalKind,
   type GoalPriority,
   type GoalStatus,
   type LinkedWorkItem,
 } from "@/lib/goals";
+import {
+  GOAL_CADENCES,
+  type GoalCadence,
+  type GoalRecurrence,
+} from "@/lib/goal-recurrences";
 
 import {
   Select,
@@ -76,6 +85,27 @@ const SCOPE_LABELS: Record<string, string> = {
   all: "All",
 };
 
+const KIND_BADGE: Record<GoalKind, { label: string; className: string }> = {
+  input: {
+    label: "Input",
+    className: "bg-cyan-500/15 text-cyan-300 border-cyan-500/30",
+  },
+  output: {
+    label: "Output",
+    className: "bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30",
+  },
+};
+
+const KIND_HINT: Record<GoalKind, string> = {
+  input: "Effort you control — e.g. 10 reddit comments, 25 outreach emails",
+  output: "Result you influence — e.g. 5 backlinks landed, 3 articles published",
+};
+
+const CADENCE_LABELS: Record<GoalCadence, string> = {
+  weekly: "Weekly",
+  monthly: "Monthly",
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -117,10 +147,12 @@ export function GoalsPage() {
     "current" | "upcoming" | "past" | "all"
   >("current");
   const [statusFilter, setStatusFilter] = useState<GoalStatus | "all">("all");
+  const [kindFilter, setKindFilter] = useState<GoalKind | "all">("all");
   const [responsibleFilter, setResponsibleFilter] = useState<string>("all");
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Goal | null>(null);
+  const [recurrences, setRecurrences] = useState<GoalRecurrence[]>([]);
 
   useEffect(() => {
     supabase?.auth.getSession().then(({ data }) => {
@@ -149,6 +181,7 @@ export function GoalsPage() {
       const params = new URLSearchParams();
       params.set("periodScope", scopeFilter);
       if (statusFilter !== "all") params.set("status", statusFilter);
+      if (kindFilter !== "all") params.set("kind", kindFilter);
       if (responsibleFilter !== "all")
         params.set("responsibleEmail", responsibleFilter);
       const res = await fetch(`/api/goals?${params}`, {
@@ -171,7 +204,25 @@ export function GoalsPage() {
   useEffect(() => {
     fetchGoals();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, scopeFilter, statusFilter, responsibleFilter]);
+  }, [token, scopeFilter, statusFilter, kindFilter, responsibleFilter]);
+
+  const fetchRecurrences = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await fetch("/api/goals/recurrences", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setRecurrences((data.recurrences ?? []) as GoalRecurrence[]);
+    } catch {
+      // non-fatal — the recurring panel just stays empty
+    }
+  }, [token]);
+
+  useEffect(() => {
+    fetchRecurrences();
+  }, [fetchRecurrences]);
 
   const incrementGoal = async (id: string, delta: number) => {
     if (!token) return;
@@ -312,6 +363,22 @@ export function GoalsPage() {
           </SelectContent>
         </Select>
         <Select
+          value={kindFilter}
+          onValueChange={(v) => setKindFilter(v as typeof kindFilter)}
+        >
+          <SelectTrigger className="h-9 w-32 border-white/10 bg-neutral-900 text-xs text-neutral-200">
+            <SelectValue placeholder="Type" />
+          </SelectTrigger>
+          <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+            <SelectItem value="all">Any type</SelectItem>
+            {GOAL_KINDS.map((k) => (
+              <SelectItem key={k} value={k}>
+                {KIND_BADGE[k].label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
           value={responsibleFilter}
           onValueChange={setResponsibleFilter}
         >
@@ -330,6 +397,16 @@ export function GoalsPage() {
       </div>
 
       {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
+
+      {/* Recurring rules */}
+      <RecurringPanel
+        token={token}
+        recurrences={recurrences}
+        onChanged={() => {
+          fetchRecurrences();
+          fetchGoals();
+        }}
+      />
 
       {/* Goal list */}
       {loading && goals.length === 0 ? (
@@ -381,8 +458,12 @@ export function GoalsPage() {
           teamMembers={teamMembers}
           onClose={() => setCreating(false)}
           onSaved={(g) => {
-            setGoals((prev) => [g, ...prev]);
+            if (g) setGoals((prev) => [g, ...prev]);
             setCreating(false);
+          }}
+          onRecurrenceCreated={() => {
+            fetchRecurrences();
+            fetchGoals();
           }}
         />
       )}
@@ -394,7 +475,7 @@ export function GoalsPage() {
           initial={editing}
           onClose={() => setEditing(null)}
           onSaved={(g) => {
-            setGoals((prev) => prev.map((it) => (it.id === g.id ? g : it)));
+            if (g) setGoals((prev) => prev.map((it) => (it.id === g.id ? g : it)));
             setEditing(null);
           }}
         />
@@ -540,6 +621,24 @@ function GoalCard({
             >
               {status.label}
             </span>
+            <span
+              className={cn(
+                "rounded-full border px-2 py-0.5 text-[10px] font-medium",
+                KIND_BADGE[goal.kind].className,
+              )}
+              title={KIND_HINT[goal.kind]}
+            >
+              {KIND_BADGE[goal.kind].label}
+            </span>
+            {goal.recurrenceId && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-300"
+                title="Auto-created from a recurring rule"
+              >
+                <Repeat className="size-2.5" />
+                Recurring
+              </span>
+            )}
             {isAuto && (
               <span
                 className="rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-300"
@@ -953,13 +1052,15 @@ function GoalFormDialog({
   initial,
   onClose,
   onSaved,
+  onRecurrenceCreated,
 }: {
   mode: "create" | "edit";
   token: string | null;
   teamMembers: TeamMember[];
   initial?: Goal;
   onClose: () => void;
-  onSaved: (g: Goal) => void;
+  onSaved: (g: Goal | null) => void;
+  onRecurrenceCreated?: () => void;
 }) {
   const week = currentWeekRange();
   const month = currentMonthRange();
@@ -967,6 +1068,10 @@ function GoalFormDialog({
   const [title, setTitle] = useState(initial?.title ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [unit, setUnit] = useState(initial?.unit ?? "");
+  const [kind, setKind] = useState<GoalKind>(initial?.kind ?? "output");
+  // Only used in create mode: "none" = one-off goal, otherwise create a
+  // recurrence rule that materializes a goal each period.
+  const [repeat, setRepeat] = useState<GoalCadence | "none">("none");
   const [target, setTarget] = useState<string>(
     String(initial?.targetCount ?? 1),
   );
@@ -1008,10 +1113,43 @@ function GoalFormDialog({
     setSaving(true);
     setError(null);
     try {
+      // Create mode + a repeat cadence → spin up a recurrence rule instead of a
+      // one-off goal. The server materializes this period's instance and the
+      // cron handles future periods.
+      if (mode === "create" && repeat !== "none") {
+        const res = await fetch("/api/goals/recurrences", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            title: title.trim(),
+            description: description.trim() || null,
+            unit: unit.trim() || null,
+            kind,
+            targetCount: Math.max(1, Number(target) || 1),
+            priority,
+            cadence: repeat,
+            responsibleEmail: responsibleEmail || null,
+            projectRef: projectRef.trim() || null,
+            notes: notes.trim() || null,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed");
+        onRecurrenceCreated?.();
+        // The materialized instance, if any, lands via onRecurrenceCreated's
+        // refetch — don't double-insert it here.
+        onSaved(null);
+        return;
+      }
+
       const body = {
         title: title.trim(),
         description: description.trim() || null,
         unit: unit.trim() || null,
+        kind,
         targetCount: Math.max(1, Number(target) || 1),
         currentCount: Math.max(0, Number(current) || 0),
         periodStart,
@@ -1095,7 +1233,51 @@ function GoalFormDialog({
               />
             </Field>
           </div>
-          <div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Type">
+              <Select value={kind} onValueChange={(v) => setKind(v as GoalKind)}>
+                <SelectTrigger className="border-white/10 bg-neutral-900 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+                  {GOAL_KINDS.map((k) => (
+                    <SelectItem key={k} value={k}>
+                      {KIND_BADGE[k].label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[10px] leading-snug text-neutral-600">
+                {KIND_HINT[kind]}
+              </p>
+            </Field>
+            {mode === "create" && (
+              <Field label="Repeat">
+                <Select
+                  value={repeat}
+                  onValueChange={(v) => setRepeat(v as GoalCadence | "none")}
+                >
+                  <SelectTrigger className="border-white/10 bg-neutral-900 text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+                    <SelectItem value="none">One-off</SelectItem>
+                    {GOAL_CADENCES.map((c) => (
+                      <SelectItem key={c} value={c}>
+                        {CADENCE_LABELS[c]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[10px] leading-snug text-neutral-600">
+                  {repeat === "none"
+                    ? "Single goal for the period below"
+                    : `Auto-creates a fresh goal every ${repeat === "weekly" ? "Monday" : "1st of the month"}`}
+                </p>
+              </Field>
+            )}
+          </div>
+          <div className={cn(repeat !== "none" && "opacity-50")}>
             <div className="mb-1 flex items-center gap-2">
               <label className="text-[11px] uppercase tracking-wider text-neutral-500">
                 Period
@@ -1221,12 +1403,148 @@ function GoalFormDialog({
             {saving
               ? "Saving…"
               : mode === "create"
-                ? "Add goal"
+                ? repeat !== "none"
+                  ? "Add recurring goal"
+                  : "Add goal"
                 : "Save"}
           </button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Recurring rules panel
+// ---------------------------------------------------------------------------
+
+// Collapsible manager for recurrence rules. Each rule auto-creates a goal per
+// period; toggling it off stops future materialization (past instances stay).
+function RecurringPanel({
+  token,
+  recurrences,
+  onChanged,
+}: {
+  token: string | null;
+  recurrences: GoalRecurrence[];
+  onChanged: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const toggleActive = async (r: GoalRecurrence) => {
+    if (!token) return;
+    setBusyId(r.id);
+    try {
+      const res = await fetch(`/api/goals/recurrences/${r.id}`, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ active: !r.active }),
+      });
+      if (res.ok) onChanged();
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const remove = async (r: GoalRecurrence) => {
+    if (!token) return;
+    if (
+      !confirm(
+        `Stop the recurring "${r.title}"? Goals already created stay; no new ones will be generated.`,
+      )
+    )
+      return;
+    setBusyId(r.id);
+    try {
+      const res = await fetch(`/api/goals/recurrences/${r.id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) onChanged();
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  if (recurrences.length === 0) return null;
+
+  const activeCount = recurrences.filter((r) => r.active).length;
+
+  return (
+    <div className="mb-4 rounded-xl border border-amber-500/15 bg-amber-500/[0.03]">
+      <button
+        onClick={() => setExpanded((e) => !e)}
+        className="flex w-full items-center gap-2 px-4 py-2.5 text-left"
+      >
+        <Repeat className="size-3.5 text-amber-400" />
+        <span className="text-xs font-medium text-amber-200">
+          Recurring rules
+        </span>
+        <span className="text-[11px] text-neutral-500">
+          {activeCount} active · {recurrences.length} total
+        </span>
+        <ChevronDown
+          className={cn(
+            "ml-auto size-3.5 text-neutral-500 transition-transform",
+            expanded ? "rotate-0" : "-rotate-90",
+          )}
+        />
+      </button>
+      {expanded && (
+        <div className="space-y-1 border-t border-amber-500/10 px-2 py-2">
+          {recurrences.map((r) => (
+            <div
+              key={r.id}
+              className={cn(
+                "flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/[0.03]",
+                !r.active && "opacity-50",
+              )}
+            >
+              <span
+                className={cn(
+                  "rounded-full border px-2 py-0.5 text-[10px] font-medium",
+                  KIND_BADGE[r.kind].className,
+                )}
+              >
+                {KIND_BADGE[r.kind].label}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-xs text-neutral-200">
+                {r.title}
+              </span>
+              <span className="shrink-0 text-[10px] text-neutral-500">
+                {r.targetCount}
+                {r.unit ? ` ${r.unit}` : ""} · {CADENCE_LABELS[r.cadence]}
+              </span>
+              <button
+                onClick={() => toggleActive(r)}
+                disabled={busyId === r.id}
+                className={cn(
+                  "rounded p-1 transition disabled:opacity-40",
+                  r.active
+                    ? "text-emerald-400 hover:bg-emerald-500/10"
+                    : "text-neutral-600 hover:bg-white/10",
+                )}
+                title={r.active ? "Pause this rule" : "Resume this rule"}
+              >
+                <Power className="size-3.5" />
+              </button>
+              <button
+                onClick={() => remove(r)}
+                disabled={busyId === r.id}
+                className="rounded p-1 text-neutral-700 transition hover:bg-red-500/10 hover:text-red-400 disabled:opacity-40"
+                title="Delete rule"
+              >
+                <Trash2 className="size-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

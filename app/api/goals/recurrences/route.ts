@@ -1,23 +1,18 @@
 import { NextResponse } from "next/server";
 
 import { getSupabaseUserClient } from "@/lib/supabase-server";
+import { GOAL_KINDS, GOAL_PRIORITIES, type GoalKind, type GoalPriority } from "@/lib/goals";
 import {
-  createGoal,
-  GOAL_KINDS,
-  GOAL_PRIORITIES,
-  GOAL_STATUSES,
-  getGoalStats,
-  listGoals,
-  type GoalFilters,
-  type GoalKind,
-  type GoalPriority,
-  type GoalStatus,
-} from "@/lib/goals";
+  GOAL_CADENCES,
+  createRecurrence,
+  listRecurrences,
+  materializeRecurrence,
+  type GoalCadence,
+} from "@/lib/goal-recurrences";
 
-const STATUS_SET = new Set<string>(GOAL_STATUSES);
-const PRIORITY_SET = new Set<string>(GOAL_PRIORITIES);
 const KIND_SET = new Set<string>(GOAL_KINDS);
-const SCOPE_SET = new Set(["current", "upcoming", "past", "all"]);
+const PRIORITY_SET = new Set<string>(GOAL_PRIORITIES);
+const CADENCE_SET = new Set<string>(GOAL_CADENCES);
 
 function unauthorized(message = "Unauthorized") {
   return NextResponse.json({ error: message }, { status: 401 });
@@ -45,30 +40,15 @@ export async function GET(req: Request) {
 
   try {
     const url = new URL(req.url);
-    const status = url.searchParams.get("status");
-    const kind = url.searchParams.get("kind");
-    const responsibleEmail = url.searchParams.get("responsibleEmail");
-    const periodScope = url.searchParams.get("periodScope");
+    const activeParam = url.searchParams.get("active");
+    const filters: { active?: boolean } = {};
+    if (activeParam === "true") filters.active = true;
+    else if (activeParam === "false") filters.active = false;
 
-    const filters: GoalFilters = {};
-    if (status && STATUS_SET.has(status)) {
-      filters.status = status as GoalStatus;
-    }
-    if (kind && KIND_SET.has(kind)) {
-      filters.kind = kind as GoalKind;
-    }
-    if (responsibleEmail) filters.responsibleEmail = responsibleEmail;
-    if (periodScope && SCOPE_SET.has(periodScope)) {
-      filters.periodScope = periodScope as GoalFilters["periodScope"];
-    }
-
-    const [goals, stats] = await Promise.all([
-      listGoals(client, filters),
-      getGoalStats(client),
-    ]);
-    return NextResponse.json({ goals, stats });
+    const recurrences = await listRecurrences(client, filters);
+    return NextResponse.json({ recurrences });
   } catch (err) {
-    console.error("[api/goals] GET failed:", err);
+    console.error("[api/goals/recurrences] GET failed:", err);
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed to list" },
       { status: 500 },
@@ -89,36 +69,32 @@ export async function POST(req: Request) {
 
   const body = await safeReadJson(req);
   const title = typeof body.title === "string" ? body.title : null;
-  const periodStart =
-    typeof body.periodStart === "string" ? body.periodStart : null;
-  const periodEnd =
-    typeof body.periodEnd === "string" ? body.periodEnd : null;
+  const cadence =
+    typeof body.cadence === "string" && CADENCE_SET.has(body.cadence)
+      ? (body.cadence as GoalCadence)
+      : null;
 
   if (!title) {
     return NextResponse.json({ error: "title is required" }, { status: 400 });
   }
-  if (!periodStart || !periodEnd) {
+  if (!cadence) {
     return NextResponse.json(
-      { error: "periodStart and periodEnd are required (YYYY-MM-DD)" },
+      { error: "cadence must be 'weekly' or 'monthly'" },
       { status: 400 },
     );
   }
 
-  const status =
-    typeof body.status === "string" && STATUS_SET.has(body.status)
-      ? (body.status as GoalStatus)
+  const kind =
+    typeof body.kind === "string" && KIND_SET.has(body.kind)
+      ? (body.kind as GoalKind)
       : undefined;
   const priority =
     typeof body.priority === "string" && PRIORITY_SET.has(body.priority)
       ? (body.priority as GoalPriority)
       : undefined;
-  const kind =
-    typeof body.kind === "string" && KIND_SET.has(body.kind)
-      ? (body.kind as GoalKind)
-      : undefined;
 
   try {
-    const goal = await createGoal(client, {
+    const recurrence = await createRecurrence(client, {
       title,
       description:
         typeof body.description === "string" ? body.description : null,
@@ -126,12 +102,9 @@ export async function POST(req: Request) {
       kind,
       targetCount:
         typeof body.targetCount === "number" ? body.targetCount : undefined,
-      currentCount:
-        typeof body.currentCount === "number" ? body.currentCount : undefined,
-      periodStart,
-      periodEnd,
-      status,
       priority,
+      cadence,
+      active: typeof body.active === "boolean" ? body.active : undefined,
       responsibleEmail:
         typeof body.responsibleEmail === "string"
           ? body.responsibleEmail
@@ -140,7 +113,22 @@ export async function POST(req: Request) {
       notes: typeof body.notes === "string" ? body.notes : null,
       createdByEmail: userEmail,
     });
-    return NextResponse.json({ goal }, { status: 201 });
+
+    // Create the instance for the current period right away so the user sees
+    // the goal without waiting for the next cron tick.
+    let goal = null;
+    if (recurrence.active) {
+      try {
+        goal = await materializeRecurrence(client, recurrence);
+      } catch (err) {
+        console.error(
+          "[api/goals/recurrences] initial materialize failed:",
+          err,
+        );
+      }
+    }
+
+    return NextResponse.json({ recurrence, goal }, { status: 201 });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed to create" },

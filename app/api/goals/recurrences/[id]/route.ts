@@ -1,22 +1,19 @@
 import { NextResponse } from "next/server";
 
 import { getSupabaseUserClient } from "@/lib/supabase-server";
+import { GOAL_KINDS, GOAL_PRIORITIES, type GoalKind, type GoalPriority } from "@/lib/goals";
 import {
-  deleteGoal,
-  GOAL_KINDS,
-  GOAL_PRIORITIES,
-  GOAL_STATUSES,
-  incrementGoalProgress,
-  updateGoal,
-  type GoalKind,
-  type GoalPriority,
-  type GoalStatus,
-  type UpdateGoalInput,
-} from "@/lib/goals";
+  GOAL_CADENCES,
+  deleteRecurrence,
+  materializeRecurrence,
+  updateRecurrence,
+  type GoalCadence,
+  type UpdateRecurrenceInput,
+} from "@/lib/goal-recurrences";
 
-const STATUS_SET = new Set<string>(GOAL_STATUSES);
-const PRIORITY_SET = new Set<string>(GOAL_PRIORITIES);
 const KIND_SET = new Set<string>(GOAL_KINDS);
+const PRIORITY_SET = new Set<string>(GOAL_PRIORITIES);
+const CADENCE_SET = new Set<string>(GOAL_CADENCES);
 
 function unauthorized(message = "Unauthorized") {
   return NextResponse.json({ error: message }, { status: 401 });
@@ -48,21 +45,7 @@ export async function PATCH(
 
   const body = await safeReadJson(req);
 
-  // Special op: { delta: 1 | -1 } increments current_count and auto-flips
-  // status to completed when target is reached.
-  if (typeof body.delta === "number" && Number.isFinite(body.delta)) {
-    try {
-      const goal = await incrementGoalProgress(client, id, body.delta);
-      return NextResponse.json({ goal });
-    } catch (err) {
-      return NextResponse.json(
-        { error: err instanceof Error ? err.message : "Failed to increment" },
-        { status: 500 },
-      );
-    }
-  }
-
-  const updates: UpdateGoalInput = {};
+  const updates: UpdateRecurrenceInput = {};
   if (typeof body.title === "string") updates.title = body.title;
   if ("description" in body)
     updates.description =
@@ -73,22 +56,14 @@ export async function PATCH(
     updates.kind = body.kind as GoalKind;
   if (typeof body.targetCount === "number")
     updates.targetCount = body.targetCount;
-  if (typeof body.currentCount === "number")
-    updates.currentCount = body.currentCount;
-  if (typeof body.periodStart === "string")
-    updates.periodStart = body.periodStart;
-  if (typeof body.periodEnd === "string") updates.periodEnd = body.periodEnd;
-  if (typeof body.status === "string" && STATUS_SET.has(body.status)) {
-    updates.status = body.status as GoalStatus;
-  }
-  if (typeof body.priority === "string" && PRIORITY_SET.has(body.priority)) {
+  if (typeof body.priority === "string" && PRIORITY_SET.has(body.priority))
     updates.priority = body.priority as GoalPriority;
-  }
+  if (typeof body.cadence === "string" && CADENCE_SET.has(body.cadence))
+    updates.cadence = body.cadence as GoalCadence;
+  if (typeof body.active === "boolean") updates.active = body.active;
   if ("responsibleEmail" in body)
     updates.responsibleEmail =
-      typeof body.responsibleEmail === "string"
-        ? body.responsibleEmail
-        : null;
+      typeof body.responsibleEmail === "string" ? body.responsibleEmail : null;
   if ("projectRef" in body)
     updates.projectRef =
       typeof body.projectRef === "string" ? body.projectRef : null;
@@ -96,8 +71,18 @@ export async function PATCH(
     updates.notes = typeof body.notes === "string" ? body.notes : null;
 
   try {
-    const goal = await updateGoal(client, id, updates);
-    return NextResponse.json({ goal });
+    const recurrence = await updateRecurrence(client, id, updates);
+    // If the rule was just (re)activated, make sure the current period has an
+    // instance.
+    let goal = null;
+    if (recurrence.active) {
+      try {
+        goal = await materializeRecurrence(client, recurrence);
+      } catch (err) {
+        console.error("[api/goals/recurrences] materialize on patch failed:", err);
+      }
+    }
+    return NextResponse.json({ recurrence, goal });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed to update" },
@@ -119,7 +104,7 @@ export async function DELETE(
   }
 
   try {
-    await deleteGoal(client, id);
+    await deleteRecurrence(client, id);
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(

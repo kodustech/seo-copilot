@@ -13,6 +13,12 @@ export type GoalStatus =
 
 export type GoalPriority = "high" | "medium" | "low";
 
+// "input"  = a leading activity you fully control (e.g. "10 reddit comments").
+// "output" = a lagging result you influence but don't fully control (e.g. "5
+//            backlinks landed"). Output goals pair naturally with kanban
+//            auto-progress; input goals are usually manual increment.
+export type GoalKind = "input" | "output";
+
 export const GOAL_STATUSES: GoalStatus[] = [
   "active",
   "completed",
@@ -23,11 +29,14 @@ export const GOAL_STATUSES: GoalStatus[] = [
 
 export const GOAL_PRIORITIES: GoalPriority[] = ["high", "medium", "low"];
 
+export const GOAL_KINDS: GoalKind[] = ["input", "output"];
+
 export type Goal = {
   id: string;
   title: string;
   description: string | null;
   unit: string | null;
+  kind: GoalKind;
   targetCount: number;
   currentCount: number;
   periodStart: string; // YYYY-MM-DD
@@ -37,6 +46,8 @@ export type Goal = {
   responsibleEmail: string | null;
   projectRef: string | null;
   notes: string | null;
+  // Set when this goal was materialized from a recurrence rule.
+  recurrenceId: string | null;
   createdByEmail: string | null;
   createdAt: string;
   updatedAt: string;
@@ -46,6 +57,7 @@ export type CreateGoalInput = {
   title: string;
   description?: string | null;
   unit?: string | null;
+  kind?: GoalKind;
   targetCount?: number;
   currentCount?: number;
   periodStart: string;
@@ -55,6 +67,7 @@ export type CreateGoalInput = {
   responsibleEmail?: string | null;
   projectRef?: string | null;
   notes?: string | null;
+  recurrenceId?: string | null;
   createdByEmail?: string | null;
 };
 
@@ -64,6 +77,7 @@ export type UpdateGoalInput = Partial<
 
 export type GoalFilters = {
   status?: GoalStatus | GoalStatus[];
+  kind?: GoalKind;
   responsibleEmail?: string;
   // "current": goals whose period contains today
   // "upcoming": period_start > today
@@ -118,6 +132,7 @@ type Row = {
   title: string;
   description: string | null;
   unit: string | null;
+  kind: GoalKind;
   target_count: number;
   current_count: number;
   period_start: string;
@@ -127,6 +142,7 @@ type Row = {
   responsible_email: string | null;
   project_ref: string | null;
   notes: string | null;
+  recurrence_id: string | null;
   created_by_email: string | null;
   created_at: string;
   updated_at: string;
@@ -138,6 +154,8 @@ function rowToGoal(row: Row): Goal {
     title: row.title,
     description: row.description,
     unit: row.unit,
+    // Tolerate rows written before the column existed.
+    kind: row.kind ?? "output",
     targetCount: row.target_count,
     currentCount: row.current_count,
     periodStart: row.period_start,
@@ -147,6 +165,7 @@ function rowToGoal(row: Row): Goal {
     responsibleEmail: row.responsible_email,
     projectRef: row.project_ref,
     notes: row.notes,
+    recurrenceId: row.recurrence_id ?? null,
     createdByEmail: row.created_by_email,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -179,6 +198,9 @@ export async function listGoals(
     } else {
       query = query.eq("status", filters.status);
     }
+  }
+  if (filters.kind) {
+    query = query.eq("kind", filters.kind);
   }
   if (filters.responsibleEmail) {
     query = query.eq("responsible_email", filters.responsibleEmail);
@@ -215,6 +237,7 @@ export async function createGoal(
     title: input.title.trim(),
     description: trimOrNull(input.description),
     unit: trimOrNull(input.unit),
+    kind: input.kind ?? "output",
     target_count: input.targetCount ?? 1,
     current_count: input.currentCount ?? 0,
     period_start: input.periodStart,
@@ -224,6 +247,7 @@ export async function createGoal(
     responsible_email: trimOrNull(input.responsibleEmail),
     project_ref: trimOrNull(input.projectRef),
     notes: trimOrNull(input.notes),
+    recurrence_id: input.recurrenceId ?? null,
     created_by_email: trimOrNull(input.createdByEmail),
   };
 
@@ -247,6 +271,8 @@ export async function updateGoal(
   if ("description" in updates)
     patch.description = trimOrNull(updates.description ?? null);
   if ("unit" in updates) patch.unit = trimOrNull(updates.unit ?? null);
+  if ("kind" in updates && updates.kind !== undefined)
+    patch.kind = updates.kind;
   if ("targetCount" in updates && typeof updates.targetCount === "number")
     patch.target_count = updates.targetCount;
   if ("currentCount" in updates && typeof updates.currentCount === "number")
