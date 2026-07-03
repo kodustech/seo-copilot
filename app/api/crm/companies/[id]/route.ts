@@ -100,6 +100,8 @@ export async function PATCH(
     updates.industry = typeof body.industry === "string" ? body.industry : null;
   if ("size" in body)
     updates.size = typeof body.size === "string" ? body.size : null;
+  if ("devCount" in body)
+    updates.devCount = typeof body.devCount === "number" ? body.devCount : null;
   if ("country" in body)
     updates.country = typeof body.country === "string" ? body.country : null;
   if ("website" in body)

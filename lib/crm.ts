@@ -47,6 +47,7 @@ export type CrmCompany = {
   ownerEmail: string | null;
   industry: string | null;
   size: string | null;
+  devCount: number | null;
   country: string | null;
   website: string | null;
   linkedin: string | null;
@@ -107,6 +108,7 @@ export type CreateCompanyInput = {
   ownerEmail?: string | null;
   industry?: string | null;
   size?: string | null;
+  devCount?: number | null;
   country?: string | null;
   website?: string | null;
   linkedin?: string | null;
@@ -153,6 +155,7 @@ type CompanyRow = {
   owner_email: string | null;
   industry: string | null;
   size: string | null;
+  dev_count: number | string | null;
   country: string | null;
   website: string | null;
   linkedin: string | null;
@@ -178,6 +181,7 @@ function rowToCompany(row: CompanyRow): CrmCompany {
     ownerEmail: row.owner_email,
     industry: row.industry,
     size: row.size,
+    devCount: row.dev_count == null ? null : Number(row.dev_count),
     country: row.country,
     website: row.website,
     linkedin: row.linkedin,
@@ -421,6 +425,7 @@ function companyInsertRow(input: CreateCompanyInput): Record<string, unknown> {
     owner_email: trimOrNull(input.ownerEmail),
     industry: trimOrNull(input.industry),
     size: trimOrNull(input.size),
+    dev_count: typeof input.devCount === "number" ? input.devCount : null,
     country: trimOrNull(input.country),
     website: trimOrNull(input.website),
     linkedin: trimOrNull(input.linkedin),
@@ -478,6 +483,9 @@ export async function updateCompany(
     patch.owner_email = trimOrNull(updates.ownerEmail);
   if ("industry" in updates) patch.industry = trimOrNull(updates.industry);
   if ("size" in updates) patch.size = trimOrNull(updates.size);
+  if ("devCount" in updates)
+    patch.dev_count =
+      typeof updates.devCount === "number" ? updates.devCount : null;
   if ("country" in updates) patch.country = trimOrNull(updates.country);
   if ("website" in updates) patch.website = trimOrNull(updates.website);
   if ("linkedin" in updates) patch.linkedin = trimOrNull(updates.linkedin);
@@ -562,6 +570,7 @@ export async function upsertCompanyFromWebhook(
     if (orgId) merged.orgId = orgId;
     if (input.industry != null) merged.industry = input.industry;
     if (input.size != null) merged.size = input.size;
+    if (input.devCount != null) merged.devCount = input.devCount;
     if (input.country != null) merged.country = input.country;
     if (input.website != null) merged.website = input.website;
     if (input.linkedin != null) merged.linkedin = input.linkedin;
