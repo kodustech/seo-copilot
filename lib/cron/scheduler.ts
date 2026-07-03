@@ -149,6 +149,17 @@ async function runCrmIdleCron(): Promise<void> {
   }
 }
 
+async function runNotificationsCron(): Promise<void> {
+  const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
+  const { generateNotificationsForAllUsers } = await import(
+    "@/lib/notifications"
+  );
+  const res = await generateNotificationsForAllUsers(getSupabaseServiceClient());
+  console.log(
+    `[cron] notifications: ${res.created} created across ${res.users} users`,
+  );
+}
+
 const JOBS: JobDefinition[] = [
   {
     name: "scheduled-jobs + YOLO",
@@ -175,6 +186,12 @@ const JOBS: JobDefinition[] = [
     name: "crm-idle",
     schedule: "0 12 * * *",
     run: runCrmIdleCron,
+  },
+  {
+    // Every 3h: refresh per-user notifications from the attention feed.
+    name: "notifications",
+    schedule: "0 */3 * * *",
+    run: runNotificationsCron,
   },
 ];
 

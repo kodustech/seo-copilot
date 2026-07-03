@@ -10,6 +10,7 @@ import {
   Building2,
   ChevronRight,
   Clock,
+  Inbox,
   KanbanSquare,
   Lightbulb,
   Loader2,
@@ -29,6 +30,7 @@ import {
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
 import { AgentChat } from "@/components/agent-chat";
+import { NotificationBell } from "@/components/notification-bell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -73,6 +75,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       {
         label: "Workspace",
         items: [
+          { href: "/central", label: "Central de Controle", icon: Inbox },
           { href: "/", label: "Content Canvas", icon: Sparkles },
           { href: "/goals", label: "Goals", icon: Target },
           { href: "/kanban", label: "Kanban", icon: KanbanSquare },
@@ -656,6 +659,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
             </h1>
           </div>
           <div className="flex items-center gap-1.5">
+            <NotificationBell />
             <Button
               variant="ghost"
               size="sm"
