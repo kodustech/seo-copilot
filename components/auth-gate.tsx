@@ -7,6 +7,7 @@ import type { Session } from "@supabase/supabase-js";
 import {
   BarChart3,
   Calendar,
+  Building2,
   ChevronRight,
   Clock,
   KanbanSquare,
@@ -84,6 +85,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           { href: "/social-monitoring", label: "Social Monitor", icon: Radar },
           { href: "/reply-radar", label: "Reply Radar", icon: MessageCircle },
           { href: "/outreach", label: "Outreach CRM", icon: Send },
+          { href: "/crm", label: "Company CRM", icon: Building2 },
           { href: "/calendario", label: "Calendar", icon: Calendar },
           { href: "/ideas", label: "Ideas", icon: Lightbulb },
         ],
