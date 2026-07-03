@@ -65,6 +65,7 @@ export async function POST(req: Request) {
     status,
     industry: typeof body.industry === "string" ? body.industry : null,
     size: typeof body.size === "string" ? body.size : null,
+    devCount: typeof body.devCount === "number" ? body.devCount : null,
     country: typeof body.country === "string" ? body.country : null,
     website: typeof body.website === "string" ? body.website : null,
     linkedin: typeof body.linkedin === "string" ? body.linkedin : null,

@@ -380,6 +380,11 @@ export function CrmPage() {
                         </span>
                         <span className="truncate text-xs text-neutral-500">
                           {c.domain ?? "—"}
+                          {c.devCount != null && (
+                            <span className="ml-1.5 rounded bg-white/[0.06] px-1 py-0.5 text-[10px] text-neutral-400">
+                              {c.devCount} devs
+                            </span>
+                          )}
                           {c.orgId && (
                             <span className="ml-1.5 rounded bg-violet-500/15 px-1 py-0.5 text-[10px] text-violet-300">
                               linked
@@ -547,6 +552,7 @@ function WebhookDocs() {
     "orgId": "org-uuid-optional",
     "industry": "SaaS",
     "size": "50-200",
+    "devCount": 120,
     "country": "BR",
     "tags": ["inbound"],
     "enrichment": { "employees": 120, "stack": ["node"] }
@@ -603,6 +609,7 @@ function CreateCompanyDialog({
   const [status, setStatus] = useState<CompanyStatus>("lead");
   const [priority, setPriority] = useState<CompanyPriority>("medium");
   const [ownerEmail, setOwnerEmail] = useState<string>("");
+  const [devCount, setDevCount] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -622,6 +629,7 @@ function CreateCompanyDialog({
         status,
         priority,
         ownerEmail: ownerEmail || null,
+        devCount: devCount.trim() ? Number(devCount) : null,
       }),
     });
     setSaving(false);
@@ -651,6 +659,16 @@ function CreateCompanyDialog({
               <Input value={orgId} onChange={(e) => setOrgId(e.target.value)} placeholder="uuid (optional)" className="border-white/10 bg-neutral-900" />
             </Field>
           </div>
+          <Field label="Qtd. de devs">
+            <Input
+              type="number"
+              min={0}
+              value={devCount}
+              onChange={(e) => setDevCount(e.target.value)}
+              placeholder="ex: 120"
+              className="border-white/10 bg-neutral-900"
+            />
+          </Field>
           <div className="grid grid-cols-3 gap-3">
             <Field label="Status">
               <Select value={status} onValueChange={(v) => setStatus(v as CompanyStatus)}>
@@ -864,6 +882,9 @@ function OverviewTab({
 }) {
   const [orgId, setOrgId] = useState(company.orgId ?? "");
   const [industry, setIndustry] = useState(company.industry ?? "");
+  const [devCount, setDevCount] = useState(
+    company.devCount != null ? String(company.devCount) : "",
+  );
   const [notes, setNotes] = useState(company.notes ?? "");
 
   return (
@@ -925,14 +946,31 @@ function OverviewTab({
         </div>
       </Field>
 
-      <Field label="Industry">
-        <Input
-          value={industry}
-          onChange={(e) => setIndustry(e.target.value)}
-          onBlur={() => industry !== (company.industry ?? "") && onPatch({ industry: industry || null })}
-          className="border-white/10 bg-neutral-900"
-        />
-      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Industry">
+          <Input
+            value={industry}
+            onChange={(e) => setIndustry(e.target.value)}
+            onBlur={() => industry !== (company.industry ?? "") && onPatch({ industry: industry || null })}
+            className="border-white/10 bg-neutral-900"
+          />
+        </Field>
+        <Field label="Qtd. de devs">
+          <Input
+            type="number"
+            min={0}
+            value={devCount}
+            onChange={(e) => setDevCount(e.target.value)}
+            onBlur={() => {
+              const current = company.devCount != null ? String(company.devCount) : "";
+              if (devCount !== current)
+                onPatch({ devCount: devCount.trim() ? Number(devCount) : null });
+            }}
+            placeholder="ex: 120"
+            className="border-white/10 bg-neutral-900"
+          />
+        </Field>
+      </div>
 
       <Field label="Notes">
         <Textarea
