@@ -112,6 +112,43 @@ async function runReplyRadarCron(): Promise<void> {
   }
 }
 
+async function runCrmIdleCron(): Promise<void> {
+  const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
+  const { getStaleCompanies } = await import("@/lib/crm");
+
+  const stale = await getStaleCompanies(getSupabaseServiceClient());
+  if (stale.length === 0) return;
+
+  const companies = stale.map((c) => ({
+    id: c.id,
+    name: c.name,
+    status: c.status,
+    ownerEmail: c.ownerEmail,
+    idleDays: c.idleDays,
+    slaDays: c.slaDays,
+    lastActivityAt: c.lastActivityAt,
+  }));
+  console.log(
+    `[cron] crm-idle: ${stale.length} idle companies — ${companies
+      .map((c) => c.name)
+      .join(", ")}`,
+  );
+
+  // Optional fan-out (e.g. n8n → Slack). No-op if the env var is unset.
+  const webhook = process.env.CRM_IDLE_WEBHOOK_URL;
+  if (webhook) {
+    try {
+      await fetch(webhook, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ count: stale.length, companies }),
+      });
+    } catch (err) {
+      console.error("[cron] crm-idle webhook post failed:", err);
+    }
+  }
+}
+
 const JOBS: JobDefinition[] = [
   {
     name: "scheduled-jobs + YOLO",
@@ -132,6 +169,12 @@ const JOBS: JobDefinition[] = [
     name: "reply-radar",
     schedule: "0 11,16,21 * * *",
     run: runReplyRadarCron,
+  },
+  {
+    // Daily 12:00 UTC (~09:00 BRT): flag CRM accounts idle past their SLA.
+    name: "crm-idle",
+    schedule: "0 12 * * *",
+    run: runCrmIdleCron,
   },
 ];
 
