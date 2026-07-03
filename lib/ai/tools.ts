@@ -69,6 +69,21 @@ import {
   currentMonthRange,
   type Goal,
 } from "@/lib/goals";
+import {
+  listCompanies,
+  getCompany,
+  createCompany,
+  updateCompany,
+  createComment,
+  listContacts,
+  listComments,
+  listActivities,
+  COMPANY_STATUSES,
+  COMPANY_PRIORITIES,
+  type CompanyStatus,
+  type CompanyPriority,
+} from "@/lib/crm";
+import { getProductSignals } from "@/lib/crm-signals";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getModel } from "@/lib/ai/provider";
 import { CONTENT_PLAN_SYNTHESIS_PROMPT } from "@/lib/ai/system-prompt";
@@ -3116,6 +3131,242 @@ const listSocialMentions = tool({
   },
 });
 
+// ---------------------------------------------------------------------------
+// Company CRM tools
+// ---------------------------------------------------------------------------
+
+export const listCrmCompanies = tool({
+  description:
+    "List/filter companies in the Company CRM. Filter by status, owner, search text, or only accounts that are idle past their status SLA (stale_only).",
+  inputSchema: z.object({
+    status: z
+      .enum(COMPANY_STATUSES as unknown as [string, ...string[]])
+      .optional()
+      .describe("Filter by pipeline status"),
+    owner_email: z.string().optional().describe("Filter by responsible owner email"),
+    stale_only: z
+      .boolean()
+      .optional()
+      .describe("Only companies idle past their status SLA (need attention)"),
+    search: z.string().optional().describe("Search name, domain, org id, industry, notes"),
+    limit: z.number().optional().describe("Max rows (default 50)"),
+  }),
+  execute: async ({ status, owner_email, stale_only, search, limit }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const companies = await listCompanies(client, {
+        status: status as CompanyStatus | undefined,
+        ownerEmail: owner_email,
+        staleOnly: stale_only,
+        search,
+        limit: limit ?? 50,
+      });
+      return {
+        success: true as const,
+        count: companies.length,
+        companies: companies.map((c) => ({
+          id: c.id,
+          name: c.name,
+          domain: c.domain,
+          org_id: c.orgId,
+          status: c.status,
+          priority: c.priority,
+          owner_email: c.ownerEmail,
+          dev_count: c.devCount,
+          idle_days: c.idleDays,
+          is_stale: c.isStale,
+          last_activity_at: c.lastActivityAt,
+        })),
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to list companies",
+      };
+    }
+  },
+});
+
+export const getCrmCompany = tool({
+  description:
+    "Get a single CRM company with its contacts, recent comments, activity timeline, and — when linked to a product org_id — real product usage signals from BigQuery.",
+  inputSchema: z.object({
+    id: z.string().describe("Company id"),
+  }),
+  execute: async ({ id }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const company = await getCompany(client, id);
+      if (!company) {
+        return { success: false as const, message: "Company not found" };
+      }
+      const [contacts, comments, activities] = await Promise.all([
+        listContacts(client, id),
+        listComments(client, id),
+        listActivities(client, id, 20),
+      ]);
+      let signals = null;
+      if (company.orgId) {
+        signals = await getProductSignals(company.orgId).catch(() => null);
+      }
+      return {
+        success: true as const,
+        company: {
+          id: company.id,
+          name: company.name,
+          domain: company.domain,
+          org_id: company.orgId,
+          status: company.status,
+          priority: company.priority,
+          owner_email: company.ownerEmail,
+          industry: company.industry,
+          size: company.size,
+          dev_count: company.devCount,
+          country: company.country,
+          arr: company.arr,
+          notes: company.notes,
+          last_activity_at: company.lastActivityAt,
+        },
+        contacts: contacts.map((c) => ({
+          name: c.name,
+          email: c.email,
+          role: c.role,
+        })),
+        comments: comments.slice(0, 10).map((c) => ({
+          author: c.authorEmail,
+          body: c.bodyMd,
+          created_at: c.createdAt,
+        })),
+        activities: activities.map((a) => ({
+          kind: a.kind,
+          summary: a.summary,
+          created_at: a.createdAt,
+        })),
+        product_signals: signals,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to get company",
+      };
+    }
+  },
+});
+
+export const createCrmCompany = tool({
+  description:
+    "Create a company in the Company CRM. Link it to a product org with org_id when known.",
+  inputSchema: z.object({
+    name: z.string().describe("Company name (required)"),
+    domain: z.string().optional().describe("Primary domain, e.g. acme.com"),
+    org_id: z.string().optional().describe("Product organization uuid to link usage signals"),
+    status: z.enum(COMPANY_STATUSES as unknown as [string, ...string[]]).optional(),
+    priority: z.enum(COMPANY_PRIORITIES as unknown as [string, ...string[]]).optional(),
+    owner_email: z.string().optional().describe("Responsible owner email"),
+    industry: z.string().optional(),
+    dev_count: z.number().optional().describe("Number of developers at the company"),
+    notes: z.string().optional(),
+    user_email: z.string().optional().describe("Acting user's email (recorded as creator)"),
+  }),
+  execute: async ({
+    name,
+    domain,
+    org_id,
+    status,
+    priority,
+    owner_email,
+    industry,
+    dev_count,
+    notes,
+    user_email,
+  }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const company = await createCompany(client, {
+        name,
+        domain,
+        orgId: org_id,
+        status: status as CompanyStatus | undefined,
+        priority: priority as CompanyPriority | undefined,
+        ownerEmail: owner_email,
+        industry,
+        devCount: dev_count,
+        notes,
+        source: "agent",
+        createdByEmail: user_email,
+      });
+      return { success: true as const, id: company.id, company };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to create company",
+      };
+    }
+  },
+});
+
+export const updateCrmCompany = tool({
+  description:
+    "Update a CRM company — change status, priority, owner, dev_count, org link, industry or notes.",
+  inputSchema: z.object({
+    id: z.string().describe("Company id"),
+    status: z.enum(COMPANY_STATUSES as unknown as [string, ...string[]]).optional(),
+    priority: z.enum(COMPANY_PRIORITIES as unknown as [string, ...string[]]).optional(),
+    owner_email: z.string().nullable().optional(),
+    org_id: z.string().nullable().optional(),
+    industry: z.string().nullable().optional(),
+    dev_count: z.number().nullable().optional(),
+    notes: z.string().nullable().optional(),
+    user_email: z.string().optional().describe("Acting user's email (recorded as actor)"),
+  }),
+  execute: async ({ id, status, priority, owner_email, org_id, industry, dev_count, notes, user_email }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const company = await updateCompany(
+        client,
+        id,
+        {
+          status: status as CompanyStatus | undefined,
+          priority: priority as CompanyPriority | undefined,
+          ownerEmail: owner_email,
+          orgId: org_id,
+          industry,
+          devCount: dev_count,
+          notes,
+        },
+        user_email,
+      );
+      return { success: true as const, company };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to update company",
+      };
+    }
+  },
+});
+
+export const addCrmComment = tool({
+  description: "Add a markdown comment to a CRM company (logged in the activity timeline).",
+  inputSchema: z.object({
+    id: z.string().describe("Company id"),
+    body_md: z.string().describe("Comment body in markdown"),
+    user_email: z.string().optional().describe("Comment author email"),
+  }),
+  execute: async ({ id, body_md, user_email }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const comment = await createComment(client, id, body_md, user_email);
+      return { success: true as const, id: comment.id };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to add comment",
+      };
+    }
+  },
+});
+
 export function createAgentTools(userEmail?: string) {
   return {
     generateIdeas,
@@ -3163,6 +3414,11 @@ export function createAgentTools(userEmail?: string) {
     unlinkGoalFromTask: unlinkGoalFromTaskTool,
     listGoalLinks: listGoalLinksTool,
     listSocialMentions,
+    listCrmCompanies,
+    getCrmCompany,
+    createCrmCompany,
+    updateCrmCompany,
+    addCrmComment,
   };
 }
 
