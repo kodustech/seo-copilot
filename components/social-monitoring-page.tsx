@@ -15,6 +15,7 @@ import {
   Square,
   ChevronLeft,
   ChevronRight,
+  Download,
 } from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
@@ -111,6 +112,43 @@ const INTENT_OPTIONS: FilterIntent[] = [
 ];
 
 const PAGE_SIZE = 50;
+
+function csvCell(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  const text = Array.isArray(value) ? value.join(", ") : String(value);
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function downloadCsv(filename: string, rows: Record<string, unknown>[]) {
+  if (rows.length === 0) return;
+  const headers = Object.keys(rows[0]);
+  const csv = [
+    headers.map(csvCell).join(","),
+    ...rows.map((row) => headers.map((header) => csvCell(row[header])).join(",")),
+  ].join("\n");
+  const blob = new Blob([`\uFEFF${csv}`], {
+    type: "text/csv;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function outreachTargetTypeFor(mention: SocialMention) {
+  if (mention.intent === "competitor_listicle") return "listicle";
+  if (mention.intent === "backlink_opportunity") return "link_reclamation";
+  if (mention.platform === "github") return "awesome_list";
+  return "article";
+}
+
+function outreachPriorityFor(mention: SocialMention) {
+  return mention.relevance === "high" ? "high" : "medium";
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -434,6 +472,69 @@ export function SocialMonitoringPage() {
     } finally {
       setSendingMention(null);
     }
+  };
+
+  const exportSelectedMentions = () => {
+    const selected = mentions.filter((mention) => selectedIds.has(mention.id));
+    if (selected.length === 0) return;
+
+    const exportedAt = new Date().toISOString();
+    const rows = selected.map((mention) => {
+      const domain = mentionDomain(mention.url);
+      const openPageRank =
+        mention.platform === "web" && domain
+          ? domainAuthority[domain] ?? null
+          : null;
+      const targetType = outreachTargetTypeFor(mention);
+      const priority = outreachPriorityFor(mention);
+      const keywords = mention.keywords_matched.join(", ");
+      const notes = [
+        mention.suggested_approach
+          ? `Suggested approach: ${mention.suggested_approach}`
+          : null,
+        mention.title ? `Title: ${mention.title}` : null,
+        openPageRank !== null
+          ? `Open PageRank: ${openPageRank.toFixed(1)}/10`
+          : null,
+        keywords ? `Keywords: ${keywords}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+
+      return {
+        exported_at: exportedAt,
+        id: mention.id,
+        platform: mention.platform,
+        platform_label: PLATFORM_BADGES[mention.platform].label,
+        url: mention.url,
+        domain,
+        title: mention.title,
+        content: mention.content,
+        author: mention.author,
+        author_profile_url: mention.author_profile_url,
+        published_at: mention.published_at,
+        relevance: mention.relevance,
+        relevance_label: RELEVANCE_BADGES[mention.relevance].label,
+        intent: mention.intent,
+        intent_label: INTENT_LABELS[mention.intent] ?? mention.intent,
+        status: mention.status,
+        status_label: STATUS_LABELS[mention.status].label,
+        keywords_matched: keywords,
+        suggested_approach: mention.suggested_approach,
+        open_pagerank_0_10: openPageRank,
+        outreach_target_type: targetType,
+        outreach_priority: priority,
+        outreach_status_suggestion: "researching",
+        outreach_source: `social_monitor:${mention.platform}`,
+        source_mention_id: mention.id,
+        crm_notes: notes,
+        created_at: mention.created_at,
+        updated_at: mention.updated_at,
+      };
+    });
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadCsv(`social-monitor-prospects-${stamp}.csv`, rows);
   };
 
   const syncNow = async () => {
@@ -778,6 +879,16 @@ export function SocialMonitoringPage() {
             className="rounded-md bg-violet-500/20 px-2 py-1 font-medium text-violet-300 transition hover:bg-violet-500/30 disabled:opacity-50"
           >
             Reset to new
+          </button>
+          <span className="text-neutral-500">·</span>
+          <button
+            onClick={exportSelectedMentions}
+            disabled={batchSubmitting}
+            className="inline-flex items-center gap-1.5 rounded-md bg-white/10 px-2 py-1 font-medium text-neutral-100 transition hover:bg-white/15 disabled:opacity-50"
+            title="Export selected rows with prospecting fields"
+          >
+            <Download className="h-3 w-3" />
+            Export CSV
           </button>
           <span className="text-neutral-500">·</span>
           <button
