@@ -3,18 +3,28 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import type { LanguageModel } from "ai";
 
-type Provider = "google" | "openai" | "anthropic";
+type Provider = "kimi" | "google" | "openai" | "anthropic";
 
 const DEFAULT_MODELS: Record<Provider, string> = {
+  kimi: "kimi-k2.7-code",
   google: "gemini-3.0-flash-lite",
   openai: "gpt-4o",
   anthropic: "claude-sonnet-4-20250514",
 };
 
 export function getModel(): LanguageModel {
-  const provider = (process.env.AI_PROVIDER?.toLowerCase() || "google") as Provider;
+  const provider = (process.env.AI_PROVIDER?.toLowerCase() || "kimi") as Provider;
 
   switch (provider) {
+    case "kimi": {
+      const kimi = createOpenAI({
+        apiKey: process.env.MOONSHOT_API_KEY || process.env.KIMI_API_KEY,
+        baseURL: process.env.KIMI_BASE_URL || "https://api.moonshot.ai/v1",
+        name: "kimi",
+      });
+      const model = process.env.AI_MODEL_KIMI || DEFAULT_MODELS.kimi;
+      return kimi.chat(model);
+    }
     case "google": {
       const google = createGoogleGenerativeAI({
         apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY,
@@ -38,7 +48,7 @@ export function getModel(): LanguageModel {
     }
     default:
       throw new Error(
-        `AI_PROVIDER "${provider}" is not supported. Use: google, openai, or anthropic.`,
+        `AI_PROVIDER "${provider}" is not supported. Use: kimi, google, openai, or anthropic.`,
       );
   }
 }

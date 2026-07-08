@@ -50,10 +50,14 @@ export async function GET(request: Request) {
     return NextResponse.json({
       env: {
         hasExaKey,
+        hasKimiKey: Boolean(
+          process.env.MOONSHOT_API_KEY?.trim() || process.env.KIMI_API_KEY?.trim(),
+        ),
         hasAnthropicKey: Boolean(process.env.ANTHROPIC_API_KEY?.trim()),
         hasOpenAiKey: Boolean(process.env.OPENAI_API_KEY?.trim()),
         hasGoogleKey: Boolean(process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim()),
-        aiProvider: process.env.AI_PROVIDER || "(unset, defaults to google)",
+        aiProvider: process.env.AI_PROVIDER || "(unset, defaults to kimi)",
+        aiModelKimi: process.env.AI_MODEL_KIMI || "kimi-k2.7-code",
       },
       configuredDomains: domains,
       voicePolicy: {

@@ -75,7 +75,7 @@ A interface em `/` já traz todo o fluxo: dois botões para gerar keywords (com 
 
 ### Social: gerar e agendar
 
-- A aba de Social gera variações direto na app usando o provider configurado por `AI_PROVIDER`/`AI_MODEL_*`.
+- A aba de Social gera variações direto na app usando o provider configurado por `AI_PROVIDER`/`AI_MODEL_*`. O default é `AI_PROVIDER=kimi`, com `MOONSHOT_API_KEY` e `AI_MODEL_KIMI=kimi-k2.7-code`.
 - No bloco de conteúdo base, você pode trocar a fonte entre:
   - `Blog posts` (WordPress)
   - `Changelog (build in public)` (via `CHANGELOG_API_URL` -> `POST /api/v1/changelog` em `format=json`)
