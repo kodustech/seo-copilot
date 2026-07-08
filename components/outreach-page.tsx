@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Sparkles,
   CheckCircle2,
+  Download,
   LayoutGrid,
   Rows3,
   GripVertical,
@@ -132,6 +133,32 @@ function formatRelative(iso: string | null): string {
 function formatDateInput(iso: string | null): string {
   if (!iso) return "";
   return iso.slice(0, 10);
+}
+
+function csvCell(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  const text = Array.isArray(value) ? value.join(", ") : String(value);
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function downloadCsv(filename: string, rows: Record<string, unknown>[]) {
+  if (rows.length === 0) return;
+  const headers = Object.keys(rows[0]);
+  const csv = [
+    headers.map(csvCell).join(","),
+    ...rows.map((row) => headers.map((header) => csvCell(row[header])).join(",")),
+  ].join("\n");
+  const blob = new Blob([`\uFEFF${csv}`], {
+    type: "text/csv;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +301,39 @@ export function OutreachPage() {
     (stats["researching"] || 0) +
     (stats["drafted"] || 0);
 
+  const exportContactsCsv = () => {
+    const exportedAt = new Date().toISOString();
+    const rows = prospects.map((prospect) => ({
+      exported_at: exportedAt,
+      id: prospect.id,
+      domain: prospect.domain,
+      url: prospect.url,
+      target_type: prospect.targetType,
+      target_label: TARGET_LABELS[prospect.targetType],
+      contact_name: prospect.contactName,
+      contact_email: prospect.contactEmail,
+      contact_url: prospect.contactUrl,
+      has_contact: Boolean(prospect.contactName || prospect.contactEmail),
+      dr: prospect.dr,
+      niche: prospect.niche,
+      status: prospect.status,
+      status_label: STATUS_LABELS[prospect.status].label,
+      priority: prospect.priority,
+      responsible_email: prospect.responsibleEmail,
+      last_touch_at: prospect.lastTouchAt,
+      next_followup_at: prospect.nextFollowupAt,
+      notes: prospect.notes,
+      source: prospect.source,
+      source_mention_id: prospect.sourceMentionId,
+      created_by_email: prospect.createdByEmail,
+      created_at: prospect.createdAt,
+      updated_at: prospect.updatedAt,
+    }));
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadCsv(`outreach-contacts-${stamp}.csv`, rows);
+  };
+
   return (
     <div className="mx-auto w-full max-w-screen-2xl px-6 py-6">
       {/* Header */}
@@ -316,6 +376,15 @@ export function OutreachPage() {
               Kanban
             </button>
           </div>
+          <button
+            onClick={exportContactsCsv}
+            disabled={prospects.length === 0}
+            className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-neutral-200 transition hover:bg-white/10 disabled:opacity-50"
+            title="Export current filtered outreach contacts"
+          >
+            <Download className="h-4 w-4" />
+            Export CSV
+          </button>
           <button
             onClick={() => setCreating(true)}
             className="flex items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-4 py-2 text-sm font-medium text-violet-300 transition hover:bg-violet-500/20"
@@ -438,7 +507,7 @@ export function OutreachPage() {
                   colSpan={9}
                   className="py-12 text-center text-neutral-500"
                 >
-                  No prospects yet. Click "Add prospect" to start.
+                  No prospects yet. Use Add prospect to start.
                 </TableCell>
               </TableRow>
             ) : (
