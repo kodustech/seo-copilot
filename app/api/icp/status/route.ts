@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 
 import { getSupabaseUserClient } from "@/lib/supabase-server";
-import { startIcpJob } from "@/lib/icp/runner";
+import { getIcpJobState } from "@/lib/icp/runner";
 
-export async function POST(req: Request) {
+export async function GET(req: Request) {
   try {
     await getSupabaseUserClient(req.headers.get("authorization"));
   } catch (err) {
@@ -12,13 +12,5 @@ export async function POST(req: Request) {
       { status: 401 },
     );
   }
-
-  const started = startIcpJob("scan");
-  if (!started) {
-    return NextResponse.json(
-      { error: "A discovery or scan is already running" },
-      { status: 409 },
-    );
-  }
-  return NextResponse.json({ started: true }, { status: 202 });
+  return NextResponse.json(getIcpJobState());
 }

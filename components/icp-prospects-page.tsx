@@ -121,37 +121,64 @@ export function IcpProspectsPage() {
     void reload();
   }, [reload]);
 
+  // Discovery/scan run for minutes server-side; the POST returns 202
+  // immediately and we poll /api/icp/status until the job settles.
+  const pollUntilDone = useCallback(
+    async (action: "discover" | "scan") => {
+      if (!token) return;
+      const headers = { Authorization: `Bearer ${token}` };
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 8000));
+        try {
+          const res = await fetch("/api/icp/status", { headers });
+          if (!res.ok) continue;
+          const state = await res.json();
+          if (state.running) {
+            setNotice(
+              `${state.running === "discover" ? "Discovery" : "Scan"} running since ${new Date(state.startedAt).toLocaleTimeString()}...`,
+            );
+            continue;
+          }
+          setNotice(state.lastError ?? state.lastSummary ?? `${action} finished`);
+          break;
+        } catch {
+          // transient network error while polling; keep trying
+        }
+      }
+      setRunning(null);
+      await reload();
+    },
+    [token, reload],
+  );
+
   const runAction = useCallback(
     async (action: "discover" | "scan") => {
       if (!token || running) return;
       setRunning(action);
-      setNotice(null);
+      setNotice(`Starting ${action}...`);
       try {
         const res = await fetch(`/api/icp/${action}`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token}` },
         });
-        const data = await res.json();
-        if (!res.ok) {
-          setNotice(data.error ?? `${action} failed`);
-        } else if (action === "discover") {
-          setNotice(
-            `Discovered ${data.discovered} companies (${data.added} on watchlist)` +
-              (data.scan ? `, ${data.scan.newSignals} new signals` : ""),
-          );
-        } else {
-          setNotice(
-            `Scanned ${data.companiesScanned} companies, ${data.newSignals} new signals`,
-          );
+        if (res.status === 409) {
+          setNotice("A discovery or scan is already running, watching it...");
+          await pollUntilDone(action);
+          return;
         }
-        await reload();
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          setNotice(data.error ?? `${action} failed`);
+          setRunning(null);
+          return;
+        }
+        await pollUntilDone(action);
       } catch (err) {
         setNotice(err instanceof Error ? err.message : `${action} failed`);
-      } finally {
         setRunning(null);
       }
     },
-    [token, running, reload],
+    [token, running, pollUntilDone],
   );
 
   // Group signals by company for the prospect view.
