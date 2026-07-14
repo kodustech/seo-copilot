@@ -10,6 +10,7 @@ import {
   Building2,
   ChevronRight,
   Clock,
+  Crosshair,
   Inbox,
   KanbanSquare,
   Lightbulb,
@@ -85,6 +86,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       {
         label: "Discovery",
         items: [
+          { href: "/prospects", label: "ICP Prospects", icon: Crosshair },
           { href: "/social-monitoring", label: "Social Monitor", icon: Radar },
           { href: "/reply-radar", label: "Reply Radar", icon: MessageCircle },
           { href: "/outreach", label: "Outreach CRM", icon: Send },
