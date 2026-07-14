@@ -149,6 +149,44 @@ async function runCrmIdleCron(): Promise<void> {
   }
 }
 
+async function runIcpScanCron(): Promise<void> {
+  const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
+  const { scanWatchlist } = await import("@/lib/icp/scanner");
+
+  const results = await scanWatchlist(getSupabaseServiceClient());
+  const newSignals = results.flatMap((r) => r.newSignals);
+  console.log(
+    `[cron] icp-scan: ${results.length} companies scanned, ${newSignals.length} new signals`,
+  );
+
+  // Optional fan-out (e.g. n8n → Slack). No-op if the env var is unset.
+  const webhook = process.env.ICP_SCAN_WEBHOOK_URL;
+  if (webhook && newSignals.length > 0) {
+    try {
+      await fetch(webhook, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          new_signals: newSignals.length,
+          companies: results
+            .filter((r) => r.newSignals.length > 0)
+            .map((r) => ({
+              name: r.companyName,
+              signals: r.newSignals.map((s) => ({
+                type: s.signalType,
+                strength: s.strength,
+                title: s.title,
+                url: s.url,
+              })),
+            })),
+        }),
+      });
+    } catch (err) {
+      console.error("[cron] icp-scan webhook post failed:", err);
+    }
+  }
+}
+
 async function runNotificationsCron(): Promise<void> {
   const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
   const { generateNotificationsForAllUsers } = await import(
@@ -186,6 +224,12 @@ const JOBS: JobDefinition[] = [
     name: "crm-idle",
     schedule: "0 12 * * *",
     run: runCrmIdleCron,
+  },
+  {
+    // Daily 06:00 UTC: scan the ICP watchlist job boards for new signals.
+    name: "icp-scan",
+    schedule: "0 6 * * *",
+    run: runIcpScanCron,
   },
   {
     // Every 3h: refresh per-user notifications from the attention feed.
