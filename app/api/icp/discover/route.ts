@@ -1,13 +1,7 @@
 import { NextResponse } from "next/server";
 
-import {
-  getSupabaseServiceClient,
-  getSupabaseUserClient,
-} from "@/lib/supabase-server";
-import { discoverAndWatch } from "@/lib/icp/discovery";
-import { scanWatchlist } from "@/lib/icp/scanner";
-
-export const maxDuration = 300;
+import { getSupabaseUserClient } from "@/lib/supabase-server";
+import { startIcpJob } from "@/lib/icp/runner";
 
 export async function POST(req: Request) {
   let userEmail: string | null = null;
@@ -21,32 +15,13 @@ export async function POST(req: Request) {
     );
   }
 
-  try {
-    // Writes go through the service client (same posture as the agent tools):
-    // discovery + scan touch watchlist, signals and crm_companies.
-    const client = getSupabaseServiceClient();
-    const { discovered, added } = await discoverAndWatch(client, {
-      addedByEmail: userEmail,
-    });
-
-    let scan: { companiesScanned: number; newSignals: number } | null = null;
-    if (added.length > 0) {
-      const results = await scanWatchlist(client);
-      scan = {
-        companiesScanned: results.length,
-        newSignals: results.reduce((n, r) => n + r.newSignals.length, 0),
-      };
-    }
-
-    return NextResponse.json({
-      discovered: discovered.length,
-      added: added.length,
-      scan,
-    });
-  } catch (err) {
+  // Long-running (minutes): runs in the background, UI polls /api/icp/status.
+  const started = startIcpJob("discover", { userEmail });
+  if (!started) {
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Discovery failed" },
-      { status: 500 },
+      { error: "A discovery or scan is already running" },
+      { status: 409 },
     );
   }
+  return NextResponse.json({ started: true }, { status: 202 });
 }
