@@ -3484,13 +3484,17 @@ export const icpListSignals = tool({
 
 export const icpDiscoverCompanies = tool({
   description:
-    "Discover NEW companies for the ICP prospect list by searching public ATS job boards (Greenhouse/Lever/Ashby) for QA/SDET/E2E postings and working backwards to the company. Every hit is added to the watchlist already carrying a hiring signal. Optionally runs the signal scan right after so new companies land in the CRM in one shot.",
+    "Discover NEW companies for the ICP prospect list by searching public ATS job boards for QA/SDET/E2E postings and working backwards to the company. market='global' searches Greenhouse/Lever/Ashby boards (via HN + web search); market='brazil' searches the Gupy portal (dominant Brazilian ATS) — use it when asked for Brazilian companies. Every hit is added to the watchlist already carrying a hiring signal. Optionally runs the signal scan right after so new companies land in the CRM in one shot.",
   inputSchema: z.object({
+    market: z
+      .enum(["global", "brazil"])
+      .optional()
+      .describe("Where to hunt: 'global' (default) or 'brazil' (Gupy portal)"),
     queries: z
       .array(z.string())
       .optional()
       .describe(
-        `Custom search queries. Defaults to: ${DEFAULT_DISCOVERY_QUERIES.join(" | ")}`,
+        `Custom search queries. Global defaults: ${DEFAULT_DISCOVERY_QUERIES.join(" | ")}. Brazil defaults: QA | SDET | Playwright | Cypress | Automação de testes`,
       ),
     max_companies: z
       .number()
@@ -3502,10 +3506,11 @@ export const icpDiscoverCompanies = tool({
       .describe("Run icpScanSignals on the watchlist right after discovery (default true)"),
     user_email: z.string().optional().describe("Acting user's email"),
   }),
-  execute: async ({ queries, max_companies, scan_after, user_email }) => {
+  execute: async ({ market, queries, max_companies, scan_after, user_email }) => {
     try {
       const client = getSupabaseServiceClient();
       const { discovered, added } = await discoverAndWatch(client, {
+        market,
         queries,
         maxCompanies: max_companies,
         addedByEmail: user_email,

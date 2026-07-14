@@ -28,9 +28,9 @@ export type PostingSignal = {
 // in the TITLE, or unambiguous testing terms in the body. Generic words like
 // "testing" in a job description are too common to qualify on their own.
 const TITLE_REGEX =
-  /\b(qa|sdet|quality|test(ing|s|er)?|e2e|automation|evals?|llm|ai|machine learning)\b/i;
+  /\b(qa|sdet|quality|test(ing|s|er|es)?|e2e|automation|automa[çc][ãa]o|qualidade|evals?|llm|ai|machine learning)\b/i;
 const CONTENT_REGEX =
-  /\b(playwright|cypress|selenium|flaky|sdet|e2e test|end[- ]to[- ]end test|test suite|test coverage|qa automation|evals?\b)/i;
+  /\b(playwright|cypress|selenium|flaky|sdet|e2e test|end[- ]to[- ]end test|test suite|test coverage|qa automation|automa[çc][ãa]o de testes|su[íi]te de testes|testes automatizados|evals?\b)/i;
 
 export function prefilterPostings(postings: JobPosting[]): JobPosting[] {
   return postings.filter(
@@ -41,7 +41,7 @@ export function prefilterPostings(postings: JobPosting[]): JobPosting[] {
 const DEV_ROLE_REGEX =
   /\b(software|backend|frontend|front[- ]end|back[- ]end|full[- ]?stack|platform|devops|mobile|ios|android|data)\s+(engineer|developer)\b|\bengenheir[oa]\b|\bdesenvolvedor(a)?\b/i;
 
-const QA_ROLE_REGEX = /\b(qa|sdet|quality|test)\b/i;
+const QA_ROLE_REGEX = /\b(qa|sdet|quality|test|qualidade)\b/i;
 
 // Deterministic cross-posting signal: hiring several devs but no QA at all.
 export function detectDevHiringNoQa(postings: JobPosting[]): {
@@ -65,6 +65,7 @@ Signal taxonomy (only these types):
 - e2e_tooling (medium): posting mentions Playwright, Cypress or Selenium but does not qualify for a strong signal above.
 
 Rules:
+- Postings may be in English or Portuguese; classify either, keep evidence quotes in the original language.
 - A posting can carry multiple signals; emit one entry per (posting, type).
 - Prefer the strong type when both a strong and e2e_tooling match the same posting; still emit e2e_tooling only if no strong type matched.
 - evidence must be a short verbatim quote (max 200 chars) from the posting that justifies the signal.

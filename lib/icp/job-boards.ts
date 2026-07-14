@@ -3,9 +3,9 @@
 // here is free — no Exa credits, no scraping. Each collector normalizes into
 // a common JobPosting shape for the classifier.
 
-export type AtsProvider = "greenhouse" | "lever" | "ashby";
+export type AtsProvider = "greenhouse" | "lever" | "ashby" | "gupy";
 
-export const ATS_PROVIDERS: AtsProvider[] = ["greenhouse", "lever", "ashby"];
+export const ATS_PROVIDERS: AtsProvider[] = ["greenhouse", "lever", "ashby", "gupy"];
 
 export type JobPosting = {
   title: string;
@@ -131,6 +131,94 @@ export async function fetchAshbyJobs(slug: string): Promise<JobPosting[] | null>
     }));
 }
 
+// Gupy (dominant Brazilian ATS). The public portal API filters by exact
+// career-page name, so for gupy entries the watchlist board_slug stores the
+// careerPageName string rather than a subdomain slug.
+export type GupyJob = JobPosting & {
+  companyName: string;
+  country: string | null;
+  city: string | null;
+  isRemote: boolean;
+};
+
+const GUPY_API = "https://employability-portal.gupy.io/api/v1/jobs";
+const GUPY_HEADERS = {
+  Accept: "application/json",
+  // The portal rejects the default undici UA.
+  "User-Agent":
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+};
+
+type GupyRawJob = {
+  name?: string;
+  description?: string;
+  careerPageName?: string;
+  jobUrl?: string;
+  publishedDate?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+  isRemoteWork?: boolean;
+};
+
+function gupyRawToJob(j: GupyRawJob): GupyJob {
+  return {
+    title: j.name?.trim() ?? "",
+    url: (j.jobUrl ?? "").split("?")[0],
+    location:
+      [j.city, j.state, j.country].filter(Boolean).join(", ") ||
+      (j.isRemoteWork ? "Remote" : null),
+    team: null,
+    content: (j.description ?? "").replace(/<[^>]+>/g, " ").slice(0, 6_000),
+    publishedAt: j.publishedDate ?? null,
+    companyName: j.careerPageName ?? "",
+    country: j.country ?? null,
+    city: j.city ?? null,
+    isRemote: j.isRemoteWork ?? false,
+  };
+}
+
+export async function fetchGupyCompanyJobs(
+  careerPageName: string,
+): Promise<JobPosting[] | null> {
+  const data = await (async () => {
+    try {
+      const res = await fetch(
+        `${GUPY_API}?careerPageName=${encodeURIComponent(careerPageName)}&limit=100`,
+        { headers: GUPY_HEADERS, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
+      );
+      if (!res.ok) return null;
+      return (await res.json()) as { data?: GupyRawJob[] };
+    } catch {
+      return null;
+    }
+  })();
+  if (!data || !Array.isArray(data.data)) return null;
+  return data.data
+    .map(gupyRawToJob)
+    .filter((j) => j.title && j.url);
+}
+
+// Cross-company search on the Gupy portal — the Brazilian discovery source.
+export async function searchGupyJobs(
+  query: string,
+  limit = 50,
+): Promise<GupyJob[]> {
+  try {
+    const res = await fetch(
+      `${GUPY_API}?jobName=${encodeURIComponent(query)}&limit=${limit}`,
+      { headers: GUPY_HEADERS, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
+    );
+    if (!res.ok) return [];
+    const data = (await res.json()) as { data?: GupyRawJob[] };
+    return (data.data ?? [])
+      .map(gupyRawToJob)
+      .filter((j) => j.title && j.url && j.companyName);
+  } catch {
+    return [];
+  }
+}
+
 export async function fetchBoardJobs(
   ats: AtsProvider,
   slug: string,
@@ -142,6 +230,8 @@ export async function fetchBoardJobs(
       return fetchLeverJobs(slug);
     case "ashby":
       return fetchAshbyJobs(slug);
+    case "gupy":
+      return fetchGupyCompanyJobs(slug);
   }
 }
 
@@ -173,12 +263,18 @@ export async function detectBoard(input: {
   }
 
   for (const slug of candidates) {
-    for (const ats of ATS_PROVIDERS) {
+    for (const ats of ["greenhouse", "lever", "ashby"] as const) {
       const jobs = await fetchBoardJobs(ats, slug);
       if (jobs && jobs.length > 0) {
         return { ats, slug, jobCount: jobs.length };
       }
     }
+  }
+
+  // Gupy filters by exact career-page name, not subdomain slug.
+  const gupyJobs = await fetchGupyCompanyJobs(input.companyName);
+  if (gupyJobs && gupyJobs.length > 0) {
+    return { ats: "gupy", slug: input.companyName, jobCount: gupyJobs.length };
   }
   return null;
 }

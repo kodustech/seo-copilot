@@ -41,7 +41,7 @@ function finish(kind: IcpJobKind, summary: string | null, error: string | null) 
 // Returns false when a job is already in flight.
 export function startIcpJob(
   kind: IcpJobKind,
-  opts: { userEmail?: string | null } = {},
+  opts: { userEmail?: string | null; market?: "global" | "brazil" } = {},
 ): boolean {
   if (state.running) return false;
   state.running = kind;
@@ -57,6 +57,7 @@ export function startIcpJob(
         const { scanWatchlist } = await import("@/lib/icp/scanner");
         const { discovered, added } = await discoverAndWatch(client, {
           addedByEmail: opts.userEmail ?? null,
+          market: opts.market,
         });
         let newSignals = 0;
         if (added.length > 0) {

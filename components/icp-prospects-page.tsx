@@ -23,6 +23,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 // ---------------------------------------------------------------------------
@@ -69,6 +76,8 @@ function boardUrl(entry: { ats: string; boardSlug: string }): string {
       return `https://jobs.lever.co/${entry.boardSlug}`;
     case "ashby":
       return `https://jobs.ashbyhq.com/${entry.boardSlug}`;
+    case "gupy":
+      return `https://portal.gupy.io/job-search/term=${encodeURIComponent(entry.boardSlug)}`;
     default:
       return "#";
   }
@@ -90,6 +99,7 @@ export function IcpProspectsPage() {
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState<"discover" | "scan" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [market, setMarket] = useState<"global" | "brazil">("global");
 
   useEffect(() => {
     supabase?.auth.getSession().then(({ data }) => {
@@ -159,7 +169,11 @@ export function IcpProspectsPage() {
       try {
         const res = await fetch(`/api/icp/${action}`, {
           method: "POST",
-          headers: { Authorization: `Bearer ${token}` },
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: action === "discover" ? JSON.stringify({ market }) : undefined,
         });
         if (res.status === 409) {
           setNotice("A discovery or scan is already running, watching it...");
@@ -178,7 +192,7 @@ export function IcpProspectsPage() {
         setRunning(null);
       }
     },
-    [token, running, pollUntilDone],
+    [token, running, market, pollUntilDone],
   );
 
   // Group signals by company for the prospect view.
@@ -217,6 +231,18 @@ export function IcpProspectsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Select
+            value={market}
+            onValueChange={(v) => setMarket(v as "global" | "brazil")}
+          >
+            <SelectTrigger className="h-8 w-[120px] text-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="global">Global</SelectItem>
+              <SelectItem value="brazil">Brazil</SelectItem>
+            </SelectContent>
+          </Select>
           <Button
             variant="outline"
             size="sm"
