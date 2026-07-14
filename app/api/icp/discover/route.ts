@@ -15,8 +15,18 @@ export async function POST(req: Request) {
     );
   }
 
+  let market: "global" | "brazil" | undefined;
+  try {
+    const body = await req.json();
+    if (body?.market === "brazil" || body?.market === "global") {
+      market = body.market;
+    }
+  } catch {
+    // no body — default market
+  }
+
   // Long-running (minutes): runs in the background, UI polls /api/icp/status.
-  const started = startIcpJob("discover", { userEmail });
+  const started = startIcpJob("discover", { userEmail, market });
   if (!started) {
     return NextResponse.json(
       { error: "A discovery or scan is already running" },

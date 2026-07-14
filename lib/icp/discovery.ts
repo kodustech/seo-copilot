@@ -8,8 +8,14 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { searchUrls } from "@/lib/exa";
-import { fetchBoardJobs, type AtsProvider } from "@/lib/icp/job-boards";
+import {
+  fetchBoardJobs,
+  searchGupyJobs,
+  type AtsProvider,
+} from "@/lib/icp/job-boards";
 import { addToWatchlist, type WatchlistEntry } from "@/lib/icp/scanner";
+
+export type DiscoveryMarket = "global" | "brazil";
 
 // Queries mirror the ICP's strong signals: QA automation hiring, suite
 // rescue, E2E tooling. Kept short — Exa autoprompt does the expansion.
@@ -127,13 +133,64 @@ async function discoverFromHackerNews(opts: {
   return found;
 }
 
+// Brazilian market: search the Gupy portal (dominant BR ATS, free public
+// API) for QA/testing-intent postings and group by company. Every posting
+// already carries company name + country, so no board probing is needed.
+export const BRAZIL_DISCOVERY_QUERIES = [
+  "QA",
+  "SDET",
+  "Playwright",
+  "Cypress",
+  "Automação de testes",
+];
+
+async function discoverFromGupy(opts: {
+  queries?: string[];
+  maxCompanies: number;
+}): Promise<DiscoveredCompany[]> {
+  const queries = opts.queries?.length ? opts.queries : BRAZIL_DISCOVERY_QUERIES;
+  const byCompany = new Map<string, { jobCount: number; sourceUrl: string; sourceTitle: string | null }>();
+
+  for (const query of queries) {
+    const jobs = await searchGupyJobs(query, 50);
+    for (const job of jobs) {
+      const existing = byCompany.get(job.companyName);
+      if (existing) {
+        existing.jobCount += 1;
+      } else {
+        byCompany.set(job.companyName, {
+          jobCount: 1,
+          sourceUrl: job.url,
+          sourceTitle: job.title,
+        });
+      }
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  return Array.from(byCompany.entries())
+    .slice(0, opts.maxCompanies)
+    .map(([companyName, info]) => ({
+      ats: "gupy" as const,
+      slug: companyName, // gupy fetches by exact career-page name
+      companyName,
+      jobCount: info.jobCount,
+      sourceUrl: info.sourceUrl,
+      sourceTitle: info.sourceTitle,
+    }));
+}
+
 export async function discoverCompanies(opts: {
   queries?: string[];
   numResultsPerQuery?: number;
   maxCompanies?: number;
+  market?: DiscoveryMarket;
 }): Promise<DiscoveredCompany[]> {
-  const queries = opts.queries?.length ? opts.queries : DEFAULT_DISCOVERY_QUERIES;
   const maxCompanies = opts.maxCompanies ?? 20;
+  if (opts.market === "brazil") {
+    return discoverFromGupy({ queries: opts.queries, maxCompanies });
+  }
+  const queries = opts.queries?.length ? opts.queries : DEFAULT_DISCOVERY_QUERIES;
 
   const seen = new Set<string>();
   const boards: Array<{
@@ -198,6 +255,7 @@ export async function discoverAndWatch(
   opts: {
     queries?: string[];
     maxCompanies?: number;
+    market?: DiscoveryMarket;
     addedByEmail?: string | null;
   } = {},
 ): Promise<{ discovered: DiscoveredCompany[]; added: WatchlistEntry[] }> {
