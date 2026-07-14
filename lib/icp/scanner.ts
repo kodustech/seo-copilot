@@ -163,7 +163,8 @@ export async function addToWatchlist(
         company_name: input.companyName,
         domain: normalizeDomain(input.domain),
         ats,
-        board_slug: boardSlug,
+        // Lowercased so the plain-column unique index dedupes reliably.
+        board_slug: boardSlug.toLowerCase(),
         active: true,
         added_by_email: input.addedByEmail ?? null,
       },
