@@ -27,6 +27,7 @@ import {
   scanWatchlist,
 } from "@/lib/icp/scanner";
 import { ATS_PROVIDERS, type AtsProvider } from "@/lib/icp/job-boards";
+import { discoverAndWatch, DEFAULT_DISCOVERY_QUERIES } from "@/lib/icp/discovery";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 import {
   listMentions,
@@ -3481,6 +3482,65 @@ export const icpListSignals = tool({
   },
 });
 
+export const icpDiscoverCompanies = tool({
+  description:
+    "Discover NEW companies for the ICP prospect list by searching public ATS job boards (Greenhouse/Lever/Ashby) for QA/SDET/E2E postings and working backwards to the company. Every hit is added to the watchlist already carrying a hiring signal. Optionally runs the signal scan right after so new companies land in the CRM in one shot.",
+  inputSchema: z.object({
+    queries: z
+      .array(z.string())
+      .optional()
+      .describe(
+        `Custom search queries. Defaults to: ${DEFAULT_DISCOVERY_QUERIES.join(" | ")}`,
+      ),
+    max_companies: z
+      .number()
+      .optional()
+      .describe("Cap on new companies per run (default 20)"),
+    scan_after: z
+      .boolean()
+      .optional()
+      .describe("Run icpScanSignals on the watchlist right after discovery (default true)"),
+    user_email: z.string().optional().describe("Acting user's email"),
+  }),
+  execute: async ({ queries, max_companies, scan_after, user_email }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { discovered, added } = await discoverAndWatch(client, {
+        queries,
+        maxCompanies: max_companies,
+        addedByEmail: user_email,
+      });
+
+      let scan: { companies_scanned: number; new_signals: number } | null = null;
+      if (scan_after !== false && added.length > 0) {
+        const results = await scanWatchlist(client);
+        scan = {
+          companies_scanned: results.length,
+          new_signals: results.reduce((n, r) => n + r.newSignals.length, 0),
+        };
+      }
+
+      return {
+        success: true as const,
+        discovered: discovered.map((d) => ({
+          company: d.companyName,
+          ats: d.ats,
+          board_slug: d.slug,
+          open_jobs: d.jobCount,
+          found_via: d.sourceUrl,
+        })),
+        added_to_watchlist: added.length,
+        scan,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to discover companies",
+      };
+    }
+  },
+});
+
 export function createAgentTools(userEmail?: string) {
   return {
     generateIdeas,
@@ -3537,6 +3597,7 @@ export function createAgentTools(userEmail?: string) {
     icpListWatchlist,
     icpScanSignals,
     icpListSignals,
+    icpDiscoverCompanies,
   };
 }
 

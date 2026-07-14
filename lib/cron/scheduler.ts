@@ -149,6 +149,16 @@ async function runCrmIdleCron(): Promise<void> {
   }
 }
 
+async function runIcpDiscoveryCron(): Promise<void> {
+  const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
+  const { discoverAndWatch } = await import("@/lib/icp/discovery");
+
+  const { discovered, added } = await discoverAndWatch(getSupabaseServiceClient());
+  console.log(
+    `[cron] icp-discovery: ${discovered.length} companies found, ${added.length} on watchlist`,
+  );
+}
+
 async function runIcpScanCron(): Promise<void> {
   const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
   const { scanWatchlist } = await import("@/lib/icp/scanner");
@@ -224,6 +234,13 @@ const JOBS: JobDefinition[] = [
     name: "crm-idle",
     schedule: "0 12 * * *",
     run: runCrmIdleCron,
+  },
+  {
+    // Weekly Monday 05:00 UTC: discover new ICP companies from QA/E2E job
+    // postings on public ATS boards (runs before the daily scan picks them up).
+    name: "icp-discovery",
+    schedule: "0 5 * * 1",
+    run: runIcpDiscoveryCron,
   },
   {
     // Daily 06:00 UTC: scan the ICP watchlist job boards for new signals.

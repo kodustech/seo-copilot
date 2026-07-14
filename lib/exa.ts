@@ -421,6 +421,31 @@ export async function searchWebContent({
   return { query, results: deduped };
 }
 
+// Lean URL-only search used by the ICP discovery layer: no text, summary or
+// highlight ops, so it costs a fraction of searchWebContent per call.
+export async function searchUrls({
+  query,
+  domains,
+  numResults = 25,
+  daysBack = 90,
+}: {
+  query: string;
+  domains?: string[];
+  numResults?: number;
+  daysBack?: number;
+}): Promise<Array<{ url: string; title: string | null }>> {
+  const exa = createExaClient("url discovery");
+  const response = await exa.search(query, {
+    type: "auto",
+    numResults,
+    ...(domains?.length ? { includeDomains: domains } : {}),
+    ...(typeof daysBack === "number" ? { startPublishedDate: makeStartDate(daysBack) } : {}),
+  });
+  return (response.results ?? [])
+    .filter((r) => Boolean(r.url))
+    .map((r) => ({ url: r.url as string, title: r.title ?? null }));
+}
+
 export async function scrapePageContent({
   url,
   maxCharacters = 8000,
