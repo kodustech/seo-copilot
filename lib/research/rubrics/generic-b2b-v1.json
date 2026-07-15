@@ -1,0 +1,56 @@
+{
+  "id": "generic-b2b-v1",
+  "name": "Generic B2B SaaS fit",
+  "version": 1,
+  "description": "Lightweight second rubric proving multi-ICP support — B2B SaaS with real product surface.",
+  "pass_threshold": 40,
+  "default_personas": [
+    "Head of Engineering",
+    "CTO",
+    "Founder",
+    "VP Product"
+  ],
+  "criteria": [
+    {
+      "id": "b2b_saas_customer_facing",
+      "label": "Customer-facing B2B product",
+      "kind": "fit",
+      "weight": 25,
+      "packs": ["product"],
+      "pass_hint": "B2B SaaS with demo/pricing"
+    },
+    {
+      "id": "money_access_permissions_flows",
+      "label": "Meaningful product workflows",
+      "kind": "fit",
+      "weight": 20,
+      "packs": ["product"],
+      "pass_hint": "Billing, roles, integrations, or multi-step product"
+    },
+    {
+      "id": "hiring_signal",
+      "label": "Active engineering hiring",
+      "kind": "trigger",
+      "weight": 20,
+      "packs": ["careers"],
+      "pass_hint": "Open engineering roles"
+    },
+    {
+      "id": "growth_or_funding",
+      "label": "Growth / funding / launch signal",
+      "kind": "trigger",
+      "weight": 15,
+      "packs": ["news", "ship"],
+      "pass_hint": "Recent funding, launch, or ship activity"
+    },
+    {
+      "id": "simple_or_stable_product",
+      "label": "Too simple / not a real product company",
+      "kind": "anti",
+      "weight": 0,
+      "veto": true,
+      "packs": ["product"],
+      "pass_hint": "ANTI: no real SaaS product surface"
+    }
+  ]
+}

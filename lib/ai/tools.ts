@@ -28,6 +28,15 @@ import {
 } from "@/lib/icp/scanner";
 import { ATS_PROVIDERS, type AtsProvider } from "@/lib/icp/job-boards";
 import { discoverAndWatch, DEFAULT_DISCOVERY_QUERIES } from "@/lib/icp/discovery";
+import {
+  addRows,
+  createTable,
+  getDefaultRubricId,
+  listRows,
+  listTables,
+} from "@/lib/research/tables";
+import { researchRow } from "@/lib/research/research-company";
+import { listRubrics } from "@/lib/research/rubrics";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 import {
   listMentions,
@@ -3546,6 +3555,164 @@ export const icpDiscoverCompanies = tool({
   },
 });
 
+export const researchListTables = tool({
+  description:
+    "List Clay-style ICP research tables (spreadsheets of companies scored against a rubric).",
+  inputSchema: z.object({}),
+  execute: async () => {
+    try {
+      const client = getSupabaseServiceClient();
+      const tables = await listTables(client);
+      return { success: true as const, tables, rubrics: listRubrics() };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to list tables",
+      };
+    }
+  },
+});
+
+export const researchCreateTable = tool({
+  description:
+    "Create a research table with a rubric (default qe-kodus-v1 for QE/E2E ICP).",
+  inputSchema: z.object({
+    name: z.string(),
+    rubric_id: z.string().optional().describe("qe-kodus-v1 | generic-b2b-v1"),
+    user_email: z.string().optional(),
+  }),
+  execute: async ({ name, rubric_id, user_email }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const table = await createTable(client, {
+        name,
+        rubricId: rubric_id ?? getDefaultRubricId(),
+        createdByEmail: user_email,
+      });
+      return { success: true as const, table };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to create table",
+      };
+    }
+  },
+});
+
+export const researchAddDomains = tool({
+  description:
+    "Add company domains to a research table (import candidates before research).",
+  inputSchema: z.object({
+    table_id: z.string(),
+    domains: z
+      .array(
+        z.object({
+          company_name: z.string().optional(),
+          domain: z.string(),
+        }),
+      )
+      .describe("List of domains / companies to add"),
+    source: z.string().optional(),
+  }),
+  execute: async ({ table_id, domains, source }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const result = await addRows(
+        client,
+        table_id,
+        domains.map((d) => ({
+          companyName: d.company_name || d.domain,
+          domain: d.domain,
+          source: source ?? "agent",
+        })),
+      );
+      return {
+        success: true as const,
+        added: result.added,
+        skipped: result.skipped,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to add domains",
+      };
+    }
+  },
+});
+
+export const researchCompany = tool({
+  description:
+    "Run multi-source ICP research on one research row (careers, product, ship, news, pain packs + rubric score). Use after adding domains. Long-running.",
+  inputSchema: z.object({
+    row_id: z.string().describe("research_rows id"),
+    force: z.boolean().optional().describe("Bypass cache"),
+  }),
+  execute: async ({ row_id, force }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const result = await researchRow(client, row_id, { force });
+      return {
+        success: true as const,
+        company: result.companyName,
+        domain: result.domain,
+        icp_score: result.score.icpScore,
+        pass: result.score.pass,
+        anti_flags: result.score.antiFlags,
+        why_now: result.score.whyNow,
+        criteria: result.score.criteria.map((c) => ({
+          id: c.criterionId,
+          kind: c.kind,
+          status: c.status,
+          evidence: c.evidence,
+        })),
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Research failed",
+      };
+    }
+  },
+});
+
+export const researchListRows = tool({
+  description:
+    "List rows in a research table with ICP scores. Filter to pass-only for outreach-ready companies.",
+  inputSchema: z.object({
+    table_id: z.string(),
+    pass_only: z.boolean().optional(),
+    min_score: z.number().optional(),
+  }),
+  execute: async ({ table_id, pass_only, min_score }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const rows = await listRows(client, table_id, {
+        passOnly: pass_only,
+        minScore: min_score,
+      });
+      return {
+        success: true as const,
+        count: rows.length,
+        rows: rows.map((r) => ({
+          id: r.id,
+          company: r.companyName,
+          domain: r.domain,
+          status: r.status,
+          icp_score: r.icpScore,
+          pass: r.pass,
+          anti_flags: r.antiFlags,
+          why_now: r.whyNow,
+        })),
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to list rows",
+      };
+    }
+  },
+});
+
 export function createAgentTools(userEmail?: string) {
   return {
     generateIdeas,
@@ -3603,6 +3770,11 @@ export function createAgentTools(userEmail?: string) {
     icpScanSignals,
     icpListSignals,
     icpDiscoverCompanies,
+    researchListTables,
+    researchCreateTable,
+    researchAddDomains,
+    researchCompany,
+    researchListRows,
   };
 }
 
