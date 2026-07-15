@@ -173,11 +173,20 @@ function buildEvidenceBlob(packs: Record<string, PackOutput>): string {
   return parts.join("\n\n").slice(0, 28000);
 }
 
+export type CriterionSeed = {
+  criterionId: string;
+  evidence: string;
+  url: string;
+  confidence?: number;
+};
+
 export async function scoreCompany(
   rubric: Rubric,
   companyName: string,
   domain: string | null,
   packs: Record<string, PackOutput>,
+  /** Pre-confirmed criteria (e.g. from a signal hunt) — seeded as pass. */
+  seeds: CriterionSeed[] = [],
 ): Promise<ScoreResult> {
   const blob = buildEvidenceBlob(packs);
   const criterionList = rubric.criteria
@@ -204,6 +213,23 @@ export async function scoreCompany(
   }
 
   applyDeterministicCareersHints(rubric, packs, results);
+
+  // Hunt-confirmed criteria: the signal was verified at discovery time with
+  // a quote from the source page — seed as pass so the scorer can't lose it.
+  for (const seed of seeds) {
+    const criterion = rubric.criteria.find((c) => c.id === seed.criterionId);
+    if (!criterion || criterion.kind === "anti") continue;
+    results.set(criterion.id, {
+      criterionId: criterion.id,
+      kind: criterion.kind,
+      status: "pass",
+      confidence: Math.min(Math.max(seed.confidence ?? 0.85, 0.5), 1),
+      evidence: seed.evidence,
+      sources: [{ url: seed.url, pack: "hunt", title: null }],
+      weight: criterion.weight,
+      veto: criterion.veto,
+    });
+  }
 
   if (blob.length > 80) {
     try {

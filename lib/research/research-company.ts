@@ -58,13 +58,20 @@ export async function researchRow(
   try {
     // Discovery rows (Gupy, LinkedIn, Programathor…) arrive without a domain,
     // which blinds product/pain packs, the cache, and the people waterfall.
+    const hunt = (row.packRaw?.hunt ?? null) as {
+      criterionId?: string;
+      url?: string;
+      quote?: string;
+      confidence?: number;
+    } | null;
+
     let domain = row.domain;
     if (!domain) {
       const discovery = (row.packRaw?.discovery ?? null) as {
         sourceUrl?: string;
       } | null;
       const resolved = await resolveDomain(client, row.companyName, {
-        hintUrl: discovery?.sourceUrl ?? null,
+        hintUrl: discovery?.sourceUrl ?? hunt?.url ?? null,
       });
       if (resolved.domain) {
         domain = resolved.domain;
@@ -107,7 +114,18 @@ export async function researchRow(
         packs: needed,
         knownBoard,
       });
-      score = await scoreCompany(rubric, row.companyName, domain, packs);
+      const seeds =
+        hunt?.criterionId && hunt?.quote && hunt?.url
+          ? [
+              {
+                criterionId: hunt.criterionId,
+                evidence: hunt.quote,
+                url: hunt.url,
+                confidence: hunt.confidence,
+              },
+            ]
+          : [];
+      score = await scoreCompany(rubric, row.companyName, domain, packs, seeds);
       if (cacheKey) {
         await setCache(
           client,
@@ -124,6 +142,7 @@ export async function researchRow(
       ...serializePacks(packs),
       discovery: row.packRaw?.discovery,
       find: row.packRaw?.find,
+      hunt: row.packRaw?.hunt,
     };
     await saveScore(client, rowId, score, mergedRaw);
 

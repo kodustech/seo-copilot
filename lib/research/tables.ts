@@ -327,12 +327,21 @@ export async function listPeople(
   }));
 }
 
+/** Postgres jsonb rejects the NUL escape (u0000) - scraped pages carry it. */
+function stripNullChars<T>(value: T): T {
+  return JSON.parse(
+    JSON.stringify(value).replace(/(?<!\\)\\u0000/g, ""),
+  ) as T;
+}
+
 export async function saveScore(
   client: SupabaseClient,
   rowId: string,
   score: ScoreResult,
   packRaw: Record<string, unknown>,
 ): Promise<void> {
+  score = stripNullChars(score);
+  packRaw = stripNullChars(packRaw);
   const { error } = await client
     .from("research_rows")
     .update({

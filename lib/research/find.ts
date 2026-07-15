@@ -5,6 +5,8 @@ import {
   type DiscoveryMarket,
 } from "@/lib/icp/discovery";
 import type { AtsProvider } from "@/lib/icp/job-boards";
+import type { IcpHunt } from "@/lib/research/icp-plan";
+import { runHunts, type HuntCandidate } from "@/lib/research/hunts";
 import { addRows, getTable } from "@/lib/research/tables";
 import type { ResearchRow } from "@/lib/research/types";
 
@@ -21,6 +23,8 @@ export type FindIcpInput = {
   queries?: string[] | null;
   /** Short keyword terms for keyword-based boards (Gupy, LinkedIn…). */
   keywords?: string[] | null;
+  /** Signal hunts from the ICP plan — run first; confirmed candidates carry evidence. */
+  hunts?: IcpHunt[] | null;
   /** Company-name substrings to drop at discovery time (consultancies etc). */
   excludeNamePatterns?: string[] | null;
 };
@@ -76,12 +80,40 @@ export async function findIcpCompanies(
     (k) => typeof k === "string" && k.trim().length > 0,
   );
 
-  let discovered = await discoverCompanies({
-    market: input.market,
-    maxCompanies: fetchCap,
-    queries,
-    keywords: keywords.length > 0 ? keywords : undefined,
-  });
+  // Signal hunts first: candidates arrive with confirmed evidence (quote +
+  // source URL) and often a domain. Legacy board discovery tops up the rest.
+  let huntCandidates: HuntCandidate[] = [];
+  if (input.hunts && input.hunts.length > 0) {
+    try {
+      huntCandidates = await runHunts(input.hunts, {
+        maxCandidates: maxCompanies,
+        excludeNamePatterns: input.excludeNamePatterns ?? [],
+        // Table description stores the compiled ICP interpretation.
+        icpContext: table.description,
+      });
+    } catch (err) {
+      console.error("[research/find] hunts failed:", err);
+    }
+  }
+
+  const remaining = Math.max(fetchCap - huntCandidates.length, 0);
+  let discovered =
+    remaining > 0
+      ? await discoverCompanies({
+          market: input.market,
+          maxCompanies: remaining,
+          queries,
+          keywords: keywords.length > 0 ? keywords : undefined,
+        })
+      : [];
+
+  // Drop board-discovered companies the hunts already confirmed.
+  const huntNames = new Set(
+    huntCandidates.map((c) => c.companyName.toLowerCase()),
+  );
+  discovered = discovered.filter(
+    (d) => !huntNames.has(d.companyName.toLowerCase()),
+  );
 
   const exclude = (input.excludeNamePatterns ?? [])
     .map((p) => p.trim().toLowerCase())
@@ -93,32 +125,53 @@ export async function findIcpCompanies(
     });
   }
 
-  const toAdd = discovered.map((d) => ({
-    companyName: d.companyName,
-    // Gupy often has no public domain; global ATS slug is not a domain.
-    domain: null as string | null,
-    source: "discovery" as const,
-    packRaw: {
-      find: {
-        market: input.market,
-        size: input.size,
-        focus: focus ?? null,
-        found_at: new Date().toISOString(),
+  const findMeta = {
+    market: input.market,
+    size: input.size,
+    focus: focus ?? null,
+    found_at: new Date().toISOString(),
+  };
+
+  const toAdd = [
+    ...huntCandidates.map((c) => ({
+      companyName: c.companyName,
+      domain: c.domain,
+      source: "icp_signal" as const,
+      packRaw: {
+        find: findMeta,
+        hunt: {
+          source: c.source,
+          criterionId: c.criterionId,
+          query: c.query,
+          url: c.url,
+          title: c.title,
+          quote: c.quote,
+          confidence: c.confidence,
+        },
       },
-      discovery: {
-        ats: d.ats as AtsProvider,
-        boardSlug: d.slug,
-        jobCount: d.jobCount,
-        sourceUrl: d.sourceUrl,
-        sourceQuery: d.sourceQuery ?? null,
+    })),
+    ...discovered.map((d) => ({
+      companyName: d.companyName,
+      // Gupy often has no public domain; global ATS slug is not a domain.
+      domain: null as string | null,
+      source: "discovery" as const,
+      packRaw: {
+        find: findMeta,
+        discovery: {
+          ats: d.ats as AtsProvider,
+          boardSlug: d.slug,
+          jobCount: d.jobCount,
+          sourceUrl: d.sourceUrl,
+          sourceQuery: d.sourceQuery ?? null,
+        },
       },
-    },
-  }));
+    })),
+  ].slice(0, fetchCap);
 
   const result = await addRows(client, input.tableId, toAdd);
 
   return {
-    discovered: discovered.length,
+    discovered: huntCandidates.length + discovered.length,
     added: result.added,
     skipped: result.skipped,
     rowIds: result.rows.map((r) => r.id),

@@ -10,6 +10,17 @@ import { getModel } from "@/lib/ai/provider";
 import { validateRubric } from "@/lib/research/rubrics";
 import type { Rubric } from "@/lib/research/types";
 
+export type HuntSource = "job_postings" | "news" | "incidents" | "web";
+
+export type IcpHunt = {
+  source: HuntSource;
+  /** Rubric criterion this hunt confirms when the signal checks out. */
+  criterionId: string;
+  queries: string[];
+  /** Yes/no question answered by reading the found page. */
+  confirm: string;
+};
+
 export type IcpPlan = {
   rubric: Rubric;
   /** Suggested table name, e.g. "SaaS B2B Brasil — dor de QA" */
@@ -20,6 +31,8 @@ export type IcpPlan = {
   queries: string[];
   /** Short keyword terms for keyword-based job boards (Gupy, LinkedIn…). */
   keywords: string[];
+  /** Signal hunts — source-aware search plans chosen from the ICP. */
+  hunts: IcpHunt[];
   /** Company-name patterns to drop at discovery time (consultancies etc). */
   excludeNamePatterns: string[];
   /** How the model interpreted the ICP — shown to the user for correction. */
@@ -51,6 +64,13 @@ Rules for discovery queries (6-10):
 
 Also produce "keywords" (4-8): SHORT job-search terms (1-3 words, e.g. "QA", "SDET", "Playwright", "Analista de Testes") for keyword-based job boards (Gupy, LinkedIn, Workable). Same market-language rule.
 
+Also produce "hunts" (2-5): signal hunts — HOW to find companies exhibiting this ICP's trigger moments. Choose the source where each signal actually lives; do NOT default everything to job postings:
+- "job_postings": signal appears in hiring text (first QA hire, team being built, migration mentioned in a role)
+- "news": funding rounds, launches, enterprise deals, expansion
+- "incidents": public outages, status pages, complaint sites, bug backlash
+- "web": engineering blogs, changelogs, communities, anything else public
+Each hunt: {"source": "job_postings|news|incidents|web", "criterion_id": "<the rubric criterion this hunt confirms>", "queries": ["2-4 search phrases in the market language"], "confirm": "a yes/no question an analyst answers by reading the found page to confirm the signal applies to that company"}.
+
 Respond with ONLY a JSON object:
 {
   "table_name": "...",
@@ -71,7 +91,10 @@ Respond with ONLY a JSON object:
       {"id": "...", "label": "...", "kind": "trigger|fit|anti", "weight": 12, "packs": ["careers"], "pass_hint": "...", "veto": false}
     ]
   },
-  "queries": ["...", "..."]
+  "queries": ["...", "..."],
+  "hunts": [
+    {"source": "job_postings", "criterion_id": "...", "queries": ["..."], "confirm": "..."}
+  ]
 }`;
 
 export type IcpPlanResult = IcpPlan & { callChecklist: string[] };
@@ -101,6 +124,12 @@ export async function buildIcpPlanFromPrompt(
     rubric?: unknown;
     queries?: unknown[];
     keywords?: unknown[];
+    hunts?: Array<{
+      source?: string;
+      criterion_id?: string;
+      queries?: unknown[];
+      confirm?: string;
+    }>;
   };
   try {
     parsed = JSON.parse(match[0]);
@@ -143,6 +172,27 @@ export async function buildIcpPlanFromPrompt(
     keywords: (parsed.keywords ?? [])
       .filter((k): k is string => typeof k === "string" && k.trim().length > 0)
       .slice(0, 8),
+    hunts: (parsed.hunts ?? [])
+      .filter(
+        (h) =>
+          (h.source === "job_postings" ||
+            h.source === "news" ||
+            h.source === "incidents" ||
+            h.source === "web") &&
+          typeof h.criterion_id === "string" &&
+          typeof h.confirm === "string" &&
+          Array.isArray(h.queries),
+      )
+      .map((h) => ({
+        source: h.source as HuntSource,
+        criterionId: h.criterion_id as string,
+        queries: (h.queries ?? [])
+          .filter((q): q is string => typeof q === "string" && q.trim().length > 2)
+          .slice(0, 4),
+        confirm: h.confirm as string,
+      }))
+      .filter((h) => h.queries.length > 0)
+      .slice(0, 5),
     excludeNamePatterns: (parsed.exclude_name_patterns ?? [])
       .filter((p): p is string => typeof p === "string" && p.trim().length > 1)
       .slice(0, 20),
