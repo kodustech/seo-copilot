@@ -3713,6 +3713,97 @@ export const researchListRows = tool({
   },
 });
 
+export const researchCreateFromIcp = tool({
+  description:
+    "Create a research table from a FREE-TEXT ICP description (Clay-style). Compiles the ICP into a custom scoring rubric (triggers, fits, anti-criteria with veto) + signal-first discovery queries, creates the table, and optionally runs discovery right away. Use when the user describes who they want to find in natural language — including exclusions like 'não quero fábricas de software'.",
+  inputSchema: z.object({
+    icp_text: z
+      .string()
+      .describe("The ICP description verbatim (paste the user's full text)"),
+    market: z.enum(["global", "brazil"]).optional(),
+    find_now: z
+      .boolean()
+      .optional()
+      .describe("Run discovery immediately after creating (default true)"),
+    max_companies: z.number().optional().describe("Cap for immediate find (max 8 in chat)"),
+    user_email: z.string().optional(),
+  }),
+  execute: async ({ icp_text, market, find_now, max_companies, user_email }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { buildIcpPlanFromPrompt } = await import("@/lib/research/icp-plan");
+      const plan = await buildIcpPlanFromPrompt(icp_text, {
+        marketHint: market ?? null,
+      });
+
+      const table = await createTable(client, {
+        name: plan.tableName,
+        rubricJson: plan.rubric,
+        description: plan.interpretation || null,
+        createdByEmail: user_email,
+      });
+
+      let find: {
+        discovered: number;
+        added: number;
+        researched: number;
+        passed: number;
+      } | null = null;
+      if (find_now !== false) {
+        const { findIcpCompanies } = await import("@/lib/research/find");
+        const found = await findIcpCompanies(client, {
+          tableId: table.id,
+          market: plan.market,
+          size: plan.size,
+          maxCompanies: Math.min(max_companies ?? 6, 8),
+          queries: plan.queries,
+          excludeNamePatterns: plan.excludeNamePatterns,
+        });
+        let researched = 0;
+        let passed = 0;
+        if (found.rowIds.length > 0) {
+          const { researchRows } = await import("@/lib/research/research-company");
+          const result = await researchRows(client, found.rowIds, {
+            concurrency: 1,
+          });
+          researched = result.ok;
+          passed = result.results.filter((r) => r.score.pass).length;
+        }
+        find = {
+          discovered: found.discovered,
+          added: found.added,
+          researched,
+          passed,
+        };
+      }
+
+      return {
+        success: true as const,
+        table_id: table.id,
+        table_name: table.name,
+        interpretation: plan.interpretation,
+        rubric_summary: plan.rubric.criteria.map((c) => ({
+          id: c.id,
+          kind: c.kind,
+          weight: c.weight,
+          veto: c.veto ?? false,
+        })),
+        discovery_queries: plan.queries,
+        excluded_name_patterns: plan.excludeNamePatterns,
+        call_checklist: plan.callChecklist,
+        find,
+        note: "Review 'interpretation' with the user; rubric is stored on the table and used for all research in it. For large runs use the Research UI.",
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "Failed to compile ICP",
+      };
+    }
+  },
+});
+
 export const researchFindIcp = tool({
   description:
     "Find companies matching the QE ICP: market=brazil (Gupy) or global (Greenhouse/Lever/Ashby), optional size band, then score each with the research rubric. Long-running — prefer UI for large runs; agent use max 6.",
@@ -3830,6 +3921,7 @@ export function createAgentTools(userEmail?: string) {
     icpDiscoverCompanies,
     researchListTables,
     researchCreateTable,
+    researchCreateFromIcp,
     researchAddDomains,
     researchCompany,
     researchListRows,

@@ -76,6 +76,8 @@ export type ResearchTable = {
   id: string;
   name: string;
   rubricId: string;
+  /** Custom rubric compiled from a natural-language ICP (overrides rubricId). */
+  rubricJson?: Rubric | null;
   description: string | null;
   createdByEmail: string | null;
   createdAt: string;

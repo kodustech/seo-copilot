@@ -36,6 +36,22 @@ export const BRAZIL_DISCOVERY_QUERIES = [
   "Analista de Testes",
 ];
 
+// Signal-first queries: instead of "who is hiring QA", these look for the
+// trigger moment itself (first QA hire, flaky suite, manual→automation
+// migration) inside job-posting text. Run through the Exa ATS harvest, which
+// searches full posting content, so multi-word signal phrases match.
+export const SIGNAL_DISCOVERY_QUERIES = [
+  '"first QA hire" OR "founding QA" OR "founding SDET" job',
+  '"flaky tests" OR "test debt" hiring software engineer',
+  '"manual testing" migrating to automated tests QA job',
+  '"build our QA" OR "establish quality engineering" job',
+];
+
+export const BRAZIL_SIGNAL_QUERIES = [
+  '"primeiro QA" OR "estruturar QA" vaga',
+  '"automação de testes" migração testes manuais vaga',
+];
+
 const ATS_JOB_DOMAINS = [
   "boards.greenhouse.io",
   "job-boards.greenhouse.io",
@@ -57,6 +73,8 @@ export type DiscoveredCompany = {
   jobCount: number;
   sourceUrl: string;
   sourceTitle: string | null;
+  /** The search query that surfaced this company (signal provenance). */
+  sourceQuery?: string | null;
 };
 
 // greenhouse: boards.greenhouse.io/{slug}/jobs/{id}
@@ -235,6 +253,7 @@ type CompanyAcc = {
   jobCount: number;
   sourceUrl: string;
   sourceTitle: string | null;
+  sourceQuery?: string | null;
 };
 
 function mergeCompany(
@@ -245,6 +264,9 @@ function mergeCompany(
   const existing = map.get(key);
   if (existing) {
     existing.jobCount += hit.jobCount;
+    if (!existing.sourceQuery && hit.sourceQuery) {
+      existing.sourceQuery = hit.sourceQuery;
+    }
     return;
   }
   // Also merge same company name across sources (prefer first ATS).
@@ -417,20 +439,29 @@ async function discoverFromAtsUrlHarvest(opts: {
     slug: string;
     sourceUrl: string;
     sourceTitle: string | null;
+    sourceQuery: string | null;
   }> = [];
 
-  const collect = (results: Array<{ url: string; title: string | null }>) => {
+  const collect = (
+    results: Array<{ url: string; title: string | null }>,
+    sourceQuery: string | null,
+  ) => {
     for (const r of results) {
       const parsed = parseBoardUrl(r.url);
       if (!parsed) continue;
       const key = `${parsed.ats}:${parsed.slug}`.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
-      boards.push({ ...parsed, sourceUrl: r.url, sourceTitle: r.title });
+      boards.push({
+        ...parsed,
+        sourceUrl: r.url,
+        sourceTitle: r.title,
+        sourceQuery,
+      });
     }
   };
 
-  collect(await discoverFromHackerNews({}));
+  collect(await discoverFromHackerNews({}), null);
 
   for (const query of opts.queries) {
     try {
@@ -440,6 +471,7 @@ async function discoverFromAtsUrlHarvest(opts: {
           domains: ATS_JOB_DOMAINS,
           numResults: opts.numResultsPerQuery,
         }),
+        query,
       );
     } catch (err) {
       console.error(`[icp-discovery] Exa search failed for "${query}":`, err);
@@ -464,6 +496,7 @@ async function discoverFromAtsUrlHarvest(opts: {
             jobCount: 1,
             sourceUrl: board.sourceUrl,
             sourceTitle: board.sourceTitle,
+            sourceQuery: board.sourceQuery,
           });
         }
         continue;
@@ -476,6 +509,7 @@ async function discoverFromAtsUrlHarvest(opts: {
         jobCount: jobs.length,
         sourceUrl: board.sourceUrl,
         sourceTitle: board.sourceTitle,
+        sourceQuery: board.sourceQuery,
       });
     } catch (err) {
       console.error(
@@ -527,7 +561,11 @@ export async function discoverCompanies(opts: {
           maxCompanies,
         }),
         discoverFromAtsUrlHarvest({
-          queries: queries.slice(0, 3),
+          queries: [
+            ...queries.slice(0, 3),
+            ...BRAZIL_SIGNAL_QUERIES,
+            ...SIGNAL_DISCOVERY_QUERIES.slice(0, 2),
+          ],
           numResultsPerQuery: opts.numResultsPerQuery ?? 15,
           maxCompanies,
         }),
@@ -549,7 +587,7 @@ export async function discoverCompanies(opts: {
     // Global: classic ATS harvest + Workable + Remotive + LinkedIn.
     const [harvest, workable, remotive, linkedin] = await Promise.all([
       discoverFromAtsUrlHarvest({
-        queries,
+        queries: [...queries, ...SIGNAL_DISCOVERY_QUERIES],
         numResultsPerQuery: opts.numResultsPerQuery ?? 25,
         maxCompanies: maxCompanies * 2,
       }),
@@ -582,6 +620,7 @@ export async function discoverCompanies(opts: {
       jobCount: c.jobCount,
       sourceUrl: c.sourceUrl,
       sourceTitle: c.sourceTitle,
+      sourceQuery: c.sourceQuery ?? null,
     }));
 }
 

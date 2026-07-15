@@ -8,6 +8,7 @@ import type {
   ResearchRun,
   ResearchTable,
   RowSource,
+  Rubric,
   ScoreResult,
 } from "@/lib/research/types";
 import { normalizeDomain } from "@/lib/crm";
@@ -16,6 +17,7 @@ type TableRow = {
   id: string;
   name: string;
   rubric_id: string;
+  rubric_json: Rubric | null;
   description: string | null;
   created_by_email: string | null;
   created_at: string;
@@ -47,6 +49,7 @@ function mapTable(r: TableRow, rowCount?: number): ResearchTable {
     id: r.id,
     name: r.name,
     rubricId: r.rubric_id,
+    rubricJson: r.rubric_json ?? null,
     description: r.description,
     createdByEmail: r.created_by_email,
     createdAt: r.created_at,
@@ -106,18 +109,21 @@ export async function createTable(
   input: {
     name: string;
     rubricId?: string;
+    /** Custom rubric compiled from a natural-language ICP; overrides rubricId at research time. */
+    rubricJson?: Rubric | null;
     description?: string | null;
     createdByEmail?: string | null;
   },
 ): Promise<ResearchTable> {
   const rubricId = input.rubricId ?? getDefaultRubricId();
-  getRubric(rubricId); // validate
+  if (!input.rubricJson) getRubric(rubricId); // validate built-in reference
 
   const { data, error } = await client
     .from("research_tables")
     .insert({
       name: input.name.trim(),
-      rubric_id: rubricId,
+      rubric_id: input.rubricJson ? (input.rubricJson.id ?? rubricId) : rubricId,
+      rubric_json: input.rubricJson ?? null,
       description: input.description ?? null,
       created_by_email: input.createdByEmail ?? null,
     })
@@ -368,6 +374,7 @@ export async function markRow(
   patch: {
     status?: string;
     error?: string | null;
+    domain?: string | null;
   },
 ): Promise<void> {
   const { error } = await client
@@ -375,6 +382,9 @@ export async function markRow(
     .update({
       ...("status" in patch ? { status: patch.status } : {}),
       ...("error" in patch ? { error: patch.error } : {}),
+      ...("domain" in patch
+        ? { domain: normalizeDomain(patch.domain) }
+        : {}),
       updated_at: new Date().toISOString(),
     })
     .eq("id", rowId);

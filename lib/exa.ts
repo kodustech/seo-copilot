@@ -432,7 +432,8 @@ export async function searchUrls({
   query: string;
   domains?: string[];
   numResults?: number;
-  daysBack?: number;
+  /** null skips the published-date filter (needed for evergreen pages like homepages). */
+  daysBack?: number | null;
 }): Promise<Array<{ url: string; title: string | null }>> {
   const exa = createExaClient("url discovery");
   const response = await exa.search(query, {

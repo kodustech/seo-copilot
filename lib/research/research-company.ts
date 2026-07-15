@@ -1,8 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { getCached, setCache, domainCacheKey } from "@/lib/research/cache";
+import { resolveDomain } from "@/lib/research/domain-resolver";
 import { packsRequiredByRubric, runPacks } from "@/lib/research/packs";
-import { getRubric } from "@/lib/research/rubrics";
+import { resolveRubric } from "@/lib/research/rubrics";
 import { scoreCompany } from "@/lib/research/score";
 import {
   getRow,
@@ -50,13 +51,29 @@ export async function researchRow(
 
   const table = await getTable(client, row.tableId);
   if (!table) throw new Error(`Table ${row.tableId} not found`);
-  const rubric = getRubric(table.rubricId);
+  const rubric = resolveRubric(table);
 
   await markRow(client, rowId, { status: "researching", error: null });
 
   try {
-    const cacheKey = row.domain
-      ? domainCacheKey(row.domain, `research:${rubric.id}:v1`)
+    // Discovery rows (Gupy, LinkedIn, Programathor…) arrive without a domain,
+    // which blinds product/pain packs, the cache, and the people waterfall.
+    let domain = row.domain;
+    if (!domain) {
+      const discovery = (row.packRaw?.discovery ?? null) as {
+        sourceUrl?: string;
+      } | null;
+      const resolved = await resolveDomain(client, row.companyName, {
+        hintUrl: discovery?.sourceUrl ?? null,
+      });
+      if (resolved.domain) {
+        domain = resolved.domain;
+        await markRow(client, rowId, { domain });
+      }
+    }
+
+    const cacheKey = domain
+      ? domainCacheKey(domain, `research:${rubric.id}:v1`)
       : null;
 
     let packs: Record<string, PackOutput> | null = null;
@@ -86,16 +103,11 @@ export async function researchRow(
 
       packs = await runPacks({
         companyName: row.companyName,
-        domain: row.domain,
+        domain,
         packs: needed,
         knownBoard,
       });
-      score = await scoreCompany(
-        rubric,
-        row.companyName,
-        row.domain,
-        packs,
-      );
+      score = await scoreCompany(rubric, row.companyName, domain, packs);
       if (cacheKey) {
         await setCache(
           client,
@@ -118,7 +130,7 @@ export async function researchRow(
     return {
       rowId,
       companyName: row.companyName,
-      domain: row.domain,
+      domain,
       score,
       packs,
     };

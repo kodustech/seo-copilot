@@ -17,6 +17,10 @@ export type FindIcpInput = {
   maxCompanies?: number;
   /** Optional extra search terms (appended to default QA/E2E queries). */
   focus?: string | null;
+  /** Full custom query set (from an ICP plan) — replaces the defaults. */
+  queries?: string[] | null;
+  /** Company-name substrings to drop at discovery time (consultancies etc). */
+  excludeNamePatterns?: string[] | null;
 };
 
 export type FindIcpResult = {
@@ -44,28 +48,43 @@ export async function findIcpCompanies(
   const maxCompanies = Math.min(Math.max(input.maxCompanies ?? 12, 3), 30);
 
   const focus = input.focus?.trim();
+  const customQueries = (input.queries ?? []).filter(
+    (q) => typeof q === "string" && q.trim().length > 2,
+  );
   const queries =
-    input.market === "brazil"
-      ? focus
-        ? [focus, "QA", "SDET", "Playwright", "Automação de testes"]
-        : undefined
-      : focus
-        ? [
-            focus,
-            "QA Automation Engineer end-to-end tests",
-            "SDET Playwright Cypress",
-          ]
-        : undefined;
+    customQueries.length > 0
+      ? customQueries
+      : input.market === "brazil"
+        ? focus
+          ? [focus, "QA", "SDET", "Playwright", "Automação de testes"]
+          : undefined
+        : focus
+          ? [
+              focus,
+              "QA Automation Engineer end-to-end tests",
+              "SDET Playwright Cypress",
+            ]
+          : undefined;
 
   // Over-fetch a bit so size filter after research still has enough rows.
   const fetchCap =
     input.size === "any" ? maxCompanies : Math.min(maxCompanies * 2, 30);
 
-  const discovered = await discoverCompanies({
+  let discovered = await discoverCompanies({
     market: input.market,
     maxCompanies: fetchCap,
     queries,
   });
+
+  const exclude = (input.excludeNamePatterns ?? [])
+    .map((p) => p.trim().toLowerCase())
+    .filter((p) => p.length > 1);
+  if (exclude.length > 0) {
+    discovered = discovered.filter((d) => {
+      const name = d.companyName.toLowerCase();
+      return !exclude.some((p) => name.includes(p));
+    });
+  }
 
   const toAdd = discovered.map((d) => ({
     companyName: d.companyName,
@@ -84,6 +103,7 @@ export async function findIcpCompanies(
         boardSlug: d.slug,
         jobCount: d.jobCount,
         sourceUrl: d.sourceUrl,
+        sourceQuery: d.sourceQuery ?? null,
       },
     },
   }));

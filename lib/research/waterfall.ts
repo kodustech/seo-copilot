@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { discoverContacts } from "@/lib/contact-discovery";
 import { verifyEmails } from "@/lib/email-verifier";
 import { getCached, setCache, domainCacheKey } from "@/lib/research/cache";
-import { getRubric } from "@/lib/research/rubrics";
+import { resolveRubric } from "@/lib/research/rubrics";
 import {
   getRow,
   getTable,
@@ -63,7 +63,7 @@ export async function enrichPeopleForRow(
   }
 
   const table = await getTable(client, row.tableId);
-  const rubric = table ? getRubric(table.rubricId) : null;
+  const rubric = table ? resolveRubric(table) : null;
   const personas = rubric?.default_personas ?? [
     "Head of Engineering",
     "CTO",
