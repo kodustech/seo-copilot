@@ -10,7 +10,8 @@ export type AtsProvider =
   | "workable"
   | "smartrecruiters"
   | "programathor"
-  | "remotive";
+  | "remotive"
+  | "linkedin";
 
 export const ATS_PROVIDERS: AtsProvider[] = [
   "greenhouse",
@@ -21,6 +22,7 @@ export const ATS_PROVIDERS: AtsProvider[] = [
   "smartrecruiters",
   "programathor",
   "remotive",
+  "linkedin",
 ];
 
 /** Providers we probe when guessing a company board slug. */
@@ -686,6 +688,373 @@ export async function fetchProgramathorCompanyJobs(
 }
 
 // ---------------------------------------------------------------------------
+// LinkedIn Jobs — via search engines + light public-page scrape
+//
+// We never log into LinkedIn. Flow:
+// 1) DuckDuckGo HTML (and optional Exa) for site:linkedin.com/jobs/view
+// 2) Parse company/title from URL slug + og:title / og:description on the
+//    public guest job page (works without auth for many postings).
+// Fragile by nature; treat as best-effort discovery signal.
+// ---------------------------------------------------------------------------
+
+const LI_JOB_ID_RE = /linkedin\.com\/jobs\/view\/(?:[^/?#]*-)?(\d{6,})/i;
+const LI_JOB_URL_RE =
+  /https?:\/\/(?:[a-z]{2}\.)?linkedin\.com\/jobs\/view\/[^\s"'<>&]+/gi;
+
+function normalizeLinkedInJobUrl(raw: string): string | null {
+  let url = raw;
+  try {
+    url = decodeURIComponent(raw);
+  } catch {
+    // keep raw
+  }
+  // Strip tracking junk
+  url = url.replace(/&amp;/g, "&").split("?")[0].split("#")[0];
+  const idMatch = url.match(LI_JOB_ID_RE);
+  if (!idMatch) return null;
+  return `https://www.linkedin.com/jobs/view/${idMatch[1]}`;
+}
+
+/** "qa-automation-at-compass-uol-4439" → company "compass-uol", title words. */
+export function parseLinkedInJobSlug(url: string): {
+  jobId: string;
+  companySlug: string | null;
+  titleSlug: string | null;
+} | null {
+  try {
+    const path = new URL(url).pathname;
+    const seg = path.split("/").filter(Boolean).pop() ?? "";
+    // formats:
+    //   4439350576
+    //   qa-automation-engineer-at-compass-uol-4439350576
+    const m = seg.match(/^(?:(.+)-)?(\d{6,})$/);
+    if (!m) return null;
+    const jobId = m[2];
+    const rest = m[1] ?? null;
+    if (!rest) return { jobId, companySlug: null, titleSlug: null };
+    const at = rest.lastIndexOf("-at-");
+    if (at === -1) {
+      return { jobId, companySlug: null, titleSlug: rest };
+    }
+    return {
+      jobId,
+      titleSlug: rest.slice(0, at) || null,
+      companySlug: rest.slice(at + 4) || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function humanizeSlug(slug: string): string {
+  return slug
+    .split("-")
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+type LinkedInListHit = {
+  url: string;
+  title: string;
+  companyName: string;
+  location: string | null;
+};
+
+/**
+ * Primary: LinkedIn public guest search HTML (no login).
+ * https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search
+ */
+async function searchLinkedInViaGuestApi(opts: {
+  query: string;
+  location?: string | null;
+  limit: number;
+}): Promise<LinkedInListHit[]> {
+  const params = new URLSearchParams({
+    keywords: opts.query,
+    start: "0",
+  });
+  if (opts.location) params.set("location", opts.location);
+
+  const html = await fetchText(
+    `https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?${params.toString()}`,
+    { "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8" },
+  );
+  if (!html || html.length < 200) return [];
+
+  const hrefs = [
+    ...html.matchAll(
+      /href="(https:\/\/(?:[a-z]{2}\.)?linkedin\.com\/jobs\/view\/[^"?]+)/g,
+    ),
+  ].map((m) => m[1]);
+  const titles = [
+    ...html.matchAll(/base-search-card__title[^>]*>\s*([^<]+)/g),
+  ].map((m) => m[1].trim());
+  const companies = [
+    ...html.matchAll(
+      /base-search-card__subtitle[^>]*>\s*(?:<a[^>]*>)?\s*([^<\n]+)/g,
+    ),
+  ].map((m) => m[1].trim());
+  const locs = [
+    ...html.matchAll(/job-search-card__location[^>]*>\s*([^<\n]+)/g),
+  ].map((m) => m[1].trim());
+
+  const n = Math.min(
+    opts.limit,
+    hrefs.length,
+    titles.length || hrefs.length,
+    companies.length || hrefs.length,
+  );
+  const out: LinkedInListHit[] = [];
+  for (let i = 0; i < n; i++) {
+    const url = normalizeLinkedInJobUrl(hrefs[i]) ?? hrefs[i].split("?")[0];
+    out.push({
+      url,
+      title: titles[i] || "LinkedIn job",
+      companyName: companies[i] || "Unknown",
+      location: locs[i] || opts.location || null,
+    });
+  }
+  return out;
+}
+
+/**
+ * Fallback: DuckDuckGo HTML — often captcha'd from datacenter IPs.
+ */
+async function searchLinkedInJobUrlsViaDdg(
+  query: string,
+  limit: number,
+): Promise<string[]> {
+  const q = `site:linkedin.com/jobs/view ${query}`;
+  const html = await fetchText(
+    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`,
+  );
+  if (!html) return [];
+
+  const urls = new Set<string>();
+  for (const m of html.matchAll(/uddg=([^&"']+)/g)) {
+    try {
+      const decoded = decodeURIComponent(m[1]);
+      const norm = normalizeLinkedInJobUrl(decoded);
+      if (norm) urls.add(norm);
+    } catch {
+      // skip
+    }
+  }
+  for (const m of html.matchAll(LI_JOB_URL_RE)) {
+    const norm = normalizeLinkedInJobUrl(m[0]);
+    if (norm) urls.add(norm);
+  }
+  return [...urls].slice(0, limit);
+}
+
+/** Optional Exa when EXA_API_KEY is set. */
+async function searchLinkedInJobUrlsViaExa(
+  query: string,
+  limit: number,
+): Promise<string[]> {
+  if (!process.env.EXA_API_KEY?.trim()) return [];
+  try {
+    const { searchUrls } = await import("@/lib/exa");
+    const results = await searchUrls({
+      query: `${query} linkedin jobs`,
+      domains: ["linkedin.com"],
+      numResults: limit,
+      daysBack: 120,
+    });
+    const urls: string[] = [];
+    for (const r of results) {
+      const norm = normalizeLinkedInJobUrl(r.url);
+      if (norm) urls.push(norm);
+    }
+    return urls;
+  } catch (err) {
+    console.warn("[linkedin] Exa search failed:", err);
+    return [];
+  }
+}
+
+/** Light guest-page scrape: og:title / og:description (no login). */
+export async function scrapeLinkedInJobPage(jobUrl: string): Promise<{
+  title: string | null;
+  companyName: string | null;
+  location: string | null;
+  content: string;
+} | null> {
+  const html = await fetchText(jobUrl, {
+    "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8",
+  });
+  if (!html || html.length < 500) return null;
+
+  const ogTitle =
+    html.match(
+      /property=["']og:title["']\s+content=["']([^"']+)["']/i,
+    )?.[1] ??
+    html.match(
+      /content=["']([^"']+)["']\s+property=["']og:title["']/i,
+    )?.[1] ??
+    null;
+  const ogDesc =
+    html.match(
+      /property=["']og:description["']\s+content=["']([^"']+)["']/i,
+    )?.[1] ??
+    html.match(
+      /content=["']([^"']+)["']\s+property=["']og:description["']/i,
+    )?.[1] ??
+    null;
+
+  // "Compass UOL hiring QA Automation Engineer | Mid-Level (Remote) in Brazil | LinkedIn"
+  let companyName: string | null = null;
+  let title: string | null = null;
+  let location: string | null = null;
+
+  if (ogTitle) {
+    const decoded = ogTitle
+      .replace(/&amp;/g, "&")
+      .replace(/&#39;/g, "'")
+      .replace(/&quot;/g, '"');
+    const hiring = decoded.match(
+      /^(.+?)\s+hiring\s+(.+?)(?:\s+in\s+(.+?))?\s*\|\s*LinkedIn$/i,
+    );
+    if (hiring) {
+      companyName = hiring[1].trim();
+      title = hiring[2].trim();
+      location = hiring[3]?.trim() ?? null;
+    } else {
+      title = decoded.replace(/\s*\|\s*LinkedIn$/i, "").trim();
+    }
+  }
+
+  const content = truncate(
+    htmlToText((ogDesc ?? "").replace(/&amp;/g, "&").replace(/&#39;/g, "'")),
+  );
+
+  return { title, companyName, location, content };
+}
+
+export async function searchLinkedInJobs(opts: {
+  query: string;
+  /** e.g. "Brazil" */
+  location?: string | null;
+  limit?: number;
+  /** Fetch og: description for body text. Default true. */
+  enrich?: boolean;
+}): Promise<AggregatedJob[]> {
+  const limit = opts.limit ?? 20;
+  const enrich = opts.enrich !== false;
+
+  // 1) Guest search API (best signal, no key)
+  let list = await searchLinkedInViaGuestApi({
+    query: opts.query,
+    location: opts.location,
+    limit,
+  });
+
+  // 2) Fallbacks if guest is blocked: Exa + DDG URL harvest
+  if (list.length === 0) {
+    const q = [opts.query, opts.location].filter(Boolean).join(" ");
+    const [exaUrls, ddgUrls] = await Promise.all([
+      searchLinkedInJobUrlsViaExa(q, limit),
+      searchLinkedInJobUrlsViaDdg(q, limit),
+    ]);
+    const urls = [...new Set([...exaUrls, ...ddgUrls])].slice(0, limit);
+    list = urls.map((url) => {
+      const parsed = parseLinkedInJobSlug(url);
+      return {
+        url,
+        title: parsed?.titleSlug
+          ? humanizeSlug(parsed.titleSlug)
+          : "LinkedIn job",
+        companyName: parsed?.companySlug
+          ? humanizeSlug(parsed.companySlug)
+          : "Unknown",
+        location: opts.location ?? null,
+      };
+    });
+  }
+
+  const out: AggregatedJob[] = [];
+  for (const hit of list.slice(0, limit)) {
+    let { title, companyName, location, url } = hit;
+    let content = "";
+
+    if (enrich) {
+      try {
+        const page = await scrapeLinkedInJobPage(url);
+        if (page) {
+          // Prefer guest-list title; og:title is often a localized
+          // "Company is hiring for role…" template.
+          if (
+            page.title &&
+            !/^a empresa\b/i.test(page.title) &&
+            !/\bestá contratando\b/i.test(page.title)
+          ) {
+            title = page.title;
+          }
+          if (page.companyName) companyName = page.companyName;
+          if (page.location && !/ in /i.test(page.location)) {
+            location = page.location;
+          }
+          content = page.content;
+        }
+        await new Promise((r) => setTimeout(r, 150));
+      } catch {
+        // keep list fields
+      }
+    }
+
+    if (!companyName || companyName === "Unknown") continue;
+
+    const boardSlug = companyName
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "")
+      .slice(0, 40);
+
+    const parsed = parseLinkedInJobSlug(url);
+    out.push({
+      title,
+      url,
+      location,
+      team: null,
+      content,
+      publishedAt: null,
+      companyName,
+      ats: "linkedin",
+      boardSlug: boardSlug || `li-${parsed?.jobId ?? "job"}`,
+    });
+  }
+
+  return out;
+}
+
+export async function fetchLinkedInCompanyJobs(
+  companySlug: string,
+): Promise<JobPosting[] | null> {
+  // Re-search LinkedIn for this company name; filter by slug match.
+  const name = humanizeSlug(companySlug);
+  const hits = await searchLinkedInJobs({
+    query: `${name} QA OR SDET OR automation OR engineer`,
+    limit: 15,
+    enrich: true,
+  });
+  const needle = companySlug.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const matched = hits.filter((h) =>
+    h.companyName.toLowerCase().replace(/[^a-z0-9]/g, "").includes(needle),
+  );
+  if (matched.length === 0) return null;
+  return matched.map(({ title, url, location, team, content, publishedAt }) => ({
+    title,
+    url,
+    location,
+    team,
+    content,
+    publishedAt,
+  }));
+}
+
+// ---------------------------------------------------------------------------
 // Unified fetch / detect
 // ---------------------------------------------------------------------------
 
@@ -710,6 +1079,8 @@ export async function fetchBoardJobs(
       return fetchProgramathorCompanyJobs(slug);
     case "remotive":
       return fetchRemotiveCompanyJobs(slug);
+    case "linkedin":
+      return fetchLinkedInCompanyJobs(slug);
   }
 }
 
@@ -731,6 +1102,8 @@ export function boardPublicUrl(ats: AtsProvider, slug: string): string {
       return `https://programathor.com.br/jobs?s=${encodeURIComponent(slug)}`;
     case "remotive":
       return `https://remotive.com/remote-jobs?search=${encodeURIComponent(slug)}`;
+    case "linkedin":
+      return `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(slug)}`;
   }
 }
 

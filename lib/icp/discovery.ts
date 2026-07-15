@@ -8,6 +8,7 @@ import { searchUrls } from "@/lib/exa";
 import {
   fetchBoardJobs,
   searchGupyJobs,
+  searchLinkedInJobs,
   searchProgramathorJobs,
   searchRemotiveJobs,
   searchWorkableJobs,
@@ -371,6 +372,40 @@ async function discoverFromRemotive(opts: {
   return [...map.values()].slice(0, opts.maxCompanies * 2);
 }
 
+/** LinkedIn via DDG/Exa + light og: scrape — no LinkedIn login. */
+async function discoverFromLinkedIn(opts: {
+  queries: string[];
+  location?: string | null;
+  maxCompanies: number;
+}): Promise<CompanyAcc[]> {
+  const map = new Map<string, CompanyAcc>();
+  for (const query of opts.queries.slice(0, 3)) {
+    try {
+      const jobs = await searchLinkedInJobs({
+        query,
+        location: opts.location,
+        limit: 15,
+        enrich: true,
+      });
+      for (const job of jobs) {
+        if (!job.companyName || job.companyName === "Unknown") continue;
+        mergeCompany(map, {
+          ats: "linkedin",
+          slug: job.boardSlug,
+          companyName: job.companyName,
+          jobCount: 1,
+          sourceUrl: job.url,
+          sourceTitle: job.title,
+        });
+      }
+    } catch (err) {
+      console.error(`[icp-discovery] LinkedIn failed for "${query}":`, err);
+    }
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return [...map.values()].slice(0, opts.maxCompanies * 2);
+}
+
 async function discoverFromAtsUrlHarvest(opts: {
   queries: string[];
   numResultsPerQuery: number;
@@ -471,9 +506,9 @@ export async function discoverCompanies(opts: {
   const map = new Map<string, CompanyAcc>();
 
   if (market === "brazil") {
-    // Multi-source Brazil: Gupy + Workable (location Brazil) + Programathor
-    // + Remotive (remote, often hire BR) + ATS URL harvest.
-    const [gupy, workable, programathor, remotive, harvest] =
+    // Multi-source Brazil: Gupy + Workable + Programathor + LinkedIn +
+    // Remotive + ATS URL harvest.
+    const [gupy, workable, programathor, remotive, linkedin, harvest] =
       await Promise.all([
         discoverFromGupy({ queries, maxCompanies }),
         discoverFromWorkable({
@@ -486,6 +521,11 @@ export async function discoverCompanies(opts: {
           queries: ["QA", "SDET", "Playwright"],
           maxCompanies,
         }),
+        discoverFromLinkedIn({
+          queries: ["QA Automation", "SDET", "Playwright"],
+          location: "Brazil",
+          maxCompanies,
+        }),
         discoverFromAtsUrlHarvest({
           queries: queries.slice(0, 3),
           numResultsPerQuery: opts.numResultsPerQuery ?? 15,
@@ -493,15 +533,21 @@ export async function discoverCompanies(opts: {
         }),
       ]);
 
-    for (const c of [...gupy, ...workable, ...programathor, ...remotive]) {
+    for (const c of [
+      ...gupy,
+      ...workable,
+      ...programathor,
+      ...remotive,
+      ...linkedin,
+    ]) {
       mergeCompany(map, c);
     }
     for (const c of harvest) {
       mergeCompany(map, c);
     }
   } else {
-    // Global: classic ATS harvest + Workable search + Remotive.
-    const [harvest, workable, remotive] = await Promise.all([
+    // Global: classic ATS harvest + Workable + Remotive + LinkedIn.
+    const [harvest, workable, remotive, linkedin] = await Promise.all([
       discoverFromAtsUrlHarvest({
         queries,
         numResultsPerQuery: opts.numResultsPerQuery ?? 25,
@@ -513,11 +559,17 @@ export async function discoverCompanies(opts: {
         maxCompanies,
       }),
       discoverFromRemotive({ queries, maxCompanies }),
+      discoverFromLinkedIn({
+        queries: queries.slice(0, 2),
+        location: null,
+        maxCompanies,
+      }),
     ]);
 
     for (const c of harvest) mergeCompany(map, c);
     for (const c of workable) mergeCompany(map, c);
     for (const c of remotive) mergeCompany(map, c);
+    for (const c of linkedin) mergeCompany(map, c);
   }
 
   return [...map.values()]

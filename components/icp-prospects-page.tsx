@@ -86,6 +86,8 @@ function boardUrl(entry: { ats: string; boardSlug: string }): string {
       return `https://programathor.com.br/jobs?s=${encodeURIComponent(entry.boardSlug)}`;
     case "remotive":
       return `https://remotive.com/remote-jobs?search=${encodeURIComponent(entry.boardSlug)}`;
+    case "linkedin":
+      return `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(entry.boardSlug)}`;
     default:
       return "#";
   }

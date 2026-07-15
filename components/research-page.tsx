@@ -544,9 +544,9 @@ export function ResearchPage() {
         </div>
         <p className="mb-4 text-pretty text-xs text-muted-foreground">
           Searches public boards for QA/SDET/automation hiring — Brazil: Gupy +
-          Workable + Programathor (+ Remotive/ATS links); Global: Greenhouse,
-          Lever, Ashby, Workable, SmartRecruiters, Remotive — then scores with
-          the QE playbook.
+          Workable + Programathor + LinkedIn (via search) + Remotive; Global:
+          Greenhouse/Lever/Ashby/Workable/SmartRecruiters/LinkedIn/Remotive —
+          then scores with the QE playbook.
         </p>
 
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
