@@ -122,6 +122,14 @@ export function parseBoardUrl(
     // Identifier is often PascalCase — keep original casing
     return { ats: "smartrecruiters", slug };
   }
+  if (host.endsWith(".gupy.io")) {
+    // Job pages live at {company}.gupy.io/... — subdomain is the board slug.
+    const sub = host.slice(0, -".gupy.io".length);
+    if (!sub || sub === "portal" || sub === "employability-portal" || sub.includes(".")) {
+      return null;
+    }
+    return { ats: "gupy", slug: sub };
+  }
   if (host === "programathor.com.br" || host === "www.programathor.com.br") {
     return null; // company resolved via listing scrape, not URL slug
   }
@@ -168,6 +176,34 @@ async function resolveCompanyName(
       if (res.ok) {
         const data = (await res.json()) as { name?: string };
         if (data.name) return data.name;
+      }
+    } catch {
+      // fall through
+    }
+  }
+  if (ats === "gupy") {
+    // Subdomain slugs ("vemprasofist") rarely match the API's careerPageName;
+    // the career page <title> carries the real company name.
+    try {
+      const res = await fetch(`https://${slug}.gupy.io/`, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (res.ok) {
+        const html = await res.text();
+        const title =
+          html.match(/<meta[^>]+og:site_name[^>]+content="([^"]+)"/i)?.[1] ??
+          html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1];
+        if (title) {
+          const name = title
+            .split(/\s*[-|–]\s*/)[0]
+            .replace(/\s*(vagas|carreiras|jobs|careers)\s*/gi, "")
+            .trim();
+          if (name.length >= 2) return name;
+        }
       }
     } catch {
       // fall through
@@ -439,6 +475,8 @@ async function discoverFromAtsUrlHarvest(opts: {
   queries: string[];
   numResultsPerQuery: number;
   maxCompanies: number;
+  /** Extra searchable job-page domains (e.g. gupy.io for Brazil). */
+  extraDomains?: string[];
 }): Promise<DiscoveredCompany[]> {
   const seen = new Set<string>();
   const boards: Array<{
@@ -475,7 +513,7 @@ async function discoverFromAtsUrlHarvest(opts: {
       collect(
         await searchUrls({
           query,
-          domains: ATS_JOB_DOMAINS,
+          domains: [...ATS_JOB_DOMAINS, ...(opts.extraDomains ?? [])],
           numResults: opts.numResultsPerQuery,
         }),
         query,
@@ -485,8 +523,29 @@ async function discoverFromAtsUrlHarvest(opts: {
     }
   }
 
+  // Round-robin across ATS types before validating: collection order puts
+  // HN/Greenhouse first, and a straight scan exhausts maxCompanies before
+  // ever reaching e.g. gupy.io boards from extraDomains.
+  const byAts = new Map<string, typeof boards>();
+  for (const b of boards) {
+    const list = byAts.get(b.ats) ?? [];
+    list.push(b);
+    byAts.set(b.ats, list);
+  }
+  const ordered: typeof boards = [];
+  const groups = [...byAts.values()];
+  for (let i = 0; ordered.length < boards.length; i++) {
+    for (const g of groups) {
+      if (i < g.length) ordered.push(g[i]);
+    }
+  }
+  // Signal-matched boards validate first so they fit inside maxCompanies.
+  ordered.sort(
+    (a, b) => (b.sourceQuery ? 1 : 0) - (a.sourceQuery ? 1 : 0),
+  );
+
   const discovered: DiscoveredCompany[] = [];
-  for (const board of boards) {
+  for (const board of ordered) {
     if (discovered.length >= opts.maxCompanies) break;
     // Workable company id slugs from /company/{id}/ may not work with widget —
     // skip validation failure silently.
@@ -494,7 +553,13 @@ async function discoverFromAtsUrlHarvest(opts: {
       const jobs = await fetchBoardJobs(board.ats, board.slug);
       if (!jobs || jobs.length === 0) {
         // Still include if we only have URL evidence (search portals).
-        if (board.ats === "workable" || board.ats === "smartrecruiters") {
+        // gupy: careerPageName API rarely matches subdomain slugs, but the
+        // job URL itself is proof the board exists.
+        if (
+          board.ats === "workable" ||
+          board.ats === "smartrecruiters" ||
+          board.ats === "gupy"
+        ) {
           const companyName = await resolveCompanyName(board.ats, board.slug);
           discovered.push({
             ats: board.ats,
@@ -587,6 +652,9 @@ export async function discoverCompanies(opts: {
           ],
           numResultsPerQuery: opts.numResultsPerQuery ?? 15,
           maxCompanies,
+          // Gupy job pages are public ({company}.gupy.io) — lets signal
+          // phrases hit Brazilian posting text, not just global ATS boards.
+          extraDomains: ["gupy.io"],
         }),
       ]);
 
@@ -600,14 +668,17 @@ export async function discoverCompanies(opts: {
       mergeCompany(map, c);
     }
     for (const c of harvest) {
-      mergeCompany(map, c);
+      mergeCompany(map, { ...c, local: c.ats === "gupy" });
     }
 
     // Brazil-first ranking: global harvest boards carry big job counts and
     // would crowd out market-scoped hits (jobCount 1-3) in a pure jobCount
-    // sort. Fill at least half the slots with local-source companies
-    // (Gupy, Programathor, Workable/LinkedIn scoped to Brazil).
-    const all = [...map.values()].sort((a, b) => b.jobCount - a.jobCount);
+    // sort. Signal-matched companies (sourceQuery set — found via a trigger
+    // phrase, not a generic keyword) outrank raw job counts. Fill at least
+    // half the slots with local-source companies.
+    const rank = (c: CompanyAcc) =>
+      (c.sourceQuery ? 1_000_000 : 0) + c.jobCount;
+    const all = [...map.values()].sort((a, b) => rank(b) - rank(a));
     const brazilian = all.filter((c) => c.local);
     const other = all.filter((c) => !c.local);
     const quota = Math.ceil(maxCompanies / 2);
@@ -652,7 +723,12 @@ export async function discoverCompanies(opts: {
   }
 
   return [...map.values()]
-    .sort((a, b) => b.jobCount - a.jobCount)
+    .sort(
+      (a, b) =>
+        (b.sourceQuery ? 1_000_000 : 0) +
+        b.jobCount -
+        ((a.sourceQuery ? 1_000_000 : 0) + a.jobCount),
+    )
     .slice(0, maxCompanies)
     .map((c) => ({
       ats: c.ats,

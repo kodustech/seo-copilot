@@ -194,13 +194,15 @@ export async function addRows(
         continue;
       }
     } else {
-      // No domain (common for Gupy): dedupe by company name.
+      // No domain (common for discovery rows): dedupe by company name across
+      // the whole table — an earlier research run may have filled in the
+      // domain on a row that started domainless.
       const { data: existing } = await client
         .from("research_rows")
         .select("id")
         .eq("table_id", tableId)
-        .is("domain", null)
         .ilike("company_name", companyName)
+        .limit(1)
         .maybeSingle();
       if (existing) {
         skipped += 1;
