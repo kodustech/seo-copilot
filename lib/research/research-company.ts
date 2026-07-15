@@ -75,10 +75,20 @@ export async function researchRow(
 
     if (!packs || !score) {
       const needed = packsRequiredByRubric(rubric);
+      const discovery = (row.packRaw?.discovery ?? null) as {
+        ats?: string;
+        boardSlug?: string;
+      } | null;
+      const knownBoard =
+        discovery?.ats && discovery?.boardSlug
+          ? { ats: discovery.ats, slug: discovery.boardSlug }
+          : null;
+
       packs = await runPacks({
         companyName: row.companyName,
         domain: row.domain,
         packs: needed,
+        knownBoard,
       });
       score = await scoreCompany(
         rubric,
@@ -96,7 +106,14 @@ export async function researchRow(
       }
     }
 
-    await saveScore(client, rowId, score, serializePacks(packs));
+    // Preserve find/discovery metadata when writing pack results.
+    const mergedRaw = {
+      ...(row.packRaw ?? {}),
+      ...serializePacks(packs),
+      discovery: row.packRaw?.discovery,
+      find: row.packRaw?.find,
+    };
+    await saveScore(client, rowId, score, mergedRaw);
 
     return {
       rowId,

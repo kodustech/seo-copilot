@@ -18,15 +18,27 @@ function truncate(text: string, max = 600): string {
 export async function runCareersPack(input: {
   companyName: string;
   domain: string | null;
+  /** When discovery already knows the board, skip detectBoard. */
+  knownBoard?: { ats: string; slug: string } | null;
 }): Promise<PackOutput> {
   const pack = "careers";
   try {
-    let board = input.domain
-      ? await detectBoard({
-          companyName: input.companyName,
-          domain: input.domain,
-        })
-      : null;
+    let board: { ats: import("@/lib/icp/job-boards").AtsProvider; slug: string } | null =
+      null;
+
+    if (input.knownBoard?.ats && input.knownBoard?.slug) {
+      board = {
+        ats: input.knownBoard.ats as import("@/lib/icp/job-boards").AtsProvider,
+        slug: input.knownBoard.slug,
+      };
+    }
+
+    if (!board && input.domain) {
+      board = await detectBoard({
+        companyName: input.companyName,
+        domain: input.domain,
+      });
+    }
 
     // Fallback: try company name as slug on common ATS if detect failed.
     if (!board && input.companyName) {

@@ -160,6 +160,7 @@ export async function addRows(
     companyName: string;
     domain?: string | null;
     source?: RowSource | string;
+    packRaw?: Record<string, unknown>;
   }>,
 ): Promise<{ added: number; skipped: number; rows: ResearchRow[] }> {
   let added = 0;
@@ -186,6 +187,19 @@ export async function addRows(
         skipped += 1;
         continue;
       }
+    } else {
+      // No domain (common for Gupy): dedupe by company name.
+      const { data: existing } = await client
+        .from("research_rows")
+        .select("id")
+        .eq("table_id", tableId)
+        .is("domain", null)
+        .ilike("company_name", companyName)
+        .maybeSingle();
+      if (existing) {
+        skipped += 1;
+        continue;
+      }
     }
 
     const { data, error } = await client
@@ -196,6 +210,7 @@ export async function addRows(
         domain,
         source: r.source ?? "manual",
         status: "pending",
+        pack_raw: r.packRaw ?? {},
       })
       .select("*")
       .single();

@@ -3713,6 +3713,64 @@ export const researchListRows = tool({
   },
 });
 
+export const researchFindIcp = tool({
+  description:
+    "Find companies matching the QE ICP: market=brazil (Gupy) or global (Greenhouse/Lever/Ashby), optional size band, then score each with the research rubric. Long-running — prefer UI for large runs; agent use max 6.",
+  inputSchema: z.object({
+    table_id: z.string().describe("Research table id"),
+    market: z.enum(["global", "brazil"]).optional(),
+    size: z.enum(["any", "small", "mid", "large"]).optional(),
+    max_companies: z.number().optional(),
+    focus: z.string().optional(),
+    research_after: z.boolean().optional().describe("Score after find (default true)"),
+  }),
+  execute: async ({
+    table_id,
+    market,
+    size,
+    max_companies,
+    focus,
+    research_after,
+  }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { findIcpCompanies } = await import("@/lib/research/find");
+      const found = await findIcpCompanies(client, {
+        tableId: table_id,
+        market: market ?? "brazil",
+        size: size ?? "mid",
+        maxCompanies: Math.min(max_companies ?? 6, 12),
+        focus: focus ?? null,
+      });
+      let research: { ok: number; failed: number; passed: number } | null = null;
+      if (research_after !== false && found.rowIds.length > 0) {
+        const { researchRows } = await import("@/lib/research/research-company");
+        const result = await researchRows(client, found.rowIds, {
+          concurrency: 1,
+        });
+        research = {
+          ok: result.ok,
+          failed: result.failed,
+          passed: result.results.filter((r) => r.score.pass).length,
+        };
+      }
+      return {
+        success: true as const,
+        discovered: found.discovered,
+        added: found.added,
+        market: found.market,
+        size: found.size,
+        research,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Find ICP failed",
+      };
+    }
+  },
+});
+
 export function createAgentTools(userEmail?: string) {
   return {
     generateIdeas,
@@ -3775,6 +3833,7 @@ export function createAgentTools(userEmail?: string) {
     researchAddDomains,
     researchCompany,
     researchListRows,
+    researchFindIcp,
   };
 }
 

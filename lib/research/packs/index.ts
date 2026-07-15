@@ -29,12 +29,14 @@ export async function runPacks(input: {
   companyName: string;
   domain: string | null;
   packs: PackName[];
+  knownBoard?: { ats: string; slug: string } | null;
 }): Promise<Record<string, PackOutput>> {
   const runners: Record<PackName, () => Promise<PackOutput>> = {
     careers: () =>
       runCareersPack({
         companyName: input.companyName,
         domain: input.domain,
+        knownBoard: input.knownBoard,
       }),
     product: () => runProductPack({ domain: input.domain }),
     ship: () =>
