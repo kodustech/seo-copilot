@@ -1,0 +1,167 @@
+{
+  "id": "qe-kodus-v1",
+  "name": "QE / E2E testing ICP (Kodus)",
+  "version": 1,
+  "description": "Companies with quality/automation pain on customer-facing products — not headcount alone.",
+  "pass_threshold": 55,
+  "default_personas": [
+    "Head of Engineering",
+    "Engineering Manager",
+    "CTO",
+    "VP Engineering",
+    "QA Lead",
+    "SDET",
+    "Founder"
+  ],
+  "criteria": [
+    {
+      "id": "qa_automation_hiring",
+      "label": "Open QA Automation / SDET role",
+      "kind": "trigger",
+      "weight": 18,
+      "packs": ["careers"],
+      "pass_hint": "Hiring QA Automation, SDET, or SEIT with E2E/CI/flaky mentions"
+    },
+    {
+      "id": "test_suite_rescue",
+      "label": "Test suite rebuild / rescue / flaky debt",
+      "kind": "trigger",
+      "weight": 16,
+      "packs": ["careers", "news"],
+      "pass_hint": "Role or content about rebuilding, recovering, or owning a flaky/unreliable suite"
+    },
+    {
+      "id": "eng_growth_no_qa",
+      "label": "Engineering growth without QA growth",
+      "kind": "trigger",
+      "weight": 12,
+      "packs": ["careers"],
+      "pass_hint": "Several open eng roles and zero QA/SDET roles"
+    },
+    {
+      "id": "ai_feature_shipping",
+      "label": "AI features entering production",
+      "kind": "trigger",
+      "weight": 12,
+      "packs": ["careers", "product", "news"],
+      "pass_hint": "Building customer-facing AI/LLM features that need evals/regression"
+    },
+    {
+      "id": "release_or_launch",
+      "label": "Important release or launch",
+      "kind": "trigger",
+      "weight": 8,
+      "packs": ["ship", "news"],
+      "pass_hint": "Recent launch, major release, or high ship cadence"
+    },
+    {
+      "id": "migration_or_redesign",
+      "label": "Migration or redesign",
+      "kind": "trigger",
+      "weight": 8,
+      "packs": ["careers", "news"],
+      "pass_hint": "Platform rewrite, migration, redesign, or rearchitecture"
+    },
+    {
+      "id": "compliance_or_enterprise",
+      "label": "Compliance / enterprise pressure",
+      "kind": "trigger",
+      "weight": 10,
+      "packs": ["careers", "product", "news"],
+      "pass_hint": "SOC2, HIPAA, PCI, enterprise security, or enterprise sales hiring"
+    },
+    {
+      "id": "public_stability_pain",
+      "label": "Public bugs / incidents / support pressure",
+      "kind": "trigger",
+      "weight": 6,
+      "packs": ["pain"],
+      "pass_hint": "Public outages, status incidents, or recurring bug complaints"
+    },
+    {
+      "id": "b2b_saas_customer_facing",
+      "label": "Customer-facing B2B product",
+      "kind": "fit",
+      "weight": 14,
+      "packs": ["product"],
+      "pass_hint": "B2B SaaS with demo/pricing/workspaces used by customers"
+    },
+    {
+      "id": "money_access_permissions_flows",
+      "label": "Flows with money, access, permissions, or data",
+      "kind": "fit",
+      "weight": 12,
+      "packs": ["product"],
+      "pass_hint": "Billing, RBAC, SSO, permissions, sensitive data, or operational workflows"
+    },
+    {
+      "id": "complex_states_and_rules",
+      "label": "Enough product complexity to need context",
+      "kind": "fit",
+      "weight": 8,
+      "packs": ["product"],
+      "pass_hint": "Multi-role, integrations, onboarding, multi-step workflows"
+    },
+    {
+      "id": "target_industry",
+      "label": "Fintech / health / marketplace / commerce / workflow SaaS",
+      "kind": "fit",
+      "weight": 8,
+      "packs": ["product", "news"],
+      "pass_hint": "Industry or product category matches high-pain verticals"
+    },
+    {
+      "id": "mid_size_eng_org",
+      "label": "Roughly mid-size engineering org (not tiny, not mega)",
+      "kind": "fit",
+      "weight": 6,
+      "packs": ["careers", "product"],
+      "pass_hint": "Signals of ~10–50 eng or similar scale; not a sole founder toy app"
+    },
+    {
+      "id": "manual_qa_factory",
+      "label": "Wants cheap manual test labor only",
+      "kind": "anti",
+      "weight": 0,
+      "veto": true,
+      "packs": ["careers"],
+      "pass_hint": "ANTI: hiring only for manual test-case factories / cheap headcount"
+    },
+    {
+      "id": "already_mature_qe",
+      "label": "Already mature QE / stable E2E",
+      "kind": "anti",
+      "weight": 0,
+      "veto": false,
+      "packs": ["careers", "product", "news"],
+      "pass_hint": "ANTI: strong mature QE org with healthy suite and no pain signals"
+    },
+    {
+      "id": "simple_or_stable_product",
+      "label": "Simple or very stable product / low cost of failure",
+      "kind": "anti",
+      "weight": 0,
+      "veto": false,
+      "packs": ["product"],
+      "pass_hint": "ANTI: trivial product, few users, low failure cost"
+    },
+    {
+      "id": "mobile_native_central",
+      "label": "Mobile native as central need",
+      "kind": "anti",
+      "weight": 0,
+      "veto": true,
+      "packs": ["careers", "product"],
+      "pass_hint": "ANTI: primary product is native mobile with little web SaaS surface"
+    },
+    {
+      "id": "outsources_all_quality",
+      "label": "Wants full quality ownership outsourced",
+      "kind": "anti",
+      "weight": 0,
+      "veto": true,
+      "packs": ["careers", "news"],
+      "pass_hint": "ANTI: seeking a vendor to own all quality responsibility"
+    }
+  ]
+}

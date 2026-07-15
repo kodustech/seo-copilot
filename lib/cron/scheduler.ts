@@ -197,6 +197,33 @@ async function runIcpScanCron(): Promise<void> {
   }
 }
 
+/** Re-research rows that previously passed ICP (signals change over time). */
+async function runResearchRefreshCron(): Promise<void> {
+  const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
+  const { listTables, listRows } = await import("@/lib/research/tables");
+  const { researchRows } = await import("@/lib/research/research-company");
+
+  const client = getSupabaseServiceClient();
+  const tables = await listTables(client);
+  let total = 0;
+  let ok = 0;
+  for (const table of tables.slice(0, 5)) {
+    const rows = await listRows(client, table.id, { passOnly: true });
+    // Cap per table to control Exa/LLM cost.
+    const ids = rows.slice(0, 15).map((r) => r.id);
+    if (ids.length === 0) continue;
+    total += ids.length;
+    const result = await researchRows(client, ids, {
+      force: true,
+      concurrency: 1,
+    });
+    ok += result.ok;
+  }
+  console.log(
+    `[cron] research-refresh: re-researched ${ok}/${total} pass rows across ${tables.length} tables`,
+  );
+}
+
 async function runNotificationsCron(): Promise<void> {
   const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
   const { generateNotificationsForAllUsers } = await import(
@@ -247,6 +274,12 @@ const JOBS: JobDefinition[] = [
     name: "icp-scan",
     schedule: "0 6 * * *",
     run: runIcpScanCron,
+  },
+  {
+    // Weekly Wednesday 07:00 UTC: re-score companies that already passed ICP.
+    name: "research-refresh",
+    schedule: "0 7 * * 3",
+    run: runResearchRefreshCron,
   },
   {
     // Every 3h: refresh per-user notifications from the attention feed.
