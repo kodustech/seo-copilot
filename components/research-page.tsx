@@ -543,9 +543,10 @@ export function ResearchPage() {
           <h2 className="text-sm font-semibold">Find ICP companies</h2>
         </div>
         <p className="mb-4 text-pretty text-xs text-muted-foreground">
-          Searches public job boards for QA/SDET/automation hiring (Brazil =
-          Gupy; Global = Greenhouse/Lever/Ashby), then scores each company with
-          the QE playbook (triggers + fit + anti).
+          Searches public boards for QA/SDET/automation hiring — Brazil: Gupy +
+          Workable + Programathor (+ Remotive/ATS links); Global: Greenhouse,
+          Lever, Ashby, Workable, SmartRecruiters, Remotive — then scores with
+          the QE playbook.
         </p>
 
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -561,8 +562,12 @@ export function ResearchPage() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="brazil">Brazil (Gupy)</SelectItem>
-                <SelectItem value="global">Global (ATS boards)</SelectItem>
+                <SelectItem value="brazil">
+                  Brazil (Gupy + Workable + Programathor)
+                </SelectItem>
+                <SelectItem value="global">
+                  Global (GH/Lever/Ashby/Workable/SR)
+                </SelectItem>
               </SelectContent>
             </Select>
           </div>

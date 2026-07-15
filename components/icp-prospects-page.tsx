@@ -78,6 +78,14 @@ function boardUrl(entry: { ats: string; boardSlug: string }): string {
       return `https://jobs.ashbyhq.com/${entry.boardSlug}`;
     case "gupy":
       return `https://portal.gupy.io/job-search/term=${encodeURIComponent(entry.boardSlug)}`;
+    case "workable":
+      return `https://apply.workable.com/${entry.boardSlug}/`;
+    case "smartrecruiters":
+      return `https://jobs.smartrecruiters.com/${entry.boardSlug}`;
+    case "programathor":
+      return `https://programathor.com.br/jobs?s=${encodeURIComponent(entry.boardSlug)}`;
+    case "remotive":
+      return `https://remotive.com/remote-jobs?search=${encodeURIComponent(entry.boardSlug)}`;
     default:
       return "#";
   }
