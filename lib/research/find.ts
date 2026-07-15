@@ -19,6 +19,8 @@ export type FindIcpInput = {
   focus?: string | null;
   /** Full custom query set (from an ICP plan) — replaces the defaults. */
   queries?: string[] | null;
+  /** Short keyword terms for keyword-based boards (Gupy, LinkedIn…). */
+  keywords?: string[] | null;
   /** Company-name substrings to drop at discovery time (consultancies etc). */
   excludeNamePatterns?: string[] | null;
 };
@@ -70,10 +72,15 @@ export async function findIcpCompanies(
   const fetchCap =
     input.size === "any" ? maxCompanies : Math.min(maxCompanies * 2, 30);
 
+  const keywords = (input.keywords ?? []).filter(
+    (k) => typeof k === "string" && k.trim().length > 0,
+  );
+
   let discovered = await discoverCompanies({
     market: input.market,
     maxCompanies: fetchCap,
     queries,
+    keywords: keywords.length > 0 ? keywords : undefined,
   });
 
   const exclude = (input.excludeNamePatterns ?? [])

@@ -18,6 +18,8 @@ export type IcpPlan = {
   size: "any" | "small" | "mid" | "large";
   /** Signal-first discovery queries (job-posting content search). */
   queries: string[];
+  /** Short keyword terms for keyword-based job boards (Gupy, LinkedIn…). */
+  keywords: string[];
   /** Company-name patterns to drop at discovery time (consultancies etc). */
   excludeNamePatterns: string[];
   /** How the model interpreted the ICP — shown to the user for correction. */
@@ -32,6 +34,7 @@ The plan scores companies using ONLY externally observable evidence, collected b
 - ship: changelog / release notes / eng blog — shipping cadence
 - news: recent news / funding / launches
 - pain: public bug complaints, incidents, status pages
+- firmo: firmographics from a data provider — real employee count (with dev-team estimate), industry, founded year, HQ country, leadership. Use for company-size and industry criteria.
 
 Rules for the rubric:
 - criteria kinds: "trigger" (why-now signal, weight 8-18), "fit" (stable attribute, weight 6-14), "anti" (disqualifier, weight 0-8)
@@ -46,6 +49,8 @@ Rules for discovery queries (6-10):
 - derive them from the ICP's trigger moments (e.g. "first QA hire", "flaky test suite", "regressão manual atrasando release")
 - write them in the language of the target market (Portuguese for brazil, English for global); include both when market is brazil and postings may be bilingual
 
+Also produce "keywords" (4-8): SHORT job-search terms (1-3 words, e.g. "QA", "SDET", "Playwright", "Analista de Testes") for keyword-based job boards (Gupy, LinkedIn, Workable). Same market-language rule.
+
 Respond with ONLY a JSON object:
 {
   "table_name": "...",
@@ -54,6 +59,7 @@ Respond with ONLY a JSON object:
   "interpretation": "2-4 sentences summarizing how you read the ICP, in the user's language",
   "exclude_name_patterns": ["consultoria", "software house", ...],
   "call_checklist": ["...conditions to verify on a call..."],
+  "keywords": ["QA", "SDET", ...],
   "rubric": {
     "id": "custom-...",
     "name": "...",
@@ -94,6 +100,7 @@ export async function buildIcpPlanFromPrompt(
     call_checklist?: unknown[];
     rubric?: unknown;
     queries?: unknown[];
+    keywords?: unknown[];
   };
   try {
     parsed = JSON.parse(match[0]);
@@ -110,10 +117,12 @@ export async function buildIcpPlanFromPrompt(
     throw new Error("ICP compiler returned no discovery queries");
   }
 
+  // An explicit hint from the caller/user always wins over the LLM's guess.
   const market =
-    parsed.market === "brazil" || parsed.market === "global"
+    opts.marketHint ??
+    (parsed.market === "brazil" || parsed.market === "global"
       ? parsed.market
-      : (opts.marketHint ?? "global");
+      : "global");
   const size =
     parsed.size === "small" ||
     parsed.size === "mid" ||
@@ -131,6 +140,9 @@ export async function buildIcpPlanFromPrompt(
     market,
     size,
     queries,
+    keywords: (parsed.keywords ?? [])
+      .filter((k): k is string => typeof k === "string" && k.trim().length > 0)
+      .slice(0, 8),
     excludeNamePatterns: (parsed.exclude_name_patterns ?? [])
       .filter((p): p is string => typeof p === "string" && p.trim().length > 1)
       .slice(0, 20),

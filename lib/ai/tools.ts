@@ -3757,6 +3757,7 @@ export const researchCreateFromIcp = tool({
           size: plan.size,
           maxCompanies: Math.min(max_companies ?? 6, 8),
           queries: plan.queries,
+          keywords: plan.keywords,
           excludeNamePatterns: plan.excludeNamePatterns,
         });
         let researched = 0;

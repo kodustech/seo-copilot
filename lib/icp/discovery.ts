@@ -254,6 +254,8 @@ type CompanyAcc = {
   sourceUrl: string;
   sourceTitle: string | null;
   sourceQuery?: string | null;
+  /** Found via a market-scoped source (e.g. Gupy, Workable location=Brazil). */
+  local?: boolean;
 };
 
 function mergeCompany(
@@ -267,6 +269,7 @@ function mergeCompany(
     if (!existing.sourceQuery && hit.sourceQuery) {
       existing.sourceQuery = hit.sourceQuery;
     }
+    if (hit.local) existing.local = true;
     return;
   }
   // Also merge same company name across sources (prefer first ATS).
@@ -299,6 +302,7 @@ async function discoverFromGupy(opts: {
           jobCount: 1,
           sourceUrl: job.url,
           sourceTitle: job.title,
+          local: true,
         });
       }
     } catch (err) {
@@ -330,6 +334,7 @@ async function discoverFromWorkable(opts: {
           jobCount: 1,
           sourceUrl: job.url,
           sourceTitle: job.title,
+          local: Boolean(opts.location),
         });
       }
     } catch (err) {
@@ -356,6 +361,7 @@ async function discoverFromProgramathor(opts: {
           jobCount: 1,
           sourceUrl: job.url,
           sourceTitle: job.title,
+          local: true,
         });
       }
     } catch (err) {
@@ -418,6 +424,7 @@ async function discoverFromLinkedIn(opts: {
           jobCount: 1,
           sourceUrl: job.url,
           sourceTitle: job.title,
+          local: Boolean(opts.location),
         });
       }
     } catch (err) {
@@ -524,6 +531,13 @@ async function discoverFromAtsUrlHarvest(opts: {
 
 export async function discoverCompanies(opts: {
   queries?: string[];
+  /**
+   * Short terms for keyword-based boards (Gupy, Workable, LinkedIn…).
+   * When omitted, `queries` (or market defaults) are used everywhere —
+   * long signal phrases match nothing on keyword search, so pass this
+   * whenever `queries` are full-text signal phrases.
+   */
+  keywords?: string[];
   numResultsPerQuery?: number;
   maxCompanies?: number;
   market?: DiscoveryMarket;
@@ -536,6 +550,11 @@ export async function discoverCompanies(opts: {
       : market === "brazil"
         ? BRAZIL_DISCOVERY_QUERIES
         : DEFAULT_DISCOVERY_QUERIES;
+  const keywords = opts.keywords?.length
+    ? opts.keywords
+    : market === "brazil"
+      ? BRAZIL_DISCOVERY_QUERIES
+      : queries;
 
   const map = new Map<string, CompanyAcc>();
 
@@ -544,19 +563,19 @@ export async function discoverCompanies(opts: {
     // Remotive + ATS URL harvest.
     const [gupy, workable, programathor, remotive, linkedin, harvest] =
       await Promise.all([
-        discoverFromGupy({ queries, maxCompanies }),
+        discoverFromGupy({ queries: keywords, maxCompanies }),
         discoverFromWorkable({
-          queries,
+          queries: keywords,
           location: "Brazil",
           maxCompanies,
         }),
-        discoverFromProgramathor({ queries, maxCompanies }),
+        discoverFromProgramathor({ queries: keywords, maxCompanies }),
         discoverFromRemotive({
-          queries: ["QA", "SDET", "Playwright"],
+          queries: keywords.slice(0, 3),
           maxCompanies,
         }),
         discoverFromLinkedIn({
-          queries: ["QA Automation", "SDET", "Playwright"],
+          queries: keywords.slice(0, 3),
           location: "Brazil",
           maxCompanies,
         }),
@@ -583,6 +602,28 @@ export async function discoverCompanies(opts: {
     for (const c of harvest) {
       mergeCompany(map, c);
     }
+
+    // Brazil-first ranking: global harvest boards carry big job counts and
+    // would crowd out market-scoped hits (jobCount 1-3) in a pure jobCount
+    // sort. Fill at least half the slots with local-source companies
+    // (Gupy, Programathor, Workable/LinkedIn scoped to Brazil).
+    const all = [...map.values()].sort((a, b) => b.jobCount - a.jobCount);
+    const brazilian = all.filter((c) => c.local);
+    const other = all.filter((c) => !c.local);
+    const quota = Math.ceil(maxCompanies / 2);
+    const picked = [
+      ...brazilian.slice(0, Math.max(quota, maxCompanies - other.length)),
+      ...other,
+    ].slice(0, maxCompanies);
+    return picked.map((c) => ({
+      ats: c.ats,
+      slug: c.slug,
+      companyName: c.companyName,
+      jobCount: c.jobCount,
+      sourceUrl: c.sourceUrl,
+      sourceTitle: c.sourceTitle,
+      sourceQuery: c.sourceQuery ?? null,
+    }));
   } else {
     // Global: classic ATS harvest + Workable + Remotive + LinkedIn.
     const [harvest, workable, remotive, linkedin] = await Promise.all([
@@ -592,13 +633,13 @@ export async function discoverCompanies(opts: {
         maxCompanies: maxCompanies * 2,
       }),
       discoverFromWorkable({
-        queries,
+        queries: keywords,
         location: null,
         maxCompanies,
       }),
-      discoverFromRemotive({ queries, maxCompanies }),
+      discoverFromRemotive({ queries: keywords, maxCompanies }),
       discoverFromLinkedIn({
-        queries: queries.slice(0, 2),
+        queries: keywords.slice(0, 2),
         location: null,
         maxCompanies,
       }),
