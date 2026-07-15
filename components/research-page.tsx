@@ -584,7 +584,7 @@ export function ResearchPage() {
           then scores with the QE playbook.
         </p>
 
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 [&>div]:min-w-0">
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground">
               Region
@@ -593,7 +593,7 @@ export function ResearchPage() {
               value={market}
               onValueChange={(v) => setMarket(v as Market)}
             >
-              <SelectTrigger>
+              <SelectTrigger className="w-full [&>span]:truncate">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -612,7 +612,7 @@ export function ResearchPage() {
               Company size (eng signal)
             </label>
             <Select value={size} onValueChange={(v) => setSize(v as SizeBand)}>
-              <SelectTrigger>
+              <SelectTrigger className="w-full [&>span]:truncate">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -629,7 +629,7 @@ export function ResearchPage() {
               How many
             </label>
             <Select value={maxCompanies} onValueChange={setMaxCompanies}>
-              <SelectTrigger>
+              <SelectTrigger className="w-full [&>span]:truncate">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
