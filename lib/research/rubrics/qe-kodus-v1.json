@@ -137,6 +137,7 @@
       "kind": "fit",
       "weight": 8,
       "packs": [
+        "firmo",
         "product",
         "news"
       ],
@@ -148,10 +149,10 @@
       "kind": "fit",
       "weight": 6,
       "packs": [
-        "careers",
-        "product"
+        "firmo",
+        "careers"
       ],
-      "pass_hint": "Signals of ~10–50 eng or similar scale; not a sole founder toy app"
+      "pass_hint": "Roughly 10-50 developers: prefer firmo employee_count/dev estimate; fall back to open-roles proxy from careers"
     },
     {
       "id": "frequent_deploys",
@@ -231,6 +232,7 @@
       "weight": 0,
       "veto": true,
       "packs": [
+        "firmo",
         "product",
         "careers",
         "news"

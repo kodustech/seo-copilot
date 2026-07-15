@@ -25,7 +25,14 @@ export function getDefaultRubricId(): string {
   return "qe-kodus-v1";
 }
 
-const VALID_PACKS = new Set(["careers", "product", "ship", "news", "pain"]);
+const VALID_PACKS = new Set([
+  "careers",
+  "product",
+  "ship",
+  "news",
+  "pain",
+  "firmo",
+]);
 
 /**
  * Validate/normalize a rubric coming from outside the static registry
