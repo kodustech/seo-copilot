@@ -5,6 +5,7 @@ import {
   Building2,
   Check,
   Download,
+  ExternalLink,
   Loader2,
   MoreHorizontal,
   Plus,
@@ -113,6 +114,40 @@ function engOpenings(row: ResearchRow): number | null {
 function rowMarket(row: ResearchRow): string | null {
   const find = row.packRaw?.find as { market?: string } | undefined;
   return find?.market ?? null;
+}
+
+type HuntProvenance = {
+  source: string;
+  query: string;
+  url: string;
+  title: string | null;
+  quote: string;
+  confidence?: number;
+};
+
+function rowHunt(row: ResearchRow): HuntProvenance | null {
+  const hunt = row.packRaw?.hunt as HuntProvenance | undefined;
+  return hunt?.url && hunt?.quote ? hunt : null;
+}
+
+function rowDiscovery(
+  row: ResearchRow,
+): { sourceUrl?: string; sourceQuery?: string | null; ats?: string } | null {
+  return (
+    (row.packRaw?.discovery as {
+      sourceUrl?: string;
+      sourceQuery?: string | null;
+      ats?: string;
+    }) ?? null
+  );
+}
+
+function hostLabel(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url.slice(0, 40);
+  }
 }
 
 function matchesSize(size: SizeBand, eng: number | null): boolean {
@@ -851,7 +886,18 @@ export function ResearchPage() {
                           />
                         </TableCell>
                         <TableCell>
-                          <div className="font-medium">{r.companyName}</div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-medium">{r.companyName}</span>
+                            {rowHunt(r) && (
+                              <Badge
+                                variant="outline"
+                                className="border-emerald-500/40 px-1 py-0 text-[9px] uppercase text-emerald-700 dark:text-emerald-400"
+                                title={`Sinal: “${rowHunt(r)!.quote.slice(0, 140)}”`}
+                              >
+                                sinal
+                              </Badge>
+                            )}
+                          </div>
                           <div className="font-mono text-xs text-muted-foreground">
                             {r.domain ?? "—"}
                           </div>
@@ -1080,6 +1126,55 @@ export function ResearchPage() {
                       <p className="mt-2 text-sm">{drawerRow.whyNow}</p>
                     )}
                   </section>
+                  {rowHunt(drawerRow) && (
+                    <section>
+                      <h3 className="mb-2 text-xs font-medium uppercase text-muted-foreground">
+                        Encontrada via sinal
+                      </h3>
+                      <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm">
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <Badge variant="outline" className="text-[10px]">
+                            {rowHunt(drawerRow)!.source.replace(/_/g, " ")}
+                          </Badge>
+                          <span className="truncate">
+                            busca: “{rowHunt(drawerRow)!.query}”
+                          </span>
+                        </div>
+                        <blockquote className="mt-1.5 border-l-2 border-emerald-500/50 pl-2 text-xs italic">
+                          “{rowHunt(drawerRow)!.quote}”
+                        </blockquote>
+                        <a
+                          href={rowHunt(drawerRow)!.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-1.5 inline-flex items-center gap-1 text-xs text-emerald-700 underline-offset-2 hover:underline dark:text-emerald-400"
+                        >
+                          <ExternalLink className="size-3" />
+                          {rowHunt(drawerRow)!.title ??
+                            hostLabel(rowHunt(drawerRow)!.url)}
+                        </a>
+                      </div>
+                    </section>
+                  )}
+                  {!rowHunt(drawerRow) && rowDiscovery(drawerRow)?.sourceUrl && (
+                    <section>
+                      <h3 className="mb-2 text-xs font-medium uppercase text-muted-foreground">
+                        Origem
+                      </h3>
+                      <a
+                        href={rowDiscovery(drawerRow)!.sourceUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:underline"
+                      >
+                        <ExternalLink className="size-3" />
+                        {hostLabel(rowDiscovery(drawerRow)!.sourceUrl!)}
+                        {rowDiscovery(drawerRow)!.sourceQuery
+                          ? ` — busca: “${rowDiscovery(drawerRow)!.sourceQuery}”`
+                          : ""}
+                      </a>
+                    </section>
+                  )}
                   <section>
                     <h3 className="mb-2 text-xs font-medium uppercase text-muted-foreground">
                       Playbook checklist
@@ -1111,6 +1206,32 @@ export function ResearchPage() {
                             <p className="mt-1 text-xs text-muted-foreground">
                               {e.evidence}
                             </p>
+                          )}
+                          {e.sources.length > 0 && (
+                            <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+                              {e.sources.slice(0, 4).map((s, i) => (
+                                <a
+                                  key={i}
+                                  href={s.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1 text-[11px] text-primary underline-offset-2 hover:underline"
+                                >
+                                  <ExternalLink className="size-3" />
+                                  {hostLabel(s.url)}
+                                  {s.pack && s.pack !== "llm" ? (
+                                    <span className="text-muted-foreground">
+                                      ({s.pack})
+                                    </span>
+                                  ) : null}
+                                </a>
+                              ))}
+                            </div>
+                          )}
+                          {e.confidence > 0 && (
+                            <div className="mt-1 text-[10px] text-muted-foreground">
+                              confiança {Math.round(e.confidence * 100)}%
+                            </div>
                           )}
                         </li>
                       ))}
