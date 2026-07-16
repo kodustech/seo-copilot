@@ -147,7 +147,8 @@ export async function addToWatchlist(
     });
     if (!board) {
       throw new Error(
-        `No public Greenhouse/Lever/Ashby board found for "${input.companyName}". ` +
+        `No public board found for "${input.companyName}" ` +
+          `(Greenhouse/Lever/Ashby/Workable/SmartRecruiters/Gupy). ` +
           "Pass ats + board_slug explicitly if you know them.",
       );
     }
@@ -156,6 +157,11 @@ export async function addToWatchlist(
     detected = true;
   }
 
+  // Preserve case for APIs that are case-sensitive (Gupy career page name,
+  // SmartRecruiters company identifier). Others lowercase for unique index.
+  const preserveCase = ats === "gupy" || ats === "smartrecruiters";
+  const storedSlug = preserveCase ? boardSlug : boardSlug!.toLowerCase();
+
   const { data, error } = await client
     .from("icp_watchlist")
     .upsert(
@@ -163,9 +169,7 @@ export async function addToWatchlist(
         company_name: input.companyName,
         domain: normalizeDomain(input.domain),
         ats,
-        // Lowercased so the plain-column unique index dedupes reliably —
-        // except gupy, whose API filters by exact (case-sensitive) name.
-        board_slug: ats === "gupy" ? boardSlug : boardSlug.toLowerCase(),
+        board_slug: storedSlug,
         active: true,
         added_by_email: input.addedByEmail ?? null,
       },

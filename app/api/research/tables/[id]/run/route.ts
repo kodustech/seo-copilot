@@ -17,7 +17,8 @@ export async function POST(
     const kind =
       body.kind === "people" ||
       body.kind === "full" ||
-      body.kind === "ai_column"
+      body.kind === "ai_column" ||
+      body.kind === "find"
         ? body.kind
         : "research";
 
@@ -29,6 +30,18 @@ export async function POST(
       onlyIfPass: body.onlyIfPass !== false,
       aiPrompt: typeof body.aiPrompt === "string" ? body.aiPrompt : undefined,
       enrichPeople: Boolean(body.enrichPeople),
+      market: body.market === "brazil" || body.market === "global" ? body.market : undefined,
+      size:
+        body.size === "small" ||
+        body.size === "mid" ||
+        body.size === "large" ||
+        body.size === "any"
+          ? body.size
+          : undefined,
+      maxCompanies:
+        typeof body.maxCompanies === "number" ? body.maxCompanies : undefined,
+      focus: typeof body.focus === "string" ? body.focus : undefined,
+      researchAfterFind: body.researchAfter !== false,
     });
 
     if (!started) {

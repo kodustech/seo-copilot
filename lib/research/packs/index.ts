@@ -4,22 +4,30 @@ import { runProductPack } from "@/lib/research/packs/product";
 import { runShipPack } from "@/lib/research/packs/ship";
 import { runNewsPack } from "@/lib/research/packs/news";
 import { runPainPack } from "@/lib/research/packs/pain";
+import { runFirmoPack } from "@/lib/research/packs/firmo";
 
-export type PackName = "careers" | "product" | "ship" | "news" | "pain";
+export type PackName =
+  | "careers"
+  | "product"
+  | "ship"
+  | "news"
+  | "pain"
+  | "firmo";
+
+const PACK_NAMES = new Set<PackName>([
+  "careers",
+  "product",
+  "ship",
+  "news",
+  "pain",
+  "firmo",
+]);
 
 export function packsRequiredByRubric(rubric: Rubric): PackName[] {
   const set = new Set<PackName>();
   for (const c of rubric.criteria) {
     for (const p of c.packs) {
-      if (
-        p === "careers" ||
-        p === "product" ||
-        p === "ship" ||
-        p === "news" ||
-        p === "pain"
-      ) {
-        set.add(p);
-      }
+      if (PACK_NAMES.has(p as PackName)) set.add(p as PackName);
     }
   }
   return [...set];
@@ -29,12 +37,14 @@ export async function runPacks(input: {
   companyName: string;
   domain: string | null;
   packs: PackName[];
+  knownBoard?: { ats: string; slug: string } | null;
 }): Promise<Record<string, PackOutput>> {
   const runners: Record<PackName, () => Promise<PackOutput>> = {
     careers: () =>
       runCareersPack({
         companyName: input.companyName,
         domain: input.domain,
+        knownBoard: input.knownBoard,
       }),
     product: () => runProductPack({ domain: input.domain }),
     ship: () =>
@@ -43,6 +53,8 @@ export async function runPacks(input: {
       runNewsPack({ companyName: input.companyName, domain: input.domain }),
     pain: () =>
       runPainPack({ companyName: input.companyName, domain: input.domain }),
+    firmo: () =>
+      runFirmoPack({ companyName: input.companyName, domain: input.domain }),
   };
 
   const entries = await Promise.all(

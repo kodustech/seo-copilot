@@ -1,8 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { getCached, setCache, domainCacheKey } from "@/lib/research/cache";
+import { resolveDomain } from "@/lib/research/domain-resolver";
 import { packsRequiredByRubric, runPacks } from "@/lib/research/packs";
-import { getRubric } from "@/lib/research/rubrics";
+import { resolveRubric } from "@/lib/research/rubrics";
 import { scoreCompany } from "@/lib/research/score";
 import {
   getRow,
@@ -50,13 +51,36 @@ export async function researchRow(
 
   const table = await getTable(client, row.tableId);
   if (!table) throw new Error(`Table ${row.tableId} not found`);
-  const rubric = getRubric(table.rubricId);
+  const rubric = resolveRubric(table);
 
   await markRow(client, rowId, { status: "researching", error: null });
 
   try {
-    const cacheKey = row.domain
-      ? domainCacheKey(row.domain, `research:${rubric.id}:v1`)
+    // Discovery rows (Gupy, LinkedIn, Programathor…) arrive without a domain,
+    // which blinds product/pain packs, the cache, and the people waterfall.
+    const hunt = (row.packRaw?.hunt ?? null) as {
+      criterionId?: string;
+      url?: string;
+      quote?: string;
+      confidence?: number;
+    } | null;
+
+    let domain = row.domain;
+    if (!domain) {
+      const discovery = (row.packRaw?.discovery ?? null) as {
+        sourceUrl?: string;
+      } | null;
+      const resolved = await resolveDomain(client, row.companyName, {
+        hintUrl: discovery?.sourceUrl ?? hunt?.url ?? null,
+      });
+      if (resolved.domain) {
+        domain = resolved.domain;
+        await markRow(client, rowId, { domain });
+      }
+    }
+
+    const cacheKey = domain
+      ? domainCacheKey(domain, `research:${rubric.id}:v1`)
       : null;
 
     let packs: Record<string, PackOutput> | null = null;
@@ -75,17 +99,33 @@ export async function researchRow(
 
     if (!packs || !score) {
       const needed = packsRequiredByRubric(rubric);
+      const discovery = (row.packRaw?.discovery ?? null) as {
+        ats?: string;
+        boardSlug?: string;
+      } | null;
+      const knownBoard =
+        discovery?.ats && discovery?.boardSlug
+          ? { ats: discovery.ats, slug: discovery.boardSlug }
+          : null;
+
       packs = await runPacks({
         companyName: row.companyName,
-        domain: row.domain,
+        domain,
         packs: needed,
+        knownBoard,
       });
-      score = await scoreCompany(
-        rubric,
-        row.companyName,
-        row.domain,
-        packs,
-      );
+      const seeds =
+        hunt?.criterionId && hunt?.quote && hunt?.url
+          ? [
+              {
+                criterionId: hunt.criterionId,
+                evidence: hunt.quote,
+                url: hunt.url,
+                confidence: hunt.confidence,
+              },
+            ]
+          : [];
+      score = await scoreCompany(rubric, row.companyName, domain, packs, seeds);
       if (cacheKey) {
         await setCache(
           client,
@@ -96,12 +136,20 @@ export async function researchRow(
       }
     }
 
-    await saveScore(client, rowId, score, serializePacks(packs));
+    // Preserve find/discovery metadata when writing pack results.
+    const mergedRaw = {
+      ...(row.packRaw ?? {}),
+      ...serializePacks(packs),
+      discovery: row.packRaw?.discovery,
+      find: row.packRaw?.find,
+      hunt: row.packRaw?.hunt,
+    };
+    await saveScore(client, rowId, score, mergedRaw);
 
     return {
       rowId,
       companyName: row.companyName,
-      domain: row.domain,
+      domain,
       score,
       packs,
     };

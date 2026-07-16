@@ -11,6 +11,7 @@ import {
 } from "@/lib/research/tables";
 
 export type ResearchJobKind =
+  | "find"
   | "research"
   | "people"
   | "full"
@@ -67,6 +68,12 @@ export function startResearchJob(
     onlyIfPass?: boolean;
     aiPrompt?: string;
     enrichPeople?: boolean;
+    /** Find-ICP options (kind === "find") */
+    market?: "global" | "brazil";
+    size?: "any" | "small" | "mid" | "large";
+    maxCompanies?: number;
+    focus?: string | null;
+    researchAfterFind?: boolean;
   },
 ): boolean {
   if (state.running) return false;
@@ -92,6 +99,67 @@ export function startResearchJob(
       runId = run.id;
       state.runId = run.id;
 
+      if (kind === "find") {
+        const { findIcpCompanies, matchesSizeBand, engOpeningsFromPackRaw } =
+          await import("@/lib/research/find");
+        state.lastSummary = "Finding companies…";
+        const found = await findIcpCompanies(client, {
+          tableId: opts.tableId,
+          market: opts.market ?? "global",
+          size: opts.size ?? "mid",
+          maxCompanies: opts.maxCompanies ?? 12,
+          focus: opts.focus ?? null,
+        });
+
+        let researchSummary: {
+          ok: number;
+          failed: number;
+          passed: number;
+          sizeMatched: number;
+        } | null = null;
+
+        if (opts.researchAfterFind !== false && found.rowIds.length > 0) {
+          state.lastSummary = `Found ${found.added} companies — researching…`;
+          const { researchRows } = await import(
+            "@/lib/research/research-company"
+          );
+          const { getRow } = await import("@/lib/research/tables");
+          const result = await researchRows(client, found.rowIds, {
+            concurrency: 2,
+          });
+
+          // Soft size filter for reporting (rows stay; UI can filter).
+          let sizeMatched = 0;
+          for (const r of result.results) {
+            const full = await getRow(client, r.rowId);
+            const eng = engOpeningsFromPackRaw(full?.packRaw);
+            if (matchesSizeBand(opts.size ?? "mid", eng)) sizeMatched += 1;
+          }
+
+          researchSummary = {
+            ok: result.ok,
+            failed: result.failed,
+            passed: result.results.filter((x) => x.score.pass).length,
+            sizeMatched,
+          };
+        }
+
+        const summary = {
+          discovered: found.discovered,
+          added: found.added,
+          skipped: found.skipped,
+          market: found.market,
+          size: found.size,
+          research: researchSummary,
+        };
+        await finishRun(client, run.id, { status: "done", summary });
+        state.lastSummary = researchSummary
+          ? `Found ${found.added} (${found.market}). Researched ${researchSummary.ok}: ${researchSummary.passed} passed ICP` +
+            (opts.size && opts.size !== "any"
+              ? `; ${researchSummary.sizeMatched} match size “${opts.size}”`
+              : "")
+          : `Found ${found.added} companies (${found.market}) — run research next`;
+      } else {
       let rowIds = opts.rowIds;
       if (!rowIds || rowIds.length === 0) {
         const rows = await listRows(client, opts.tableId);
@@ -186,6 +254,7 @@ export function startResearchJob(
         });
         state.lastSummary = `AI column on ${ok} rows (${failed} failed)`;
       }
+      } // end non-find kinds
 
       state.lastError = null;
     } catch (err) {

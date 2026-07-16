@@ -2,8 +2,13 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { discoverContacts } from "@/lib/contact-discovery";
 import { verifyEmails } from "@/lib/email-verifier";
+import {
+  findWorkEmail,
+  ninjapearEnabled,
+  searchEmployees,
+} from "@/lib/ninjapear";
 import { getCached, setCache, domainCacheKey } from "@/lib/research/cache";
-import { getRubric } from "@/lib/research/rubrics";
+import { resolveRubric } from "@/lib/research/rubrics";
 import {
   getRow,
   getTable,
@@ -63,7 +68,7 @@ export async function enrichPeopleForRow(
   }
 
   const table = await getTable(client, row.tableId);
-  const rubric = table ? getRubric(table.rubricId) : null;
+  const rubric = table ? resolveRubric(table) : null;
   const personas = rubric?.default_personas ?? [
     "Head of Engineering",
     "CTO",
@@ -109,6 +114,23 @@ export async function enrichPeopleForRow(
         (b.confidence ?? 0) - (a.confidence ?? 0),
     )
     .slice(0, maxPeople);
+
+  // Provider 2: NinjaPear employee search by buyer persona + work-email
+  // lookup. Credit-billed — only runs when scrape found nobody relevant.
+  if (ninjapearEnabled() && people.length < maxPeople) {
+    try {
+      const npPeople = await ninjapearPeople(
+        row.domain,
+        personas,
+        maxPeople - people.length,
+      );
+      if (npPeople.length > 0) {
+        people = mergePeople(people, npPeople, maxPeople, personas);
+      }
+    } catch (err) {
+      console.warn("[research/waterfall] NinjaPear failed:", err);
+    }
+  }
 
   // Optional Hunter domain search if configured and we still need people/emails.
   if (
@@ -158,6 +180,47 @@ export async function enrichPeopleForRow(
   await replacePeople(client, rowId, people);
   await setCache(client, cacheKey, people, 60 * 60 * 24 * 14);
   return people;
+}
+
+/**
+ * NinjaPear provider: search employees by the rubric's top buyer persona,
+ * then resolve work emails for up to `max` matches. Credit cost per row:
+ * one search (2 + 1/result) + up to `max` email lookups (2 hit / 0.5 miss).
+ */
+async function ninjapearPeople(
+  domain: string,
+  personas: string[],
+  max: number,
+): Promise<WaterfallPerson[]> {
+  const role = personas[0] ?? "CTO";
+  const employees = await searchEmployees({ companyWebsite: domain, role });
+  const top = employees.slice(0, Math.max(max, 1));
+
+  const out: WaterfallPerson[] = [];
+  for (const e of top) {
+    let email: string | null = null;
+    try {
+      email = await findWorkEmail({
+        firstName: e.first_name,
+        lastName: e.last_name,
+        domain,
+      });
+    } catch (err) {
+      console.warn("[research/waterfall] work-email lookup failed:", err);
+    }
+    out.push({
+      name: [e.first_name, e.last_name].filter(Boolean).join(" "),
+      role: e.role,
+      linkedin: null,
+      email,
+      emailStatus: null,
+      emailSource: email ? "provider" : null,
+      providerUsed: "ninjapear",
+      confidence: email ? 0.85 : 0.6,
+      notes: null,
+    });
+  }
+  return out;
 }
 
 function mergePeople(

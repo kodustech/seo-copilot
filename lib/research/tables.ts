@@ -8,6 +8,7 @@ import type {
   ResearchRun,
   ResearchTable,
   RowSource,
+  Rubric,
   ScoreResult,
 } from "@/lib/research/types";
 import { normalizeDomain } from "@/lib/crm";
@@ -16,6 +17,7 @@ type TableRow = {
   id: string;
   name: string;
   rubric_id: string;
+  rubric_json: Rubric | null;
   description: string | null;
   created_by_email: string | null;
   created_at: string;
@@ -47,6 +49,7 @@ function mapTable(r: TableRow, rowCount?: number): ResearchTable {
     id: r.id,
     name: r.name,
     rubricId: r.rubric_id,
+    rubricJson: r.rubric_json ?? null,
     description: r.description,
     createdByEmail: r.created_by_email,
     createdAt: r.created_at,
@@ -106,18 +109,21 @@ export async function createTable(
   input: {
     name: string;
     rubricId?: string;
+    /** Custom rubric compiled from a natural-language ICP; overrides rubricId at research time. */
+    rubricJson?: Rubric | null;
     description?: string | null;
     createdByEmail?: string | null;
   },
 ): Promise<ResearchTable> {
   const rubricId = input.rubricId ?? getDefaultRubricId();
-  getRubric(rubricId); // validate
+  if (!input.rubricJson) getRubric(rubricId); // validate built-in reference
 
   const { data, error } = await client
     .from("research_tables")
     .insert({
       name: input.name.trim(),
-      rubric_id: rubricId,
+      rubric_id: input.rubricJson ? (input.rubricJson.id ?? rubricId) : rubricId,
+      rubric_json: input.rubricJson ?? null,
       description: input.description ?? null,
       created_by_email: input.createdByEmail ?? null,
     })
@@ -160,6 +166,7 @@ export async function addRows(
     companyName: string;
     domain?: string | null;
     source?: RowSource | string;
+    packRaw?: Record<string, unknown>;
   }>,
 ): Promise<{ added: number; skipped: number; rows: ResearchRow[] }> {
   let added = 0;
@@ -186,6 +193,21 @@ export async function addRows(
         skipped += 1;
         continue;
       }
+    } else {
+      // No domain (common for discovery rows): dedupe by company name across
+      // the whole table — an earlier research run may have filled in the
+      // domain on a row that started domainless.
+      const { data: existing } = await client
+        .from("research_rows")
+        .select("id")
+        .eq("table_id", tableId)
+        .ilike("company_name", companyName)
+        .limit(1)
+        .maybeSingle();
+      if (existing) {
+        skipped += 1;
+        continue;
+      }
     }
 
     const { data, error } = await client
@@ -196,6 +218,7 @@ export async function addRows(
         domain,
         source: r.source ?? "manual",
         status: "pending",
+        pack_raw: r.packRaw ?? {},
       })
       .select("*")
       .single();
@@ -304,12 +327,21 @@ export async function listPeople(
   }));
 }
 
+/** Postgres jsonb rejects the NUL escape (u0000) - scraped pages carry it. */
+function stripNullChars<T>(value: T): T {
+  return JSON.parse(
+    JSON.stringify(value).replace(/(?<!\\)\\u0000/g, ""),
+  ) as T;
+}
+
 export async function saveScore(
   client: SupabaseClient,
   rowId: string,
   score: ScoreResult,
   packRaw: Record<string, unknown>,
 ): Promise<void> {
+  score = stripNullChars(score);
+  packRaw = stripNullChars(packRaw);
   const { error } = await client
     .from("research_rows")
     .update({
@@ -353,6 +385,7 @@ export async function markRow(
   patch: {
     status?: string;
     error?: string | null;
+    domain?: string | null;
   },
 ): Promise<void> {
   const { error } = await client
@@ -360,6 +393,9 @@ export async function markRow(
     .update({
       ...("status" in patch ? { status: patch.status } : {}),
       ...("error" in patch ? { error: patch.error } : {}),
+      ...("domain" in patch
+        ? { domain: normalizeDomain(patch.domain) }
+        : {}),
       updated_at: new Date().toISOString(),
     })
     .eq("id", rowId);
