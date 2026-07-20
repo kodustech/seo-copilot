@@ -1,3 +1,5 @@
+import { Suspense } from "react";
+
 import { McpTokenSettings } from "@/components/mcp-token-settings";
 import { OutreachMailboxSettings } from "@/components/outreach-mailbox-settings";
 import { VoicePolicySettings } from "@/components/voice-policy-settings";
@@ -12,7 +14,13 @@ export default function SettingsPage() {
           Cursor.
         </p>
       </div>
-      <OutreachMailboxSettings />
+      <Suspense
+        fallback={
+          <div className="text-sm text-muted-foreground">Loading…</div>
+        }
+      >
+        <OutreachMailboxSettings />
+      </Suspense>
       <McpTokenSettings />
       <VoicePolicySettings />
     </div>

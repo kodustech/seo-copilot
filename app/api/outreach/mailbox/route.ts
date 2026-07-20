@@ -3,22 +3,24 @@ import { NextResponse } from "next/server";
 import {
   deleteMailbox,
   listMailboxes,
+  updateMailboxMeta,
   upsertMailbox,
 } from "@/lib/outreach/mailbox";
-import { getSupabaseServiceClient } from "@/lib/supabase-server";
-import { getSupabaseUserClient } from "@/lib/supabase-server";
+import { isGoogleOAuthConfigured } from "@/lib/outreach/google-oauth";
+import {
+  getSupabaseServiceClient,
+  getSupabaseUserClient,
+} from "@/lib/supabase-server";
 
-/**
- * Product config for sequence email send.
- * Secrets written via service client; password never returned.
- */
 export async function GET(req: Request) {
   try {
     await getSupabaseUserClient(req.headers.get("authorization"));
-    // service client can read full row; we only map public fields
     const client = getSupabaseServiceClient();
     const mailboxes = await listMailboxes(client);
-    return NextResponse.json({ mailboxes });
+    return NextResponse.json({
+      mailboxes,
+      googleOAuthConfigured: isGoogleOAuthConfigured(),
+    });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Unauthorized" },
@@ -34,6 +36,23 @@ export async function POST(req: Request) {
     );
     const body = await req.json().catch(() => ({}));
     const client = getSupabaseServiceClient();
+
+    // Meta-only update for OAuth mailbox (label, from name, cap)
+    if (body.metaOnly && body.id) {
+      const mailbox = await updateMailboxMeta(client, String(body.id), {
+        label: body.label,
+        fromName: body.fromName ?? body.from_name,
+        dailyCap:
+          body.dailyCap != null
+            ? Number(body.dailyCap)
+            : body.daily_cap != null
+              ? Number(body.daily_cap)
+              : undefined,
+        enabled: body.enabled,
+      });
+      return NextResponse.json({ mailbox });
+    }
+
     const mailbox = await upsertMailbox(client, {
       id: typeof body.id === "string" ? body.id : undefined,
       label: body.label,
