@@ -1,4 +1,5 @@
 import { McpTokenSettings } from "@/components/mcp-token-settings";
+import { OutreachMailboxSettings } from "@/components/outreach-mailbox-settings";
 import { VoicePolicySettings } from "@/components/voice-policy-settings";
 
 export default function SettingsPage() {
@@ -7,9 +8,11 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
         <p className="text-sm text-muted-foreground">
-          Voice policy and MCP access for Claude Code / Cursor.
+          Outreach mailbox, voice policy, and MCP access for Claude Code /
+          Cursor.
         </p>
       </div>
+      <OutreachMailboxSettings />
       <McpTokenSettings />
       <VoicePolicySettings />
     </div>

@@ -4352,6 +4352,171 @@ export const researchUpsertPeople = tool({
   },
 });
 
+// ---------------------------------------------------------------------------
+// Outreach sequences (email auto + LinkedIn semi)
+// ---------------------------------------------------------------------------
+
+export const sequenceList = tool({
+  description: "List outreach sequences with step and active enrollment counts.",
+  inputSchema: z.object({}),
+  execute: async () => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { listSequences } = await import("@/lib/outreach/sequences");
+      const sequences = await listSequences(client);
+      return { success: true as const, sequences };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed",
+      };
+    }
+  },
+});
+
+export const sequenceCreate = tool({
+  description:
+    "Create an outreach sequence with default steps: LinkedIn connect note (semi) → email intro (auto) → LinkedIn follow-up (semi). Templates support {{first_name}} {{company}} {{role}} {{domain}}.",
+  inputSchema: z.object({
+    name: z.string(),
+    description: z.string().optional(),
+    user_email: z.string().optional(),
+  }),
+  execute: async ({ name, description, user_email }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { createSequence } = await import("@/lib/outreach/sequences");
+      const result = await createSequence(client, {
+        name,
+        description,
+        createdByEmail: user_email,
+      });
+      return {
+        success: true as const,
+        sequence: result.sequence,
+        steps: result.steps,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed",
+      };
+    }
+  },
+});
+
+export const sequenceEnrollResearch = tool({
+  description:
+    "Enroll people from a research list into a sequence. Creates LinkedIn queue tasks for semi steps. Use table_ref (slug/id) and optional row_ids.",
+  inputSchema: z.object({
+    sequence_id: z.string(),
+    table_ref: z.string(),
+    row_ids: z.array(z.string()).optional(),
+    all_people: z
+      .boolean()
+      .optional()
+      .describe("Enroll every person on each company (default true)"),
+    user_email: z.string().optional(),
+  }),
+  execute: async ({
+    sequence_id,
+    table_ref,
+    row_ids,
+    all_people,
+    user_email,
+  }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { enrollFromResearch } = await import("@/lib/outreach/sequences");
+      const result = await enrollFromResearch(client, {
+        sequenceId: sequence_id,
+        tableRef: table_ref,
+        rowIds: row_ids,
+        allPeople: all_people !== false,
+        enrolledByEmail: user_email ?? null,
+      });
+      return { success: true as const, ...result };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed",
+      };
+    }
+  },
+});
+
+export const sequenceListQueue = tool({
+  description:
+    "List ready LinkedIn semi tasks (human queue): open profile, copy message, mark sent.",
+  inputSchema: z.object({
+    channel: z.enum(["linkedin", "email"]).optional(),
+    limit: z.number().optional(),
+  }),
+  execute: async ({ channel, limit }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { listReadyQueue, processDueSequenceTasks } = await import(
+        "@/lib/outreach/sequences"
+      );
+      await processDueSequenceTasks(client);
+      const tasks = await listReadyQueue(client, {
+        channel: channel ?? "linkedin",
+        limit: limit ?? 30,
+      });
+      return {
+        success: true as const,
+        tasks: tasks.map((t) => ({
+          id: t.id,
+          channel: t.channel,
+          body: t.renderedBody,
+          subject: t.renderedSubject,
+          company: t.enrollment?.companyName,
+          contact: t.enrollment?.contactName,
+          linkedin: t.enrollment?.contactLinkedin,
+          role: t.enrollment?.contactRole,
+          action: t.step?.linkedinAction,
+        })),
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed",
+      };
+    }
+  },
+});
+
+export const sequenceCompleteTask = tool({
+  description:
+    "Mark a sequence task as sent or skipped (after human sends LinkedIn message). Advances enrollment to next step.",
+  inputSchema: z.object({
+    task_id: z.string(),
+    outcome: z.enum(["sent", "skipped"]).optional(),
+    user_email: z.string().optional(),
+  }),
+  execute: async ({ task_id, outcome, user_email }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { completeTask } = await import("@/lib/outreach/sequences");
+      const result = await completeTask(client, task_id, {
+        outcome: outcome ?? "sent",
+        sentByEmail: user_email ?? null,
+      });
+      return {
+        success: true as const,
+        task_status: result.task.status,
+        enrollment_status: result.enrollment?.status,
+        next_step: result.enrollment?.currentStepPosition,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed",
+      };
+    }
+  },
+});
+
 export function createAgentTools(userEmail?: string) {
   return {
     generateIdeas,
@@ -4424,6 +4589,11 @@ export function createAgentTools(userEmail?: string) {
     researchRunColumn,
     researchSetCell,
     researchUpsertPeople,
+    sequenceList,
+    sequenceCreate,
+    sequenceEnrollResearch,
+    sequenceListQueue,
+    sequenceCompleteTask,
   };
 }
 

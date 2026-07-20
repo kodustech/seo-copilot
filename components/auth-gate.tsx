@@ -25,6 +25,7 @@ import {
   Settings,
   Sparkles,
   Target,
+  Workflow,
   Wrench,
 } from "lucide-react";
 
@@ -87,6 +88,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         label: "Discovery",
         items: [
           { href: "/research", label: "Lists", icon: Search },
+          { href: "/sequences", label: "Sequences", icon: Workflow },
           { href: "/social-monitoring", label: "Social Monitor", icon: Radar },
           { href: "/reply-radar", label: "Reply Radar", icon: MessageCircle },
           { href: "/outreach", label: "Outreach CRM", icon: Send },
