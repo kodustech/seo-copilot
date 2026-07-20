@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 
+import { getDefaultMailbox } from "@/lib/outreach/mailbox";
 import {
   createSequence,
   listSequences,
 } from "@/lib/outreach/sequences";
-import { getSupabaseUserClient } from "@/lib/supabase-server";
+import {
+  getSupabaseServiceClient,
+  getSupabaseUserClient,
+} from "@/lib/supabase-server";
 
 export async function GET(req: Request) {
   try {
@@ -12,7 +16,14 @@ export async function GET(req: Request) {
       req.headers.get("authorization"),
     );
     const sequences = await listSequences(client);
-    return NextResponse.json({ sequences });
+    let mailboxConfigured = false;
+    try {
+      const box = await getDefaultMailbox(getSupabaseServiceClient());
+      mailboxConfigured = Boolean(box?.enabled && box.hasPassword);
+    } catch {
+      mailboxConfigured = false;
+    }
+    return NextResponse.json({ sequences, mailboxConfigured });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Unauthorized" },

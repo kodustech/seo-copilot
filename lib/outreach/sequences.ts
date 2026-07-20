@@ -714,13 +714,17 @@ async function advanceEnrollment(
 
 /**
  * Promote due scheduled tasks:
- * - linkedin semi → ready (queue)
- * - email auto → still scheduled until email provider sends (PR2)
- * Also promote delayed linkedin that was incorrectly left scheduled.
+ * - linkedin semi → ready (human queue)
+ * - email auto → send via product-configured mailbox (Settings → Outreach email)
  */
 export async function processDueSequenceTasks(
   client: SupabaseClient,
-): Promise<{ promoted: number; emailsDue: number }> {
+): Promise<{
+  promoted: number;
+  emailsSent: number;
+  emailsFailed: number;
+  emailsSkipped: number;
+}> {
   const now = new Date().toISOString();
   const { data, error } = await client
     .from("outreach_send_tasks")
@@ -731,7 +735,9 @@ export async function processDueSequenceTasks(
   if (error) throw new Error(error.message);
 
   let promoted = 0;
-  let emailsDue = 0;
+  let emailsSent = 0;
+  let emailsFailed = 0;
+  let emailsSkipped = 0;
 
   for (const raw of data ?? []) {
     const task = mapTask(raw as Record<string, unknown>);
@@ -742,10 +748,16 @@ export async function processDueSequenceTasks(
         .eq("id", task.id)
         .eq("status", "scheduled");
       promoted += 1;
-    } else if (task.channel === "email" && task.mode === "auto") {
-      emailsDue += 1;
-      // PR2: send via Resend. For now leave scheduled (or mark ready for manual).
-      // Optional: promote to ready so UI can show "email due"
+      continue;
+    }
+
+    if (task.channel === "email" && task.mode === "auto") {
+      const result = await sendDueEmailTask(client, task);
+      if (result === "sent") emailsSent += 1;
+      else if (result === "failed") emailsFailed += 1;
+      else emailsSkipped += 1;
+    } else if (task.channel === "email") {
+      // email semi → human queue
       await client
         .from("outreach_send_tasks")
         .update({ status: "ready", updated_at: now })
@@ -755,7 +767,138 @@ export async function processDueSequenceTasks(
     }
   }
 
-  return { promoted, emailsDue };
+  return { promoted, emailsSent, emailsFailed, emailsSkipped };
+}
+
+async function sendDueEmailTask(
+  client: SupabaseClient,
+  task: OutreachSendTask,
+): Promise<"sent" | "failed" | "skipped"> {
+  const now = new Date().toISOString();
+
+  const { data: enrRaw } = await client
+    .from("outreach_enrollments")
+    .select("*")
+    .eq("id", task.enrollmentId)
+    .maybeSingle();
+  if (!enrRaw) {
+    await client
+      .from("outreach_send_tasks")
+      .update({
+        status: "failed",
+        error: "Enrollment missing",
+        updated_at: now,
+      })
+      .eq("id", task.id);
+    return "failed";
+  }
+  const enrollment = mapEnrollment(enrRaw as Record<string, unknown>);
+  if (enrollment.status !== "active") {
+    await client
+      .from("outreach_send_tasks")
+      .update({
+        status: "cancelled",
+        error: `Enrollment ${enrollment.status}`,
+        updated_at: now,
+      })
+      .eq("id", task.id);
+    return "skipped";
+  }
+
+  const to = enrollment.contactEmail?.trim();
+  if (!to) {
+    await client
+      .from("outreach_send_tasks")
+      .update({
+        status: "skipped",
+        error: "No contact email",
+        updated_at: now,
+      })
+      .eq("id", task.id);
+    await advanceEnrollment(client, enrollment.id);
+    return "skipped";
+  }
+
+  // claim
+  await client
+    .from("outreach_send_tasks")
+    .update({ status: "sending", updated_at: now })
+    .eq("id", task.id)
+    .eq("status", "scheduled");
+
+  const { sendOutreachEmail } = await import("@/lib/outreach/send-email");
+  const subject = task.renderedSubject ?? "";
+  const body = task.renderedBody ?? "";
+
+  const send = await sendOutreachEmail(client, {
+    to,
+    subject,
+    text: body,
+  });
+
+  if (!send.ok) {
+    // Cap / no mailbox: leave as scheduled for retry later
+    if (send.code === "cap" || send.code === "no_mailbox") {
+      await client
+        .from("outreach_send_tasks")
+        .update({
+          status: "scheduled",
+          error: send.error,
+          updated_at: now,
+        })
+        .eq("id", task.id);
+      return "skipped";
+    }
+    await client
+      .from("outreach_send_tasks")
+      .update({
+        status: "failed",
+        error: send.error,
+        provider: "smtp",
+        updated_at: now,
+      })
+      .eq("id", task.id);
+    await client
+      .from("outreach_enrollments")
+      .update({
+        last_error: send.error,
+        updated_at: now,
+      })
+      .eq("id", enrollment.id);
+    return "failed";
+  }
+
+  await client
+    .from("outreach_send_tasks")
+    .update({
+      status: "sent",
+      sent_at: now,
+      provider: "smtp",
+      provider_message_id: send.messageId,
+      error: null,
+      updated_at: now,
+      meta: {
+        ...(task.meta ?? {}),
+        mailbox_id: send.mailboxId,
+        from: send.from,
+      },
+    })
+    .eq("id", task.id);
+
+  await advanceEnrollment(client, enrollment.id);
+
+  if (enrollment.outreachProspectId) {
+    try {
+      await updateProspect(client, enrollment.outreachProspectId, {
+        status: "contacted",
+        lastTouchAt: now,
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return "sent";
 }
 
 export async function listEnrollments(

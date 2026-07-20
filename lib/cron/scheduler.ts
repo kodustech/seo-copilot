@@ -240,7 +240,7 @@ async function runOutreachSequencesCron(): Promise<void> {
   const { processDueSequenceTasks } = await import("@/lib/outreach/sequences");
   const res = await processDueSequenceTasks(getSupabaseServiceClient());
   console.log(
-    `[cron] outreach-sequences: promoted ${res.promoted} tasks (${res.emailsDue} email due)`,
+    `[cron] outreach-sequences: promoted ${res.promoted}, emails sent ${res.emailsSent}, failed ${res.emailsFailed}, skipped ${res.emailsSkipped}`,
   );
 }
 

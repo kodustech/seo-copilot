@@ -102,6 +102,7 @@ export function SequencesPage() {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [mailboxConfigured, setMailboxConfigured] = useState(true);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("QA founders outreach");
@@ -126,6 +127,7 @@ export function SequencesPage() {
       if (seqRes.ok) {
         const d = await seqRes.json();
         setSequences(d.sequences ?? []);
+        setMailboxConfigured(Boolean(d.mailboxConfigured));
       }
       if (queueRes.ok) {
         const d = await queueRes.json();
@@ -246,8 +248,12 @@ export function SequencesPage() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Sequences</h1>
           <p className="text-sm text-muted-foreground">
-            Multi-step outreach: LinkedIn semi-auto queue + email auto (Resend
-            in next PR). Enroll from research lists or outreach prospects.
+            Multi-step outreach: LinkedIn semi-auto queue + email auto from the
+            mailbox in{" "}
+            <a href="/settings" className="underline underline-offset-2">
+              Settings
+            </a>
+            . Enroll from research lists or outreach prospects.
           </p>
         </div>
         <div className="flex gap-2">
@@ -264,6 +270,17 @@ export function SequencesPage() {
           </Button>
         </div>
       </div>
+
+      {!mailboxConfigured && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
+          No outreach mailbox configured — email steps won&apos;t send until you
+          add one in{" "}
+          <a href="/settings" className="font-medium underline underline-offset-2">
+            Settings → Outreach email
+          </a>
+          . LinkedIn queue still works.
+        </div>
+      )}
 
       {notice && (
         <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
