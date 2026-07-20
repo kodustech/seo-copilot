@@ -337,13 +337,35 @@ async function insertEnrollment(
   snap: ContactSnapshot,
   enrolledByEmail: string | null,
   firstStep: OutreachSequenceStep,
-): Promise<{ enrollment: OutreachEnrollment; task: OutreachSendTask } | null> {
+): Promise<
+  | { enrollment: OutreachEnrollment; task: OutreachSendTask; warning?: string }
+  | null
+  | { skipped: true; reason: string }
+> {
   // Need contact path for first step
   if (firstStep.channel === "email" && !snap.contactEmail) {
-    return null;
+    return {
+      skipped: true,
+      reason: `${snap.contactName ?? snap.companyName}: missing email (first step is email)`,
+    };
   }
-  if (firstStep.channel === "linkedin" && !snap.contactLinkedin && !snap.contactName) {
-    // allow name-only for semi (user finds profile); better with URL
+  if (
+    firstStep.channel === "linkedin" &&
+    !snap.contactLinkedin &&
+    !snap.contactName
+  ) {
+    return {
+      skipped: true,
+      reason: `${snap.companyName}: no name or LinkedIn for first step`,
+    };
+  }
+
+  let warning: string | undefined;
+  if (firstStep.channel === "linkedin" && !snap.contactLinkedin) {
+    warning = "Missing LinkedIn URL — will show in queue without profile link";
+  }
+  if (firstStep.channel === "email" && !snap.contactEmail) {
+    warning = "Missing email";
   }
 
   const { data: enr, error } = await client
@@ -376,7 +398,7 @@ async function insertEnrollment(
 
   const enrollment = mapEnrollment(enr as Record<string, unknown>);
   const task = await createTaskForStep(client, enrollment, firstStep, new Date());
-  return { enrollment, task };
+  return { enrollment, task, warning };
 }
 
 async function createTaskForStep(
@@ -435,11 +457,20 @@ export async function enrollFromResearch(
     /** If true, one enrollment per person; else top person only per company */
     allPeople?: boolean;
   },
-): Promise<{ enrolled: number; skipped: number; errors: string[] }> {
+): Promise<{
+  enrolled: number;
+  skipped: number;
+  errors: string[];
+  warnings: string[];
+  missingLinkedin: number;
+  missingEmail: number;
+}> {
   const seq = await getSequence(client, input.sequenceId);
   if (!seq) throw new Error("Sequence not found");
   if (seq.steps.length === 0) throw new Error("Sequence has no steps");
   const first = seq.steps[0];
+  const needsEmailLater = seq.steps.some((s) => s.channel === "email");
+  const needsLinkedinLater = seq.steps.some((s) => s.channel === "linkedin");
 
   const table = await resolveTable(client, input.tableRef);
   let rows = await listRows(client, table.id);
@@ -450,7 +481,10 @@ export async function enrollFromResearch(
 
   let enrolled = 0;
   let skipped = 0;
+  let missingLinkedin = 0;
+  let missingEmail = 0;
   const errors: string[] = [];
+  const warnings: string[] = [];
 
   for (const row of rows) {
     const people = await listPeople(client, row.id);
@@ -488,8 +522,27 @@ export async function enrollFromResearch(
           input.enrolledByEmail ?? null,
           first,
         );
-        if (result) enrolled += 1;
-        else skipped += 1;
+        if (result && "skipped" in result && result.skipped) {
+          skipped += 1;
+          errors.push(result.reason);
+          continue;
+        }
+        if (result && "enrollment" in result) {
+          enrolled += 1;
+          if (!p.linkedin && needsLinkedinLater) {
+            missingLinkedin += 1;
+            warnings.push(
+              `${p.name}: enrolled without LinkedIn`,
+            );
+          }
+          if (!p.email && needsEmailLater) {
+            missingEmail += 1;
+            warnings.push(`${p.name}: enrolled without email`);
+          }
+          if (result.warning) warnings.push(`${p.name}: ${result.warning}`);
+        } else {
+          skipped += 1;
+        }
       } catch (err) {
         skipped += 1;
         errors.push(
@@ -504,7 +557,14 @@ export async function enrollFromResearch(
     await updateSequence(client, input.sequenceId, { status: "active" });
   }
 
-  return { enrolled, skipped, errors: errors.slice(0, 20) };
+  return {
+    enrolled,
+    skipped,
+    errors: errors.slice(0, 30),
+    warnings: warnings.slice(0, 30),
+    missingLinkedin,
+    missingEmail,
+  };
 }
 
 export async function enrollFromProspects(
@@ -547,8 +607,14 @@ export async function enrollFromProspects(
         input.enrolledByEmail ?? null,
         first,
       );
-      if (result) enrolled += 1;
-      else skipped += 1;
+      if (result && "skipped" in result && result.skipped) {
+        skipped += 1;
+        errors.push(result.reason);
+      } else if (result && "enrollment" in result) {
+        enrolled += 1;
+      } else {
+        skipped += 1;
+      }
     } catch (err) {
       skipped += 1;
       errors.push(err instanceof Error ? err.message : "fail");
