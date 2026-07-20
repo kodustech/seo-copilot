@@ -4,22 +4,15 @@
  * Used by Claude Code (running in `kodus-growth/`), Anthropic Desktop,
  * Cursor, Cline, etc. via `.mcp.json` pointing to this URL.
  *
- * Auth: Bearer token via `Authorization` header. The token must match
- * the `MCP_AUTH_TOKEN` env var. Generate a strong random token and
- * share with Junior + Ed (1Password). Rotate by changing the env var.
- *
- * Optional per-request identity: `x-mcp-user-email` header (used for
- * user-scoped tools like kanban). Defaults to `growth@kodus.io`.
+ * Auth (dual):
+ *   1. Personal PAT — create in Settings → MCP access after login.
+ *      Identity = token owner (ignores x-mcp-user-email).
+ *   2. Shared MCP_AUTH_TOKEN env (legacy/service). Identity from
+ *      x-mcp-user-email or MCP_DEFAULT_USER_EMAIL. Disable with
+ *      MCP_ALLOW_SHARED_TOKEN=false.
  *
  * Transport: simplified JSON-RPC over HTTP. Stateless (one request →
- * one response), works perfectly with Vercel serverless. Implements
- * the subset of MCP needed for client→server tool invocation:
- *   - initialize
- *   - tools/list
- *   - tools/call
- *
- * For multi-user real auth (per-user tokens), see roadmap in
- * `kodus-growth/specs/setup/18-seo-copilot-mcp-export.md`.
+ * one response). Methods: initialize, tools/list, tools/call, ping.
  */
 
 import {
@@ -28,6 +21,7 @@ import {
   PROTOCOL_VERSION,
   type McpToolDefinition,
 } from "@/lib/mcp/server";
+import { resolveMcpAuth } from "@/lib/mcp/tokens";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -62,49 +56,6 @@ function jsonRpcError(
   data?: unknown
 ): JsonRpcResponse {
   return { jsonrpc: "2.0", id, error: { code, message, data } };
-}
-
-function unauthorized(reason: string) {
-  return new Response(JSON.stringify({ error: "unauthorized", reason }), {
-    status: 401,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
-function validateAuth(
-  req: Request
-): { ok: true; userEmail: string } | { ok: false; response: Response } {
-  const expectedToken = process.env.MCP_AUTH_TOKEN;
-  if (!expectedToken || expectedToken.length < 16) {
-    return {
-      ok: false,
-      response: new Response(
-        JSON.stringify({
-          error: "server_misconfigured",
-          reason:
-            "MCP_AUTH_TOKEN is not set (or too short). Set it in seo-copilot env (>= 16 chars).",
-        }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
-      ),
-    };
-  }
-
-  const authHeader = req.headers.get("authorization") ?? "";
-  if (!authHeader.startsWith("Bearer ")) {
-    return { ok: false, response: unauthorized("Missing Bearer token") };
-  }
-
-  const presented = authHeader.slice("Bearer ".length).trim();
-  if (presented !== expectedToken) {
-    return { ok: false, response: unauthorized("Invalid token") };
-  }
-
-  const userEmail =
-    req.headers.get("x-mcp-user-email")?.trim() ||
-    process.env.MCP_DEFAULT_USER_EMAIL ||
-    "growth@kodus.io";
-
-  return { ok: true, userEmail };
 }
 
 async function dispatchRpc(
@@ -179,8 +130,16 @@ async function dispatchRpc(
 }
 
 export async function POST(req: Request) {
-  const auth = validateAuth(req);
-  if (!auth.ok) return auth.response;
+  const resolved = await resolveMcpAuth(req);
+  if (!resolved.ok) {
+    return new Response(
+      JSON.stringify({ error: resolved.error, reason: resolved.reason }),
+      {
+        status: resolved.status,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }
 
   let body: unknown;
   try {
@@ -192,7 +151,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const { tools } = buildMcpTools({ userEmail: auth.userEmail });
+  const { tools } = buildMcpTools({ userEmail: resolved.auth.userEmail });
 
   // Support batched requests (JSON-RPC 2.0 spec).
   if (Array.isArray(body)) {
@@ -213,6 +172,11 @@ export async function GET() {
     server: SERVER_INFO,
     protocolVersion: PROTOCOL_VERSION,
     transport: "http-jsonrpc",
-    note: "POST JSON-RPC requests to this endpoint. See specs/setup/18.",
+    auth: {
+      personalTokens: true,
+      sharedToken: process.env.MCP_ALLOW_SHARED_TOKEN?.toLowerCase() !== "false",
+      mintPath: "/settings (MCP access) or POST /api/mcp/tokens",
+    },
+    note: "POST JSON-RPC with Authorization: Bearer <personal or shared token>.",
   });
 }

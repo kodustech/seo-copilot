@@ -3864,6 +3864,101 @@ export const researchFindIcp = tool({
   },
 });
 
+export const researchEnrichPeople = tool({
+  description:
+    "Find buyer personas (people/leads) for companies in a research table: team-page scrape + email guess, then NinjaPear/Hunter if needed. Targets rubric personas (e.g. CTO, Head of Eng, QA Lead). Use onlyIfPass=false for pre-qualified CSV lists that were not ICP-scored yet. Long-running — prefer small batches (max 15 in agent).",
+  inputSchema: z.object({
+    table_id: z.string().describe("Research table id"),
+    only_if_pass: z
+      .boolean()
+      .optional()
+      .describe("Only enrich rows that passed ICP (default true). Set false for CSV imports."),
+    max_rows: z
+      .number()
+      .optional()
+      .describe("Cap how many rows to enrich this call (default 8, max 15)"),
+    max_people: z
+      .number()
+      .optional()
+      .describe("Max people per company (default 3)"),
+    row_ids: z
+      .array(z.string())
+      .optional()
+      .describe("Optional explicit row ids; if omitted, takes from table"),
+  }),
+  execute: async ({ table_id, only_if_pass, max_rows, max_people, row_ids }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { enrichPeopleForRows } = await import("@/lib/research/waterfall");
+      const { listPeople } = await import("@/lib/research/tables");
+
+      let ids = row_ids ?? [];
+      if (ids.length === 0) {
+        const rows = await listRows(client, table_id);
+        const filtered =
+          only_if_pass === false
+            ? rows
+            : rows.filter((r) => r.pass === true);
+        const cap = Math.min(max_rows ?? 8, 15);
+        ids = filtered.slice(0, cap).map((r) => r.id);
+      } else {
+        ids = ids.slice(0, Math.min(max_rows ?? 15, 15));
+      }
+
+      if (ids.length === 0) {
+        return {
+          success: true as const,
+          message: "No rows to enrich (check only_if_pass / table contents)",
+          ok: 0,
+          failed: 0,
+          total_people: 0,
+          sample: [],
+        };
+      }
+
+      const result = await enrichPeopleForRows(client, ids, {
+        onlyIfPass: only_if_pass !== false,
+        maxPeople: max_people ?? 3,
+      });
+
+      // Return a small sample of people found for agent visibility
+      const sample: Array<{
+        row_id: string;
+        people: Array<{ name: string; role: string | null; email: string | null; linkedin: string | null }>;
+      }> = [];
+      for (const id of ids.slice(0, 5)) {
+        const people = await listPeople(client, id);
+        if (people.length === 0) continue;
+        sample.push({
+          row_id: id,
+          people: people.map((p) => ({
+            name: p.name,
+            role: p.role,
+            email: p.email,
+            linkedin: p.linkedin,
+          })),
+        });
+      }
+
+      return {
+        success: true as const,
+        rows_processed: ids.length,
+        ok: result.ok,
+        failed: result.failed,
+        total_people: result.totalPeople,
+        sample,
+        note: "People saved on research_people. Open the Research UI or export CSV for full list. Re-call with next batch if more rows remain.",
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "People enrichment failed",
+      };
+    }
+  },
+});
+
 export function createAgentTools(userEmail?: string) {
   return {
     generateIdeas,
@@ -3928,6 +4023,7 @@ export function createAgentTools(userEmail?: string) {
     researchCompany,
     researchListRows,
     researchFindIcp,
+    researchEnrichPeople,
   };
 }
 

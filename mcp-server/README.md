@@ -35,7 +35,7 @@ The process stays attached. Connect with any MCP stdio client.
 |---|---|---|
 | **Use case** | Local debugging | Production (Junior + Ed via Claude Code) |
 | **Setup** | Clone repo + `npm install` | Just configure `.mcp.json` with URL + token |
-| **Auth** | None (filesystem access = trust) | Bearer token via `MCP_AUTH_TOKEN` env var |
+| **Auth** | None (filesystem access = trust) | Personal PAT (Settings) or shared `MCP_AUTH_TOKEN` |
 | **Hot reload** | Yes (tsx) | Yes (Next.js dev mode) |
 | **Multi-user** | No (1 process per user) | Yes (1 endpoint, many clients) |
 
