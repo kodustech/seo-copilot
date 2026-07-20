@@ -1072,7 +1072,7 @@ export function SeoWorkspace({
       historySelectedIds.has(keyword.id)
     );
     if (!selected.length) {
-      setHistoryError("Select ao menos uma keyword do history.");
+      setHistoryError("Select at least one keyword from history.");
       return;
     }
 
@@ -1317,8 +1317,8 @@ export function SeoWorkspace({
                         <SelectValue placeholder="Select" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="2076">Brasil</SelectItem>
-                        <SelectItem value="2840">Estados Unidos</SelectItem>
+                        <SelectItem value="2076">Brazil</SelectItem>
+                        <SelectItem value="2840">United States</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>

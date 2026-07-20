@@ -418,7 +418,7 @@ const TYPE_BADGE: Record<string, string> = {
 
 const TYPE_LABEL: Record<string, string> = {
   new: "Novo",
-  refresh: "Atualizar",
+  refresh: "Refresh",
   optimize: "Otimizar",
 };
 
@@ -462,12 +462,12 @@ function ContentPlanView({ data }: { data: ContentPlanData }) {
         )}
         {counts.opportunities > 0 && (
           <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 text-[11px] text-neutral-400">
-            {counts.opportunities} oportunidades SEO
+            {counts.opportunities} SEO opportunities
           </span>
         )}
         {counts.decaying > 0 && (
           <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 text-[11px] text-neutral-400">
-            {counts.decaying} pages em queda
+            {counts.decaying} pages declining
           </span>
         )}
         {counts.blogPosts > 0 && (
@@ -1050,7 +1050,8 @@ function PageKeywordsView({ data }: { data: PageKeywordsData }) {
   return (
     <div className="space-y-3">
       <p className="text-xs text-neutral-500">
-        Keywords que trazem traffic para <span className="font-mono text-neutral-400">{data.page}</span>
+        Keywords driving traffic to{" "}
+        <span className="font-mono text-neutral-400">{data.page}</span>
       </p>
       {data.keywords.length === 0 ? (
         <p className="text-xs text-neutral-500">No keyword found for this page.</p>

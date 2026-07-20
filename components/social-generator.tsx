@@ -277,7 +277,7 @@ function getDefaultPlatformConfigs() {
     createPlatformConfig({
       platform: "Twitter",
       maxLength: "500",
-      linksPolicy: "Sem link",
+      linksPolicy: "No links",
     }),
   ];
 }
@@ -400,7 +400,7 @@ export function SocialGenerator() {
   const [variationStrategy, setVariationStrategy] = useState(
     DEFAULT_SOCIAL_VARIATION_STRATEGY,
   );
-  const [language, setLanguage] = useState("pt-BR");
+  const [language, setLanguage] = useState("en-US");
   const [platformConfigs, setPlatformConfigs] = useState<PlatformConfigForm[]>(
     () => getDefaultPlatformConfigs()
   );
@@ -976,7 +976,7 @@ export function SocialGenerator() {
                                 </span>
                                 {post.publishedAt && (
                                   <span className="text-[10px] text-neutral-500">
-                                    {new Date(post.publishedAt).toLocaleDateString("pt-BR")}
+                                    {new Date(post.publishedAt).toLocaleDateString("en-US")}
                                   </span>
                                 )}
                               </CommandItem>
@@ -1240,10 +1240,10 @@ export function SocialGenerator() {
             <div className="space-y-4 rounded-2xl border border-neutral-200/80 p-4 dark:border-white/10">
               <div className="flex items-center justify-between">
                 <p className="text-xs uppercase text-neutral-500">
-                  Plataformas e regras
+                  Platforms & rules
                 </p>
                 <Button variant="ghost" size="sm" onClick={handleAddPlatform}>
-                  + Adicionar plataforma
+                  + Add platform
                 </Button>
               </div>
               <div className="space-y-4">
@@ -1254,7 +1254,7 @@ export function SocialGenerator() {
                   >
                     <div className="mb-3 flex items-center justify-between">
                       <p className="text-sm font-medium text-neutral-700 dark:text-neutral-100">
-                        {`Plataforma #${index + 1}`}
+                        {`Platform #${index + 1}`}
                       </p>
                       {platformConfigs.length > 1 && (
                         <Button
@@ -1264,14 +1264,14 @@ export function SocialGenerator() {
                           className="text-red-500 hover:text-red-600"
                         >
                           <X className="mr-1 h-4 w-4" />
-                          Remover
+                          Remove
                         </Button>
                       )}
                     </div>
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div className="space-y-2">
                         <p className="text-xs uppercase text-neutral-500">
-                          Plataforma
+                          Platform
                         </p>
                         <Select
                           value={config.platform}
@@ -1280,7 +1280,7 @@ export function SocialGenerator() {
                           }
                         >
                           <SelectTrigger className="bg-neutral-50/70 dark:bg-neutral-800">
-                            <SelectValue placeholder="Plataforma" />
+                            <SelectValue placeholder="Platform" />
                           </SelectTrigger>
                           <SelectContent>
                             {platformOptions.map((option) => (
@@ -1305,7 +1305,7 @@ export function SocialGenerator() {
                               maxLength: event.target.value,
                             })
                           }
-                          placeholder="Ex.: 260"
+                          placeholder="e.g. 260"
                           className="bg-neutral-50/70 dark:bg-neutral-800"
                         />
                       </div>
@@ -1339,7 +1339,7 @@ export function SocialGenerator() {
                               linksPolicy: event.target.value,
                             })
                           }
-                          placeholder="Ex.: sem links no corpo"
+                          placeholder="e.g. no links in body"
                           className="bg-neutral-50/70 dark:bg-neutral-800"
                         />
                       </div>
@@ -1361,12 +1361,12 @@ export function SocialGenerator() {
                 {loading ? (
                   <>
                     <Loader2 className="mr-3 h-5 w-5 animate-spin" />
-                    Gerando posts...
+                    Generating posts…
                   </>
                 ) : (
                   <>
                     <Sparkles className="mr-3 h-5 w-5" />
-                    Gerar posts sociais
+                    Generate social posts
                   </>
                 )}
               </Button>
@@ -1383,7 +1383,7 @@ export function SocialGenerator() {
                   setVariationStrategy(
                     "Vary hook and format (carousel/thread/short post) across variations."
                   );
-                  setLanguage("pt-BR");
+                  setLanguage("en-US");
                   setPlatformConfigs(getDefaultPlatformConfigs());
                   setPosts([]);
                   setScheduledIds(new Set());
@@ -1393,7 +1393,7 @@ export function SocialGenerator() {
                 }}
                 type="button"
               >
-                Limpar campos
+                Clear fields
               </Button>
             </div>
           </CardContent>
@@ -1402,9 +1402,9 @@ export function SocialGenerator() {
         <Card className="border-0 bg-white/90 shadow-sm ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/5">
           <CardHeader className="flex-row items-center justify-between gap-3">
             <div>
-              <CardTitle className="text-2xl">Posts sugeridos</CardTitle>
+              <CardTitle className="text-2xl">Suggested posts</CardTitle>
               <CardDescription className="text-base">
-                Copie e ajuste antes de publicar.
+                Copy and tweak before publishing.
               </CardDescription>
             </div>
             <Badge className="rounded-full px-4 py-1 text-sm" variant="outline">
@@ -1414,8 +1414,7 @@ export function SocialGenerator() {
           <CardContent className="space-y-4">
             {!hasPosts ? (
               <div className="rounded-3xl border border-dashed border-neutral-300/70 p-8 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
-                Generate posts from the brief above to see suggestions
-                aqui.
+                Generate posts from the brief above to see suggestions here.
               </div>
             ) : (
               <div className="grid gap-4 md:grid-cols-3">
@@ -1719,7 +1718,7 @@ export function SocialGenerator() {
                         <div className="flex shrink-0 flex-col items-end gap-1">
                           {post.publishedAt && (
                             <span className="text-[10px] text-neutral-600">
-                              {new Date(post.publishedAt).toLocaleDateString("pt-BR")}
+                              {new Date(post.publishedAt).toLocaleDateString("en-US")}
                             </span>
                           )}
                           <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-neutral-500 opacity-0 transition group-hover:opacity-100">

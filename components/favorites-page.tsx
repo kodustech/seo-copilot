@@ -188,7 +188,7 @@ function FavoriteCard({
                 {idea.source}
               </span>
               <span className="text-[10px] text-neutral-600">
-                {new Date(idea.favoritedAt).toLocaleDateString("pt-BR")}
+                {new Date(idea.favoritedAt).toLocaleDateString("en-US")}
               </span>
             </div>
           </div>
