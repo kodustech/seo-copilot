@@ -3557,13 +3557,30 @@ export const icpDiscoverCompanies = tool({
 
 export const researchListTables = tool({
   description:
-    "List Clay-style ICP research tables (spreadsheets of companies scored against a rubric).",
+    "List Clay-style research lists/tables. Returns id, slug, name, row_count, and column keys — use slug or id in later tools (table_ref).",
   inputSchema: z.object({}),
   execute: async () => {
     try {
       const client = getSupabaseServiceClient();
       const tables = await listTables(client);
-      return { success: true as const, tables, rubrics: listRubrics() };
+      return {
+        success: true as const,
+        tables: tables.map((t) => ({
+          id: t.id,
+          slug: t.slug,
+          name: t.name,
+          row_count: t.rowCount ?? 0,
+          columns: (t.columns ?? []).map((c) => ({
+            key: c.key,
+            label: c.label,
+            type: c.type,
+            enrich: c.enrich.kind,
+          })),
+          description: t.description,
+        })),
+        rubrics: listRubrics(),
+        note: "Pass table_ref as slug, id, or exact name to other research* tools.",
+      };
     } catch (error) {
       return {
         success: false as const,
@@ -3575,7 +3592,7 @@ export const researchListTables = tool({
 
 export const researchCreateTable = tool({
   description:
-    "Create a research table with a rubric (default qe-kodus-v1 for QE/E2E ICP).",
+    "Create a research list/table with a rubric (default qe-kodus-v1). Returns id + slug for deep links (/research?table=slug).",
   inputSchema: z.object({
     name: z.string(),
     rubric_id: z.string().optional().describe("qe-kodus-v1 | generic-b2b-v1"),
@@ -3589,7 +3606,18 @@ export const researchCreateTable = tool({
         rubricId: rubric_id ?? getDefaultRubricId(),
         createdByEmail: user_email,
       });
-      return { success: true as const, table };
+      return {
+        success: true as const,
+        table: {
+          id: table.id,
+          slug: table.slug,
+          name: table.name,
+          columns: table.columns,
+        },
+        open_url: table.slug
+          ? `/research?table=${encodeURIComponent(table.slug)}`
+          : `/research?table=${table.id}`,
+      };
     } catch (error) {
       return {
         success: false as const,
@@ -3603,7 +3631,13 @@ export const researchAddDomains = tool({
   description:
     "Add company domains to a research table (import candidates before research).",
   inputSchema: z.object({
-    table_id: z.string(),
+    table_ref: z
+      .string()
+      .describe("Table id, slug, or unique name (preferred over raw UUID alone)"),
+    table_id: z
+      .string()
+      .optional()
+      .describe("Deprecated alias for table_ref"),
     domains: z
       .array(
         z.object({
@@ -3614,12 +3648,14 @@ export const researchAddDomains = tool({
       .describe("List of domains / companies to add"),
     source: z.string().optional(),
   }),
-  execute: async ({ table_id, domains, source }) => {
+  execute: async ({ table_ref, table_id, domains, source }) => {
     try {
       const client = getSupabaseServiceClient();
+      const { resolveTable } = await import("@/lib/research/columns");
+      const table = await resolveTable(client, table_ref || table_id || "");
       const result = await addRows(
         client,
-        table_id,
+        table.id,
         domains.map((d) => ({
           companyName: d.company_name || d.domain,
           domain: d.domain,
@@ -3628,6 +3664,8 @@ export const researchAddDomains = tool({
       );
       return {
         success: true as const,
+        table_id: table.id,
+        table_slug: table.slug,
         added: result.added,
         skipped: result.skipped,
       };
@@ -3677,21 +3715,32 @@ export const researchCompany = tool({
 
 export const researchListRows = tool({
   description:
-    "List rows in a research table with ICP scores. Filter to pass-only for outreach-ready companies.",
+    "List rows in a research table with ICP scores and dynamic cells. Filter to pass-only for outreach-ready companies.",
   inputSchema: z.object({
-    table_id: z.string(),
+    table_ref: z.string().optional().describe("Table id, slug, or name"),
+    table_id: z.string().optional().describe("Deprecated alias for table_ref"),
     pass_only: z.boolean().optional(),
     min_score: z.number().optional(),
+    include_cells: z.boolean().optional().describe("Include dynamic column cells (default true)"),
   }),
-  execute: async ({ table_id, pass_only, min_score }) => {
+  execute: async ({ table_ref, table_id, pass_only, min_score, include_cells }) => {
     try {
       const client = getSupabaseServiceClient();
-      const rows = await listRows(client, table_id, {
+      const { resolveTable } = await import("@/lib/research/columns");
+      const table = await resolveTable(client, table_ref || table_id || "");
+      const rows = await listRows(client, table.id, {
         passOnly: pass_only,
         minScore: min_score,
       });
+      const withCells = include_cells !== false;
       return {
         success: true as const,
+        table: {
+          id: table.id,
+          slug: table.slug,
+          name: table.name,
+          columns: table.columns,
+        },
         count: rows.length,
         rows: rows.map((r) => ({
           id: r.id,
@@ -3702,6 +3751,7 @@ export const researchListRows = tool({
           pass: r.pass,
           anti_flags: r.antiFlags,
           why_now: r.whyNow,
+          ...(withCells ? { cells: r.cells ?? {} } : {}),
         })),
       };
     } catch (error) {
@@ -3868,7 +3918,8 @@ export const researchEnrichPeople = tool({
   description:
     "Find buyer personas (people/leads) for companies in a research table: team-page scrape + email guess, then NinjaPear/Hunter if needed. Targets rubric personas (e.g. CTO, Head of Eng, QA Lead). Use onlyIfPass=false for pre-qualified CSV lists that were not ICP-scored yet. Long-running — prefer small batches (max 15 in agent).",
   inputSchema: z.object({
-    table_id: z.string().describe("Research table id"),
+    table_ref: z.string().optional().describe("Table id, slug, or name"),
+    table_id: z.string().optional().describe("Deprecated alias for table_ref"),
     only_if_pass: z
       .boolean()
       .optional()
@@ -3886,15 +3937,17 @@ export const researchEnrichPeople = tool({
       .optional()
       .describe("Optional explicit row ids; if omitted, takes from table"),
   }),
-  execute: async ({ table_id, only_if_pass, max_rows, max_people, row_ids }) => {
+  execute: async ({ table_ref, table_id, only_if_pass, max_rows, max_people, row_ids }) => {
     try {
       const client = getSupabaseServiceClient();
       const { enrichPeopleForRows } = await import("@/lib/research/waterfall");
       const { listPeople } = await import("@/lib/research/tables");
+      const { resolveTable } = await import("@/lib/research/columns");
+      const table = await resolveTable(client, table_ref || table_id || "");
 
       let ids = row_ids ?? [];
       if (ids.length === 0) {
-        const rows = await listRows(client, table_id);
+        const rows = await listRows(client, table.id);
         const filtered =
           only_if_pass === false
             ? rows
@@ -3954,6 +4007,243 @@ export const researchEnrichPeople = tool({
         success: false as const,
         message:
           error instanceof Error ? error.message : "People enrichment failed",
+      };
+    }
+  },
+});
+
+export const researchGetTable = tool({
+  description:
+    "Get one research table by id, slug, or unique name — includes column schema. Use before create/run columns.",
+  inputSchema: z.object({
+    table_ref: z.string().describe("UUID, slug, or unique table name"),
+  }),
+  execute: async ({ table_ref }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { resolveTable } = await import("@/lib/research/columns");
+      const table = await resolveTable(client, table_ref);
+      return {
+        success: true as const,
+        table: {
+          id: table.id,
+          slug: table.slug,
+          name: table.name,
+          description: table.description,
+          row_count: table.rowCount,
+          columns: table.columns,
+          open_url: table.slug
+            ? `/research?table=${encodeURIComponent(table.slug)}`
+            : `/research?table=${table.id}`,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Table not found",
+      };
+    }
+  },
+});
+
+export const researchCreateColumn = tool({
+  description:
+    "Create a dynamic column on a research table (Clay-style). enrich.kind: none | ai (needs prompt) | people_field (field: linkedin|email|name|role). Example: contact_linkedin with people_field linkedin.",
+  inputSchema: z.object({
+    table_ref: z.string().describe("Table id, slug, or name"),
+    label: z.string().describe("Human label, e.g. Contact LinkedIn"),
+    key: z
+      .string()
+      .optional()
+      .describe("snake_case key; default slugified from label"),
+    type: z
+      .enum(["text", "url", "email", "boolean", "number"])
+      .optional()
+      .describe("Default text; use url for LinkedIn"),
+    enrich: z
+      .object({
+        kind: z.enum(["none", "ai", "people_field"]),
+        prompt: z.string().optional(),
+        field: z.enum(["linkedin", "email", "name", "role"]).optional(),
+        runPeopleIfMissing: z.boolean().optional(),
+      })
+      .optional(),
+    run_now: z
+      .boolean()
+      .optional()
+      .describe("If true, immediately run enrich on missing cells (max 30)"),
+  }),
+  execute: async ({ table_ref, label, key, type, enrich, run_now }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { createColumn, runColumn } = await import("@/lib/research/columns");
+      const created = await createColumn(client, table_ref, {
+        label,
+        key,
+        type,
+        enrich: enrich ?? { kind: "none" },
+      });
+      let run: Awaited<ReturnType<typeof runColumn>> | null = null;
+      if (run_now && created.column.enrich.kind !== "none") {
+        run = await runColumn(client, created.table.id, created.column.key, {
+          onlyMissing: true,
+          maxRows: 30,
+        });
+      }
+      return {
+        success: true as const,
+        table_id: created.table.id,
+        table_slug: created.table.slug,
+        column: created.column,
+        columns: created.columns,
+        run: run
+          ? { ok: run.ok, failed: run.failed, skipped: run.skipped, sample: run.sample }
+          : null,
+        note: run_now
+          ? "Column created and enrich started for up to 30 missing rows."
+          : "Column created. Call researchRunColumn to fill values.",
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Create column failed",
+      };
+    }
+  },
+});
+
+export const researchUpdateColumn = tool({
+  description: "Update a dynamic column (label, type, enrich, order, or rename key).",
+  inputSchema: z.object({
+    table_ref: z.string(),
+    key: z.string(),
+    label: z.string().optional(),
+    type: z.enum(["text", "url", "email", "boolean", "number"]).optional(),
+    enrich: z
+      .object({
+        kind: z.enum(["none", "ai", "people_field"]),
+        prompt: z.string().optional(),
+        field: z.enum(["linkedin", "email", "name", "role"]).optional(),
+        runPeopleIfMissing: z.boolean().optional(),
+      })
+      .optional(),
+    order: z.number().optional(),
+    new_key: z.string().optional(),
+  }),
+  execute: async ({ table_ref, key, label, type, enrich, order, new_key }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { updateColumn } = await import("@/lib/research/columns");
+      const result = await updateColumn(client, table_ref, key, {
+        label,
+        type,
+        enrich,
+        order,
+        newKey: new_key,
+      });
+      return {
+        success: true as const,
+        column: result.column,
+        columns: result.columns,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Update column failed",
+      };
+    }
+  },
+});
+
+export const researchDeleteColumn = tool({
+  description:
+    "Delete a dynamic column from a research table. By default purges cell values too.",
+  inputSchema: z.object({
+    table_ref: z.string(),
+    key: z.string(),
+    purge_cells: z.boolean().optional(),
+  }),
+  execute: async ({ table_ref, key, purge_cells }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { deleteColumn } = await import("@/lib/research/columns");
+      const result = await deleteColumn(client, table_ref, key, {
+        purgeCells: purge_cells !== false,
+      });
+      return {
+        success: true as const,
+        columns: result.columns,
+        table_slug: result.table.slug,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Delete column failed",
+      };
+    }
+  },
+});
+
+export const researchRunColumn = tool({
+  description:
+    "Run enrich for one dynamic column across rows (AI prompt or people_field). Caps at max_rows (default 25, max 50). Prefer only_missing=true.",
+  inputSchema: z.object({
+    table_ref: z.string(),
+    key: z.string().describe("Column key, e.g. contact_linkedin"),
+    only_missing: z.boolean().optional(),
+    max_rows: z.number().optional(),
+    row_ids: z.array(z.string()).optional(),
+  }),
+  execute: async ({ table_ref, key, only_missing, max_rows, row_ids }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { runColumn } = await import("@/lib/research/columns");
+      const result = await runColumn(client, table_ref, key, {
+        onlyMissing: only_missing !== false,
+        maxRows: Math.min(max_rows ?? 25, 50),
+        rowIds: row_ids,
+      });
+      return {
+        success: true as const,
+        table_id: result.table.id,
+        table_slug: result.table.slug,
+        column: result.column,
+        ok: result.ok,
+        failed: result.failed,
+        skipped: result.skipped,
+        sample: result.sample,
+        note: "Re-call with next batch if more rows remain. Open /research?table=<slug> to view.",
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Run column failed",
+      };
+    }
+  },
+});
+
+export const researchSetCell = tool({
+  description: "Manually set a cell value on a row for a dynamic column.",
+  inputSchema: z.object({
+    row_id: z.string(),
+    key: z.string(),
+    value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+    evidence: z.string().optional(),
+  }),
+  execute: async ({ row_id, key, value, evidence }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { setCell } = await import("@/lib/research/columns");
+      const cell = await setCell(client, row_id, key, value, {
+        status: "done",
+        evidence: evidence ?? null,
+      });
+      return { success: true as const, cell };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Set cell failed",
       };
     }
   },
@@ -4024,6 +4314,12 @@ export function createAgentTools(userEmail?: string) {
     researchListRows,
     researchFindIcp,
     researchEnrichPeople,
+    researchGetTable,
+    researchCreateColumn,
+    researchUpdateColumn,
+    researchDeleteColumn,
+    researchRunColumn,
+    researchSetCell,
   };
 }
 
