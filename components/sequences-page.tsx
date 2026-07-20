@@ -1011,523 +1011,548 @@ export function SequencesPage() {
             )}
           </div>
         ) : (
-          /* ── Steps: rail + compose + preview theater ── */
-          <div className="mx-auto grid min-h-0 w-full max-w-6xl flex-1 grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)_300px]">
-            {/* Rail */}
-            <aside className="flex min-h-0 flex-col border-b border-border lg:border-b-0 lg:border-r">
-              <div className="flex items-center justify-between px-3 py-3">
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Cadence
-                </p>
-                <span className="text-[11px] tabular-nums text-muted-foreground">
-                  {editSteps.length}
-                </span>
-              </div>
-              <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-3">
-                {editSteps.map((step, idx) => {
-                  const isSel = selected?.key === step.key;
-                  return (
-                    <button
-                      key={step.key}
-                      type="button"
-                      onClick={() => setSelectedStepKey(step.key)}
-                      className={cn(
-                        "flex w-full items-start gap-2.5 rounded-lg px-2 py-2.5 text-left transition",
-                        isSel
-                          ? "bg-foreground text-background"
-                          : "text-foreground hover:bg-muted/60",
-                      )}
+          /* Instantly-style vertical sequence builder */
+          <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col overflow-hidden">
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-6 sm:px-6">
+              {/* Meta */}
+              <div className="mb-6 space-y-3">
+                <Input
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  placeholder="Description (optional)"
+                  className="h-9 border-border/60 bg-transparent text-sm"
+                />
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs text-muted-foreground">
+                    {editSteps.length} step{editSteps.length === 1 ? "" : "s"}
+                    {activePeople > 0
+                      ? ` · ${activePeople} people active`
+                      : " · enroll people when ready"}
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8"
+                      onClick={() => {
+                        const s = blankStep("linkedin");
+                        setEditSteps((p) => [...p, s]);
+                        setSelectedStepKey(s.key);
+                      }}
                     >
-                      <span
-                        className={cn(
-                          "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold tabular-nums",
-                          isSel
-                            ? "bg-background/20 text-background"
-                            : "bg-muted text-muted-foreground",
-                        )}
-                      >
-                        {idx + 1}
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="flex items-center gap-1.5 text-sm font-medium">
-                          {step.channel === "linkedin" ? (
-                            <Linkedin
-                              className={cn(
-                                "size-3.5 shrink-0",
-                                isSel ? "opacity-90" : "text-[#0A66C2]",
-                              )}
-                            />
-                          ) : (
-                            <Mail
-                              className={cn(
-                                "size-3.5 shrink-0",
-                                isSel ? "opacity-90" : "text-amber-600",
-                              )}
-                            />
-                          )}
-                          <span className="truncate">{stepTitle(step)}</span>
-                        </span>
-                        <span
-                          className={cn(
-                            "mt-0.5 block text-[11px]",
-                            isSel
-                              ? "text-background/70"
-                              : "text-muted-foreground",
-                          )}
-                        >
-                          {formatWait(step.delayHours)}
-                        </span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="flex gap-1 border-t border-border p-2">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-8 flex-1 text-xs"
-                  onClick={() => {
-                    const s = blankStep("linkedin");
-                    setEditSteps((p) => [...p, s]);
-                    setSelectedStepKey(s.key);
-                  }}
-                >
-                  <Linkedin className="size-3.5" />
-                  LI
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-8 flex-1 text-xs"
-                  onClick={() => {
-                    const s = blankStep("email");
-                    setEditSteps((p) => [...p, s]);
-                    setSelectedStepKey(s.key);
-                  }}
-                >
-                  <Mail className="size-3.5" />
-                  Email
-                </Button>
-              </div>
-            </aside>
-
-            {/* Compose selected step */}
-            <div className="min-h-0 overflow-y-auto px-4 py-5 sm:px-6">
-              {!selected ? (
-                <p className="text-sm text-muted-foreground">Select a step</p>
-              ) : (
-                (() => {
-                  const step = selected;
-                  const idx = editSteps.findIndex((s) => s.key === step.key);
-                  const waitDays = Math.floor(step.delayHours / 24);
-                  const waitHours = step.delayHours % 24;
-                  return (
-                    <div className="mx-auto max-w-xl space-y-6">
-                      <div className="flex flex-wrap items-start justify-between gap-2">
-                        <div>
-                          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                            Step {idx + 1} of {editSteps.length}
-                          </p>
-                          <h2 className="mt-0.5 text-lg font-semibold tracking-tight">
-                            {stepTitle(step)}
-                          </h2>
-                          <p className="text-xs text-muted-foreground">
-                            {idx === 0
-                              ? "Starts when someone is enrolled"
-                              : `Waits ${formatWait(step.delayHours).toLowerCase()} after previous`}
-                            {step.channel === "linkedin"
-                              ? " · you send from Today"
-                              : step.mode === "auto"
-                                ? " · auto-send"
-                                : " · manual from Today"}
-                          </p>
-                        </div>
-                        <div className="flex gap-0.5">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="size-8 p-0"
-                            disabled={idx <= 0}
-                            aria-label="Move up"
-                            onClick={() =>
-                              setEditSteps((prev) => {
-                                if (idx <= 0) return prev;
-                                const n = [...prev];
-                                [n[idx - 1], n[idx]] = [n[idx], n[idx - 1]];
-                                return n;
-                              })
-                            }
-                          >
-                            <ArrowUp className="size-3.5" />
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="size-8 p-0"
-                            disabled={idx >= editSteps.length - 1}
-                            aria-label="Move down"
-                            onClick={() =>
-                              setEditSteps((prev) => {
-                                if (idx >= prev.length - 1) return prev;
-                                const n = [...prev];
-                                [n[idx], n[idx + 1]] = [n[idx + 1], n[idx]];
-                                return n;
-                              })
-                            }
-                          >
-                            <ArrowDown className="size-3.5" />
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="size-8 p-0 text-muted-foreground hover:text-destructive"
-                            disabled={editSteps.length <= 1}
-                            aria-label="Remove step"
-                            onClick={() => {
-                              setEditSteps((p) => {
-                                const next = p.filter((x) => x.key !== step.key);
-                                setSelectedStepKey(next[0]?.key ?? null);
-                                return next;
-                              });
-                            }}
-                          >
-                            <Trash2 className="size-3.5" />
-                          </Button>
-                        </div>
-                      </div>
-
-                      <div className="space-y-2">
-                        <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                          Channel
-                        </p>
-                        <Segmented
-                          value={step.channel}
-                          onChange={(v) =>
-                            updateStep(step.key, { channel: v })
-                          }
-                          options={[
-                            {
-                              value: "linkedin" as const,
-                              label: "LinkedIn",
-                              icon: <Linkedin className="size-3" />,
-                            },
-                            {
-                              value: "email" as const,
-                              label: "Email",
-                              icon: <Mail className="size-3" />,
-                            },
-                          ]}
-                        />
-                      </div>
-
-                      {step.channel === "linkedin" ? (
-                        <div className="space-y-2">
-                          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                            Action
-                          </p>
-                          <Segmented
-                            value={step.linkedinAction ?? "connect_note"}
-                            onChange={(v) =>
-                              updateStep(step.key, { linkedinAction: v })
-                            }
-                            options={[
-                              {
-                                value: "connect_note" as const,
-                                label: "Add connection + note",
-                              },
-                              {
-                                value: "message" as const,
-                                label: "Message",
-                              },
-                            ]}
-                          />
-                        </div>
-                      ) : (
-                        <div className="space-y-2">
-                          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                            Delivery
-                          </p>
-                          <Segmented
-                            value={step.mode}
-                            onChange={(v) =>
-                              updateStep(step.key, { mode: v })
-                            }
-                            options={[
-                              {
-                                value: "auto" as const,
-                                label: "Auto-send",
-                              },
-                              {
-                                value: "semi" as const,
-                                label: "Manual queue",
-                              },
-                            ]}
-                          />
-                        </div>
-                      )}
-
-                      <div className="space-y-2">
-                        <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                          Wait before this step
-                        </p>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <div className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5">
-                            <Input
-                              type="number"
-                              min={0}
-                              className="h-7 w-12 border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0"
-                              value={waitDays}
-                              onChange={(e) =>
-                                updateStep(step.key, {
-                                  delayHours:
-                                    Math.max(0, Number(e.target.value) || 0) *
-                                      24 +
-                                    waitHours,
-                                })
-                              }
-                            />
-                            <span className="text-xs text-muted-foreground">
-                              days
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5">
-                            <Input
-                              type="number"
-                              min={0}
-                              max={23}
-                              className="h-7 w-12 border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0"
-                              value={waitHours}
-                              onChange={(e) =>
-                                updateStep(step.key, {
-                                  delayHours:
-                                    waitDays * 24 +
-                                    Math.max(0, Number(e.target.value) || 0),
-                                })
-                              }
-                            />
-                            <span className="text-xs text-muted-foreground">
-                              hrs
-                            </span>
-                          </div>
-                          <div className="flex flex-wrap gap-1">
-                            {(
-                              [
-                                [0, "Now"],
-                                [24, "1d"],
-                                [48, "2d"],
-                                [72, "3d"],
-                                [168, "1w"],
-                              ] as const
-                            ).map(([h, label]) => (
-                              <button
-                                key={h}
-                                type="button"
-                                onClick={() =>
-                                  updateStep(step.key, { delayHours: h })
-                                }
-                                className={cn(
-                                  "rounded-md px-2 py-1 text-[11px] font-medium transition",
-                                  step.delayHours === h
-                                    ? "bg-foreground text-background"
-                                    : "bg-muted text-muted-foreground hover:text-foreground",
-                                )}
-                              >
-                                {label}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-
-                      {step.channel === "email" && (
-                        <div className="space-y-2">
-                          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                            Subject
-                          </p>
-                          <Input
-                            value={step.subjectTemplate}
-                            onChange={(e) =>
-                              updateStep(step.key, {
-                                subjectTemplate: e.target.value,
-                              })
-                            }
-                            placeholder="Subject line…"
-                            className="bg-background"
-                          />
-                        </div>
-                      )}
-
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                            {step.channel === "linkedin"
-                              ? step.linkedinAction === "connect_note"
-                                ? "Connection note"
-                                : "Message"
-                              : "Body"}
-                          </p>
-                          <p className="text-[10px] text-muted-foreground">
-                            {"{{first_name}} {{company}} {{role}}"}
-                          </p>
-                        </div>
-                        <Textarea
-                          value={step.bodyTemplate}
-                          onChange={(e) =>
-                            updateStep(step.key, {
-                              bodyTemplate: e.target.value,
-                            })
-                          }
-                          rows={step.channel === "email" ? 10 : 6}
-                          className="min-h-[140px] resize-y bg-background text-sm leading-relaxed"
-                          placeholder="Write the message…"
-                        />
-                      </div>
-                    </div>
-                  );
-                })()
-              )}
-            </div>
-
-            {/* Preview theater */}
-            <aside className="hidden min-h-0 flex-col border-l border-border bg-muted/20 lg:flex">
-              <div className="border-b border-border px-4 py-3">
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Preview
-                </p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  How this cadence reads for one person
-                </p>
-                <div className="mt-2">
-                  <Select
-                    value={previewPersonId}
-                    onValueChange={(v) =>
-                      setPreviewPersonId(v as string | "sample")
-                    }
-                  >
-                    <SelectTrigger className="h-9 bg-background text-left text-xs">
-                      <SelectValue placeholder="Pick a person" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="sample">
-                        Sample (Alex · Acme QA)
-                      </SelectItem>
-                      {enrollments.map((e) => (
-                        <SelectItem key={e.id} value={e.id}>
-                          {(e.contactName || "—") +
-                            (e.companyName ? ` · ${e.companyName}` : "")}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                      <Linkedin className="size-3.5 text-[#0A66C2]" />
+                      LinkedIn step
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8"
+                      onClick={() => {
+                        const s = blankStep("email");
+                        setEditSteps((p) => [...p, s]);
+                        setSelectedStepKey(s.key);
+                      }}
+                    >
+                      <Mail className="size-3.5 text-amber-600" />
+                      Email step
+                    </Button>
+                  </div>
                 </div>
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-                {(() => {
-                  const sample = {
-                    companyName: "Acme QA",
-                    domain: "acme.com",
-                    contactName: "Alex Chen",
-                    contactEmail: "alex@acme.com",
-                    contactLinkedin: "https://linkedin.com/in/alex",
-                    contactRole: "Head of QA",
-                  };
-                  const person =
+
+              {/* Vertical timeline */}
+              <div className="relative space-y-0">
+                {editSteps.map((step, idx) => {
+                  const isSel = selected?.key === step.key;
+                  const waitDays = Math.floor(step.delayHours / 24);
+                  const waitHours = step.delayHours % 24;
+                  const previewPerson =
                     previewPersonId === "sample"
-                      ? sample
+                      ? {
+                          companyName: "Acme QA",
+                          domain: "acme.com",
+                          contactName: "Alex Chen",
+                          contactEmail: "alex@acme.com",
+                          contactLinkedin: "https://linkedin.com/in/alex",
+                          contactRole: "Head of QA",
+                        }
                       : (() => {
                           const e = enrollments.find(
                             (x) => x.id === previewPersonId,
                           );
-                          if (!e) return sample;
-                          return {
-                            companyName: e.companyName,
-                            domain: e.domain,
-                            contactName: e.contactName,
-                            contactEmail: e.contactEmail,
-                            contactLinkedin: e.contactLinkedin,
-                            contactRole: e.contactRole,
-                          };
+                          return e
+                            ? {
+                                companyName: e.companyName,
+                                domain: e.domain,
+                                contactName: e.contactName,
+                                contactEmail: e.contactEmail,
+                                contactLinkedin: e.contactLinkedin,
+                                contactRole: e.contactRole,
+                              }
+                            : {
+                                companyName: "Acme QA",
+                                domain: "acme.com",
+                                contactName: "Alex Chen",
+                                contactEmail: "alex@acme.com",
+                                contactLinkedin:
+                                  "https://linkedin.com/in/alex",
+                                contactRole: "Head of QA",
+                              };
                         })();
+                  const renderedBody = renderTemplate(
+                    step.bodyTemplate,
+                    previewPerson,
+                  );
+                  const renderedSubject =
+                    step.channel === "email" && step.subjectTemplate
+                      ? renderTemplate(step.subjectTemplate, previewPerson)
+                      : null;
 
                   return (
-                    <div className="space-y-3">
-                      <div className="rounded-lg border border-border bg-background px-3 py-2.5">
-                        <p className="text-sm font-medium">
-                          {person.contactName || person.companyName}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {[person.contactRole, person.companyName]
-                            .filter(Boolean)
-                            .join(" · ")}
-                        </p>
-                      </div>
-                      {editSteps.map((s, i) => {
-                        const isSel = selected?.key === s.key;
-                        const body = renderTemplate(s.bodyTemplate, person);
-                        const subject =
-                          s.channel === "email" && s.subjectTemplate
-                            ? renderTemplate(s.subjectTemplate, person)
-                            : null;
-                        const gaps: string[] = [];
-                        if (
-                          s.channel === "linkedin" &&
-                          !person.contactLinkedin
-                        ) {
-                          gaps.push("no LinkedIn");
-                        }
-                        if (s.channel === "email" && !person.contactEmail) {
-                          gaps.push("no email");
-                        }
-                        return (
-                          <button
-                            key={s.key}
-                            type="button"
-                            onClick={() => setSelectedStepKey(s.key)}
+                    <div key={step.key} className="relative">
+                      {/* Wait connector between steps */}
+                      {idx > 0 && (
+                        <div className="flex items-center gap-3 py-2 pl-4">
+                          <div className="flex w-8 flex-col items-center">
+                            <div className="h-4 w-px bg-border" />
+                          </div>
+                          <div className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-[11px] text-muted-foreground">
+                            <Clock className="size-3" />
+                            Wait {formatWait(step.delayHours).toLowerCase()}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex gap-3">
+                        {/* Timeline rail */}
+                        <div className="flex w-8 shrink-0 flex-col items-center pt-3">
+                          <div
                             className={cn(
-                              "w-full rounded-xl border p-3 text-left transition",
+                              "z-[1] flex size-8 items-center justify-center rounded-full border-2 text-xs font-semibold tabular-nums",
                               isSel
-                                ? "border-foreground/25 bg-background shadow-sm"
-                                : "border-transparent bg-background/50 hover:border-border hover:bg-background",
+                                ? "border-foreground bg-foreground text-background"
+                                : "border-border bg-background text-muted-foreground",
                             )}
                           >
-                            <div className="flex items-center gap-2 text-xs">
-                              <span className="font-semibold tabular-nums text-muted-foreground">
-                                {i + 1}
-                              </span>
-                              {s.channel === "linkedin" ? (
-                                <Linkedin className="size-3 text-[#0A66C2]" />
-                              ) : (
-                                <Mail className="size-3 text-amber-600" />
+                            {idx + 1}
+                          </div>
+                          {idx < editSteps.length - 1 && !isSel && (
+                            <div className="w-px flex-1 bg-border" />
+                          )}
+                          {idx < editSteps.length - 1 && isSel && (
+                            <div className="w-px flex-1 bg-border" />
+                          )}
+                        </div>
+
+                        {/* Step card */}
+                        <div
+                          className={cn(
+                            "mb-1 min-w-0 flex-1 overflow-hidden rounded-xl border transition",
+                            isSel
+                              ? "border-foreground/20 bg-card shadow-sm"
+                              : "border-border bg-card/60 hover:border-foreground/15 hover:bg-card",
+                          )}
+                        >
+                          {/* Collapsed header — always visible */}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSelectedStepKey(isSel ? step.key : step.key)
+                            }
+                            className="flex w-full items-start gap-3 p-4 text-left"
+                          >
+                            <span
+                              className={cn(
+                                "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg",
+                                step.channel === "linkedin"
+                                  ? "bg-[#0A66C2]/12 text-[#0A66C2]"
+                                  : "bg-amber-500/12 text-amber-600 dark:text-amber-400",
                               )}
-                              <span className="font-medium">
-                                {stepTitle(s)}
-                              </span>
-                              <span className="text-muted-foreground">
-                                · {formatWait(s.delayHours).toLowerCase()}
-                              </span>
+                            >
+                              {step.channel === "linkedin" ? (
+                                <Linkedin className="size-4" />
+                              ) : (
+                                <Mail className="size-4" />
+                              )}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-semibold">
+                                  {stepTitle(step)}
+                                </span>
+                                <span className="text-[11px] text-muted-foreground">
+                                  {idx === 0
+                                    ? "Day 0 · on enroll"
+                                    : formatWait(step.delayHours)}
+                                  {step.channel === "linkedin"
+                                    ? " · manual"
+                                    : step.mode === "auto"
+                                      ? " · auto"
+                                      : " · manual"}
+                                </span>
+                              </div>
+                              {!isSel && (
+                                <p className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-muted-foreground">
+                                  {step.channel === "email" &&
+                                  step.subjectTemplate
+                                    ? `${step.subjectTemplate} — `
+                                    : ""}
+                                  {step.bodyTemplate || "Empty message…"}
+                                </p>
+                              )}
                             </div>
-                            {gaps.length > 0 && (
-                              <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
-                                {gaps.join(" · ")} — may stall
-                              </p>
-                            )}
-                            {subject && (
-                              <p className="mt-2 text-xs font-medium">
-                                {subject}
-                              </p>
-                            )}
-                            <pre className="mt-1.5 max-h-28 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-pretty text-muted-foreground">
-                              {body || "…"}
-                            </pre>
                           </button>
-                        );
-                      })}
+
+                          {/* Expanded editor */}
+                          {isSel && (
+                            <div className="space-y-4 border-t border-border px-4 pb-4 pt-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <Segmented
+                                  value={step.channel}
+                                  onChange={(v) =>
+                                    updateStep(step.key, { channel: v })
+                                  }
+                                  options={[
+                                    {
+                                      value: "linkedin" as const,
+                                      label: "LinkedIn",
+                                      icon: <Linkedin className="size-3" />,
+                                    },
+                                    {
+                                      value: "email" as const,
+                                      label: "Email",
+                                      icon: <Mail className="size-3" />,
+                                    },
+                                  ]}
+                                />
+                                <div className="flex gap-0.5">
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="size-8 p-0"
+                                    disabled={idx === 0}
+                                    aria-label="Move up"
+                                    onClick={() =>
+                                      setEditSteps((prev) => {
+                                        if (idx === 0) return prev;
+                                        const n = [...prev];
+                                        [n[idx - 1], n[idx]] = [
+                                          n[idx],
+                                          n[idx - 1],
+                                        ];
+                                        return n;
+                                      })
+                                    }
+                                  >
+                                    <ArrowUp className="size-3.5" />
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="size-8 p-0"
+                                    disabled={idx === editSteps.length - 1}
+                                    aria-label="Move down"
+                                    onClick={() =>
+                                      setEditSteps((prev) => {
+                                        if (idx >= prev.length - 1)
+                                          return prev;
+                                        const n = [...prev];
+                                        [n[idx], n[idx + 1]] = [
+                                          n[idx + 1],
+                                          n[idx],
+                                        ];
+                                        return n;
+                                      })
+                                    }
+                                  >
+                                    <ArrowDown className="size-3.5" />
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="size-8 p-0 text-muted-foreground hover:text-destructive"
+                                    disabled={editSteps.length <= 1}
+                                    aria-label="Delete step"
+                                    onClick={() => {
+                                      setEditSteps((p) => {
+                                        const next = p.filter(
+                                          (x) => x.key !== step.key,
+                                        );
+                                        setSelectedStepKey(
+                                          next[Math.max(0, idx - 1)]?.key ??
+                                            next[0]?.key ??
+                                            null,
+                                        );
+                                        return next;
+                                      });
+                                    }}
+                                  >
+                                    <Trash2 className="size-3.5" />
+                                  </Button>
+                                </div>
+                              </div>
+
+                              {step.channel === "linkedin" ? (
+                                <div className="space-y-1.5">
+                                  <p className="text-[11px] font-medium text-muted-foreground">
+                                    Action
+                                  </p>
+                                  <Segmented
+                                    value={
+                                      step.linkedinAction ?? "connect_note"
+                                    }
+                                    onChange={(v) =>
+                                      updateStep(step.key, {
+                                        linkedinAction: v,
+                                      })
+                                    }
+                                    options={[
+                                      {
+                                        value: "connect_note" as const,
+                                        label: "Connection + note",
+                                      },
+                                      {
+                                        value: "message" as const,
+                                        label: "Message",
+                                      },
+                                    ]}
+                                  />
+                                </div>
+                              ) : (
+                                <div className="space-y-1.5">
+                                  <p className="text-[11px] font-medium text-muted-foreground">
+                                    Send mode
+                                  </p>
+                                  <Segmented
+                                    value={step.mode}
+                                    onChange={(v) =>
+                                      updateStep(step.key, { mode: v })
+                                    }
+                                    options={[
+                                      {
+                                        value: "auto" as const,
+                                        label: "Auto-send",
+                                      },
+                                      {
+                                        value: "semi" as const,
+                                        label: "Manual",
+                                      },
+                                    ]}
+                                  />
+                                </div>
+                              )}
+
+                              <div className="space-y-1.5">
+                                <p className="text-[11px] font-medium text-muted-foreground">
+                                  Delay after previous step
+                                </p>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <div className="flex items-center gap-1 rounded-md border border-border px-2 py-1">
+                                    <Input
+                                      type="number"
+                                      min={0}
+                                      className="h-7 w-12 border-0 p-0 text-sm shadow-none focus-visible:ring-0"
+                                      value={waitDays}
+                                      onChange={(e) =>
+                                        updateStep(step.key, {
+                                          delayHours:
+                                            Math.max(
+                                              0,
+                                              Number(e.target.value) || 0,
+                                            ) *
+                                              24 +
+                                            waitHours,
+                                        })
+                                      }
+                                    />
+                                    <span className="text-xs text-muted-foreground">
+                                      d
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-1 rounded-md border border-border px-2 py-1">
+                                    <Input
+                                      type="number"
+                                      min={0}
+                                      max={23}
+                                      className="h-7 w-12 border-0 p-0 text-sm shadow-none focus-visible:ring-0"
+                                      value={waitHours}
+                                      onChange={(e) =>
+                                        updateStep(step.key, {
+                                          delayHours:
+                                            waitDays * 24 +
+                                            Math.max(
+                                              0,
+                                              Number(e.target.value) || 0,
+                                            ),
+                                        })
+                                      }
+                                    />
+                                    <span className="text-xs text-muted-foreground">
+                                      h
+                                    </span>
+                                  </div>
+                                  {(
+                                    [
+                                      [0, "Now"],
+                                      [24, "1d"],
+                                      [48, "2d"],
+                                      [72, "3d"],
+                                      [168, "1w"],
+                                    ] as const
+                                  ).map(([h, label]) => (
+                                    <button
+                                      key={h}
+                                      type="button"
+                                      onClick={() =>
+                                        updateStep(step.key, {
+                                          delayHours: h,
+                                        })
+                                      }
+                                      className={cn(
+                                        "rounded-md px-2 py-1 text-[11px] font-medium",
+                                        step.delayHours === h
+                                          ? "bg-foreground text-background"
+                                          : "bg-muted text-muted-foreground hover:text-foreground",
+                                      )}
+                                    >
+                                      {label}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+
+                              {step.channel === "email" && (
+                                <div className="space-y-1.5">
+                                  <p className="text-[11px] font-medium text-muted-foreground">
+                                    Subject
+                                  </p>
+                                  <Input
+                                    value={step.subjectTemplate}
+                                    onChange={(e) =>
+                                      updateStep(step.key, {
+                                        subjectTemplate: e.target.value,
+                                      })
+                                    }
+                                    placeholder="Subject…"
+                                  />
+                                </div>
+                              )}
+
+                              <div className="space-y-1.5">
+                                <div className="flex justify-between">
+                                  <p className="text-[11px] font-medium text-muted-foreground">
+                                    {step.channel === "linkedin"
+                                      ? step.linkedinAction === "connect_note"
+                                        ? "Connection note"
+                                        : "Message"
+                                      : "Email body"}
+                                  </p>
+                                  <p className="text-[10px] text-muted-foreground">
+                                    {"{{first_name}} {{company}}"}
+                                  </p>
+                                </div>
+                                <Textarea
+                                  value={step.bodyTemplate}
+                                  onChange={(e) =>
+                                    updateStep(step.key, {
+                                      bodyTemplate: e.target.value,
+                                    })
+                                  }
+                                  rows={step.channel === "email" ? 7 : 4}
+                                  className="resize-y text-sm leading-relaxed"
+                                />
+                              </div>
+
+                              {/* Live preview strip */}
+                              <div className="rounded-lg border border-dashed border-border bg-muted/30 px-3 py-2.5">
+                                <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                                    Preview
+                                  </p>
+                                  <Select
+                                    value={previewPersonId}
+                                    onValueChange={(v) =>
+                                      setPreviewPersonId(
+                                        v as string | "sample",
+                                      )
+                                    }
+                                  >
+                                    <SelectTrigger className="h-7 w-auto min-w-[140px] border-0 bg-transparent text-[11px] shadow-none">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="sample">
+                                        Sample · Alex
+                                      </SelectItem>
+                                      {enrollments.map((e) => (
+                                        <SelectItem key={e.id} value={e.id}>
+                                          {e.contactName || e.companyName}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                {renderedSubject && (
+                                  <p className="mb-1 text-xs font-medium">
+                                    {renderedSubject}
+                                  </p>
+                                )}
+                                <pre className="whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+                                  {renderedBody || "…"}
+                                </pre>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   );
-                })()}
+                })}
+
+                {/* Add step */}
+                <div className="flex items-center gap-3 pt-4">
+                  <div className="flex w-8 justify-center">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const s = blankStep("linkedin");
+                        setEditSteps((p) => [...p, s]);
+                        setSelectedStepKey(s.key);
+                      }}
+                      className="flex size-8 items-center justify-center rounded-full border border-dashed border-border text-muted-foreground transition hover:border-foreground/40 hover:text-foreground"
+                      aria-label="Add step"
+                    >
+                      <Plus className="size-3.5" />
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const s = blankStep("linkedin");
+                        setEditSteps((p) => [...p, s]);
+                        setSelectedStepKey(s.key);
+                      }}
+                      className="text-xs font-medium text-muted-foreground hover:text-foreground"
+                    >
+                      + LinkedIn step
+                    </button>
+                    <span className="text-muted-foreground/40">·</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const s = blankStep("email");
+                        setEditSteps((p) => [...p, s]);
+                        setSelectedStepKey(s.key);
+                      }}
+                      className="text-xs font-medium text-muted-foreground hover:text-foreground"
+                    >
+                      + Email step
+                    </button>
+                  </div>
+                </div>
               </div>
-            </aside>
+            </div>
           </div>
         )}
 
