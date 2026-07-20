@@ -235,6 +235,15 @@ async function runNotificationsCron(): Promise<void> {
   );
 }
 
+async function runOutreachSequencesCron(): Promise<void> {
+  const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
+  const { processDueSequenceTasks } = await import("@/lib/outreach/sequences");
+  const res = await processDueSequenceTasks(getSupabaseServiceClient());
+  console.log(
+    `[cron] outreach-sequences: promoted ${res.promoted} tasks (${res.emailsDue} email due)`,
+  );
+}
+
 const JOBS: JobDefinition[] = [
   {
     name: "scheduled-jobs + YOLO",
@@ -280,6 +289,13 @@ const JOBS: JobDefinition[] = [
     name: "research-refresh",
     schedule: "0 7 * * 3",
     run: runResearchRefreshCron,
+  },
+  {
+    // Every 15 min: promote due LinkedIn semi tasks to the human queue
+    // (email auto send lands in PR2 / Resend).
+    name: "outreach-sequences",
+    schedule: "*/15 * * * *",
+    run: runOutreachSequencesCron,
   },
   {
     // Every 3h: refresh per-user notifications from the attention feed.

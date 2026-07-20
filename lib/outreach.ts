@@ -307,6 +307,20 @@ export async function updateProspect(
   return rowToProspect(data as Row);
 }
 
+export async function getProspect(
+  client: SupabaseClient,
+  id: string,
+): Promise<OutreachProspect | null> {
+  const { data, error } = await client
+    .from("outreach_prospects")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new Error(`Failed to get prospect: ${error.message}`);
+  if (!data) return null;
+  return rowToProspect(data as Row);
+}
+
 export async function deleteProspect(
   client: SupabaseClient,
   id: string,
