@@ -575,7 +575,7 @@ export async function listReadyQueue(
     .select("*")
     .eq("status", "ready")
     .order("scheduled_for", { ascending: true })
-    .limit(opts.limit ?? 50);
+    .limit(opts.limit ?? 100);
   if (opts.channel) q = q.eq("channel", opts.channel);
 
   const { data, error } = await q;
@@ -583,7 +583,8 @@ export async function listReadyQueue(
 
   const tasks = (data ?? []).map((r) => mapTask(r as Record<string, unknown>));
 
-  // join enrollment + step
+  const seqNameCache = new Map<string, string>();
+
   for (const t of tasks) {
     const { data: enr } = await client
       .from("outreach_enrollments")
@@ -595,10 +596,76 @@ export async function listReadyQueue(
       .select("*")
       .eq("id", t.stepId)
       .maybeSingle();
-    if (enr) t.enrollment = mapEnrollment(enr as Record<string, unknown>);
+    if (enr) {
+      t.enrollment = mapEnrollment(enr as Record<string, unknown>);
+      const seqId = t.enrollment.sequenceId;
+      if (seqId) {
+        if (!seqNameCache.has(seqId)) {
+          const { data: seq } = await client
+            .from("outreach_sequences")
+            .select("name")
+            .eq("id", seqId)
+            .maybeSingle();
+          seqNameCache.set(seqId, (seq?.name as string) ?? "Sequence");
+        }
+        t.sequenceName = seqNameCache.get(seqId) ?? null;
+      }
+    }
     if (step) t.step = mapStep(step as Record<string, unknown>);
   }
   return tasks;
+}
+
+/** Counts for the daily activity board. */
+export async function getActivityStats(
+  client: SupabaseClient,
+): Promise<{
+  readyLinkedin: number;
+  readyEmail: number;
+  readyTotal: number;
+  sentToday: number;
+  skippedToday: number;
+  emailAutoSend: boolean;
+}> {
+  const { isEmailAutoSendEnabled } = await import("@/lib/outreach/mailbox");
+  const emailAutoSend = await isEmailAutoSendEnabled(client);
+
+  const { count: readyLinkedin } = await client
+    .from("outreach_send_tasks")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "ready")
+    .eq("channel", "linkedin");
+  const { count: readyEmail } = await client
+    .from("outreach_send_tasks")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "ready")
+    .eq("channel", "email");
+
+  const start = new Date();
+  start.setUTCHours(0, 0, 0, 0);
+  const startIso = start.toISOString();
+
+  const { count: sentToday } = await client
+    .from("outreach_send_tasks")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "sent")
+    .gte("sent_at", startIso);
+  const { count: skippedToday } = await client
+    .from("outreach_send_tasks")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "skipped")
+    .gte("sent_at", startIso);
+
+  const li = readyLinkedin ?? 0;
+  const em = readyEmail ?? 0;
+  return {
+    readyLinkedin: li,
+    readyEmail: em,
+    readyTotal: li + em,
+    sentToday: sentToday ?? 0,
+    skippedToday: skippedToday ?? 0,
+    emailAutoSend,
+  };
 }
 
 export async function completeTask(
@@ -752,6 +819,27 @@ export async function processDueSequenceTasks(
     }
 
     if (task.channel === "email" && task.mode === "auto") {
+      const { isEmailAutoSendEnabled } = await import("@/lib/outreach/mailbox");
+      const auto = await isEmailAutoSendEnabled(client);
+      if (!auto) {
+        // Workspace config: email auto-send off → human activity queue
+        await client
+          .from("outreach_send_tasks")
+          .update({
+            status: "ready",
+            mode: "semi",
+            provider: "manual",
+            updated_at: now,
+            meta: {
+              ...(task.meta ?? {}),
+              auto_send_disabled: true,
+            },
+          })
+          .eq("id", task.id)
+          .eq("status", "scheduled");
+        promoted += 1;
+        continue;
+      }
       const result = await sendDueEmailTask(client, task);
       if (result === "sent") emailsSent += 1;
       else if (result === "failed") emailsFailed += 1;

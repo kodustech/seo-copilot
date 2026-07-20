@@ -25,6 +25,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 
 function FieldLabel({
   htmlFor,
@@ -56,6 +57,7 @@ type Mailbox = {
   connected: boolean;
   hasPassword: boolean;
   dailyCap: number;
+  emailAutoSend?: boolean;
   enabled: boolean;
   sentToday: number;
   lastTestedAt: string | null;
@@ -121,6 +123,7 @@ export function OutreachMailboxSettings() {
 
   const [fromName, setFromName] = useState("");
   const [dailyCap, setDailyCap] = useState("40");
+  const [emailAutoSend, setEmailAutoSend] = useState(true);
   const [smtpFromEmail, setSmtpFromEmail] = useState("");
   const [smtpUser, setSmtpUser] = useState("");
   const [smtpPass, setSmtpPass] = useState("");
@@ -144,6 +147,7 @@ export function OutreachMailboxSettings() {
       if (m) {
         setFromName(m.fromName ?? "");
         setDailyCap(String(m.dailyCap));
+        setEmailAutoSend(m.emailAutoSend !== false);
         setSmtpFromEmail(m.fromEmail);
         setSmtpUser(m.smtpUser ?? m.fromEmail);
         setSmtpHost(m.smtpHost);
@@ -216,6 +220,7 @@ export function OutreachMailboxSettings() {
           id: mailbox.id,
           fromName: fromName || null,
           dailyCap: Number(dailyCap) || 40,
+          emailAutoSend,
           label: mailbox.label,
         }),
       });
@@ -225,6 +230,7 @@ export function OutreachMailboxSettings() {
         return;
       }
       setMailbox(data.mailbox);
+      setEmailAutoSend(data.mailbox?.emailAutoSend !== false);
       setNotice("Saved.");
     } finally {
       setSaving(false);
@@ -403,6 +409,22 @@ export function OutreachMailboxSettings() {
                     />
                   </div>
                 </div>
+
+                <div className="flex items-start justify-between gap-4 rounded-lg border border-border px-3 py-3">
+                  <div className="min-w-0 space-y-0.5">
+                    <p className="text-sm font-medium">Auto-send sequence emails</p>
+                    <p className="text-xs text-pretty text-muted-foreground">
+                      On: due email steps send from this mailbox alone. Off: they
+                      appear in Sequences → Today for you to send manually.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={emailAutoSend}
+                    onCheckedChange={setEmailAutoSend}
+                    aria-label="Auto-send sequence emails"
+                  />
+                </div>
+
                 <div className="flex flex-wrap gap-2">
                   <Button disabled={saving} onClick={() => void saveMeta()}>
                     {saving ? (

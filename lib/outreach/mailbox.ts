@@ -26,6 +26,8 @@ export type OutreachMailboxPublic = {
   connected: boolean;
   hasPassword: boolean;
   dailyCap: number;
+  /** When true, sequence email auto steps send via mailbox. When false, queue for human. */
+  emailAutoSend: boolean;
   isDefault: boolean;
   enabled: boolean;
   sentToday: number;
@@ -66,6 +68,7 @@ function mapPublic(r: Record<string, unknown>): OutreachMailboxPublic {
     connected: hasPassword || hasOauth,
     hasPassword,
     dailyCap: Number(r.daily_cap ?? 40),
+    emailAutoSend: r.email_auto_send === false ? false : true,
     isDefault: Boolean(r.is_default),
     enabled: Boolean(r.enabled ?? true),
     sentToday: Number(r.sent_today ?? 0),
@@ -408,6 +411,14 @@ export async function upsertMailboxFromGoogleOAuth(
   return mapPublic(data as Record<string, unknown>);
 }
 
+export async function isEmailAutoSendEnabled(
+  client: SupabaseClient,
+): Promise<boolean> {
+  const box = await getDefaultMailbox(client);
+  if (!box) return true;
+  return box.emailAutoSend !== false;
+}
+
 export async function updateMailboxMeta(
   client: SupabaseClient,
   id: string,
@@ -415,6 +426,7 @@ export async function updateMailboxMeta(
     label?: string;
     fromName?: string | null;
     dailyCap?: number;
+    emailAutoSend?: boolean;
     enabled?: boolean;
   },
 ): Promise<OutreachMailboxPublic> {
@@ -427,6 +439,9 @@ export async function updateMailboxMeta(
   }
   if (patch.dailyCap != null) {
     body.daily_cap = Math.min(500, Math.max(1, patch.dailyCap));
+  }
+  if (patch.emailAutoSend !== undefined) {
+    body.email_auto_send = patch.emailAutoSend;
   }
   if (patch.enabled !== undefined) body.enabled = patch.enabled;
 

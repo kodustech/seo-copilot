@@ -1,29 +1,38 @@
 import { NextResponse } from "next/server";
 
 import {
+  getActivityStats,
   listReadyQueue,
   processDueSequenceTasks,
 } from "@/lib/outreach/sequences";
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 
-/** GET — LinkedIn (and email-ready) semi queue */
+/**
+ * GET — daily activity queue (LinkedIn + email ready tasks).
+ * ?channel=linkedin|email optional filter
+ */
 export async function GET(req: Request) {
   try {
     const { client } = await getSupabaseUserClient(
       req.headers.get("authorization"),
     );
-    // promote due scheduled → ready first
     await processDueSequenceTasks(client);
     const url = new URL(req.url);
-    const channel = url.searchParams.get("channel") as
-      | "email"
-      | "linkedin"
-      | null;
-    const tasks = await listReadyQueue(client, {
-      channel: channel ?? "linkedin",
-      limit: 100,
-    });
-    return NextResponse.json({ tasks });
+    const channelParam = url.searchParams.get("channel");
+    const channel =
+      channelParam === "email" || channelParam === "linkedin"
+        ? channelParam
+        : undefined;
+
+    const [tasks, stats] = await Promise.all([
+      listReadyQueue(client, {
+        channel,
+        limit: 100,
+      }),
+      getActivityStats(client),
+    ]);
+
+    return NextResponse.json({ tasks, stats });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Unauthorized" },

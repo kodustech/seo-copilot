@@ -48,6 +48,12 @@ export async function POST(req: Request) {
             : body.daily_cap != null
               ? Number(body.daily_cap)
               : undefined,
+        emailAutoSend:
+          body.emailAutoSend != null
+            ? Boolean(body.emailAutoSend)
+            : body.email_auto_send != null
+              ? Boolean(body.email_auto_send)
+              : undefined,
         enabled: body.enabled,
       });
       return NextResponse.json({ mailbox });

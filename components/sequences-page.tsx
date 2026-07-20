@@ -70,7 +70,9 @@ type QueueTask = {
   status: string;
   renderedBody: string | null;
   renderedSubject: string | null;
+  scheduledFor?: string;
   meta: Record<string, unknown>;
+  sequenceName?: string | null;
   enrollment?: {
     companyName: string;
     domain: string | null;
@@ -80,6 +82,15 @@ type QueueTask = {
     contactRole: string | null;
   };
   step?: { linkedinAction: string | null; position: number };
+};
+
+type ActivityStats = {
+  readyLinkedin: number;
+  readyEmail: number;
+  readyTotal: number;
+  sentToday: number;
+  skippedToday: number;
+  emailAutoSend: boolean;
 };
 
 type ResearchTable = { id: string; name: string; slug?: string | null };
@@ -225,9 +236,13 @@ export function SequencesPage() {
     [token],
   );
 
-  const [view, setView] = useState<"list" | "queue" | "editor">("list");
+  const [view, setView] = useState<"list" | "queue" | "editor">("queue");
   const [sequences, setSequences] = useState<Sequence[]>([]);
   const [tasks, setTasks] = useState<QueueTask[]>([]);
+  const [stats, setStats] = useState<ActivityStats | null>(null);
+  const [activityFilter, setActivityFilter] = useState<
+    "all" | "linkedin" | "email"
+  >("all");
   const [tables, setTables] = useState<ResearchTable[]>([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
@@ -260,7 +275,7 @@ export function SequencesPage() {
     try {
       const [seqRes, queueRes, tablesRes] = await Promise.all([
         fetch("/api/outreach/sequences", { headers: headers() }),
-        fetch("/api/outreach/sequences/queue?channel=linkedin", {
+        fetch("/api/outreach/sequences/queue", {
           headers: headers(),
         }),
         fetch("/api/research/tables", { headers: headers() }),
@@ -273,6 +288,7 @@ export function SequencesPage() {
       if (queueRes.ok) {
         const d = await queueRes.json();
         setTasks(d.tasks ?? []);
+        setStats(d.stats ?? null);
       }
       if (tablesRes.ok) {
         const d = await tablesRes.json();
@@ -492,6 +508,35 @@ export function SequencesPage() {
     } catch {
       setError("Could not copy");
     }
+  };
+
+  const openEmailCompose = (t: QueueTask) => {
+    const to = t.enrollment?.contactEmail ?? "";
+    const subject = t.renderedSubject ?? "";
+    const body = t.renderedBody ?? "";
+    const gmail = new URL("https://mail.google.com/mail/");
+    gmail.searchParams.set("view", "cm");
+    gmail.searchParams.set("fs", "1");
+    if (to) gmail.searchParams.set("to", to);
+    if (subject) gmail.searchParams.set("su", subject);
+    if (body) gmail.searchParams.set("body", body);
+    window.open(gmail.toString(), "_blank", "noopener,noreferrer");
+  };
+
+  const filteredTasks = useMemo(() => {
+    if (activityFilter === "all") return tasks;
+    return tasks.filter((t) => t.channel === activityFilter);
+  }, [tasks, activityFilter]);
+
+  const activityLabel = (t: QueueTask) => {
+    if (t.channel === "linkedin") {
+      return t.step?.linkedinAction === "connect_note"
+        ? "Send LinkedIn connection"
+        : "Send LinkedIn message";
+    }
+    return t.mode === "auto" || t.meta?.auto_send_disabled
+      ? "Send email (manual)"
+      : "Send email";
   };
 
   if (!token) {
@@ -1116,8 +1161,8 @@ export function SequencesPage() {
             Sequences
           </h1>
           <p className="mt-1 max-w-xl text-sm text-pretty text-muted-foreground">
-            Multi-step LinkedIn + email cadences. Build the path, enroll a
-            list, work the queue.
+            Today&apos;s outreach work first. Build cadences, enroll lists,
+            execute LinkedIn + email from one board.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -1168,12 +1213,17 @@ export function SequencesPage() {
         </div>
       )}
 
-      {/* Tabs */}
+      {/* Tabs — Today first */}
       <div className="flex gap-1 border-b border-border">
         {(
           [
+            [
+              "queue",
+              "Today",
+              stats?.readyTotal ?? tasks.length,
+              Check,
+            ],
             ["list", "Sequences", sequences.length, Workflow],
-            ["queue", "LinkedIn queue", tasks.length, Linkedin],
           ] as const
         ).map(([id, label, count, Icon]) => (
           <button
@@ -1270,111 +1320,259 @@ export function SequencesPage() {
       )}
 
       {view === "queue" && (
-        <div className="min-h-0 flex-1 space-y-3 overflow-auto pb-8">
+        <div className="min-h-0 flex-1 space-y-4 overflow-auto pb-8">
+          {/* Day summary */}
+          <div className="grid gap-2 sm:grid-cols-4">
+            {(
+              [
+                {
+                  label: "To do now",
+                  value: stats?.readyTotal ?? tasks.length,
+                  hint: "Ready for you",
+                },
+                {
+                  label: "LinkedIn",
+                  value: stats?.readyLinkedin ?? 0,
+                  hint: "Connections & DMs",
+                },
+                {
+                  label: "Email",
+                  value: stats?.readyEmail ?? 0,
+                  hint: stats?.emailAutoSend
+                    ? "Manual queue only"
+                    : "Auto-send is off",
+                },
+                {
+                  label: "Done today",
+                  value: stats?.sentToday ?? 0,
+                  hint: `${stats?.skippedToday ?? 0} skipped`,
+                },
+              ] as const
+            ).map((c) => (
+              <div
+                key={c.label}
+                className="rounded-xl border border-border bg-card px-4 py-3"
+              >
+                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  {c.label}
+                </p>
+                <p className="mt-1 text-2xl font-semibold tabular-nums">
+                  {c.value}
+                </p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  {c.hint}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          {stats && !stats.emailAutoSend && (
+            <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+              Email auto-send is{" "}
+              <span className="font-medium text-foreground">off</span> — due
+              emails land here for you to send. Change in{" "}
+              <a
+                href="/settings"
+                className="font-medium text-foreground underline underline-offset-2"
+              >
+                Settings → Outreach email
+              </a>
+              .
+            </div>
+          )}
+
+          {/* Filters */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">Show</span>
+            {(
+              [
+                ["all", "All"],
+                ["linkedin", "LinkedIn"],
+                ["email", "Email"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setActivityFilter(id)}
+                className={cn(
+                  "rounded-full px-3 py-1 text-xs font-medium",
+                  activityFilter === id
+                    ? "bg-foreground text-background"
+                    : "bg-muted text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {label}
+                {id === "all" && stats
+                  ? ` · ${stats.readyTotal}`
+                  : id === "linkedin" && stats
+                    ? ` · ${stats.readyLinkedin}`
+                    : id === "email" && stats
+                      ? ` · ${stats.readyEmail}`
+                      : ""}
+              </button>
+            ))}
+          </div>
+
           {loading && tasks.length === 0 ? (
             <div className="py-16 text-center text-sm text-muted-foreground">
               <Loader2 className="mr-2 inline size-4 animate-spin" />
-              Loading queue…
+              Loading today&apos;s work…
             </div>
-          ) : tasks.length === 0 ? (
+          ) : filteredTasks.length === 0 ? (
             <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border px-6 py-16 text-center">
-              <Linkedin className="size-8 text-[#0A66C2]/60" />
-              <p className="mt-4 text-sm font-medium">Queue is clear</p>
+              <Check className="size-8 text-emerald-500/80" />
+              <p className="mt-4 text-sm font-medium">Nothing due right now</p>
               <p className="mt-1 max-w-sm text-sm text-pretty text-muted-foreground">
-                Enroll people into a sequence with a LinkedIn step to fill this
-                queue.
+                Enroll a list into a sequence, or wait for delayed steps to come
+                due. Auto emails send in the background when enabled.
               </p>
-              <Button
-                className="mt-5"
-                variant="outline"
-                onClick={() => setView("list")}
-              >
-                View sequences
-              </Button>
+              <div className="mt-5 flex gap-2">
+                <Button variant="outline" onClick={() => setView("list")}>
+                  Sequences
+                </Button>
+                <Button
+                  onClick={() => {
+                    setEnrollSeqId(sequences[0]?.id ?? "");
+                    setEnrollOpen(true);
+                  }}
+                >
+                  Enroll list
+                </Button>
+              </div>
             </div>
           ) : (
-            tasks.map((t) => {
-              const e = t.enrollment;
-              const profile =
-                (t.meta?.profile_url as string) ||
-                e?.contactLinkedin ||
-                null;
-              const action = t.step?.linkedinAction ?? "message";
-              return (
-                <div
-                  key={t.id}
-                  className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-5"
-                >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-sm font-semibold">
-                          {e?.contactName ?? "—"}
-                        </p>
-                        <span className="text-sm text-muted-foreground">
-                          {e?.companyName}
-                        </span>
-                        <Badge variant="secondary" className="text-[10px]">
-                          {action === "connect_note"
-                            ? "Connection + note"
-                            : "Message"}
-                        </Badge>
-                      </div>
-                      <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                        {e?.contactRole && <span>{e.contactRole}</span>}
-                        {e?.domain && (
-                          <span className="font-mono">{e.domain}</span>
+            <div className="space-y-3">
+              <p className="text-xs text-muted-foreground">
+                Work top → bottom. Open · copy · send · mark done.
+              </p>
+              {filteredTasks.map((t, idx) => {
+                const e = t.enrollment;
+                const profile =
+                  (t.meta?.profile_url as string) ||
+                  e?.contactLinkedin ||
+                  null;
+                const isLi = t.channel === "linkedin";
+                return (
+                  <div
+                    key={t.id}
+                    className="overflow-hidden rounded-xl border border-border bg-card shadow-sm"
+                  >
+                    <div className="flex flex-wrap items-center gap-3 border-b border-border bg-muted/20 px-4 py-2.5">
+                      <span className="flex size-6 items-center justify-center rounded-full bg-foreground text-[11px] font-semibold tabular-nums text-background">
+                        {idx + 1}
+                      </span>
+                      <div
+                        className={cn(
+                          "flex size-7 items-center justify-center rounded-md",
+                          isLi
+                            ? "bg-[#0A66C2]/15 text-[#0A66C2]"
+                            : "bg-amber-500/15 text-amber-600 dark:text-amber-400",
                         )}
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {profile && (
-                        <Button size="sm" variant="outline" asChild>
-                          <a href={profile} target="_blank" rel="noreferrer">
-                            <ExternalLink className="size-3.5" />
-                            LinkedIn
-                          </a>
-                        </Button>
-                      )}
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => void copyText(t.renderedBody ?? "")}
                       >
-                        <Copy className="size-3.5" />
-                        Copy
-                      </Button>
-                      <Button
-                        size="sm"
-                        disabled={busyId === t.id}
-                        onClick={() => void complete(t.id, "sent")}
-                      >
-                        {busyId === t.id ? (
-                          <Loader2 className="size-3.5 animate-spin" />
+                        {isLi ? (
+                          <Linkedin className="size-3.5" />
                         ) : (
-                          <Check className="size-3.5" />
+                          <Mail className="size-3.5" />
                         )}
-                        Mark sent
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={busyId === t.id}
-                        onClick={() => void complete(t.id, "skipped")}
-                      >
-                        <SkipForward className="size-3.5" />
-                        Skip
-                      </Button>
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-semibold">
+                          {activityLabel(t)}
+                        </p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {e?.contactName ?? "—"}
+                          {e?.contactRole ? ` · ${e.contactRole}` : ""}
+                          {e?.companyName ? ` @ ${e.companyName}` : ""}
+                          {t.sequenceName ? ` · ${t.sequenceName}` : ""}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {isLi && profile && (
+                          <Button size="sm" variant="outline" asChild>
+                            <a
+                              href={profile}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              <ExternalLink className="size-3.5" />
+                              Open LI
+                            </a>
+                          </Button>
+                        )}
+                        {!isLi && e?.contactEmail && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openEmailCompose(t)}
+                          >
+                            <Mail className="size-3.5" />
+                            Open Gmail
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            void copyText(
+                              isLi
+                                ? (t.renderedBody ?? "")
+                                : [
+                                    t.renderedSubject
+                                      ? `Subject: ${t.renderedSubject}`
+                                      : "",
+                                    t.renderedBody ?? "",
+                                  ]
+                                    .filter(Boolean)
+                                    .join("\n\n"),
+                            );
+                          }}
+                        >
+                          <Copy className="size-3.5" />
+                          Copy
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={busyId === t.id}
+                          onClick={() => void complete(t.id, "sent")}
+                        >
+                          {busyId === t.id ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                          ) : (
+                            <Check className="size-3.5" />
+                          )}
+                          Done
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={busyId === t.id}
+                          onClick={() => void complete(t.id, "skipped")}
+                        >
+                          <SkipForward className="size-3.5" />
+                          Skip
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="px-4 py-3">
+                      {!isLi && t.renderedSubject && (
+                        <p className="mb-2 text-sm font-medium">
+                          {t.renderedSubject}
+                        </p>
+                      )}
+                      <pre className="whitespace-pre-wrap text-sm leading-relaxed text-pretty text-foreground/90">
+                        {t.renderedBody}
+                      </pre>
+                      <p className="mt-3 text-[11px] text-muted-foreground">
+                        {isLi
+                          ? "1) Open LI  2) Paste  3) Send invite/DM  4) Done"
+                          : "1) Open Gmail  2) Check & send  3) Done"}
+                      </p>
                     </div>
                   </div>
-                  <div className="mt-4 rounded-lg border border-border bg-muted/30 px-3 py-3">
-                    <pre className="whitespace-pre-wrap text-sm leading-relaxed text-pretty">
-                      {t.renderedBody}
-                    </pre>
-                  </div>
-                </div>
-              );
-            })
+                );
+              })}
+            </div>
           )}
         </div>
       )}
