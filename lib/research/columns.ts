@@ -25,15 +25,29 @@ import { enrichPeopleForRow } from "@/lib/research/waterfall";
 
 const KEY_RE = /^[a-z][a-z0-9_]{0,63}$/;
 
+/** Safe slug without ReDoS-prone regex on user input. */
 export function slugifyName(name: string): string {
-  const base = name
+  const raw = name
     .toLowerCase()
     .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48);
-  return base || "list";
+    .slice(0, 120);
+  let out = "";
+  for (const ch of raw) {
+    const code = ch.charCodeAt(0);
+    // skip combining marks
+    if (code >= 0x0300 && code <= 0x036f) continue;
+    if (
+      (ch >= "a" && ch <= "z") ||
+      (ch >= "0" && ch <= "9")
+    ) {
+      out += ch;
+    } else if (out.length > 0 && out[out.length - 1] !== "-") {
+      out += "-";
+    }
+    if (out.length >= 48) break;
+  }
+  while (out.endsWith("-")) out = out.slice(0, -1);
+  return out || "list";
 }
 
 export async function ensureUniqueSlug(
@@ -113,18 +127,24 @@ export async function resolveTable(
   );
 }
 
+/** Safe snake_case key without ReDoS-prone regex on user input. */
 function normalizeKey(key: string): string {
-  const k = key
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  if (!KEY_RE.test(k)) {
+  const raw = key.trim().toLowerCase().slice(0, 80);
+  let out = "";
+  for (const ch of raw) {
+    if ((ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9")) {
+      out += ch;
+    } else if (ch === "_" || ch === "-" || ch === " ") {
+      if (out.length > 0 && out[out.length - 1] !== "_") out += "_";
+    }
+  }
+  while (out.endsWith("_")) out = out.slice(0, -1);
+  if (!KEY_RE.test(out)) {
     throw new Error(
       `Invalid column key "${key}". Use snake_case starting with a letter (e.g. contact_linkedin).`,
     );
   }
-  return k;
+  return out;
 }
 
 function parseEnrich(input: unknown): ResearchColumnEnrich {
