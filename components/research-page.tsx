@@ -374,7 +374,7 @@ export function ResearchPage() {
   const ensureTable = async (): Promise<string | null> => {
     if (tableId) return tableId;
     if (!token) return null;
-    const name = `List ${new Date().toLocaleDateString("pt-BR")}`;
+    const name = `List ${new Date().toLocaleDateString("en-US")}`;
     const res = await fetch("/api/research/tables", {
       method: "POST",
       headers: headers(),

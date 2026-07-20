@@ -18,8 +18,8 @@ import {
 function relative(iso: string): string {
   const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
   if (Number.isNaN(mins)) return "";
-  if (mins < 1) return "agora";
-  if (mins < 60) return `${mins}min`;
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m`;
   const h = Math.floor(mins / 60);
   if (h < 24) return `${h}h`;
   return `${Math.floor(h / 24)}d`;
@@ -122,8 +122,8 @@ export function NotificationBell() {
       <PopoverTrigger asChild>
         <button
           className="relative flex size-8 items-center justify-center rounded-md text-neutral-400 transition hover:bg-white/[0.04] hover:text-neutral-200"
-          title="Notificações"
-          aria-label="Notificações"
+          title="Notifications"
+          aria-label="Notifications"
         >
           <Bell className="size-4" />
           {unread > 0 && (
@@ -138,11 +138,11 @@ export function NotificationBell() {
         className="w-96 border-white/10 bg-neutral-950 p-0 text-neutral-100"
       >
         <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-2">
-          <span className="text-sm font-medium text-white">Notificações</span>
+          <span className="text-sm font-medium text-white">Notifications</span>
           <div className="flex items-center gap-1">
             <button
               onClick={generate}
-              title="Verificar agora"
+              title="Refresh now"
               className="flex size-6 items-center justify-center rounded text-neutral-500 hover:text-neutral-200"
             >
               <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
@@ -150,7 +150,7 @@ export function NotificationBell() {
             {unread > 0 && (
               <button
                 onClick={markAll}
-                title="Marcar todas como lidas"
+                title="Mark all as read"
                 className="flex size-6 items-center justify-center rounded text-neutral-500 hover:text-neutral-200"
               >
                 <CheckCheck className="size-4" />
@@ -165,7 +165,7 @@ export function NotificationBell() {
               {loading ? (
                 <Loader2 className="mx-auto size-4 animate-spin" />
               ) : (
-                "Nenhuma notificação. 🎉"
+                "No notifications."
               )}
             </div>
           ) : (
@@ -204,7 +204,7 @@ export function NotificationBell() {
                 {!n.readAt && (
                   <button
                     onClick={() => markOne(n.id)}
-                    title="Marcar como lida"
+                    title="Mark as read"
                     className="shrink-0 self-start text-neutral-600 opacity-0 transition group-hover:opacity-100 hover:text-neutral-200"
                   >
                     <Check className="size-3.5" />
@@ -220,7 +220,7 @@ export function NotificationBell() {
           onClick={() => setOpen(false)}
           className="block border-t border-white/[0.06] px-3 py-2 text-center text-xs text-neutral-400 hover:text-white"
         >
-          Abrir Central de Controle
+          Open Home
         </Link>
       </PopoverContent>
     </Popover>

@@ -52,11 +52,11 @@ function formatRelative(iso: string | null): string {
   if (!iso) return "—";
   const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
   if (Number.isNaN(days)) return "—";
-  if (days < 0) return `em ${-days}d`;
-  if (days === 0) return "hoje";
-  if (days === 1) return "1d atrás";
-  if (days < 30) return `${days}d atrás`;
-  return `${Math.floor(days / 30)}mo atrás`;
+  if (days < 0) return `in ${-days}d`;
+  if (days === 0) return "today";
+  if (days === 1) return "1d ago";
+  if (days < 30) return `${days}d ago`;
+  return `${Math.floor(days / 30)}mo ago`;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,12 +110,10 @@ export function UserCenterPage() {
     <div className="mx-auto max-w-[1100px] px-5 py-6">
       <div className="mb-5 flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-white">
-            Central de Controle
-          </h2>
-          <p className="text-sm capitalize text-neutral-500">
-            {firstName ? `Oi, ${firstName} — ` : ""}
-            <span className="lowercase">tudo que está no seu nome, num lugar só.</span>
+          <h2 className="text-lg font-semibold text-white">Home</h2>
+          <p className="text-sm text-neutral-500">
+            {firstName ? `Hi, ${firstName} — ` : ""}
+            everything assigned to you, in one place.
           </p>
         </div>
         <Button
@@ -125,7 +123,7 @@ export function UserCenterPage() {
           className="h-8 gap-1.5 text-neutral-400 hover:text-white"
         >
           <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
-          Atualizar
+          Refresh
         </Button>
       </div>
 
@@ -143,15 +141,15 @@ export function UserCenterPage() {
           <section className="mb-6">
             <h3 className="mb-2 flex items-center gap-2 text-sm font-medium text-neutral-300">
               <AlertTriangle className="size-4 text-amber-400" />
-              Precisa de atenção
+              Needs attention
               <span className="rounded bg-white/10 px-1.5 text-xs text-neutral-400">
                 {overview.attention.length}
               </span>
             </h3>
             {overview.attention.length === 0 ? (
               <div className="flex items-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.06] px-4 py-4 text-sm text-emerald-300">
-                <CheckCircle2 className="size-4" /> Tudo em dia. Nenhuma pendência
-                no seu nome. 🎉
+                <CheckCircle2 className="size-4" /> All clear. Nothing pending on
+                your plate.
               </div>
             ) : (
               <div className="space-y-2">
@@ -202,7 +200,7 @@ export function UserCenterPage() {
               icon={KanbanSquare}
               title="Kanban"
               primary={`${overview.kanban.pending} cards`}
-              alert={overview.kanban.overdue > 0 ? `${overview.kanban.overdue} atrasados` : null}
+              alert={overview.kanban.overdue > 0 ? `${overview.kanban.overdue} overdue` : null}
             >
               {overview.kanban.items.slice(0, 4).map((i) => (
                 <Row key={i.id} label={i.title} tag={i.stage} danger={i.overdue} />
@@ -213,8 +211,8 @@ export function UserCenterPage() {
               href="/crm"
               icon={Building2}
               title="CRM"
-              primary={`${overview.crm.total} contas`}
-              alert={overview.crm.idle > 0 ? `${overview.crm.idle} paradas` : null}
+              primary={`${overview.crm.total} accounts`}
+              alert={overview.crm.idle > 0 ? `${overview.crm.idle} idle` : null}
             >
               {overview.crm.companies.slice(0, 4).map((c) => (
                 <Row
@@ -245,9 +243,9 @@ export function UserCenterPage() {
             <SourceCard
               href="/goals"
               icon={Target}
-              title="Metas"
-              primary={`${overview.goals.total} ativas`}
-              alert={overview.goals.atRisk > 0 ? `${overview.goals.atRisk} em risco` : null}
+              title="Goals"
+              primary={`${overview.goals.total} active`}
+              alert={overview.goals.atRisk > 0 ? `${overview.goals.atRisk} at risk` : null}
             >
               {overview.goals.items.slice(0, 4).map((g) => (
                 <Row
@@ -262,9 +260,9 @@ export function UserCenterPage() {
             <SourceCard
               href="/jobs"
               icon={Clock}
-              title="Jobs agendados"
+              title="Scheduled jobs"
               primary={`${overview.jobs.total} jobs`}
-              alert={overview.jobs.failing > 0 ? `${overview.jobs.failing} falhando` : null}
+              alert={overview.jobs.failing > 0 ? `${overview.jobs.failing} failing` : null}
             >
               {overview.jobs.items.slice(0, 4).map((j) => (
                 <Row
@@ -279,15 +277,15 @@ export function UserCenterPage() {
             <SourceCard
               href="/reply-radar"
               icon={MessageCircle}
-              title="Reply Radar"
-              primary={`${overview.replyRadar.pending} pendentes`}
-              alert={overview.replyRadar.pending > 0 ? "aguardando" : null}
+              title="Social inbox"
+              primary={`${overview.replyRadar.pending} pending`}
+              alert={overview.replyRadar.pending > 0 ? "waiting" : null}
             />
           </div>
 
           <p className="mt-4 flex items-center gap-1.5 text-xs text-neutral-600">
             <CalendarClock className="size-3" />
-            Atualizado {formatRelative(overview.generatedAt)}
+            Updated {formatRelative(overview.generatedAt)}
           </p>
         </>
       ) : null}

@@ -319,7 +319,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       setFormError(
         error instanceof Error
           ? error.message
-          : "We couldn't autenticar agora.",
+          : "We couldn't sign you in right now.",
       );
     } finally {
       setSubmitting(false);
@@ -394,7 +394,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
               {mode !== "forgot" ? (
                 <Input
                   type="password"
-                  placeholder="Senha"
+                  placeholder="Password"
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   className="border-white/10 bg-neutral-900 focus-visible:ring-neutral-200"

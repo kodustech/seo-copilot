@@ -90,7 +90,7 @@ function formatGaDate(raw: string): string {
 }
 
 function formatNumber(n: number): string {
-  return n.toLocaleString("pt-BR");
+  return n.toLocaleString("en-US");
 }
 
 function formatPercent(n: number): string {

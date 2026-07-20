@@ -1106,7 +1106,7 @@ function MentionCard({
               )}
               {mention.published_at && (
                 <span className="text-[10px] text-neutral-600">
-                  {new Date(mention.published_at).toLocaleDateString("pt-BR")}
+                  {new Date(mention.published_at).toLocaleDateString("en-US")}
                 </span>
               )}
             </div>
