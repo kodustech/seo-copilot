@@ -6,13 +6,18 @@ import {
   ArrowLeft,
   ArrowUp,
   Check,
+  Clock,
   Copy,
   ExternalLink,
+  Linkedin,
   Loader2,
+  Mail,
   Plus,
   RefreshCw,
   SkipForward,
   Trash2,
+  Users,
+  Workflow,
 } from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
@@ -22,13 +27,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -37,13 +35,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
+// ── Types ──────────────────────────────────────────────────────────
 
 type Sequence = {
   id: string;
@@ -80,25 +79,12 @@ type QueueTask = {
     contactLinkedin: string | null;
     contactRole: string | null;
   };
-  step?: {
-    linkedinAction: string | null;
-    position: number;
-  };
+  step?: { linkedinAction: string | null; position: number };
 };
 
 type ResearchTable = { id: string; name: string; slug?: string | null };
 
-const TOKEN_HINT =
-  "Personalize with {{first_name}} {{full_name}} {{company}} {{domain}} {{role}} {{email}} {{linkedin}}";
-
-function formatWait(hours: number): string {
-  if (hours <= 0) return "immediately";
-  const d = Math.floor(hours / 24);
-  const h = hours % 24;
-  if (d > 0 && h > 0) return `after ${d}d ${h}h`;
-  if (d > 0) return `after ${d} day${d === 1 ? "" : "s"}`;
-  return `after ${h} hour${h === 1 ? "" : "s"}`;
-}
+// ── Helpers ────────────────────────────────────────────────────────
 
 function useAuthToken() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
@@ -111,14 +97,23 @@ function useAuthToken() {
   return token;
 }
 
-function newStepKey() {
+function newKey() {
   return `s_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function blankStep(channel: "email" | "linkedin" = "linkedin"): StepDraft {
+function formatWait(hours: number): string {
+  if (hours <= 0) return "Immediately";
+  const d = Math.floor(hours / 24);
+  const h = hours % 24;
+  if (d > 0 && h > 0) return `${d}d ${h}h`;
+  if (d > 0) return d === 1 ? "1 day" : `${d} days`;
+  return h === 1 ? "1 hour" : `${h} hours`;
+}
+
+function blankStep(channel: "email" | "linkedin"): StepDraft {
   if (channel === "email") {
     return {
-      key: newStepKey(),
+      key: newKey(),
       channel: "email",
       mode: "auto",
       delayHours: 24,
@@ -126,13 +121,13 @@ function blankStep(channel: "email" | "linkedin" = "linkedin"): StepDraft {
       subjectTemplate: "Quick note for {{company}}",
       bodyTemplate: `Hi {{first_name}},
 
-Noticed {{company}} is investing in quality/engineering. Worth a quick chat?
+Noticed {{company}} is investing in quality. Worth a quick chat?
 
 — Kodus`,
     };
   }
   return {
-    key: newStepKey(),
+    key: newKey(),
     channel: "linkedin",
     mode: "semi",
     delayHours: 0,
@@ -143,32 +138,82 @@ Noticed {{company}} is investing in quality/engineering. Worth a quick chat?
   };
 }
 
-function mapApiStep(s: {
-  channel: string;
-  mode: string;
-  delayHours?: number;
-  delay_hours?: number;
-  linkedinAction?: string | null;
-  linkedin_action?: string | null;
-  subjectTemplate?: string | null;
-  subject_template?: string | null;
-  bodyTemplate?: string;
-  body_template?: string;
-}): StepDraft {
+function mapApiStep(s: Record<string, unknown>): StepDraft {
   const channel = s.channel === "email" ? "email" : "linkedin";
-  const action = (s.linkedinAction ?? s.linkedin_action ?? "message") as
-    | "connect_note"
-    | "message";
+  const action = String(
+    s.linkedinAction ?? s.linkedin_action ?? "message",
+  ) as "connect_note" | "message";
   return {
-    key: newStepKey(),
+    key: newKey(),
     channel,
-    mode: channel === "linkedin" ? "semi" : s.mode === "semi" ? "semi" : "auto",
+    mode:
+      channel === "linkedin"
+        ? "semi"
+        : s.mode === "semi"
+          ? "semi"
+          : "auto",
     delayHours: Number(s.delayHours ?? s.delay_hours ?? 0),
     linkedinAction: channel === "linkedin" ? action : null,
     subjectTemplate: String(s.subjectTemplate ?? s.subject_template ?? ""),
     bodyTemplate: String(s.bodyTemplate ?? s.body_template ?? ""),
   };
 }
+
+function stepTitle(s: StepDraft): string {
+  if (s.channel === "linkedin") {
+    return s.linkedinAction === "connect_note"
+      ? "Connection request"
+      : "LinkedIn message";
+  }
+  return s.mode === "auto" ? "Auto email" : "Manual email";
+}
+
+function StatusDot({ status }: { status: string }) {
+  const color =
+    status === "active"
+      ? "bg-emerald-500"
+      : status === "paused"
+        ? "bg-amber-500"
+        : status === "archived"
+          ? "bg-neutral-500"
+          : "bg-sky-500";
+  return <span className={cn("inline-block size-1.5 rounded-full", color)} />;
+}
+
+// ── Segmented control ──────────────────────────────────────────────
+
+function Segmented<T extends string>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: string; icon?: React.ReactNode }[];
+}) {
+  return (
+    <div className="inline-flex rounded-lg border border-border bg-muted/40 p-0.5">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          onClick={() => onChange(o.value)}
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
+            value === o.value
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {o.icon}
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── Page ───────────────────────────────────────────────────────────
 
 export function SequencesPage() {
   const token = useAuthToken();
@@ -180,16 +225,16 @@ export function SequencesPage() {
     [token],
   );
 
-  const [tab, setTab] = useState<"queue" | "sequences">("sequences");
+  const [view, setView] = useState<"list" | "queue" | "editor">("list");
   const [sequences, setSequences] = useState<Sequence[]>([]);
   const [tasks, setTasks] = useState<QueueTask[]>([]);
   const [tables, setTables] = useState<ResearchTable[]>([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [mailboxConfigured, setMailboxConfigured] = useState(true);
 
-  // Editor
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
@@ -198,14 +243,15 @@ export function SequencesPage() {
   const [editLoading, setEditLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [enrollmentCount, setEnrollmentCount] = useState(0);
+  const [selectedStepKey, setSelectedStepKey] = useState<string | null>(null);
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [newName, setNewName] = useState("QA founders outreach");
+  const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
 
   const [enrollOpen, setEnrollOpen] = useState(false);
-  const [enrollSeqId, setEnrollSeqId] = useState<string>("");
-  const [enrollTableId, setEnrollTableId] = useState<string>("");
+  const [enrollSeqId, setEnrollSeqId] = useState("");
+  const [enrollTableId, setEnrollTableId] = useState("");
   const [enrolling, setEnrolling] = useState(false);
 
   const load = useCallback(async () => {
@@ -244,15 +290,18 @@ export function SequencesPage() {
   const openEditor = async (id: string) => {
     if (!token) return;
     setEditingId(id);
+    setView("editor");
     setEditLoading(true);
     setNotice(null);
+    setError(null);
     try {
       const res = await fetch(`/api/outreach/sequences/${id}`, {
         headers: headers(),
       });
       const data = await res.json();
       if (!res.ok) {
-        setNotice(data.error ?? "Failed to load sequence");
+        setError(data.error ?? "Failed to load");
+        setView("list");
         setEditingId(null);
         return;
       }
@@ -260,23 +309,12 @@ export function SequencesPage() {
       setEditDescription(data.sequence?.description ?? "");
       setEditStatus(data.sequence?.status ?? "draft");
       setEnrollmentCount((data.enrollments as unknown[])?.length ?? 0);
-      const steps = (data.steps ?? []).map(
-        (s: Record<string, unknown>) =>
-          mapApiStep({
-            channel: String(s.channel),
-            mode: String(s.mode),
-            delayHours: Number(s.delayHours ?? s.delay_hours ?? 0),
-            linkedinAction: (s.linkedinAction ?? s.linkedin_action) as
-              | string
-              | null,
-            subjectTemplate: (s.subjectTemplate ?? s.subject_template) as
-              | string
-              | null,
-            bodyTemplate: String(s.bodyTemplate ?? s.body_template ?? ""),
-          }),
+      const steps = ((data.steps ?? []) as Record<string, unknown>[]).map(
+        mapApiStep,
       );
-      setEditSteps(steps.length ? steps : [blankStep("linkedin")]);
-      setTab("sequences");
+      const next = steps.length ? steps : [blankStep("linkedin")];
+      setEditSteps(next);
+      setSelectedStepKey(next[0]?.key ?? null);
     } finally {
       setEditLoading(false);
     }
@@ -285,6 +323,7 @@ export function SequencesPage() {
   const createSeq = async () => {
     if (!token || !newName.trim()) return;
     setCreating(true);
+    setError(null);
     try {
       const res = await fetch("/api/outreach/sequences", {
         method: "POST",
@@ -293,15 +332,13 @@ export function SequencesPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setNotice(data.error ?? "Failed to create");
+        setError(data.error ?? "Failed to create");
         return;
       }
       setCreateOpen(false);
-      setNotice("Sequence created — edit steps and templates below.");
+      setNewName("");
       await load();
-      if (data.sequence?.id) {
-        await openEditor(data.sequence.id);
-      }
+      if (data.sequence?.id) await openEditor(data.sequence.id);
     } finally {
       setCreating(false);
     }
@@ -310,26 +347,22 @@ export function SequencesPage() {
   const saveSequence = async () => {
     if (!token || !editingId) return;
     if (!editName.trim()) {
-      setNotice("Name is required");
+      setError("Name is required");
       return;
     }
     if (editSteps.length === 0) {
-      setNotice("Add at least one step");
+      setError("Add at least one step");
       return;
     }
     for (let i = 0; i < editSteps.length; i++) {
       const s = editSteps[i];
       if (!s.bodyTemplate.trim()) {
-        setNotice(`Step ${i + 1}: message body is required`);
-        return;
-      }
-      if (s.channel === "linkedin" && !s.linkedinAction) {
-        setNotice(`Step ${i + 1}: pick LinkedIn action`);
+        setError(`Step ${i + 1}: message is empty`);
         return;
       }
     }
-
     setSaving(true);
+    setError(null);
     setNotice(null);
     try {
       const res = await fetch(`/api/outreach/sequences/${editingId}`, {
@@ -353,27 +386,18 @@ export function SequencesPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setNotice(data.error ?? "Save failed");
+        setError(data.error ?? "Save failed");
         return;
       }
-      setNotice("Sequence saved.");
+      setNotice("Saved");
       await load();
       if (data.steps) {
-        setEditSteps(
-          data.steps.map((s: Record<string, unknown>) =>
-            mapApiStep({
-              channel: String(s.channel),
-              mode: String(s.mode),
-              delayHours: Number(s.delayHours ?? s.delay_hours ?? 0),
-              linkedinAction: (s.linkedinAction ?? s.linkedin_action) as
-                | string
-                | null,
-              subjectTemplate: (s.subjectTemplate ?? s.subject_template) as
-                | string
-                | null,
-              bodyTemplate: String(s.bodyTemplate ?? s.body_template ?? ""),
-            }),
-          ),
+        const mapped = (data.steps as Record<string, unknown>[]).map(
+          mapApiStep,
+        );
+        setEditSteps(mapped);
+        setSelectedStepKey((k) =>
+          mapped.some((m) => m.key === k) ? k : mapped[0]?.key ?? null,
         );
       }
     } finally {
@@ -392,7 +416,7 @@ export function SequencesPage() {
           next.subjectTemplate = "";
         }
         if (patch.channel === "email") {
-          next.mode = "auto";
+          next.mode = next.mode === "semi" ? "semi" : "auto";
           next.linkedinAction = null;
           if (!next.subjectTemplate) {
             next.subjectTemplate = "Quick note for {{company}}";
@@ -406,6 +430,7 @@ export function SequencesPage() {
   const enroll = async () => {
     if (!token || !enrollSeqId || !enrollTableId) return;
     setEnrolling(true);
+    setError(null);
     try {
       const res = await fetch(
         `/api/outreach/sequences/${enrollSeqId}/enroll`,
@@ -421,14 +446,14 @@ export function SequencesPage() {
       );
       const data = await res.json();
       if (!res.ok) {
-        setNotice(data.error ?? "Enroll failed");
+        setError(data.error ?? "Enroll failed");
         return;
       }
       setEnrollOpen(false);
       setNotice(
-        `Enrolled ${data.enrolled}, skipped ${data.skipped}. LinkedIn tasks appear in the queue.`,
+        `Enrolled ${data.enrolled} · skipped ${data.skipped}`,
       );
-      setTab("queue");
+      setView("queue");
       setEditingId(null);
       await load();
     } finally {
@@ -450,12 +475,10 @@ export function SequencesPage() {
       );
       const data = await res.json();
       if (!res.ok) {
-        setNotice(data.error ?? "Failed");
+        setError(data.error ?? "Failed");
         return;
       }
-      setNotice(
-        outcome === "sent" ? "Marked sent — next step scheduled" : "Skipped",
-      );
+      setNotice(outcome === "sent" ? "Marked sent" : "Skipped");
       await load();
     } finally {
       setBusyId(null);
@@ -467,546 +490,653 @@ export function SequencesPage() {
       await navigator.clipboard.writeText(text);
       setNotice("Copied");
     } catch {
-      setNotice("Could not copy");
+      setError("Could not copy");
     }
   };
 
   if (!token) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+      <div className="flex h-dvh items-center justify-center text-sm text-muted-foreground">
         <Loader2 className="mr-2 size-4 animate-spin" />
         Loading…
       </div>
     );
   }
 
-  // ── Sequence editor ────────────────────────────────────────────
-  if (editingId) {
-    return (
-      <div className="mx-auto flex h-full min-h-0 max-w-3xl flex-col gap-4 p-6">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              setEditingId(null);
-              void load();
-            }}
-          >
-            <ArrowLeft className="size-3.5" />
-            All sequences
-          </Button>
-          <div className="flex-1" />
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              setEnrollSeqId(editingId);
-              setEnrollOpen(true);
-            }}
-          >
-            Enroll from list
-          </Button>
-          <Button size="sm" disabled={saving} onClick={() => void saveSequence()}>
-            {saving ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <Check className="size-3.5" />
-            )}
-            Save sequence
-          </Button>
-        </div>
+  // ════════════════════════════════════════════════════════════════
+  // EDITOR — Instantly-style vertical timeline
+  // ════════════════════════════════════════════════════════════════
+  if (view === "editor" && editingId) {
+    const selected =
+      editSteps.find((s) => s.key === selectedStepKey) ?? editSteps[0];
 
-        {notice && (
-          <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
-            {notice}
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        {/* Sticky top bar */}
+        <header className="sticky top-0 z-10 border-b border-border bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:px-6">
+          <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-3">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="-ml-2"
+              onClick={() => {
+                setView("list");
+                setEditingId(null);
+                void load();
+              }}
+            >
+              <ArrowLeft className="size-3.5" />
+              Sequences
+            </Button>
+            <div className="hidden h-4 w-px bg-border sm:block" />
+            <div className="min-w-0 flex-1">
+              <Input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                className="h-8 border-transparent bg-transparent px-1 text-base font-semibold shadow-none focus-visible:border-border focus-visible:bg-background"
+                placeholder="Sequence name"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <Select value={editStatus} onValueChange={setEditStatus}>
+                <SelectTrigger className="h-8 w-[120px] text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="draft">Draft</SelectItem>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="paused">Paused</SelectItem>
+                  <SelectItem value="archived">Archived</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setEnrollSeqId(editingId);
+                  setEnrollOpen(true);
+                }}
+              >
+                <Users className="size-3.5" />
+                Enroll
+              </Button>
+              <Button size="sm" disabled={saving} onClick={() => void saveSequence()}>
+                {saving ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Check className="size-3.5" />
+                )}
+                Save
+              </Button>
+            </div>
           </div>
-        )}
+          {(notice || error) && (
+            <div className="mx-auto mt-2 max-w-6xl">
+              {notice && (
+                <p className="text-xs text-emerald-600 dark:text-emerald-400">
+                  {notice}
+                </p>
+              )}
+              {error && (
+                <p className="text-xs text-destructive">{error}</p>
+              )}
+            </div>
+          )}
+        </header>
 
         {editLoading ? (
-          <div className="py-16 text-center text-sm text-muted-foreground">
-            <Loader2 className="mr-2 inline size-4 animate-spin" />
+          <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+            <Loader2 className="mr-2 size-4 animate-spin" />
             Loading sequence…
           </div>
         ) : (
-          <div className="min-h-0 flex-1 space-y-6 overflow-auto pb-10">
-            <div className="space-y-3 rounded-lg border p-4">
-              <h2 className="text-sm font-medium">Sequence</h2>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="space-y-1 sm:col-span-2">
-                  <label className="text-xs text-muted-foreground">Name</label>
-                  <Input
-                    value={editName}
-                    onChange={(e) => setEditName(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-1 sm:col-span-2">
-                  <label className="text-xs text-muted-foreground">
-                    Description (optional)
-                  </label>
+          <div className="mx-auto grid min-h-0 w-full max-w-6xl flex-1 grid-cols-1 gap-0 lg:grid-cols-[minmax(0,1fr)_340px]">
+            {/* Timeline column */}
+            <div className="min-h-0 overflow-y-auto border-r border-border px-4 py-6 sm:px-6">
+              <div className="mb-5 flex flex-wrap items-end justify-between gap-2">
+                <div>
+                  <p className="text-xs text-muted-foreground">
+                    {editSteps.length} step{editSteps.length === 1 ? "" : "s"}
+                    {enrollmentCount > 0
+                      ? ` · ${enrollmentCount} enrolled`
+                      : ""}
+                    {!mailboxConfigured ? " · connect Gmail in Settings" : ""}
+                  </p>
                   <Input
                     value={editDescription}
                     onChange={(e) => setEditDescription(e.target.value)}
-                    placeholder="e.g. QA founders warm intro"
+                    placeholder="Add a short description…"
+                    className="mt-1 h-8 border-transparent bg-transparent px-0 text-sm text-muted-foreground shadow-none focus-visible:border-border focus-visible:bg-background focus-visible:px-2"
                   />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs text-muted-foreground">Status</label>
-                  <Select value={editStatus} onValueChange={setEditStatus}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="draft">draft</SelectItem>
-                      <SelectItem value="active">active</SelectItem>
-                      <SelectItem value="paused">paused</SelectItem>
-                      <SelectItem value="archived">archived</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex items-end text-xs text-muted-foreground">
-                  {enrollmentCount} enrollment(s) loaded · enroll activates
-                  draft → active
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              <div className="rounded-lg border border-dashed bg-muted/20 p-3 text-xs leading-relaxed text-muted-foreground">
-                <p className="font-medium text-foreground">How a step works</p>
-                <ul className="mt-1.5 list-inside list-disc space-y-1">
-                  <li>
-                    <strong>Channel</strong> — LinkedIn or Email (pick per step).
-                  </li>
-                  <li>
-                    <strong>Wait</strong> — pause before this step runs (days +
-                    hours after the previous one). Step 1 with 0 = now.
-                  </li>
-                  <li>
-                    <strong>LinkedIn → Add connection</strong> — goes to your
-                    human queue: open profile → paste note → send invite → Mark
-                    sent.
-                  </li>
-                  <li>
-                    <strong>LinkedIn → Message</strong> — same queue, but DM
-                    (after you&apos;re connected).
-                  </li>
-                  <li>
-                    <strong>Email → Auto</strong> — sends alone via Gmail in
-                    Settings. <strong>Semi</strong> = you approve/send manually.
-                  </li>
-                  <li>
-                    <strong>Message box</strong> — edit the exact text/template
-                    for that step. {TOKEN_HINT}
-                  </li>
-                </ul>
-              </div>
-
-              {/* Cadence preview */}
-              <div className="rounded-lg border p-3">
-                <p className="mb-2 text-xs font-medium">Cadence preview</p>
-                <ol className="space-y-1 text-xs text-muted-foreground">
-                  {editSteps.map((s, i) => (
-                    <li key={s.key} className="flex flex-wrap gap-x-2">
-                      <span className="font-medium text-foreground">
-                        {i + 1}.
-                      </span>
-                      <span>
-                        {s.channel === "linkedin"
-                          ? s.linkedinAction === "connect_note"
-                            ? "LinkedIn · Add connection + note"
-                            : "LinkedIn · Message"
-                          : s.mode === "auto"
-                            ? "Email · auto-send"
-                            : "Email · semi"}
-                      </span>
-                      <span>· {formatWait(s.delayHours)}</span>
-                    </li>
-                  ))}
-                </ol>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h2 className="text-sm font-medium">
-                    Steps — channel, wait, action, message
-                  </h2>
-                  <p className="text-xs text-muted-foreground">{TOKEN_HINT}</p>
                 </div>
                 <div className="flex gap-1.5">
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() =>
-                      setEditSteps((p) => [...p, blankStep("linkedin")])
-                    }
+                    onClick={() => {
+                      const s = blankStep("linkedin");
+                      setEditSteps((p) => [...p, s]);
+                      setSelectedStepKey(s.key);
+                    }}
                   >
-                    <Plus className="size-3.5" />
-                    Add LinkedIn
+                    <Linkedin className="size-3.5" />
+                    LinkedIn
                   </Button>
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() =>
-                      setEditSteps((p) => [...p, blankStep("email")])
-                    }
+                    onClick={() => {
+                      const s = blankStep("email");
+                      setEditSteps((p) => [...p, s]);
+                      setSelectedStepKey(s.key);
+                    }}
                   >
-                    <Plus className="size-3.5" />
-                    Add Email
+                    <Mail className="size-3.5" />
+                    Email
                   </Button>
                 </div>
               </div>
 
-              {editSteps.map((step, idx) => {
-                const waitDays = Math.floor(step.delayHours / 24);
-                const waitHours = step.delayHours % 24;
-                const setWait = (days: number, hours: number) => {
-                  updateStep(step.key, {
-                    delayHours: Math.max(0, days) * 24 + Math.max(0, hours),
-                  });
-                };
-                const move = (dir: -1 | 1) => {
-                  setEditSteps((prev) => {
-                    const i = prev.findIndex((x) => x.key === step.key);
-                    const j = i + dir;
-                    if (i < 0 || j < 0 || j >= prev.length) return prev;
-                    const next = [...prev];
-                    [next[i], next[j]] = [next[j], next[i]];
-                    return next;
-                  });
-                };
+              <div className="relative space-y-0">
+                {editSteps.map((step, idx) => {
+                  const isSelected = selected?.key === step.key;
+                  const waitDays = Math.floor(step.delayHours / 24);
+                  const waitHours = step.delayHours % 24;
 
-                return (
-                  <div
-                    key={step.key}
-                    className="space-y-4 rounded-lg border bg-card p-4 shadow-sm"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Badge variant="secondary">Step {idx + 1}</Badge>
-                        <Badge variant="outline">
-                          {step.channel === "linkedin" ? "LinkedIn" : "Email"}
-                        </Badge>
-                        <span className="text-xs text-muted-foreground">
-                          {formatWait(step.delayHours)}
-                          {step.channel === "linkedin"
-                            ? " · you send from queue"
-                            : step.mode === "auto"
-                              ? " · auto via Gmail"
-                              : " · you send"}
-                        </span>
-                      </div>
-                      <div className="flex gap-1">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={idx === 0}
-                          onClick={() => move(-1)}
-                          title="Move up"
-                        >
-                          <ArrowUp className="size-3.5" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={idx === editSteps.length - 1}
-                          onClick={() => move(1)}
-                          title="Move down"
-                        >
-                          <ArrowDown className="size-3.5" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={editSteps.length <= 1}
-                          onClick={() =>
-                            setEditSteps((p) =>
-                              p.filter((x) => x.key !== step.key),
-                            )
-                          }
-                        >
-                          <Trash2 className="size-3.5" />
-                          Remove
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="space-y-1">
-                        <label className="text-xs font-medium">
-                          1. Channel (LinkedIn or Email)
-                        </label>
-                        <Select
-                          value={step.channel}
-                          onValueChange={(v) =>
-                            updateStep(step.key, {
-                              channel: v as "email" | "linkedin",
-                            })
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="linkedin">
-                              LinkedIn
-                            </SelectItem>
-                            <SelectItem value="email">Email</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      {step.channel === "linkedin" ? (
-                        <div className="space-y-1">
-                          <label className="text-xs font-medium">
-                            2. LinkedIn action
-                          </label>
-                          <Select
-                            value={step.linkedinAction ?? "connect_note"}
-                            onValueChange={(v) =>
-                              updateStep(step.key, {
-                                linkedinAction: v as
-                                  | "connect_note"
-                                  | "message",
-                              })
-                            }
-                          >
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="connect_note">
-                                Add connection + note (invite)
-                              </SelectItem>
-                              <SelectItem value="message">
-                                Message (DM after connected)
-                              </SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <p className="text-[11px] text-muted-foreground">
-                            Appears in LinkedIn queue: open profile → copy note
-                            → you send on LinkedIn → Mark sent.
-                          </p>
+                  return (
+                    <div key={step.key}>
+                      {/* Wait connector */}
+                      {idx > 0 && (
+                        <div className="flex items-center gap-3 py-2 pl-5">
+                          <div className="flex w-8 justify-center">
+                            <div className="h-6 w-px bg-border" />
+                          </div>
+                          <div className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/50 px-2.5 py-1 text-[11px] text-muted-foreground">
+                            <Clock className="size-3" />
+                            Wait {formatWait(step.delayHours).toLowerCase()}
+                          </div>
                         </div>
-                      ) : (
-                        <div className="space-y-1">
-                          <label className="text-xs font-medium">
-                            2. How email is sent
-                          </label>
-                          <Select
-                            value={step.mode}
-                            onValueChange={(v) =>
-                              updateStep(step.key, {
-                                mode: v as "auto" | "semi",
-                              })
-                            }
+                      )}
+
+                      <div className="flex gap-3">
+                        {/* Rail */}
+                        <div className="flex w-8 flex-col items-center pt-3">
+                          <div
+                            className={cn(
+                              "flex size-8 items-center justify-center rounded-full border text-xs font-semibold tabular-nums",
+                              isSelected
+                                ? "border-foreground bg-foreground text-background"
+                                : "border-border bg-card text-muted-foreground",
+                            )}
                           >
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="auto">
-                                Auto — Gmail mailbox sends
-                              </SelectItem>
-                              <SelectItem value="semi">
-                                Semi — queue for you to send
-                              </SelectItem>
-                            </SelectContent>
-                          </Select>
+                            {idx + 1}
+                          </div>
+                          {idx < editSteps.length - 1 && (
+                            <div className="mt-1 w-px flex-1 bg-border" />
+                          )}
+                        </div>
+
+                        {/* Card */}
+                        <button
+                          type="button"
+                          onClick={() => setSelectedStepKey(step.key)}
+                          className={cn(
+                            "mb-1 min-w-0 flex-1 rounded-xl border p-4 text-left transition-colors",
+                            isSelected
+                              ? "border-foreground/20 bg-card shadow-sm ring-1 ring-foreground/10"
+                              : "border-border bg-card/50 hover:border-foreground/15 hover:bg-card",
+                          )}
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={cn(
+                                  "flex size-7 items-center justify-center rounded-md",
+                                  step.channel === "linkedin"
+                                    ? "bg-[#0A66C2]/15 text-[#0A66C2]"
+                                    : "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+                                )}
+                              >
+                                {step.channel === "linkedin" ? (
+                                  <Linkedin className="size-3.5" />
+                                ) : (
+                                  <Mail className="size-3.5" />
+                                )}
+                              </span>
+                              <div>
+                                <p className="text-sm font-medium text-balance">
+                                  {stepTitle(step)}
+                                </p>
+                                <p className="text-[11px] text-muted-foreground">
+                                  {idx === 0
+                                    ? "Starts on enroll"
+                                    : `After previous · ${formatWait(step.delayHours).toLowerCase()}`}
+                                  {step.channel === "linkedin"
+                                    ? " · you send"
+                                    : step.mode === "auto"
+                                      ? " · auto-send"
+                                      : " · manual"}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                          <p className="mt-3 line-clamp-2 text-sm leading-relaxed text-muted-foreground">
+                            {step.channel === "email" && step.subjectTemplate
+                              ? `${step.subjectTemplate} — `
+                              : ""}
+                            {step.bodyTemplate || "Empty message…"}
+                          </p>
+                        </button>
+                      </div>
+
+                      {/* Expanded editor when selected */}
+                      {isSelected && (
+                        <div className="ml-11 mt-2 mb-4 space-y-4 rounded-xl border border-border bg-card p-4 shadow-sm">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <Segmented
+                              value={step.channel}
+                              onChange={(v) =>
+                                updateStep(step.key, { channel: v })
+                              }
+                              options={[
+                                {
+                                  value: "linkedin" as const,
+                                  label: "LinkedIn",
+                                  icon: <Linkedin className="size-3" />,
+                                },
+                                {
+                                  value: "email" as const,
+                                  label: "Email",
+                                  icon: <Mail className="size-3" />,
+                                },
+                              ]}
+                            />
+                            <div className="flex gap-0.5">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="size-8 p-0"
+                                disabled={idx === 0}
+                                aria-label="Move up"
+                                onClick={() =>
+                                  setEditSteps((prev) => {
+                                    if (idx === 0) return prev;
+                                    const n = [...prev];
+                                    [n[idx - 1], n[idx]] = [n[idx], n[idx - 1]];
+                                    return n;
+                                  })
+                                }
+                              >
+                                <ArrowUp className="size-3.5" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="size-8 p-0"
+                                disabled={idx === editSteps.length - 1}
+                                aria-label="Move down"
+                                onClick={() =>
+                                  setEditSteps((prev) => {
+                                    if (idx >= prev.length - 1) return prev;
+                                    const n = [...prev];
+                                    [n[idx], n[idx + 1]] = [n[idx + 1], n[idx]];
+                                    return n;
+                                  })
+                                }
+                              >
+                                <ArrowDown className="size-3.5" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="size-8 p-0 text-muted-foreground hover:text-destructive"
+                                disabled={editSteps.length <= 1}
+                                aria-label="Remove step"
+                                onClick={() => {
+                                  setEditSteps((p) => {
+                                    const next = p.filter(
+                                      (x) => x.key !== step.key,
+                                    );
+                                    setSelectedStepKey(next[0]?.key ?? null);
+                                    return next;
+                                  });
+                                }}
+                              >
+                                <Trash2 className="size-3.5" />
+                              </Button>
+                            </div>
+                          </div>
+
+                          {step.channel === "linkedin" ? (
+                            <div className="space-y-1.5">
+                              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                                Action
+                              </p>
+                              <Segmented
+                                value={step.linkedinAction ?? "connect_note"}
+                                onChange={(v) =>
+                                  updateStep(step.key, {
+                                    linkedinAction: v,
+                                  })
+                                }
+                                options={[
+                                  {
+                                    value: "connect_note" as const,
+                                    label: "Add connection + note",
+                                  },
+                                  {
+                                    value: "message" as const,
+                                    label: "Message",
+                                  },
+                                ]}
+                              />
+                            </div>
+                          ) : (
+                            <div className="space-y-1.5">
+                              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                                Delivery
+                              </p>
+                              <Segmented
+                                value={step.mode}
+                                onChange={(v) =>
+                                  updateStep(step.key, { mode: v })
+                                }
+                                options={[
+                                  {
+                                    value: "auto" as const,
+                                    label: "Auto-send",
+                                  },
+                                  {
+                                    value: "semi" as const,
+                                    label: "Manual queue",
+                                  },
+                                ]}
+                              />
+                            </div>
+                          )}
+
+                          <div className="space-y-1.5">
+                            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                              Wait before this step
+                            </p>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="flex items-center gap-1.5 rounded-lg border border-border px-2 py-1">
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  className="h-7 w-14 border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0"
+                                  value={waitDays}
+                                  onChange={(e) =>
+                                    updateStep(step.key, {
+                                      delayHours:
+                                        Math.max(0, Number(e.target.value) || 0) *
+                                          24 +
+                                        waitHours,
+                                    })
+                                  }
+                                />
+                                <span className="text-xs text-muted-foreground">
+                                  days
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5 rounded-lg border border-border px-2 py-1">
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  max={23}
+                                  className="h-7 w-14 border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0"
+                                  value={waitHours}
+                                  onChange={(e) =>
+                                    updateStep(step.key, {
+                                      delayHours:
+                                        waitDays * 24 +
+                                        Math.max(0, Number(e.target.value) || 0),
+                                    })
+                                  }
+                                />
+                                <span className="text-xs text-muted-foreground">
+                                  hrs
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap gap-1">
+                                {(
+                                  [
+                                    [0, "Now"],
+                                    [24, "1d"],
+                                    [48, "2d"],
+                                    [72, "3d"],
+                                    [168, "1w"],
+                                  ] as const
+                                ).map(([h, label]) => (
+                                  <button
+                                    key={h}
+                                    type="button"
+                                    onClick={() =>
+                                      updateStep(step.key, {
+                                        delayHours: h,
+                                      })
+                                    }
+                                    className={cn(
+                                      "rounded-md px-2 py-1 text-[11px] font-medium",
+                                      step.delayHours === h
+                                        ? "bg-foreground text-background"
+                                        : "bg-muted text-muted-foreground hover:text-foreground",
+                                    )}
+                                  >
+                                    {label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+
+                          {step.channel === "email" && (
+                            <div className="space-y-1.5">
+                              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                                Subject
+                              </p>
+                              <Input
+                                value={step.subjectTemplate}
+                                onChange={(e) =>
+                                  updateStep(step.key, {
+                                    subjectTemplate: e.target.value,
+                                  })
+                                }
+                                placeholder="Subject line…"
+                                className="text-sm"
+                              />
+                            </div>
+                          )}
+
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                                {step.channel === "linkedin"
+                                  ? step.linkedinAction === "connect_note"
+                                    ? "Connection note"
+                                    : "Message"
+                                  : "Body"}
+                              </p>
+                              <p className="text-[10px] text-muted-foreground">
+                                {"{{first_name}} {{company}} {{role}}"}
+                              </p>
+                            </div>
+                            <Textarea
+                              value={step.bodyTemplate}
+                              onChange={(e) =>
+                                updateStep(step.key, {
+                                  bodyTemplate: e.target.value,
+                                })
+                              }
+                              rows={step.channel === "email" ? 9 : 5}
+                              className="min-h-[120px] resize-y text-sm leading-relaxed"
+                              placeholder="Write the message…"
+                            />
+                          </div>
                         </div>
                       )}
                     </div>
+                  );
+                })}
 
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium">
-                        3. Wait before this step
-                        {idx === 0
-                          ? " (from enroll)"
-                          : " (after previous step is done)"}
-                      </label>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="flex items-center gap-1.5">
-                          <Input
-                            type="number"
-                            min={0}
-                            className="w-20"
-                            value={waitDays}
-                            onChange={(e) =>
-                              setWait(Number(e.target.value) || 0, waitHours)
-                            }
-                          />
-                          <span className="text-xs text-muted-foreground">
-                            days
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <Input
-                            type="number"
-                            min={0}
-                            max={23}
-                            className="w-20"
-                            value={waitHours}
-                            onChange={(e) =>
-                              setWait(waitDays, Number(e.target.value) || 0)
-                            }
-                          />
-                          <span className="text-xs text-muted-foreground">
-                            hours
-                          </span>
-                        </div>
-                        <span className="text-xs text-muted-foreground">
-                          = {formatWait(step.delayHours)}
-                        </span>
-                      </div>
-                      <div className="flex flex-wrap gap-1 pt-1">
-                        {[
-                          [0, "Now"],
-                          [24, "1 day"],
-                          [48, "2 days"],
-                          [72, "3 days"],
-                          [168, "1 week"],
-                        ].map(([h, label]) => (
-                          <Button
-                            key={String(h)}
-                            type="button"
-                            size="sm"
-                            variant={
-                              step.delayHours === h ? "default" : "outline"
-                            }
-                            className="h-7 text-xs"
-                            onClick={() =>
-                              updateStep(step.key, {
-                                delayHours: h as number,
-                              })
-                            }
-                          >
-                            {label}
-                          </Button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {step.channel === "email" && (
-                      <div className="space-y-1">
-                        <label className="text-xs font-medium">
-                          4. Email subject
-                        </label>
-                        <Input
-                          value={step.subjectTemplate}
-                          onChange={(e) =>
-                            updateStep(step.key, {
-                              subjectTemplate: e.target.value,
-                            })
-                          }
-                          placeholder="QA at {{company}}"
-                        />
-                      </div>
-                    )}
-
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium">
-                        {step.channel === "linkedin"
-                          ? step.linkedinAction === "connect_note"
-                            ? "4. Connection note text (what you paste on LinkedIn)"
-                            : "4. LinkedIn message text"
-                          : "5. Email body"}
-                      </label>
-                      <Textarea
-                        value={step.bodyTemplate}
-                        onChange={(e) =>
-                          updateStep(step.key, {
-                            bodyTemplate: e.target.value,
-                          })
-                        }
-                        rows={step.channel === "email" ? 8 : 5}
-                        className="min-h-[100px] text-sm leading-relaxed"
-                        placeholder={
-                          step.channel === "linkedin"
-                            ? "Hey {{first_name}} — …"
-                            : "Hi {{first_name}},\n\n…"
-                        }
-                      />
-                    </div>
+                {/* Add step footer */}
+                <div className="flex items-center gap-3 pt-4 pl-0">
+                  <div className="flex w-8 justify-center">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const s = blankStep("linkedin");
+                        setEditSteps((p) => [...p, s]);
+                        setSelectedStepKey(s.key);
+                      }}
+                      className="flex size-8 items-center justify-center rounded-full border border-dashed border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground"
+                      aria-label="Add step"
+                    >
+                      <Plus className="size-3.5" />
+                    </button>
                   </div>
-                );
-              })}
+                  <p className="text-xs text-muted-foreground">
+                    Add another step to the cadence
+                  </p>
+                </div>
+              </div>
             </div>
+
+            {/* Right: live preview */}
+            <aside className="hidden min-h-0 overflow-y-auto bg-muted/20 p-5 lg:block">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Preview
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                How it looks with sample data
+              </p>
+              {selected && (
+                <div className="mt-4 rounded-xl border border-border bg-background p-4 shadow-sm">
+                  <div className="mb-3 flex items-center gap-2">
+                    {selected.channel === "linkedin" ? (
+                      <Linkedin className="size-4 text-[#0A66C2]" />
+                    ) : (
+                      <Mail className="size-4 text-amber-600" />
+                    )}
+                    <span className="text-xs font-medium">
+                      {stepTitle(selected)}
+                    </span>
+                  </div>
+                  {selected.channel === "email" && (
+                    <p className="mb-2 border-b border-border pb-2 text-sm font-medium">
+                      {selected.subjectTemplate
+                        .replace(/\{\{\s*first_name\s*\}\}/gi, "Alex")
+                        .replace(/\{\{\s*company\s*\}\}/gi, "Acme QA")
+                        .replace(/\{\{\s*role\s*\}\}/gi, "Head of QA")
+                        .replace(/\{\{\s*full_name\s*\}\}/gi, "Alex Chen")
+                        .replace(/\{\{\s*domain\s*\}\}/gi, "acme.com") ||
+                        "(no subject)"}
+                    </p>
+                  )}
+                  <pre className="whitespace-pre-wrap text-sm leading-relaxed text-pretty text-foreground/90">
+                    {selected.bodyTemplate
+                      .replace(/\{\{\s*first_name\s*\}\}/gi, "Alex")
+                      .replace(/\{\{\s*company\s*\}\}/gi, "Acme QA")
+                      .replace(/\{\{\s*role\s*\}\}/gi, "Head of QA")
+                      .replace(/\{\{\s*full_name\s*\}\}/gi, "Alex Chen")
+                      .replace(/\{\{\s*domain\s*\}\}/gi, "acme.com")
+                      .replace(/\{\{\s*email\s*\}\}/gi, "alex@acme.com")
+                      .replace(
+                        /\{\{\s*linkedin\s*\}\}/gi,
+                        "linkedin.com/in/alex",
+                      ) || "Empty…"}
+                  </pre>
+                  {selected.channel === "linkedin" && (
+                    <p className="mt-4 border-t border-border pt-3 text-[11px] leading-relaxed text-muted-foreground">
+                      {selected.linkedinAction === "connect_note"
+                        ? "Queue: open LinkedIn → paste note → send connection request → Mark sent."
+                        : "Queue: open LinkedIn → paste message → send DM → Mark sent."}
+                    </p>
+                  )}
+                  {selected.channel === "email" && selected.mode === "auto" && (
+                    <p className="mt-4 border-t border-border pt-3 text-[11px] leading-relaxed text-muted-foreground">
+                      Sends automatically from the Gmail connected in Settings.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <div className="mt-6">
+                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Cadence
+                </p>
+                <ol className="mt-2 space-y-2">
+                  {editSteps.map((s, i) => (
+                    <li key={s.key} className="flex gap-2 text-xs">
+                      <span className="tabular-nums text-muted-foreground">
+                        {i + 1}.
+                      </span>
+                      <span className="text-pretty">
+                        <span className="font-medium text-foreground">
+                          {stepTitle(s)}
+                        </span>
+                        <span className="text-muted-foreground">
+                          {" "}
+                          · {formatWait(s.delayHours).toLowerCase()}
+                        </span>
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            </aside>
           </div>
         )}
 
-        <Dialog open={enrollOpen} onOpenChange={setEnrollOpen}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Enroll research list</DialogTitle>
-              <DialogDescription>
-                People from the list enter this sequence. First due step goes to
-                the LinkedIn queue or sends email.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">
-                Research list
-              </label>
-              <Select value={enrollTableId} onValueChange={setEnrollTableId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Pick list" />
-                </SelectTrigger>
-                <SelectContent>
-                  {tables.map((t) => (
-                    <SelectItem key={t.id} value={t.slug || t.id}>
-                      {t.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setEnrollOpen(false)}>
-                Cancel
-              </Button>
-              <Button
-                disabled={enrolling || !enrollTableId}
-                onClick={() => void enroll()}
-              >
-                {enrolling ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  "Enroll"
-                )}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        <EnrollDialog
+          open={enrollOpen}
+          onOpenChange={setEnrollOpen}
+          sequences={sequences}
+          tables={tables}
+          enrollSeqId={enrollSeqId}
+          setEnrollSeqId={setEnrollSeqId}
+          enrollTableId={enrollTableId}
+          setEnrollTableId={setEnrollTableId}
+          enrolling={enrolling}
+          onEnroll={() => void enroll()}
+          hideSequencePick
+        />
       </div>
     );
   }
 
-  // ── List + queue ───────────────────────────────────────────────
+  // ════════════════════════════════════════════════════════════════
+  // LIST + QUEUE
+  // ════════════════════════════════════════════════════════════════
   return (
-    <div className="mx-auto flex h-full min-h-0 max-w-5xl flex-col gap-4 p-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <div className="mx-auto flex h-full min-h-0 max-w-5xl flex-col gap-6 p-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Sequences</h1>
-          <p className="text-sm text-muted-foreground">
-            Build multi-step cadences (LinkedIn + email templates), enroll
-            lists, work the LinkedIn queue. Email sends from{" "}
-            <a href="/settings" className="underline underline-offset-2">
-              Settings → mailbox
-            </a>
-            .
+          <h1 className="text-2xl font-semibold tracking-tight text-balance">
+            Sequences
+          </h1>
+          <p className="mt-1 max-w-xl text-sm text-pretty text-muted-foreground">
+            Multi-step LinkedIn + email cadences. Build the path, enroll a
+            list, work the queue.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="outline" onClick={() => void load()}>
-            <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
+            <RefreshCw
+              className={cn("size-3.5", loading && "animate-spin")}
+            />
             Refresh
           </Button>
           <Button
             size="sm"
             variant="outline"
-            onClick={() => setEnrollOpen(true)}
+            onClick={() => {
+              setEnrollSeqId(sequences[0]?.id ?? "");
+              setEnrollOpen(true);
+            }}
           >
-            Enroll from list
+            <Users className="size-3.5" />
+            Enroll
           </Button>
           <Button size="sm" onClick={() => setCreateOpen(true)}>
             <Plus className="size-3.5" />
@@ -1016,225 +1146,253 @@ export function SequencesPage() {
       </div>
 
       {!mailboxConfigured && (
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
-          No outreach mailbox configured — email steps won&apos;t send until you
-          connect Gmail in{" "}
-          <a
-            href="/settings"
-            className="font-medium underline underline-offset-2"
-          >
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-sm text-pretty">
+          Connect Gmail in{" "}
+          <a href="/settings" className="font-medium underline underline-offset-2">
             Settings
-          </a>
-          . LinkedIn queue still works.
+          </a>{" "}
+          so email steps can auto-send.
         </div>
       )}
 
-      {notice && (
-        <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
-          {notice}
+      {(notice || error) && (
+        <div
+          className={cn(
+            "rounded-lg border px-3 py-2 text-sm",
+            error
+              ? "border-destructive/30 bg-destructive/5 text-destructive"
+              : "border-border bg-muted/40",
+          )}
+        >
+          {error ?? notice}
         </div>
       )}
 
-      <div className="flex gap-1 border-b">
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-border">
         {(
           [
-            ["sequences", `Sequences (${sequences.length})`],
-            ["queue", `LinkedIn queue (${tasks.length})`],
+            ["list", "Sequences", sequences.length, Workflow],
+            ["queue", "LinkedIn queue", tasks.length, Linkedin],
           ] as const
-        ).map(([id, label]) => (
+        ).map(([id, label, count, Icon]) => (
           <button
             key={id}
             type="button"
-            onClick={() => setTab(id)}
+            onClick={() => setView(id)}
             className={cn(
-              "border-b-2 px-3 py-2 text-sm",
-              tab === id
-                ? "border-foreground font-medium"
+              "inline-flex items-center gap-2 border-b-2 px-3 py-2.5 text-sm transition-colors",
+              view === id
+                ? "border-foreground font-medium text-foreground"
                 : "border-transparent text-muted-foreground hover:text-foreground",
             )}
           >
+            <Icon className="size-3.5" />
             {label}
+            <span
+              className={cn(
+                "rounded-full px-1.5 py-0.5 text-[10px] tabular-nums",
+                view === id ? "bg-foreground/10" : "bg-muted",
+              )}
+            >
+              {count}
+            </span>
           </button>
         ))}
       </div>
 
-      {tab === "queue" && (
-        <div className="min-h-0 flex-1 overflow-auto">
-          {loading && tasks.length === 0 ? (
-            <div className="py-12 text-center text-sm text-muted-foreground">
+      {view === "list" && (
+        <div className="min-h-0 flex-1 space-y-3 overflow-auto pb-8">
+          {loading && sequences.length === 0 ? (
+            <div className="py-16 text-center text-sm text-muted-foreground">
               <Loader2 className="mr-2 inline size-4 animate-spin" />
-              Loading queue…
+              Loading…
             </div>
-          ) : tasks.length === 0 ? (
-            <div className="rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground">
-              No LinkedIn tasks ready. Open a sequence, edit templates, enroll a
-              list, then work tasks here.
+          ) : sequences.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border px-6 py-16 text-center">
+              <div className="flex size-12 items-center justify-center rounded-2xl bg-muted">
+                <Workflow className="size-5 text-muted-foreground" />
+              </div>
+              <p className="mt-4 text-sm font-medium">No sequences yet</p>
+              <p className="mt-1 max-w-sm text-sm text-pretty text-muted-foreground">
+                Create a cadence with LinkedIn and email steps, then enroll a
+                research list.
+              </p>
+              <Button className="mt-5" onClick={() => setCreateOpen(true)}>
+                <Plus className="size-3.5" />
+                New sequence
+              </Button>
             </div>
           ) : (
-            <div className="space-y-3">
-              {tasks.map((t) => {
-                const e = t.enrollment;
-                const profile =
-                  (t.meta?.profile_url as string) ||
-                  e?.contactLinkedin ||
-                  null;
-                const action = t.step?.linkedinAction ?? "message";
-                return (
-                  <div
-                    key={t.id}
-                    className="rounded-lg border bg-card p-4 shadow-sm"
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="font-medium">
-                          {e?.contactName ?? "—"}{" "}
-                          <span className="font-normal text-muted-foreground">
-                            @ {e?.companyName}
-                          </span>
-                        </div>
-                        <div className="mt-0.5 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                          {e?.contactRole && <span>{e.contactRole}</span>}
-                          {e?.domain && (
-                            <span className="font-mono">{e.domain}</span>
-                          )}
-                          <Badge variant="secondary" className="text-[10px]">
-                            {action === "connect_note"
-                              ? "Connect note"
-                              : "Message"}
-                          </Badge>
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {profile && (
-                          <Button size="sm" variant="outline" asChild>
-                            <a
-                              href={profile}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              <ExternalLink className="size-3.5" />
-                              Open LinkedIn
-                            </a>
-                          </Button>
-                        )}
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => void copyText(t.renderedBody ?? "")}
-                        >
-                          <Copy className="size-3.5" />
-                          Copy
-                        </Button>
-                        <Button
-                          size="sm"
-                          disabled={busyId === t.id}
-                          onClick={() => void complete(t.id, "sent")}
-                        >
-                          {busyId === t.id ? (
-                            <Loader2 className="size-3.5 animate-spin" />
-                          ) : (
-                            <Check className="size-3.5" />
-                          )}
-                          Mark sent
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={busyId === t.id}
-                          onClick={() => void complete(t.id, "skipped")}
-                        >
-                          <SkipForward className="size-3.5" />
-                          Skip
-                        </Button>
-                      </div>
+            sequences.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => void openEditor(s.id)}
+                className="group flex w-full items-stretch gap-0 overflow-hidden rounded-xl border border-border bg-card text-left transition-colors hover:border-foreground/20 hover:bg-card/80"
+              >
+                <div className="flex w-1 shrink-0 bg-border group-hover:bg-foreground/30" />
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-4 px-4 py-4 sm:px-5">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="truncate text-sm font-semibold">
+                        {s.name}
+                      </p>
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-[11px] capitalize text-muted-foreground">
+                        <StatusDot status={s.status} />
+                        {s.status}
+                      </span>
                     </div>
-                    <pre className="mt-3 whitespace-pre-wrap rounded-md bg-muted/40 p-3 text-sm leading-relaxed">
-                      {t.renderedBody}
-                    </pre>
+                    {s.description && (
+                      <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                        {s.description}
+                      </p>
+                    )}
+                    <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                      <span className="inline-flex items-center gap-1">
+                        <Workflow className="size-3" />
+                        {s.stepCount ?? 0} steps
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <Users className="size-3" />
+                        {s.enrollmentCount ?? 0} active
+                      </span>
+                    </div>
                   </div>
-                );
-              })}
-            </div>
+                  <span className="text-xs font-medium text-muted-foreground group-hover:text-foreground">
+                    Open →
+                  </span>
+                </div>
+              </button>
+            ))
           )}
         </div>
       )}
 
-      {tab === "sequences" && (
-        <div className="min-h-0 flex-1 overflow-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Steps</TableHead>
-                <TableHead>Active enrollments</TableHead>
-                <TableHead className="w-[100px]" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sequences.map((s) => (
-                <TableRow
-                  key={s.id}
-                  className="cursor-pointer"
-                  onClick={() => void openEditor(s.id)}
+      {view === "queue" && (
+        <div className="min-h-0 flex-1 space-y-3 overflow-auto pb-8">
+          {loading && tasks.length === 0 ? (
+            <div className="py-16 text-center text-sm text-muted-foreground">
+              <Loader2 className="mr-2 inline size-4 animate-spin" />
+              Loading queue…
+            </div>
+          ) : tasks.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border px-6 py-16 text-center">
+              <Linkedin className="size-8 text-[#0A66C2]/60" />
+              <p className="mt-4 text-sm font-medium">Queue is clear</p>
+              <p className="mt-1 max-w-sm text-sm text-pretty text-muted-foreground">
+                Enroll people into a sequence with a LinkedIn step to fill this
+                queue.
+              </p>
+              <Button
+                className="mt-5"
+                variant="outline"
+                onClick={() => setView("list")}
+              >
+                View sequences
+              </Button>
+            </div>
+          ) : (
+            tasks.map((t) => {
+              const e = t.enrollment;
+              const profile =
+                (t.meta?.profile_url as string) ||
+                e?.contactLinkedin ||
+                null;
+              const action = t.step?.linkedinAction ?? "message";
+              return (
+                <div
+                  key={t.id}
+                  className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-5"
                 >
-                  <TableCell className="font-medium">{s.name}</TableCell>
-                  <TableCell>
-                    <Badge variant="outline">{s.status}</Badge>
-                  </TableCell>
-                  <TableCell className="tabular-nums">
-                    {s.stepCount ?? "—"}
-                  </TableCell>
-                  <TableCell className="tabular-nums">
-                    {s.enrollmentCount ?? "—"}
-                  </TableCell>
-                  <TableCell>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void openEditor(s.id);
-                      }}
-                    >
-                      Edit steps
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {sequences.length === 0 && !loading && (
-                <TableRow>
-                  <TableCell
-                    colSpan={5}
-                    className="h-24 text-center text-muted-foreground"
-                  >
-                    No sequences yet. Create one to edit steps and templates.
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-          <p className="mt-3 text-xs text-muted-foreground">
-            Click a row or <strong>Edit steps</strong> to set channel per step
-            (LinkedIn / Email), wait time, connection vs message, and the full
-            template text — then Save.
-          </p>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-sm font-semibold">
+                          {e?.contactName ?? "—"}
+                        </p>
+                        <span className="text-sm text-muted-foreground">
+                          {e?.companyName}
+                        </span>
+                        <Badge variant="secondary" className="text-[10px]">
+                          {action === "connect_note"
+                            ? "Connection + note"
+                            : "Message"}
+                        </Badge>
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                        {e?.contactRole && <span>{e.contactRole}</span>}
+                        {e?.domain && (
+                          <span className="font-mono">{e.domain}</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {profile && (
+                        <Button size="sm" variant="outline" asChild>
+                          <a href={profile} target="_blank" rel="noreferrer">
+                            <ExternalLink className="size-3.5" />
+                            LinkedIn
+                          </a>
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void copyText(t.renderedBody ?? "")}
+                      >
+                        <Copy className="size-3.5" />
+                        Copy
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={busyId === t.id}
+                        onClick={() => void complete(t.id, "sent")}
+                      >
+                        {busyId === t.id ? (
+                          <Loader2 className="size-3.5 animate-spin" />
+                        ) : (
+                          <Check className="size-3.5" />
+                        )}
+                        Mark sent
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={busyId === t.id}
+                        onClick={() => void complete(t.id, "skipped")}
+                      >
+                        <SkipForward className="size-3.5" />
+                        Skip
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="mt-4 rounded-lg border border-border bg-muted/30 px-3 py-3">
+                    <pre className="whitespace-pre-wrap text-sm leading-relaxed text-pretty">
+                      {t.renderedBody}
+                    </pre>
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
       )}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>New sequence</DialogTitle>
             <DialogDescription>
-              Starts with a default 3-step cadence. You can change every step
-              and template right after create.
+              Starts with a 3-step default cadence. You&apos;ll edit every step
+              next.
             </DialogDescription>
           </DialogHeader>
           <Input
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
-            placeholder="Sequence name"
+            placeholder="e.g. QA founders outbound"
+            autoFocus
             onKeyDown={(e) => {
               if (e.key === "Enter") void createSeq();
             }}
@@ -1243,31 +1401,80 @@ export function SequencesPage() {
             <Button variant="outline" onClick={() => setCreateOpen(false)}>
               Cancel
             </Button>
-            <Button disabled={creating} onClick={() => void createSeq()}>
+            <Button
+              disabled={creating || !newName.trim()}
+              onClick={() => void createSeq()}
+            >
               {creating ? (
                 <Loader2 className="size-4 animate-spin" />
               ) : (
-                "Create & edit"
+                "Create"
               )}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      <Dialog open={enrollOpen} onOpenChange={setEnrollOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Enroll research list</DialogTitle>
-            <DialogDescription>
-              Enrolls people into a sequence. Edit templates first if needed.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">Sequence</label>
+      <EnrollDialog
+        open={enrollOpen}
+        onOpenChange={setEnrollOpen}
+        sequences={sequences}
+        tables={tables}
+        enrollSeqId={enrollSeqId}
+        setEnrollSeqId={setEnrollSeqId}
+        enrollTableId={enrollTableId}
+        setEnrollTableId={setEnrollTableId}
+        enrolling={enrolling}
+        onEnroll={() => void enroll()}
+      />
+    </div>
+  );
+}
+
+function EnrollDialog({
+  open,
+  onOpenChange,
+  sequences,
+  tables,
+  enrollSeqId,
+  setEnrollSeqId,
+  enrollTableId,
+  setEnrollTableId,
+  enrolling,
+  onEnroll,
+  hideSequencePick,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  sequences: Sequence[];
+  tables: ResearchTable[];
+  enrollSeqId: string;
+  setEnrollSeqId: (v: string) => void;
+  enrollTableId: string;
+  setEnrollTableId: (v: string) => void;
+  enrolling: boolean;
+  onEnroll: () => void;
+  hideSequencePick?: boolean;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Enroll list</DialogTitle>
+          <DialogDescription>
+            People enter the sequence. LinkedIn steps land in the queue; email
+            auto-sends when due.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          {!hideSequencePick && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                Sequence
+              </label>
               <Select value={enrollSeqId} onValueChange={setEnrollSeqId}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Pick sequence" />
+                  <SelectValue placeholder="Choose sequence" />
                 </SelectTrigger>
                 <SelectContent>
                   {sequences.map((s) => (
@@ -1278,41 +1485,45 @@ export function SequencesPage() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">
-                Research list
-              </label>
-              <Select value={enrollTableId} onValueChange={setEnrollTableId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Pick list" />
-                </SelectTrigger>
-                <SelectContent>
-                  {tables.map((t) => (
-                    <SelectItem key={t.id} value={t.slug || t.id}>
-                      {t.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+          )}
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">
+              Research list
+            </label>
+            <Select value={enrollTableId} onValueChange={setEnrollTableId}>
+              <SelectTrigger>
+                <SelectValue placeholder="Choose list" />
+              </SelectTrigger>
+              <SelectContent>
+                {tables.map((t) => (
+                  <SelectItem key={t.id} value={t.slug || t.id}>
+                    {t.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEnrollOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              disabled={enrolling || !enrollSeqId || !enrollTableId}
-              onClick={() => void enroll()}
-            >
-              {enrolling ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                "Enroll"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            disabled={
+              enrolling ||
+              !enrollTableId ||
+              (!hideSequencePick && !enrollSeqId)
+            }
+            onClick={onEnroll}
+          >
+            {enrolling ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              "Enroll"
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
