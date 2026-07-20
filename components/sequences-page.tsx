@@ -95,6 +95,22 @@ type ActivityStats = {
 
 type ResearchTable = { id: string; name: string; slug?: string | null };
 
+type EnrollmentRow = {
+  id: string;
+  companyName: string;
+  domain: string | null;
+  contactName: string | null;
+  contactEmail: string | null;
+  contactLinkedin: string | null;
+  contactRole: string | null;
+  status: string;
+  currentStepPosition: number;
+  nextRunAt: string | null;
+  lastError: string | null;
+  source: string;
+  createdAt: string;
+};
+
 // ── Helpers ────────────────────────────────────────────────────────
 
 function useAuthToken() {
@@ -258,6 +274,11 @@ export function SequencesPage() {
   const [editLoading, setEditLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [enrollmentCount, setEnrollmentCount] = useState(0);
+  const [enrollments, setEnrollments] = useState<EnrollmentRow[]>([]);
+  const [editorTab, setEditorTab] = useState<"steps" | "people">("steps");
+  const [peopleFilter, setPeopleFilter] = useState<
+    "all" | "active" | "completed" | "other"
+  >("all");
   const [selectedStepKey, setSelectedStepKey] = useState<string | null>(null);
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -324,7 +345,31 @@ export function SequencesPage() {
       setEditName(data.sequence?.name ?? "");
       setEditDescription(data.sequence?.description ?? "");
       setEditStatus(data.sequence?.status ?? "draft");
-      setEnrollmentCount((data.enrollments as unknown[])?.length ?? 0);
+      const enrRaw = (data.enrollments ?? []) as Record<string, unknown>[];
+      const enrMapped: EnrollmentRow[] = enrRaw.map((e) => ({
+        id: String(e.id),
+        companyName: String(e.companyName ?? e.company_name ?? ""),
+        domain: (e.domain as string | null) ?? null,
+        contactName: (e.contactName ?? e.contact_name ?? null) as string | null,
+        contactEmail: (e.contactEmail ?? e.contact_email ?? null) as
+          | string
+          | null,
+        contactLinkedin: (e.contactLinkedin ??
+          e.contact_linkedin ??
+          null) as string | null,
+        contactRole: (e.contactRole ?? e.contact_role ?? null) as string | null,
+        status: String(e.status ?? "active"),
+        currentStepPosition: Number(
+          e.currentStepPosition ?? e.current_step_position ?? 0,
+        ),
+        nextRunAt: (e.nextRunAt ?? e.next_run_at ?? null) as string | null,
+        lastError: (e.lastError ?? e.last_error ?? null) as string | null,
+        source: String(e.source ?? "research"),
+        createdAt: String(e.createdAt ?? e.created_at ?? ""),
+      }));
+      setEnrollments(enrMapped);
+      setEnrollmentCount(enrMapped.length);
+      setEditorTab(enrMapped.length > 0 ? "people" : "steps");
       const steps = ((data.steps ?? []) as Record<string, unknown>[]).map(
         mapApiStep,
       );
@@ -334,6 +379,39 @@ export function SequencesPage() {
     } finally {
       setEditLoading(false);
     }
+  };
+
+  const reloadEnrollments = async (sequenceId: string) => {
+    if (!token) return;
+    const res = await fetch(`/api/outreach/sequences/${sequenceId}`, {
+      headers: headers(),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    const enrRaw = (data.enrollments ?? []) as Record<string, unknown>[];
+    const enrMapped: EnrollmentRow[] = enrRaw.map((e) => ({
+      id: String(e.id),
+      companyName: String(e.companyName ?? e.company_name ?? ""),
+      domain: (e.domain as string | null) ?? null,
+      contactName: (e.contactName ?? e.contact_name ?? null) as string | null,
+      contactEmail: (e.contactEmail ?? e.contact_email ?? null) as
+        | string
+        | null,
+      contactLinkedin: (e.contactLinkedin ?? e.contact_linkedin ?? null) as
+        | string
+        | null,
+      contactRole: (e.contactRole ?? e.contact_role ?? null) as string | null,
+      status: String(e.status ?? "active"),
+      currentStepPosition: Number(
+        e.currentStepPosition ?? e.current_step_position ?? 0,
+      ),
+      nextRunAt: (e.nextRunAt ?? e.next_run_at ?? null) as string | null,
+      lastError: (e.lastError ?? e.last_error ?? null) as string | null,
+      source: String(e.source ?? "research"),
+      createdAt: String(e.createdAt ?? e.created_at ?? ""),
+    }));
+    setEnrollments(enrMapped);
+    setEnrollmentCount(enrMapped.length);
   };
 
   const createSeq = async () => {
@@ -467,11 +545,16 @@ export function SequencesPage() {
       }
       setEnrollOpen(false);
       setNotice(
-        `Enrolled ${data.enrolled} · skipped ${data.skipped}`,
+        `Enrolled ${data.enrolled} · skipped ${data.skipped}. See People on the sequence.`,
       );
-      setView("queue");
-      setEditingId(null);
       await load();
+      // Stay on sequence editor → People so you see who is running
+      if (enrollSeqId) {
+        setEditingId(enrollSeqId);
+        setView("editor");
+        await openEditor(enrollSeqId);
+        setEditorTab("people");
+      }
     } finally {
       setEnrolling(false);
     }
@@ -555,6 +638,20 @@ export function SequencesPage() {
     const selected =
       editSteps.find((s) => s.key === selectedStepKey) ?? editSteps[0];
 
+    const filteredPeople = enrollments.filter((e) => {
+      if (peopleFilter === "all") return true;
+      if (peopleFilter === "active") return e.status === "active";
+      if (peopleFilter === "completed") return e.status === "completed";
+      return e.status !== "active" && e.status !== "completed";
+    });
+
+    const activePeople = enrollments.filter((e) => e.status === "active").length;
+    const stepLabel = (pos: number) => {
+      const s = editSteps[pos];
+      if (!s) return `Step ${pos + 1}`;
+      return `Step ${pos + 1} · ${stepTitle(s)}`;
+    };
+
     return (
       <div className="flex h-full min-h-0 flex-col">
         {/* Sticky top bar */}
@@ -603,18 +700,48 @@ export function SequencesPage() {
                 }}
               >
                 <Users className="size-3.5" />
-                Enroll
+                Enroll list
               </Button>
-              <Button size="sm" disabled={saving} onClick={() => void saveSequence()}>
-                {saving ? (
-                  <Loader2 className="size-3.5 animate-spin" />
-                ) : (
-                  <Check className="size-3.5" />
-                )}
-                Save
-              </Button>
+              {editorTab === "steps" && (
+                <Button size="sm" disabled={saving} onClick={() => void saveSequence()}>
+                  {saving ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Check className="size-3.5" />
+                  )}
+                  Save
+                </Button>
+              )}
             </div>
           </div>
+
+          {/* Steps | People tabs */}
+          <div className="mx-auto mt-3 flex max-w-6xl gap-1 border-b border-border">
+            {(
+              [
+                ["steps", "Steps", editSteps.length],
+                ["people", "People", enrollmentCount],
+              ] as const
+            ).map(([id, label, count]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setEditorTab(id)}
+                className={cn(
+                  "inline-flex items-center gap-2 border-b-2 px-3 py-2 text-sm",
+                  editorTab === id
+                    ? "border-foreground font-medium"
+                    : "border-transparent text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {label}
+                <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] tabular-nums">
+                  {count}
+                </span>
+              </button>
+            ))}
+          </div>
+
           {(notice || error) && (
             <div className="mx-auto mt-2 max-w-6xl">
               {notice && (
@@ -634,6 +761,182 @@ export function SequencesPage() {
             <Loader2 className="mr-2 size-4 animate-spin" />
             Loading sequence…
           </div>
+        ) : editorTab === "people" ? (
+          /* ── People: who is running this sequence ── */
+          <div className="mx-auto min-h-0 w-full max-w-6xl flex-1 overflow-y-auto px-4 py-6 sm:px-6">
+            <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold">People in this sequence</h2>
+                <p className="mt-0.5 text-xs text-pretty text-muted-foreground">
+                  {activePeople} active · {enrollmentCount} total. Each person is
+                  enrolled individually after you pick a research list.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void reloadEnrollments(editingId)}
+                >
+                  <RefreshCw className="size-3.5" />
+                  Refresh
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setEnrollSeqId(editingId);
+                    setEnrollOpen(true);
+                  }}
+                >
+                  <Plus className="size-3.5" />
+                  Enroll from list
+                </Button>
+              </div>
+            </div>
+
+            <div className="mb-4 flex flex-wrap gap-1.5">
+              {(
+                [
+                  ["all", "All"],
+                  ["active", "Active"],
+                  ["completed", "Completed"],
+                  ["other", "Paused / other"],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setPeopleFilter(id)}
+                  className={cn(
+                    "rounded-full px-3 py-1 text-xs font-medium",
+                    peopleFilter === id
+                      ? "bg-foreground text-background"
+                      : "bg-muted text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {filteredPeople.length === 0 ? (
+              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border px-6 py-16 text-center">
+                <Users className="size-8 text-muted-foreground/60" />
+                <p className="mt-4 text-sm font-medium">
+                  {enrollmentCount === 0
+                    ? "Nobody enrolled yet"
+                    : "No people in this filter"}
+                </p>
+                <p className="mt-1 max-w-md text-sm text-pretty text-muted-foreground">
+                  {enrollmentCount === 0
+                    ? "Click Enroll from list and pick a research list. Every person on those companies is added here and starts the cadence."
+                    : "Try another filter."}
+                </p>
+                {enrollmentCount === 0 && (
+                  <Button
+                    className="mt-5"
+                    onClick={() => {
+                      setEnrollSeqId(editingId);
+                      setEnrollOpen(true);
+                    }}
+                  >
+                    <Users className="size-3.5" />
+                    Enroll from list
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-xl border border-border">
+                <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_100px_minmax(0,1fr)_90px] gap-2 border-b border-border bg-muted/40 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  <span>Person</span>
+                  <span>Company</span>
+                  <span>Status</span>
+                  <span>Current step</span>
+                  <span>Next</span>
+                </div>
+                <ul className="divide-y divide-border">
+                  {filteredPeople.map((e) => (
+                    <li
+                      key={e.id}
+                      className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_100px_minmax(0,1fr)_90px] items-center gap-2 px-4 py-3 text-sm"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">
+                          {e.contactName || "—"}
+                        </p>
+                        <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                          {e.contactRole && (
+                            <span className="truncate">{e.contactRole}</span>
+                          )}
+                          {e.contactEmail && (
+                            <span className="truncate font-mono">
+                              {e.contactEmail}
+                            </span>
+                          )}
+                          {e.contactLinkedin && (
+                            <a
+                              href={e.contactLinkedin}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-0.5 text-[#0A66C2] hover:underline"
+                              onClick={(ev) => ev.stopPropagation()}
+                            >
+                              <Linkedin className="size-3" />
+                              LI
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate">{e.companyName}</p>
+                        {e.domain && (
+                          <p className="truncate font-mono text-[11px] text-muted-foreground">
+                            {e.domain}
+                          </p>
+                        )}
+                      </div>
+                      <div>
+                        <span
+                          className={cn(
+                            "inline-flex rounded-full px-2 py-0.5 text-[11px] capitalize",
+                            e.status === "active" &&
+                              "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
+                            e.status === "completed" &&
+                              "bg-sky-500/15 text-sky-700 dark:text-sky-400",
+                            e.status !== "active" &&
+                              e.status !== "completed" &&
+                              "bg-muted text-muted-foreground",
+                          )}
+                        >
+                          {e.status}
+                        </span>
+                      </div>
+                      <div className="min-w-0 text-xs text-muted-foreground">
+                        <p className="truncate text-foreground">
+                          {e.status === "completed"
+                            ? "Finished"
+                            : stepLabel(e.currentStepPosition)}
+                        </p>
+                        {e.lastError && (
+                          <p className="truncate text-destructive">
+                            {e.lastError}
+                          </p>
+                        )}
+                      </div>
+                      <div className="text-xs tabular-nums text-muted-foreground">
+                        {e.status === "active" && e.nextRunAt
+                          ? new Date(e.nextRunAt).toLocaleDateString(undefined, {
+                              month: "short",
+                              day: "numeric",
+                            })
+                          : "—"}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
         ) : (
           <div className="mx-auto grid min-h-0 w-full max-w-6xl flex-1 grid-cols-1 gap-0 lg:grid-cols-[minmax(0,1fr)_340px]">
             {/* Timeline column */}
@@ -643,8 +946,8 @@ export function SequencesPage() {
                   <p className="text-xs text-muted-foreground">
                     {editSteps.length} step{editSteps.length === 1 ? "" : "s"}
                     {enrollmentCount > 0
-                      ? ` · ${enrollmentCount} enrolled`
-                      : ""}
+                      ? ` · ${activePeople} people active`
+                      : " · no people yet — open People tab"}
                     {!mailboxConfigured ? " · connect Gmail in Settings" : ""}
                   </p>
                   <Input
@@ -1660,8 +1963,9 @@ function EnrollDialog({
         <DialogHeader>
           <DialogTitle>Enroll list</DialogTitle>
           <DialogDescription>
-            People enter the sequence. LinkedIn steps land in the queue; email
-            auto-sends when due.
+            Every person on companies in the research list is added to this
+            sequence (you&apos;ll see them under People). First due steps go to
+            Today / auto email.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
