@@ -4353,18 +4353,136 @@ export const researchUpsertPeople = tool({
 });
 
 // ---------------------------------------------------------------------------
-// Outreach sequences (email auto + LinkedIn semi)
+// Outreach sequences — full campaign lifecycle for CLI / MCP agents
 // ---------------------------------------------------------------------------
 
+const sequenceStepSchema = z.object({
+  channel: z
+    .enum(["linkedin", "email"])
+    .describe("linkedin = human queue semi; email = auto or semi"),
+  mode: z
+    .enum(["auto", "semi"])
+    .optional()
+    .describe("linkedin always semi; email default auto"),
+  delay_hours: z
+    .number()
+    .optional()
+    .describe("Hours after previous step (0 = immediately / on enroll)"),
+  linkedin_action: z
+    .enum(["connect_note", "message"])
+    .optional()
+    .describe("Required for linkedin steps"),
+  subject_template: z
+    .string()
+    .optional()
+    .describe("Email subject; tokens {{first_name}} {{company}} {{role}} etc."),
+  body_template: z
+    .string()
+    .describe(
+      "Message body. Tokens: {{first_name}} {{full_name}} {{company}} {{domain}} {{role}} {{email}} {{linkedin}}. Write in the campaign language (e.g. pt-BR).",
+    ),
+});
+
+function mapStepInput(
+  s: z.infer<typeof sequenceStepSchema>,
+): {
+  channel: "linkedin" | "email";
+  mode: "auto" | "semi";
+  delayHours?: number;
+  linkedinAction?: "connect_note" | "message" | null;
+  subjectTemplate?: string | null;
+  bodyTemplate: string;
+} {
+  const channel = s.channel;
+  return {
+    channel,
+    mode: channel === "linkedin" ? "semi" : s.mode === "semi" ? "semi" : "auto",
+    delayHours: s.delay_hours ?? 0,
+    linkedinAction:
+      channel === "linkedin"
+        ? (s.linkedin_action ?? "connect_note")
+        : null,
+    subjectTemplate: s.subject_template ?? null,
+    bodyTemplate: s.body_template,
+  };
+}
+
 export const sequenceList = tool({
-  description: "List outreach sequences with step and active enrollment counts.",
+  description:
+    "List all outreach sequences (campaigns) with step count and active enrollments. Use before creating a campaign or to pick a sequence_id.",
   inputSchema: z.object({}),
   execute: async () => {
     try {
       const client = getSupabaseServiceClient();
       const { listSequences } = await import("@/lib/outreach/sequences");
       const sequences = await listSequences(client);
-      return { success: true as const, sequences };
+      return {
+        success: true as const,
+        sequences: sequences.map((s) => ({
+          id: s.id,
+          name: s.name,
+          description: s.description,
+          status: s.status,
+          step_count: s.stepCount ?? 0,
+          active_enrollments: s.enrollmentCount ?? 0,
+        })),
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed",
+      };
+    }
+  },
+});
+
+export const sequenceGet = tool({
+  description:
+    "Get one sequence in full: metadata, ordered steps (templates), and enrolled people (contacts running the campaign). Use to review or iterate on a campaign before/after enroll.",
+  inputSchema: z.object({
+    sequence_id: z.string(),
+  }),
+  execute: async ({ sequence_id }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { getSequence, listEnrollments } = await import(
+        "@/lib/outreach/sequences"
+      );
+      const detail = await getSequence(client, sequence_id);
+      if (!detail) {
+        return { success: false as const, message: "Sequence not found" };
+      }
+      const enrollments = await listEnrollments(client, sequence_id);
+      return {
+        success: true as const,
+        sequence: detail.sequence,
+        steps: detail.steps.map((s) => ({
+          id: s.id,
+          position: s.position,
+          channel: s.channel,
+          mode: s.mode,
+          delay_hours: s.delayHours,
+          linkedin_action: s.linkedinAction,
+          subject_template: s.subjectTemplate,
+          body_template: s.bodyTemplate,
+        })),
+        people: enrollments.map((e) => ({
+          id: e.id,
+          status: e.status,
+          company: e.companyName,
+          domain: e.domain,
+          name: e.contactName,
+          email: e.contactEmail,
+          linkedin: e.contactLinkedin,
+          role: e.contactRole,
+          current_step: e.currentStepPosition,
+          next_run_at: e.nextRunAt,
+          missing_linkedin: !e.contactLinkedin,
+          missing_email: !e.contactEmail,
+        })),
+        people_count: enrollments.length,
+        active_count: enrollments.filter((e) => e.status === "active").length,
+      };
     } catch (error) {
       return {
         success: false as const,
@@ -4376,25 +4494,276 @@ export const sequenceList = tool({
 
 export const sequenceCreate = tool({
   description:
-    "Create an outreach sequence with default steps: LinkedIn connect note (semi) → email intro (auto) → LinkedIn follow-up (semi). Templates support {{first_name}} {{company}} {{role}} {{domain}}.",
+    "Create a fully custom outreach campaign (sequence). Pass steps[] for custom multi-channel cadence (LinkedIn connect/message + email) with body/subject templates. Prefer writing copy in the user's language (e.g. pt-BR for Brazilian ICP). Tokens: {{first_name}} {{full_name}} {{company}} {{domain}} {{role}} {{email}} {{linkedin}}. If steps omitted, uses a default EN cadence. Typical agent flow: researchListTables → researchListRows (understand ICP) → sequenceCreate with custom pt-BR steps → sequenceEnrollResearch → sequenceListQueue.",
   inputSchema: z.object({
-    name: z.string(),
-    description: z.string().optional(),
+    name: z.string().describe("Campaign name, e.g. 'QA founders BR jul/26'"),
+    description: z
+      .string()
+      .optional()
+      .describe("Internal note: ICP angle, offer, language"),
+    status: z
+      .enum(["draft", "active"])
+      .optional()
+      .describe("Default draft; set active when ready to enroll"),
+    steps: z
+      .array(sequenceStepSchema)
+      .optional()
+      .describe(
+        "Ordered cadence. Example: LI connect_note delay 0 → email auto delay 24 → LI message delay 72",
+      ),
     user_email: z.string().optional(),
   }),
-  execute: async ({ name, description, user_email }) => {
+  execute: async ({ name, description, status, steps, user_email }) => {
     try {
       const client = getSupabaseServiceClient();
-      const { createSequence } = await import("@/lib/outreach/sequences");
+      const { createSequence, updateSequence } = await import(
+        "@/lib/outreach/sequences"
+      );
       const result = await createSequence(client, {
         name,
         description,
         createdByEmail: user_email,
+        steps: steps?.map(mapStepInput),
       });
+      let sequence = result.sequence;
+      if (status === "active") {
+        sequence = await updateSequence(client, sequence.id, {
+          status: "active",
+        });
+      }
       return {
         success: true as const,
-        sequence: result.sequence,
-        steps: result.steps,
+        sequence,
+        steps: result.steps.map((s) => ({
+          position: s.position,
+          channel: s.channel,
+          mode: s.mode,
+          delay_hours: s.delayHours,
+          linkedin_action: s.linkedinAction,
+          subject_template: s.subjectTemplate,
+          body_template: s.bodyTemplate,
+        })),
+        next:
+          "Call sequenceEnrollResearch with this sequence_id and table_ref (list slug/id) to put people into the campaign. Then sequenceListQueue for human LinkedIn work.",
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed",
+      };
+    }
+  },
+});
+
+export const sequenceUpdate = tool({
+  description:
+    "Update sequence metadata and/or replace all steps (full cadence rewrite). Use to refine copy after reviewing the list ICP. Pass steps to replace the entire step list.",
+  inputSchema: z.object({
+    sequence_id: z.string(),
+    name: z.string().optional(),
+    description: z.string().optional(),
+    status: z.enum(["draft", "active", "paused", "archived"]).optional(),
+    steps: z.array(sequenceStepSchema).optional(),
+  }),
+  execute: async ({ sequence_id, name, description, status, steps }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { updateSequence, replaceSteps, getSequence } = await import(
+        "@/lib/outreach/sequences"
+      );
+      let sequence = (
+        await getSequence(client, sequence_id)
+      )?.sequence;
+      if (!sequence) {
+        return { success: false as const, message: "Sequence not found" };
+      }
+      if (
+        name !== undefined ||
+        description !== undefined ||
+        status !== undefined
+      ) {
+        sequence = await updateSequence(client, sequence_id, {
+          name,
+          description,
+          status,
+        });
+      }
+      let outSteps = (await getSequence(client, sequence_id))?.steps ?? [];
+      if (steps && steps.length > 0) {
+        outSteps = await replaceSteps(
+          client,
+          sequence_id,
+          steps.map(mapStepInput),
+        );
+      }
+      return {
+        success: true as const,
+        sequence,
+        steps: outSteps.map((s) => ({
+          position: s.position,
+          channel: s.channel,
+          mode: s.mode,
+          delay_hours: s.delayHours,
+          linkedin_action: s.linkedinAction,
+          subject_template: s.subjectTemplate,
+          body_template: s.bodyTemplate,
+        })),
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed",
+      };
+    }
+  },
+});
+
+export const sequencePreview = tool({
+  description:
+    "Preview how sequence templates render for a real person (enrollment) or a sample contact from a research list. Use before enroll to validate pt-BR copy and tokens.",
+  inputSchema: z.object({
+    sequence_id: z.string().optional(),
+    enrollment_id: z.string().optional(),
+    table_ref: z
+      .string()
+      .optional()
+      .describe("Research list to pull a sample person when not using enrollment"),
+    steps: z
+      .array(sequenceStepSchema)
+      .optional()
+      .describe("Draft steps to preview without saving (else uses sequence_id steps)"),
+  }),
+  execute: async ({ sequence_id, enrollment_id, table_ref, steps }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { renderTemplate } = await import("@/lib/outreach/renderer");
+      const { getSequence, listEnrollments } = await import(
+        "@/lib/outreach/sequences"
+      );
+
+      type Person = {
+        companyName: string;
+        domain: string | null;
+        contactName: string | null;
+        contactEmail: string | null;
+        contactLinkedin: string | null;
+        contactRole: string | null;
+      };
+
+      let person: Person = {
+        companyName: "Empresa Exemplo",
+        domain: "exemplo.com.br",
+        contactName: "Ana Silva",
+        contactEmail: "ana@exemplo.com.br",
+        contactLinkedin: "https://linkedin.com/in/ana-silva",
+        contactRole: "Head of Engineering",
+      };
+      let person_source = "sample_pt";
+
+      if (enrollment_id && sequence_id) {
+        const people = await listEnrollments(client, sequence_id);
+        const e = people.find((p) => p.id === enrollment_id);
+        if (e) {
+          person = {
+            companyName: e.companyName,
+            domain: e.domain,
+            contactName: e.contactName,
+            contactEmail: e.contactEmail,
+            contactLinkedin: e.contactLinkedin,
+            contactRole: e.contactRole,
+          };
+          person_source = "enrollment";
+        }
+      } else if (table_ref) {
+        const { resolveTable } = await import("@/lib/research/columns");
+        const { listRows, listPeople } = await import("@/lib/research/tables");
+        const table = await resolveTable(client, table_ref);
+        const rows = await listRows(client, table.id);
+        for (const row of rows.slice(0, 20)) {
+          const people = await listPeople(client, row.id);
+          const p =
+            people.find((x) => x.linkedin || x.email) ?? people[0];
+          if (p) {
+            person = {
+              companyName: row.companyName,
+              domain: row.domain,
+              contactName: p.name,
+              contactEmail: p.email,
+              contactLinkedin: p.linkedin,
+              contactRole: p.role,
+            };
+            person_source = `research:${table.slug ?? table.id}`;
+            break;
+          }
+        }
+      }
+
+      let stepDefs: Array<{
+        channel: string;
+        mode: string;
+        delayHours: number;
+        linkedinAction: string | null;
+        subjectTemplate: string | null;
+        bodyTemplate: string;
+      }> = [];
+
+      if (steps?.length) {
+        stepDefs = steps.map((s) => {
+          const m = mapStepInput(s);
+          return {
+            channel: m.channel,
+            mode: m.mode,
+            delayHours: m.delayHours ?? 0,
+            linkedinAction: m.linkedinAction ?? null,
+            subjectTemplate: m.subjectTemplate ?? null,
+            bodyTemplate: m.bodyTemplate,
+          };
+        });
+      } else if (sequence_id) {
+        const detail = await getSequence(client, sequence_id);
+        if (!detail) {
+          return { success: false as const, message: "Sequence not found" };
+        }
+        stepDefs = detail.steps.map((s) => ({
+          channel: s.channel,
+          mode: s.mode,
+          delayHours: s.delayHours,
+          linkedinAction: s.linkedinAction,
+          subjectTemplate: s.subjectTemplate,
+          bodyTemplate: s.bodyTemplate,
+        }));
+      } else {
+        return {
+          success: false as const,
+          message: "Provide sequence_id or steps[] to preview",
+        };
+      }
+
+      const rendered = stepDefs.map((s, i) => ({
+        position: i,
+        channel: s.channel,
+        mode: s.mode,
+        delay_hours: s.delayHours,
+        linkedin_action: s.linkedinAction,
+        subject: s.subjectTemplate
+          ? renderTemplate(s.subjectTemplate, person)
+          : null,
+        body: renderTemplate(s.bodyTemplate, person),
+        gaps: [
+          s.channel === "linkedin" && !person.contactLinkedin
+            ? "missing_linkedin"
+            : null,
+          s.channel === "email" && !person.contactEmail
+            ? "missing_email"
+            : null,
+        ].filter(Boolean),
+      }));
+
+      return {
+        success: true as const,
+        person_source,
+        person,
+        steps: rendered,
       };
     } catch (error) {
       return {
@@ -4407,15 +4776,15 @@ export const sequenceCreate = tool({
 
 export const sequenceEnrollResearch = tool({
   description:
-    "Enroll people from a research list into a sequence. Creates LinkedIn queue tasks for semi steps. Use table_ref (slug/id) and optional row_ids.",
+    "Enroll people from a research ICP list into a sequence (start the campaign). Creates send tasks for step 1. Returns enrolled/skipped counts, missing LinkedIn/email warnings. Use table_ref = list slug or id from researchListTables.",
   inputSchema: z.object({
     sequence_id: z.string(),
-    table_ref: z.string(),
+    table_ref: z.string().describe("Research table id or slug"),
     row_ids: z.array(z.string()).optional(),
     all_people: z
       .boolean()
       .optional()
-      .describe("Enroll every person on each company (default true)"),
+      .describe("Enroll every person per company (default true)"),
     user_email: z.string().optional(),
   }),
   execute: async ({
@@ -4435,7 +4804,12 @@ export const sequenceEnrollResearch = tool({
         allPeople: all_people !== false,
         enrolledByEmail: user_email ?? null,
       });
-      return { success: true as const, ...result };
+      return {
+        success: true as const,
+        ...result,
+        next:
+          "Use sequenceListQueue for LinkedIn/manual tasks. Email auto-send depends on Settings → mailbox email_auto_send.",
+      };
     } catch (error) {
       return {
         success: false as const,
@@ -4447,7 +4821,7 @@ export const sequenceEnrollResearch = tool({
 
 export const sequenceListQueue = tool({
   description:
-    "List ready LinkedIn semi tasks (human queue): open profile, copy message, mark sent.",
+    "List ready Today-queue tasks (LinkedIn semi + manual email). After campaign enroll, call this to work the human queue. Returns copy-ready body/subject and LinkedIn URLs.",
   inputSchema: z.object({
     channel: z.enum(["linkedin", "email"]).optional(),
     limit: z.number().optional(),
@@ -4455,26 +4829,37 @@ export const sequenceListQueue = tool({
   execute: async ({ channel, limit }) => {
     try {
       const client = getSupabaseServiceClient();
-      const { listReadyQueue, processDueSequenceTasks } = await import(
-        "@/lib/outreach/sequences"
-      );
+      const {
+        listReadyQueue,
+        processDueSequenceTasks,
+        getActivityStats,
+      } = await import("@/lib/outreach/sequences");
       await processDueSequenceTasks(client);
       const tasks = await listReadyQueue(client, {
-        channel: channel ?? "linkedin",
-        limit: limit ?? 30,
+        channel,
+        limit: limit ?? 40,
       });
+      const stats = await getActivityStats(client);
       return {
         success: true as const,
+        stats,
         tasks: tasks.map((t) => ({
           id: t.id,
           channel: t.channel,
+          mode: t.mode,
           body: t.renderedBody,
           subject: t.renderedSubject,
           company: t.enrollment?.companyName,
           contact: t.enrollment?.contactName,
+          email: t.enrollment?.contactEmail,
           linkedin: t.enrollment?.contactLinkedin,
           role: t.enrollment?.contactRole,
           action: t.step?.linkedinAction,
+          sequence: t.sequenceName,
+          how_to:
+            t.channel === "linkedin"
+              ? "Open LinkedIn URL → paste body → send → sequenceCompleteTask outcome=sent"
+              : "Open Gmail with subject/body → send → sequenceCompleteTask outcome=sent",
         })),
       };
     } catch (error) {
@@ -4488,7 +4873,7 @@ export const sequenceListQueue = tool({
 
 export const sequenceCompleteTask = tool({
   description:
-    "Mark a sequence task as sent or skipped (after human sends LinkedIn message). Advances enrollment to next step.",
+    "Mark a Today-queue task as sent or skipped after the human (or agent-assisted) send. Advances enrollment to the next step.",
   inputSchema: z.object({
     task_id: z.string(),
     outcome: z.enum(["sent", "skipped"]).optional(),
@@ -4590,7 +4975,10 @@ export function createAgentTools(userEmail?: string) {
     researchSetCell,
     researchUpsertPeople,
     sequenceList,
+    sequenceGet,
     sequenceCreate,
+    sequenceUpdate,
+    sequencePreview,
     sequenceEnrollResearch,
     sequenceListQueue,
     sequenceCompleteTask,
