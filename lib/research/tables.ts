@@ -301,17 +301,8 @@ export async function listEvidence(
   }));
 }
 
-export async function listPeople(
-  client: SupabaseClient,
-  rowId: string,
-): Promise<ResearchPerson[]> {
-  const { data, error } = await client
-    .from("research_people")
-    .select("*")
-    .eq("row_id", rowId)
-    .order("created_at", { ascending: true });
-  if (error) throw new Error(`Failed to list people: ${error.message}`);
-  return ((data ?? []) as Array<Record<string, unknown>>).map((r) => ({
+function mapPerson(r: Record<string, unknown>): ResearchPerson {
+  return {
     id: r.id as string,
     rowId: r.row_id as string,
     name: r.name as string,
@@ -324,7 +315,47 @@ export async function listPeople(
     confidence: r.confidence != null ? Number(r.confidence) : null,
     notes: (r.notes as string | null) ?? null,
     createdAt: r.created_at as string,
-  }));
+  };
+}
+
+export async function listPeople(
+  client: SupabaseClient,
+  rowId: string,
+): Promise<ResearchPerson[]> {
+  const { data, error } = await client
+    .from("research_people")
+    .select("*")
+    .eq("row_id", rowId)
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(`Failed to list people: ${error.message}`);
+  return ((data ?? []) as Array<Record<string, unknown>>).map(mapPerson);
+}
+
+/** Batch-load people for many rows (Clay grid). */
+export async function listPeopleForRows(
+  client: SupabaseClient,
+  rowIds: string[],
+): Promise<Map<string, ResearchPerson[]>> {
+  const map = new Map<string, ResearchPerson[]>();
+  if (rowIds.length === 0) return map;
+  // Chunk to avoid oversized IN lists
+  const chunkSize = 200;
+  for (let i = 0; i < rowIds.length; i += chunkSize) {
+    const chunk = rowIds.slice(i, i + chunkSize);
+    const { data, error } = await client
+      .from("research_people")
+      .select("*")
+      .in("row_id", chunk)
+      .order("created_at", { ascending: true });
+    if (error) throw new Error(`Failed to list people batch: ${error.message}`);
+    for (const raw of data ?? []) {
+      const p = mapPerson(raw as Record<string, unknown>);
+      const list = map.get(p.rowId) ?? [];
+      list.push(p);
+      map.set(p.rowId, list);
+    }
+  }
+  return map;
 }
 
 /** Postgres jsonb rejects the NUL escape (u0000) - scraped pages carry it. */

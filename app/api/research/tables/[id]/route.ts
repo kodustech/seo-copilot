@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 
-import { deleteTable, getTable, listRows } from "@/lib/research/tables";
+import {
+  deleteTable,
+  getTable,
+  listPeopleForRows,
+  listRows,
+} from "@/lib/research/tables";
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 
 export async function GET(
@@ -23,7 +28,16 @@ export async function GET(
       passOnly,
       minScore: minScore ? Number(minScore) : undefined,
     });
-    return NextResponse.json({ table, rows });
+    const peopleMap = await listPeopleForRows(
+      client,
+      rows.map((r) => r.id),
+    );
+    // Attach people onto each row for Clay-style grid (serializable).
+    const rowsWithPeople = rows.map((r) => ({
+      ...r,
+      people: peopleMap.get(r.id) ?? [],
+    }));
+    return NextResponse.json({ table, rows: rowsWithPeople });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Unauthorized" },
