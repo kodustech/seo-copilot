@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
+import { renderTemplate } from "@/lib/outreach/renderer";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -280,6 +281,9 @@ export function SequencesPage() {
     "all" | "active" | "completed" | "other"
   >("all");
   const [selectedStepKey, setSelectedStepKey] = useState<string | null>(null);
+  const [previewPersonId, setPreviewPersonId] = useState<string | "sample">(
+    "sample",
+  );
 
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
@@ -370,6 +374,10 @@ export function SequencesPage() {
       setEnrollments(enrMapped);
       setEnrollmentCount(enrMapped.length);
       setEditorTab(enrMapped.length > 0 ? "people" : "steps");
+      // Prefer a real person for sequence preview
+      const firstActive =
+        enrMapped.find((e) => e.status === "active") ?? enrMapped[0];
+      setPreviewPersonId(firstActive?.id ?? "sample");
       const steps = ((data.steps ?? []) as Record<string, unknown>[]).map(
         mapApiStep,
       );
@@ -878,18 +886,19 @@ export function SequencesPage() {
               </div>
             ) : (
               <div className="overflow-hidden rounded-xl border border-border">
-                <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_100px_minmax(0,1fr)_90px] gap-2 border-b border-border bg-muted/40 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_100px_minmax(0,1fr)_90px_72px] gap-2 border-b border-border bg-muted/40 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                   <span>Person</span>
                   <span>Company</span>
                   <span>Status</span>
                   <span>Current step</span>
                   <span>Next</span>
+                  <span />
                 </div>
                 <ul className="divide-y divide-border">
                   {filteredPeople.map((e) => (
                     <li
                       key={e.id}
-                      className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_100px_minmax(0,1fr)_90px] items-center gap-2 px-4 py-3 text-sm"
+                      className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_100px_minmax(0,1fr)_90px_72px] items-center gap-2 px-4 py-3 text-sm"
                     >
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-1.5">
@@ -981,6 +990,19 @@ export function SequencesPage() {
                               day: "numeric",
                             })
                           : "—"}
+                      </div>
+                      <div>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-2 text-[11px]"
+                          onClick={() => {
+                            setPreviewPersonId(e.id);
+                            setEditorTab("steps");
+                          }}
+                        >
+                          Preview
+                        </Button>
                       </div>
                     </li>
                   ))}
@@ -1401,88 +1423,186 @@ export function SequencesPage() {
               </div>
             </div>
 
-            {/* Right: live preview */}
+            {/* Right: real-person sequence preview */}
             <aside className="hidden min-h-0 overflow-y-auto bg-muted/20 p-5 lg:block">
               <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                Preview
+                Preview as person
               </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                How it looks with sample data
+              <p className="mt-1 text-xs text-pretty text-muted-foreground">
+                Full cadence with real tokens filled in.
               </p>
-              {selected && (
-                <div className="mt-4 rounded-xl border border-border bg-background p-4 shadow-sm">
-                  <div className="mb-3 flex items-center gap-2">
-                    {selected.channel === "linkedin" ? (
-                      <Linkedin className="size-4 text-[#0A66C2]" />
-                    ) : (
-                      <Mail className="size-4 text-amber-600" />
-                    )}
-                    <span className="text-xs font-medium">
-                      {stepTitle(selected)}
-                    </span>
-                  </div>
-                  {selected.channel === "email" && (
-                    <p className="mb-2 border-b border-border pb-2 text-sm font-medium">
-                      {selected.subjectTemplate
-                        .replace(/\{\{\s*first_name\s*\}\}/gi, "Alex")
-                        .replace(/\{\{\s*company\s*\}\}/gi, "Acme QA")
-                        .replace(/\{\{\s*role\s*\}\}/gi, "Head of QA")
-                        .replace(/\{\{\s*full_name\s*\}\}/gi, "Alex Chen")
-                        .replace(/\{\{\s*domain\s*\}\}/gi, "acme.com") ||
-                        "(no subject)"}
-                    </p>
-                  )}
-                  <pre className="whitespace-pre-wrap text-sm leading-relaxed text-pretty text-foreground/90">
-                    {selected.bodyTemplate
-                      .replace(/\{\{\s*first_name\s*\}\}/gi, "Alex")
-                      .replace(/\{\{\s*company\s*\}\}/gi, "Acme QA")
-                      .replace(/\{\{\s*role\s*\}\}/gi, "Head of QA")
-                      .replace(/\{\{\s*full_name\s*\}\}/gi, "Alex Chen")
-                      .replace(/\{\{\s*domain\s*\}\}/gi, "acme.com")
-                      .replace(/\{\{\s*email\s*\}\}/gi, "alex@acme.com")
-                      .replace(
-                        /\{\{\s*linkedin\s*\}\}/gi,
-                        "linkedin.com/in/alex",
-                      ) || "Empty…"}
-                  </pre>
-                  {selected.channel === "linkedin" && (
-                    <p className="mt-4 border-t border-border pt-3 text-[11px] leading-relaxed text-muted-foreground">
-                      {selected.linkedinAction === "connect_note"
-                        ? "Queue: open LinkedIn → paste note → send connection request → Mark sent."
-                        : "Queue: open LinkedIn → paste message → send DM → Mark sent."}
-                    </p>
-                  )}
-                  {selected.channel === "email" && selected.mode === "auto" && (
-                    <p className="mt-4 border-t border-border pt-3 text-[11px] leading-relaxed text-muted-foreground">
-                      Sends automatically from the Gmail connected in Settings.
-                    </p>
-                  )}
-                </div>
-              )}
 
-              <div className="mt-6">
-                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  Cadence
-                </p>
-                <ol className="mt-2 space-y-2">
-                  {editSteps.map((s, i) => (
-                    <li key={s.key} className="flex gap-2 text-xs">
-                      <span className="tabular-nums text-muted-foreground">
-                        {i + 1}.
-                      </span>
-                      <span className="text-pretty">
-                        <span className="font-medium text-foreground">
-                          {stepTitle(s)}
-                        </span>
-                        <span className="text-muted-foreground">
-                          {" "}
-                          · {formatWait(s.delayHours).toLowerCase()}
-                        </span>
-                      </span>
-                    </li>
-                  ))}
-                </ol>
+              <div className="mt-3 space-y-1.5">
+                <Select
+                  value={previewPersonId}
+                  onValueChange={(v) =>
+                    setPreviewPersonId(v as string | "sample")
+                  }
+                >
+                  <SelectTrigger className="h-9 bg-background text-left text-xs">
+                    <SelectValue placeholder="Pick a person" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="sample">
+                      Sample (Alex · Acme QA)
+                    </SelectItem>
+                    {enrollments.map((e) => (
+                      <SelectItem key={e.id} value={e.id}>
+                        {(e.contactName || "—") +
+                          (e.companyName ? ` · ${e.companyName}` : "")}
+                        {!e.contactLinkedin || !e.contactEmail
+                          ? " ⚠"
+                          : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {enrollments.length === 0 && (
+                  <p className="text-[11px] text-muted-foreground">
+                    Enroll people to preview with real contacts.{" "}
+                    <button
+                      type="button"
+                      className="font-medium text-foreground underline underline-offset-2"
+                      onClick={() => setEditorTab("people")}
+                    >
+                      People tab
+                    </button>
+                  </p>
+                )}
               </div>
+
+              {(() => {
+                const sample = {
+                  companyName: "Acme QA",
+                  domain: "acme.com",
+                  contactName: "Alex Chen",
+                  contactEmail: "alex@acme.com",
+                  contactLinkedin: "https://linkedin.com/in/alex",
+                  contactRole: "Head of QA",
+                };
+                const person =
+                  previewPersonId === "sample"
+                    ? sample
+                    : (() => {
+                        const e = enrollments.find(
+                          (x) => x.id === previewPersonId,
+                        );
+                        if (!e) return sample;
+                        return {
+                          companyName: e.companyName,
+                          domain: e.domain,
+                          contactName: e.contactName,
+                          contactEmail: e.contactEmail,
+                          contactLinkedin: e.contactLinkedin,
+                          contactRole: e.contactRole,
+                        };
+                      })();
+
+                const personLabel =
+                  person.contactName || person.companyName || "Contact";
+
+                return (
+                  <div className="mt-4 space-y-3">
+                    <div className="rounded-lg border border-border bg-background/80 px-3 py-2 text-xs">
+                      <p className="font-medium text-foreground">
+                        {personLabel}
+                      </p>
+                      <p className="text-muted-foreground">
+                        {[person.contactRole, person.companyName, person.domain]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </p>
+                      <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                        {person.contactEmail ? (
+                          <span className="font-mono">{person.contactEmail}</span>
+                        ) : (
+                          <span className="text-amber-600 dark:text-amber-400">
+                            no email
+                          </span>
+                        )}
+                        {person.contactLinkedin ? (
+                          <a
+                            href={person.contactLinkedin}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[#0A66C2] hover:underline"
+                          >
+                            LinkedIn
+                          </a>
+                        ) : (
+                          <span className="text-amber-600 dark:text-amber-400">
+                            no LinkedIn
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      How the sequence will look
+                    </p>
+
+                    {editSteps.map((s, i) => {
+                      const isSel = selected?.key === s.key;
+                      const body = renderTemplate(s.bodyTemplate, person);
+                      const subject =
+                        s.channel === "email" && s.subjectTemplate
+                          ? renderTemplate(s.subjectTemplate, person)
+                          : null;
+                      const gaps: string[] = [];
+                      if (s.channel === "linkedin" && !person.contactLinkedin) {
+                        gaps.push("no LinkedIn URL");
+                      }
+                      if (s.channel === "email" && !person.contactEmail) {
+                        gaps.push("no email");
+                      }
+
+                      return (
+                        <button
+                          key={s.key}
+                          type="button"
+                          onClick={() => setSelectedStepKey(s.key)}
+                          className={cn(
+                            "w-full rounded-xl border p-3 text-left transition-colors",
+                            isSel
+                              ? "border-foreground/20 bg-background shadow-sm ring-1 ring-foreground/10"
+                              : "border-border bg-background/60 hover:bg-background",
+                          )}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="flex size-6 items-center justify-center rounded-full bg-muted text-[11px] font-semibold tabular-nums">
+                              {i + 1}
+                            </span>
+                            {s.channel === "linkedin" ? (
+                              <Linkedin className="size-3.5 text-[#0A66C2]" />
+                            ) : (
+                              <Mail className="size-3.5 text-amber-600" />
+                            )}
+                            <span className="text-xs font-medium">
+                              {stepTitle(s)}
+                            </span>
+                            <span className="text-[11px] text-muted-foreground">
+                              · {formatWait(s.delayHours).toLowerCase()}
+                            </span>
+                          </div>
+                          {gaps.length > 0 && (
+                            <p className="mt-1.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                              ⚠ {gaps.join(" · ")} — this step may stall
+                            </p>
+                          )}
+                          {subject && (
+                            <p className="mt-2 border-b border-border pb-1.5 text-xs font-medium">
+                              {subject || "(no subject)"}
+                            </p>
+                          )}
+                          <pre className="mt-2 max-h-36 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-pretty text-foreground/90">
+                            {body || "Empty message…"}
+                          </pre>
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </aside>
           </div>
         )}
