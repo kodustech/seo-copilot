@@ -1,13 +1,19 @@
 "use client";
 
+/* Hallmark · Home / Command center redesign
+ * genre: modern-minimal dark workspace · AI CMO day board
+ * structure: snapshot strip → split (priority stack | motion rails) → streams
+ * pre-emit critique: P4 H5 E4 S4 R4 V4
+ */
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
+  ArrowUpRight,
   Building2,
   CalendarClock,
   CheckCircle2,
-  ChevronRight,
   Clock,
   KanbanSquare,
   Loader2,
@@ -15,6 +21,7 @@ import {
   RefreshCw,
   Send,
   Target,
+  Workflow,
   XCircle,
 } from "lucide-react";
 
@@ -22,31 +29,9 @@ import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
 import type { AttentionItem, UserOverview } from "@/lib/user-center";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 // ---------------------------------------------------------------------------
-
-const SEVERITY_STYLES: Record<
-  AttentionItem["severity"],
-  { className: string; icon: typeof AlertTriangle }
-> = {
-  error: { className: "border-red-500/30 bg-red-500/[0.07]", icon: XCircle },
-  warning: {
-    className: "border-amber-500/30 bg-amber-500/[0.07]",
-    icon: AlertTriangle,
-  },
-  info: { className: "border-sky-500/25 bg-sky-500/[0.06]", icon: Clock },
-};
-
-const SOURCE_ICON: Record<string, typeof KanbanSquare> = {
-  kanban: KanbanSquare,
-  crm: Building2,
-  outreach: Send,
-  goals: Target,
-  jobs: Clock,
-  reply_radar: MessageCircle,
-};
 
 function formatRelative(iso: string | null): string {
   if (!iso) return "—";
@@ -58,6 +43,20 @@ function formatRelative(iso: string | null): string {
   if (days < 30) return `${days}d ago`;
   return `${Math.floor(days / 30)}mo ago`;
 }
+
+function capitalize(s: string) {
+  if (!s) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+const KIND_LABEL: Record<AttentionItem["kind"], string> = {
+  crm_idle: "Accounts",
+  kanban_overdue: "Kanban",
+  outreach_followup: "Outbound",
+  goal_at_risk: "Goals",
+  job_failed: "Jobs",
+  reply_pending: "Social inbox",
+};
 
 // ---------------------------------------------------------------------------
 
@@ -100,194 +99,434 @@ export function UserCenterPage() {
   }, [token]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
 
   const firstName = overview?.userEmail?.split("@")[0]?.split(".")[0] ?? "";
+  const displayName = firstName ? capitalize(firstName) : "";
+
+  const attentionBySeverity = useMemo(() => {
+    if (!overview) return { error: [], warning: [], info: [] };
+    const error: AttentionItem[] = [];
+    const warning: AttentionItem[] = [];
+    const info: AttentionItem[] = [];
+    for (const a of overview.attention) {
+      if (a.severity === "error") error.push(a);
+      else if (a.severity === "warning") warning.push(a);
+      else info.push(a);
+    }
+    return { error, warning, info };
+  }, [overview]);
+
+  const topAction = useMemo(() => {
+    if (!overview) return null;
+    // Highest leverage signal first — real product priorities
+    if (overview.replyRadar.pending > 0) {
+      return {
+        href: "/reply-radar",
+        label: "Clear social inbox",
+        detail: `${overview.replyRadar.pending} replies waiting`,
+        tone: "sky" as const,
+      };
+    }
+    if (overview.kanban.overdue > 0) {
+      return {
+        href: "/kanban",
+        label: "Unblock overdue work",
+        detail: `${overview.kanban.overdue} cards past due`,
+        tone: "amber" as const,
+      };
+    }
+    if (overview.goals.atRisk > 0) {
+      return {
+        href: "/goals",
+        label: "Review goals at risk",
+        detail: `${overview.goals.atRisk} behind expected pace`,
+        tone: "amber" as const,
+      };
+    }
+    if (overview.crm.idle > 0) {
+      return {
+        href: "/crm",
+        label: "Touch idle accounts",
+        detail: `${overview.crm.idle} quiet accounts`,
+        tone: "amber" as const,
+      };
+    }
+    return {
+      href: "/sequences",
+      label: "Open outbound",
+      detail: "Work today's sequence queue",
+      tone: "neutral" as const,
+    };
+  }, [overview]);
 
   return (
-    <div className="mx-auto max-w-[1100px] px-5 py-6">
-      <div className="mb-5 flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-white">Home</h2>
-          <p className="text-sm text-neutral-500">
-            {firstName ? `Hi, ${firstName} — ` : ""}
-            everything assigned to you, in one place.
+    <div className="mx-auto min-h-0 w-full max-w-6xl px-4 py-6 sm:px-6">
+      {/* Masthead */}
+      <header className="mb-8 flex flex-wrap items-end justify-between gap-4 border-b border-white/[0.06] pb-6">
+        <div className="min-w-0">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-neutral-500">
+            {new Date().toLocaleDateString("en-US", {
+              weekday: "long",
+              month: "long",
+              day: "numeric",
+            })}
+          </p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-white text-balance sm:text-3xl">
+            {displayName ? `${displayName}'s day` : "Your day"}
+          </h1>
+          <p className="mt-1 max-w-lg text-sm text-pretty text-neutral-500">
+            Command view across Attract, Engage, and Convert — what needs you
+            now.
           </p>
         </div>
         <Button
-          variant="ghost"
+          variant="outline"
           size="sm"
-          onClick={() => load()}
-          className="h-8 gap-1.5 text-neutral-400 hover:text-white"
+          onClick={() => void load()}
+          disabled={loading}
+          className="h-9 shrink-0 gap-1.5 border-white/10 bg-transparent text-neutral-300 hover:bg-white/[0.04] hover:text-white"
         >
           <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
           Refresh
         </Button>
-      </div>
+      </header>
 
       {error && (
-        <div className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        <div className="mb-6 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2.5 text-sm text-red-300">
           {error}
         </div>
       )}
 
       {loading && !overview ? (
-        <Loader2 className="mx-auto mt-16 size-6 animate-spin text-neutral-500" />
+        <div className="flex justify-center py-24">
+          <Loader2 className="size-6 animate-spin text-neutral-500" />
+        </div>
       ) : overview ? (
-        <>
-          {/* Attention feed */}
-          <section className="mb-6">
-            <h3 className="mb-2 flex items-center gap-2 text-sm font-medium text-neutral-300">
-              <AlertTriangle className="size-4 text-amber-400" />
-              Needs attention
-              <span className="rounded bg-white/10 px-1.5 text-xs text-neutral-400">
-                {overview.attention.length}
-              </span>
-            </h3>
-            {overview.attention.length === 0 ? (
-              <div className="flex items-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.06] px-4 py-4 text-sm text-emerald-300">
-                <CheckCircle2 className="size-4" /> All clear. Nothing pending on
-                your plate.
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {overview.attention.map((a) => {
-                  const sev = SEVERITY_STYLES[a.severity];
-                  const SevIcon = sev.icon;
-                  return (
-                    <Link
-                      key={a.dedupeKey}
-                      href={a.link}
-                      className={cn(
-                        "group flex items-center gap-3 rounded-xl border px-4 py-3 transition hover:brightness-125",
-                        sev.className,
-                      )}
-                    >
-                      <SevIcon
-                        className={cn(
-                          "size-4 shrink-0",
-                          a.severity === "error"
-                            ? "text-red-400"
-                            : a.severity === "warning"
-                              ? "text-amber-400"
-                              : "text-sky-400",
-                        )}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium text-neutral-100">
-                          {a.title}
-                        </p>
-                        {a.body && (
-                          <p className="truncate text-xs text-neutral-400">
-                            {a.body}
-                          </p>
-                        )}
-                      </div>
-                      <ChevronRight className="size-4 shrink-0 text-neutral-500 group-hover:text-neutral-300" />
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
+        <div className="space-y-8">
+          {/* Snapshot metrics — real counts only */}
+          <section className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-white/[0.06] bg-white/[0.04] sm:grid-cols-4">
+            <Snap
+              label="Attention"
+              value={overview.attention.length}
+              hint="items open"
+              href="#attention"
+              hot={overview.attention.length > 0}
+            />
+            <Snap
+              label="Social inbox"
+              value={overview.replyRadar.pending}
+              hint="replies pending"
+              href="/reply-radar"
+              hot={overview.replyRadar.pending > 0}
+            />
+            <Snap
+              label="Kanban overdue"
+              value={overview.kanban.overdue}
+              hint={`${overview.kanban.pending} open cards`}
+              href="/kanban"
+              hot={overview.kanban.overdue > 0}
+            />
+            <Snap
+              label="Goals at risk"
+              value={overview.goals.atRisk}
+              hint={`${overview.goals.total} active`}
+              href="/goals"
+              hot={overview.goals.atRisk > 0}
+            />
           </section>
 
-          {/* Source cards */}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <SourceCard
-              href="/kanban"
-              icon={KanbanSquare}
-              title="Kanban"
-              primary={`${overview.kanban.pending} cards`}
-              alert={overview.kanban.overdue > 0 ? `${overview.kanban.overdue} overdue` : null}
-            >
-              {overview.kanban.items.slice(0, 4).map((i) => (
-                <Row key={i.id} label={i.title} tag={i.stage} danger={i.overdue} />
-              ))}
-            </SourceCard>
+          {/* Split: priority + primary action / motions */}
+          <div className="grid gap-8 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+            {/* Priority stack */}
+            <section id="attention" className="min-w-0">
+              <div className="mb-3 flex items-baseline justify-between gap-2">
+                <h2 className="text-sm font-semibold text-white">
+                  Priority stack
+                </h2>
+                <span className="text-xs tabular-nums text-neutral-500">
+                  {overview.attention.length} open
+                </span>
+              </div>
 
-            <SourceCard
-              href="/crm"
-              icon={Building2}
-              title="CRM"
-              primary={`${overview.crm.total} accounts`}
-              alert={overview.crm.idle > 0 ? `${overview.crm.idle} idle` : null}
-            >
-              {overview.crm.companies.slice(0, 4).map((c) => (
-                <Row
-                  key={c.id}
-                  label={c.name}
-                  tag={c.status}
-                  danger={c.isStale}
-                />
-              ))}
-            </SourceCard>
+              {overview.attention.length === 0 ? (
+                <div className="flex items-start gap-3 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.06] px-4 py-5">
+                  <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-emerald-400" />
+                  <div>
+                    <p className="text-sm font-medium text-emerald-200">
+                      All clear
+                    </p>
+                    <p className="mt-0.5 text-sm text-pretty text-emerald-200/70">
+                      Nothing urgent on your plate. Use the motion rails to push
+                      outbound, content, or social.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="overflow-hidden rounded-xl border border-white/[0.06] bg-neutral-950/40">
+                  {(["error", "warning", "info"] as const).map((sev) => {
+                    const items = attentionBySeverity[sev];
+                    if (items.length === 0) return null;
+                    return (
+                      <div key={sev}>
+                        <div className="flex items-center gap-2 border-b border-white/[0.04] bg-white/[0.02] px-3 py-1.5">
+                          {sev === "error" ? (
+                            <XCircle className="size-3 text-red-400" />
+                          ) : sev === "warning" ? (
+                            <AlertTriangle className="size-3 text-amber-400" />
+                          ) : (
+                            <Clock className="size-3 text-sky-400" />
+                          )}
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                            {sev === "error"
+                              ? "Blocking"
+                              : sev === "warning"
+                                ? "At risk"
+                                : "Queue"}
+                          </span>
+                          <span className="text-[10px] tabular-nums text-neutral-600">
+                            {items.length}
+                          </span>
+                        </div>
+                        <ul className="divide-y divide-white/[0.04]">
+                          {items.map((a, idx) => (
+                            <li key={a.dedupeKey}>
+                              <Link
+                                href={a.link}
+                                className="group flex items-start gap-3 px-3 py-3 transition hover:bg-white/[0.03]"
+                              >
+                                <span
+                                  className={cn(
+                                    "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md text-[11px] font-semibold tabular-nums",
+                                    sev === "error" &&
+                                      "bg-red-500/15 text-red-300",
+                                    sev === "warning" &&
+                                      "bg-amber-500/15 text-amber-300",
+                                    sev === "info" &&
+                                      "bg-sky-500/15 text-sky-300",
+                                  )}
+                                >
+                                  {idx + 1}
+                                </span>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="rounded bg-white/[0.05] px-1.5 py-0.5 text-[10px] font-medium text-neutral-500">
+                                      {KIND_LABEL[a.kind] ?? a.source}
+                                    </span>
+                                  </div>
+                                  <p className="mt-1 text-sm font-medium leading-snug text-neutral-100 text-pretty">
+                                    {a.title}
+                                  </p>
+                                  {a.body && (
+                                    <p className="mt-0.5 text-xs text-neutral-500 text-pretty">
+                                      {a.body}
+                                    </p>
+                                  )}
+                                </div>
+                                <ArrowUpRight className="mt-1 size-3.5 shrink-0 text-neutral-600 transition group-hover:text-neutral-300" />
+                              </Link>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
 
-            <SourceCard
-              href="/outreach"
-              icon={Send}
-              title="Outreach"
-              primary={`${overview.outreach.total} prospects`}
-              alert={
-                overview.outreach.followupDue > 0
-                  ? `${overview.outreach.followupDue} follow-ups`
-                  : null
-              }
-            >
-              {overview.outreach.prospects.slice(0, 4).map((p) => (
-                <Row key={p.id} label={p.domain} tag={p.status} danger={p.due} />
-              ))}
-            </SourceCard>
+              {topAction && (
+                <Link
+                  href={topAction.href}
+                  className={cn(
+                    "mt-3 flex items-center justify-between gap-3 rounded-xl border px-4 py-3 transition",
+                    topAction.tone === "sky" &&
+                      "border-sky-500/25 bg-sky-500/[0.08] hover:bg-sky-500/[0.12]",
+                    topAction.tone === "amber" &&
+                      "border-amber-500/25 bg-amber-500/[0.08] hover:bg-amber-500/[0.12]",
+                    topAction.tone === "neutral" &&
+                      "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]",
+                  )}
+                >
+                  <div>
+                    <p className="text-sm font-semibold text-white">
+                      {topAction.label}
+                    </p>
+                    <p className="text-xs text-neutral-400">{topAction.detail}</p>
+                  </div>
+                  <span className="text-xs font-medium text-neutral-300">
+                    Go →
+                  </span>
+                </Link>
+              )}
+            </section>
 
-            <SourceCard
-              href="/goals"
-              icon={Target}
-              title="Goals"
-              primary={`${overview.goals.total} active`}
-              alert={overview.goals.atRisk > 0 ? `${overview.goals.atRisk} at risk` : null}
-            >
-              {overview.goals.items.slice(0, 4).map((g) => (
-                <Row
-                  key={g.id}
-                  label={g.title}
-                  tag={`${Math.round(g.progress * 100)}%`}
-                  danger={g.atRisk}
-                />
-              ))}
-            </SourceCard>
+            {/* Motion rails */}
+            <section className="min-w-0 space-y-3">
+              <h2 className="text-sm font-semibold text-white">Motions</h2>
 
-            <SourceCard
-              href="/jobs"
-              icon={Clock}
-              title="Scheduled jobs"
-              primary={`${overview.jobs.total} jobs`}
-              alert={overview.jobs.failing > 0 ? `${overview.jobs.failing} failing` : null}
-            >
-              {overview.jobs.items.slice(0, 4).map((j) => (
-                <Row
-                  key={j.id}
-                  label={j.name}
-                  tag={j.enabled ? (j.lastStatus ?? "—") : "off"}
-                  danger={j.lastStatus === "failed"}
-                />
-              ))}
-            </SourceCard>
+              <MotionRail
+                motion="Convert"
+                description="Outbound & pipeline"
+                items={[
+                  {
+                    href: "/sequences",
+                    icon: Workflow,
+                    title: "Outbound",
+                    stat: "Today queue",
+                  },
+                  {
+                    href: "/crm",
+                    icon: Building2,
+                    title: "Accounts",
+                    stat: `${overview.crm.total}`,
+                    alert:
+                      overview.crm.idle > 0
+                        ? `${overview.crm.idle} idle`
+                        : null,
+                  },
+                  {
+                    href: "/outreach",
+                    icon: Send,
+                    title: "Pipeline",
+                    stat: `${overview.outreach.total}`,
+                    alert:
+                      overview.outreach.followupDue > 0
+                        ? `${overview.outreach.followupDue} due`
+                        : null,
+                  },
+                ]}
+              />
 
-            <SourceCard
-              href="/reply-radar"
-              icon={MessageCircle}
-              title="Social inbox"
-              primary={`${overview.replyRadar.pending} pending`}
-              alert={overview.replyRadar.pending > 0 ? "waiting" : null}
-            />
+              <MotionRail
+                motion="Engage"
+                description="Social presence"
+                items={[
+                  {
+                    href: "/reply-radar",
+                    icon: MessageCircle,
+                    title: "Social inbox",
+                    stat: `${overview.replyRadar.pending}`,
+                    alert:
+                      overview.replyRadar.pending > 0 ? "waiting" : null,
+                  },
+                ]}
+              />
+
+              <MotionRail
+                motion="Command"
+                description="Execution"
+                items={[
+                  {
+                    href: "/kanban",
+                    icon: KanbanSquare,
+                    title: "Kanban",
+                    stat: `${overview.kanban.pending}`,
+                    alert:
+                      overview.kanban.overdue > 0
+                        ? `${overview.kanban.overdue} overdue`
+                        : null,
+                  },
+                  {
+                    href: "/goals",
+                    icon: Target,
+                    title: "Goals",
+                    stat: `${overview.goals.total}`,
+                    alert:
+                      overview.goals.atRisk > 0
+                        ? `${overview.goals.atRisk} at risk`
+                        : null,
+                  },
+                  {
+                    href: "/jobs",
+                    icon: Clock,
+                    title: "Jobs",
+                    stat: `${overview.jobs.total}`,
+                    alert:
+                      overview.jobs.failing > 0
+                        ? `${overview.jobs.failing} failing`
+                        : null,
+                  },
+                ]}
+              />
+            </section>
           </div>
 
-          <p className="mt-4 flex items-center gap-1.5 text-xs text-neutral-600">
+          {/* Work streams — denser, not equal feature grid */}
+          <section>
+            <div className="mb-3 flex items-baseline justify-between">
+              <h2 className="text-sm font-semibold text-white">
+                Open work
+              </h2>
+              <p className="text-xs text-neutral-600">
+                Latest items on your plate
+              </p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <StreamPanel
+                href="/kanban"
+                title="Kanban"
+                empty={overview.kanban.items.length === 0}
+              >
+                {overview.kanban.items.slice(0, 5).map((i) => (
+                  <StreamRow
+                    key={i.id}
+                    label={i.title}
+                    tag={i.stage}
+                    danger={i.overdue}
+                  />
+                ))}
+              </StreamPanel>
+              <StreamPanel
+                href="/goals"
+                title="Goals"
+                empty={overview.goals.items.length === 0}
+              >
+                {overview.goals.items.slice(0, 5).map((g) => (
+                  <StreamRow
+                    key={g.id}
+                    label={g.title}
+                    tag={`${Math.round(g.progress * 100)}%`}
+                    danger={g.atRisk}
+                  />
+                ))}
+              </StreamPanel>
+              <StreamPanel
+                href="/crm"
+                title="Accounts"
+                empty={overview.crm.companies.length === 0}
+              >
+                {overview.crm.companies.slice(0, 5).map((c) => (
+                  <StreamRow
+                    key={c.id}
+                    label={c.name}
+                    tag={c.status}
+                    danger={c.isStale}
+                  />
+                ))}
+              </StreamPanel>
+              <StreamPanel
+                href="/outreach"
+                title="Pipeline"
+                empty={overview.outreach.prospects.length === 0}
+              >
+                {overview.outreach.prospects.slice(0, 5).map((p) => (
+                  <StreamRow
+                    key={p.id}
+                    label={p.domain}
+                    tag={p.status}
+                    danger={p.due}
+                  />
+                ))}
+              </StreamPanel>
+            </div>
+          </section>
+
+          <p className="flex items-center gap-1.5 text-xs text-neutral-600">
             <CalendarClock className="size-3" />
             Updated {formatRelative(overview.generatedAt)}
           </p>
-        </>
+        </div>
       ) : null}
     </div>
   );
@@ -295,42 +534,127 @@ export function UserCenterPage() {
 
 // ---------------------------------------------------------------------------
 
-function SourceCard({
+function Snap({
+  label,
+  value,
+  hint,
   href,
-  icon: Icon,
-  title,
-  primary,
-  alert,
-  children,
+  hot,
 }: {
+  label: string;
+  value: number;
+  hint: string;
   href: string;
-  icon: typeof KanbanSquare;
-  title: string;
-  primary: string;
-  alert: string | null;
-  children?: React.ReactNode;
+  hot?: boolean;
 }) {
   return (
     <Link
       href={href}
-      className="flex flex-col rounded-xl border border-white/[0.06] bg-neutral-900/50 p-4 transition hover:border-white/15 hover:bg-neutral-900"
+      className="bg-neutral-950/80 px-4 py-3.5 transition hover:bg-neutral-900"
     >
-      <div className="mb-2 flex items-center gap-2">
-        <Icon className="size-4 text-violet-300" />
-        <span className="text-sm font-medium text-neutral-200">{title}</span>
-        {alert && (
-          <Badge className="ml-auto border-0 bg-amber-500/20 text-[10px] font-normal text-amber-300">
-            {alert}
-          </Badge>
+      <p className="text-[10px] font-medium uppercase tracking-wider text-neutral-500">
+        {label}
+      </p>
+      <p
+        className={cn(
+          "mt-1 text-2xl font-semibold tabular-nums tracking-tight",
+          hot ? "text-white" : "text-neutral-400",
         )}
-      </div>
-      <p className="text-lg font-semibold text-white">{primary}</p>
-      {children && <div className="mt-2 space-y-1">{children}</div>}
+      >
+        {value}
+      </p>
+      <p className="mt-0.5 text-[11px] text-neutral-600">{hint}</p>
     </Link>
   );
 }
 
-function Row({
+function MotionRail({
+  motion,
+  description,
+  items,
+}: {
+  motion: string;
+  description: string;
+  items: {
+    href: string;
+    icon: typeof KanbanSquare;
+    title: string;
+    stat: string;
+    alert?: string | null;
+  }[];
+}) {
+  return (
+    <div className="rounded-xl border border-white/[0.06] bg-neutral-950/50 p-3">
+      <div className="mb-2 flex items-baseline justify-between gap-2 px-1">
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
+          {motion}
+        </p>
+        <p className="text-[11px] text-neutral-600">{description}</p>
+      </div>
+      <div className="space-y-0.5">
+        {items.map((item) => {
+          const Icon = item.icon;
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className="flex items-center gap-2.5 rounded-lg px-2 py-2 transition hover:bg-white/[0.04]"
+            >
+              <Icon className="size-3.5 shrink-0 text-neutral-500" />
+              <span className="min-w-0 flex-1 truncate text-sm text-neutral-200">
+                {item.title}
+              </span>
+              {item.alert ? (
+                <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
+                  {item.alert}
+                </span>
+              ) : (
+                <span className="shrink-0 text-xs tabular-nums text-neutral-500">
+                  {item.stat}
+                </span>
+              )}
+            </Link>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function StreamPanel({
+  href,
+  title,
+  empty,
+  children,
+}: {
+  href: string;
+  title: string;
+  empty: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-xl border border-white/[0.06] bg-neutral-950/40">
+      <div className="flex items-center justify-between border-b border-white/[0.04] px-3 py-2">
+        <p className="text-xs font-semibold text-neutral-300">{title}</p>
+        <Link
+          href={href}
+          className="text-[11px] text-neutral-500 transition hover:text-neutral-300"
+        >
+          Open
+        </Link>
+      </div>
+      {empty ? (
+        <p className="px-3 py-6 text-center text-xs text-neutral-600">
+          Nothing here
+        </p>
+      ) : (
+        <div className="divide-y divide-white/[0.04] px-1 py-1">{children}</div>
+      )}
+    </div>
+  );
+}
+
+function StreamRow({
   label,
   tag,
   danger,
@@ -340,14 +664,14 @@ function Row({
   danger?: boolean;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2 text-xs">
-      <span className="truncate text-neutral-400">{label}</span>
+    <div className="flex items-center justify-between gap-2 px-2 py-1.5 text-xs">
+      <span className="min-w-0 truncate text-neutral-400">{label}</span>
       <span
         className={cn(
           "shrink-0 rounded px-1.5 py-0.5 capitalize",
           danger
             ? "bg-amber-500/15 text-amber-300"
-            : "bg-white/[0.06] text-neutral-500",
+            : "bg-white/[0.05] text-neutral-500",
         )}
       >
         {tag}
