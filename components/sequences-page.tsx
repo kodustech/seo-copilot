@@ -544,9 +544,27 @@ export function SequencesPage() {
         return;
       }
       setEnrollOpen(false);
+      const parts = [
+        `Enrolled ${data.enrolled}`,
+        data.skipped ? `skipped ${data.skipped}` : null,
+        data.missingLinkedin
+          ? `${data.missingLinkedin} without LinkedIn`
+          : null,
+        data.missingEmail ? `${data.missingEmail} without email` : null,
+      ].filter(Boolean);
       setNotice(
-        `Enrolled ${data.enrolled} · skipped ${data.skipped}. See People on the sequence.`,
+        `${parts.join(" · ")}. Check People for warnings.`,
       );
+      if (
+        (data.errors as string[] | undefined)?.length ||
+        (data.warnings as string[] | undefined)?.length
+      ) {
+        const bits = [
+          ...((data.errors as string[]) ?? []).slice(0, 5),
+          ...((data.warnings as string[]) ?? []).slice(0, 5),
+        ];
+        setError(bits.join(" · "));
+      }
       await load();
       // Stay on sequence editor → People so you see who is running
       if (enrollSeqId) {
@@ -768,8 +786,21 @@ export function SequencesPage() {
               <div>
                 <h2 className="text-sm font-semibold">People in this sequence</h2>
                 <p className="mt-0.5 text-xs text-pretty text-muted-foreground">
-                  {activePeople} active · {enrollmentCount} total. Each person is
-                  enrolled individually after you pick a research list.
+                  {activePeople} active · {enrollmentCount} total.
+                  {enrollments.filter((e) => !e.contactLinkedin).length > 0 && (
+                    <span className="text-amber-600 dark:text-amber-400">
+                      {" "}
+                      · {enrollments.filter((e) => !e.contactLinkedin).length}{" "}
+                      missing LinkedIn
+                    </span>
+                  )}
+                  {enrollments.filter((e) => !e.contactEmail).length > 0 && (
+                    <span className="text-amber-600 dark:text-amber-400">
+                      {" "}
+                      · {enrollments.filter((e) => !e.contactEmail).length}{" "}
+                      missing email
+                    </span>
+                  )}
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -861,19 +892,35 @@ export function SequencesPage() {
                       className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_100px_minmax(0,1fr)_90px] items-center gap-2 px-4 py-3 text-sm"
                     >
                       <div className="min-w-0">
-                        <p className="truncate font-medium">
-                          {e.contactName || "—"}
-                        </p>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <p className="truncate font-medium">
+                            {e.contactName || "—"}
+                          </p>
+                          {!e.contactLinkedin && (
+                            <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+                              No LinkedIn
+                            </span>
+                          )}
+                          {!e.contactEmail && (
+                            <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+                              No email
+                            </span>
+                          )}
+                        </div>
                         <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
                           {e.contactRole && (
                             <span className="truncate">{e.contactRole}</span>
                           )}
-                          {e.contactEmail && (
+                          {e.contactEmail ? (
                             <span className="truncate font-mono">
                               {e.contactEmail}
                             </span>
+                          ) : (
+                            <span className="text-amber-600/90 dark:text-amber-400/90">
+                              email missing
+                            </span>
                           )}
-                          {e.contactLinkedin && (
+                          {e.contactLinkedin ? (
                             <a
                               href={e.contactLinkedin}
                               target="_blank"
@@ -884,6 +931,10 @@ export function SequencesPage() {
                               <Linkedin className="size-3" />
                               LI
                             </a>
+                          ) : (
+                            <span className="text-amber-600/90 dark:text-amber-400/90">
+                              LI missing
+                            </span>
                           )}
                         </div>
                       </div>
