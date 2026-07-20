@@ -6,7 +6,9 @@ import {
   Check,
   Download,
   ExternalLink,
+  Link2,
   Loader2,
+  Mail,
   MoreHorizontal,
   Plus,
   Search,
@@ -65,6 +67,15 @@ type ResearchTable = {
   rowCount?: number;
 };
 
+type Person = {
+  id?: string;
+  name: string;
+  role: string | null;
+  email: string | null;
+  emailStatus: string | null;
+  linkedin?: string | null;
+};
+
 type ResearchRow = {
   id: string;
   companyName: string;
@@ -80,6 +91,7 @@ type ResearchRow = {
   lastResearchedAt: string | null;
   error: string | null;
   packRaw?: Record<string, unknown>;
+  people?: Person[];
 };
 
 type Evidence = {
@@ -92,54 +104,15 @@ type Evidence = {
   weight: number;
 };
 
-type Person = {
-  name: string;
-  role: string | null;
-  email: string | null;
-  emailStatus: string | null;
-};
-
-type Panel = "none" | "add" | "create";
+type Panel = "none" | "add" | "create" | "find";
 type Market = "global" | "brazil";
 type SizeBand = "any" | "small" | "mid" | "large";
+type ContactFilter = "all" | "has" | "missing";
 
-function engOpenings(row: ResearchRow): number | null {
-  const careers = row.packRaw?.careers as
-    | { meta?: { extraFlags?: { engOpenings?: number } } }
-    | undefined;
-  const n = careers?.meta?.extraFlags?.engOpenings;
-  return typeof n === "number" ? n : null;
-}
-
-function rowMarket(row: ResearchRow): string | null {
-  const find = row.packRaw?.find as { market?: string } | undefined;
-  return find?.market ?? null;
-}
-
-type HuntProvenance = {
-  source: string;
-  query: string;
-  url: string;
-  title: string | null;
-  quote: string;
-  confidence?: number;
-};
-
-function rowHunt(row: ResearchRow): HuntProvenance | null {
-  const hunt = row.packRaw?.hunt as HuntProvenance | undefined;
-  return hunt?.url && hunt?.quote ? hunt : null;
-}
-
-function rowDiscovery(
-  row: ResearchRow,
-): { sourceUrl?: string; sourceQuery?: string | null; ats?: string } | null {
-  return (
-    (row.packRaw?.discovery as {
-      sourceUrl?: string;
-      sourceQuery?: string | null;
-      ats?: string;
-    }) ?? null
-  );
+function topPerson(people: Person[] | undefined): Person | null {
+  if (!people?.length) return null;
+  const withEmail = people.find((p) => p.email?.trim());
+  return withEmail ?? people[0] ?? null;
 }
 
 function hostLabel(url: string): string {
@@ -150,16 +123,7 @@ function hostLabel(url: string): string {
   }
 }
 
-function matchesSize(size: SizeBand, eng: number | null): boolean {
-  if (size === "any") return true;
-  if (eng == null) return true; // keep until researched
-  if (size === "small") return eng > 0 && eng <= 10;
-  if (size === "mid") return eng >= 3 && eng <= 50;
-  if (size === "large") return eng >= 20;
-  return true;
-}
-
-function ScoreCell({
+function ScorePill({
   score,
   pass,
 }: {
@@ -167,14 +131,16 @@ function ScoreCell({
   pass: boolean | null;
 }) {
   if (score == null) {
-    return <span className="text-muted-foreground">—</span>;
+    return <span className="text-xs text-muted-foreground">—</span>;
   }
   return (
     <span
       className={cn(
-        "font-mono text-sm tabular-nums",
-        pass === true && "text-emerald-600 dark:text-emerald-400",
-        pass === false && "text-muted-foreground",
+        "inline-flex min-w-[2.5rem] items-center justify-center rounded-md px-1.5 py-0.5 font-mono text-xs tabular-nums",
+        pass === true &&
+          "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
+        pass === false && "bg-muted text-muted-foreground",
+        pass == null && "bg-muted text-foreground",
       )}
     >
       {score}
@@ -193,10 +159,8 @@ export function ResearchPage() {
   const [running, setRunning] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [passOnly, setPassOnly] = useState(false);
-  const [minScore, setMinScore] = useState<string>("");
-  const [filterSize, setFilterSize] = useState<SizeBand | "all">("all");
-  const [filterMarket, setFilterMarket] = useState<"all" | Market>("all");
+  const [contactFilter, setContactFilter] = useState<ContactFilter>("all");
+  const [query, setQuery] = useState("");
   const [importText, setImportText] = useState("");
   const [panel, setPanel] = useState<Panel>("none");
   const [newTableName, setNewTableName] = useState("");
@@ -204,7 +168,6 @@ export function ResearchPage() {
   const [creating, setCreating] = useState(false);
   const [importing, setImporting] = useState(false);
 
-  // Find form (the actual product)
   const [market, setMarket] = useState<Market>("brazil");
   const [size, setSize] = useState<SizeBand>("mid");
   const [maxCompanies, setMaxCompanies] = useState("12");
@@ -212,9 +175,8 @@ export function ResearchPage() {
 
   const [drawerRowId, setDrawerRowId] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<Evidence[]>([]);
-  const [people, setPeople] = useState<Person[]>([]);
+  const [drawerPeople, setDrawerPeople] = useState<Person[]>([]);
   const [drawerLoading, setDrawerLoading] = useState(false);
-  const [aiPrompt, setAiPrompt] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
 
   useEffect(() => {
@@ -282,7 +244,7 @@ export function ResearchPage() {
     if (!token || !tableId) return;
     setRunning(true);
     for (;;) {
-      await new Promise((r) => setTimeout(r, 5000));
+      await new Promise((r) => setTimeout(r, 4000));
       try {
         const res = await fetch(`/api/research/status?tableId=${tableId}`, {
           headers: headers(),
@@ -290,11 +252,7 @@ export function ResearchPage() {
         if (!res.ok) continue;
         const state = await res.json();
         if (state.running) {
-          setNotice(
-            state.lastSummary ??
-              "Working… finding + scoring companies (can take several minutes).",
-          );
-          // Refresh mid-run so new rows appear
+          setNotice(state.lastSummary ?? "Working…");
           await loadRows();
           continue;
         }
@@ -313,7 +271,7 @@ export function ResearchPage() {
   const ensureTable = async (): Promise<string | null> => {
     if (tableId) return tableId;
     if (!token) return null;
-    const name = `QE ${market === "brazil" ? "Brasil" : "Global"} · ${new Date().toLocaleDateString("pt-BR")}`;
+    const name = `List ${new Date().toLocaleDateString("pt-BR")}`;
     const res = await fetch("/api/research/tables", {
       method: "POST",
       headers: headers(),
@@ -336,6 +294,7 @@ export function ResearchPage() {
 
     setRunning(true);
     setNotice("Finding companies…");
+    setPanel("none");
     const res = await fetch(`/api/research/tables/${id}/find`, {
       method: "POST",
       headers: headers(),
@@ -358,8 +317,6 @@ export function ResearchPage() {
       setRunning(false);
       return;
     }
-    setFilterMarket(market);
-    setFilterSize(size === "any" ? "all" : size);
     void pollUntilDone();
   };
 
@@ -405,20 +362,30 @@ export function ResearchPage() {
       }
       setImportText("");
       setPanel("none");
-      setNotice(`Added ${data.added} companies.`);
+      setNotice(`Added ${data.added} companies${data.skipped ? ` (${data.skipped} skipped)` : ""}.`);
       await loadRows();
+      await loadTables();
     } finally {
       setImporting(false);
     }
   };
 
-  const runJob = async (kind: "research" | "people" | "full", force = false) => {
+  const runJob = async (
+    kind: "research" | "people" | "full",
+    opts: { force?: boolean; onlyIfPass?: boolean } = {},
+  ) => {
     if (!token || !tableId) return;
     const rowIds = selected.size > 0 ? [...selected] : undefined;
     const res = await fetch(`/api/research/tables/${tableId}/run`, {
       method: "POST",
       headers: headers(),
-      body: JSON.stringify({ kind, rowIds, force }),
+      body: JSON.stringify({
+        kind,
+        rowIds,
+        force: Boolean(opts.force),
+        // Clay default: enrich everyone unless caller restricts
+        onlyIfPass: opts.onlyIfPass === true,
+      }),
     });
     if (res.status === 409) {
       void pollUntilDone();
@@ -429,6 +396,13 @@ export function ResearchPage() {
       setNotice(data.error ?? "Failed");
       return;
     }
+    setNotice(
+      kind === "people"
+        ? selected.size
+          ? `Finding people on ${selected.size} selected…`
+          : "Finding people on all rows…"
+        : "Running…",
+    );
     void pollUntilDone();
   };
 
@@ -443,7 +417,7 @@ export function ResearchPage() {
       if (!res.ok) return;
       const data = await res.json();
       setEvidence(data.evidence ?? []);
-      setPeople(data.people ?? []);
+      setDrawerPeople(data.people ?? []);
     } finally {
       setDrawerLoading(false);
     }
@@ -468,11 +442,9 @@ export function ResearchPage() {
         return;
       }
       setNotice(
-        action === "ai_column"
-          ? (data.answer ?? "Done")
-          : action === "people"
-            ? `Found ${(data.people ?? []).length} people`
-            : "Done",
+        action === "people"
+          ? `Found ${(data.people ?? []).length} people`
+          : "Done",
       );
       if (drawerRowId === rowId) await openDrawer(rowId);
       await loadRows();
@@ -484,42 +456,50 @@ export function ResearchPage() {
   const exportCsv = () => {
     if (!token || !tableId) return;
     void (async () => {
-      const res = await fetch(
-        `/api/research/tables/${tableId}/export`,
-        { headers: headers() },
-      );
+      const res = await fetch(`/api/research/tables/${tableId}/export`, {
+        headers: headers(),
+      });
       if (!res.ok) return;
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `research-${tableId.slice(0, 8)}.csv`;
+      a.download = `list-${tableId.slice(0, 8)}.csv`;
       a.click();
       URL.revokeObjectURL(url);
     })();
   };
 
   const filteredRows = useMemo(() => {
-    const min = minScore ? Number(minScore) : null;
+    const q = query.trim().toLowerCase();
     return rows.filter((r) => {
-      if (passOnly && r.pass !== true) return false;
-      if (min != null && !Number.isNaN(min)) {
-        if (r.icpScore == null || r.icpScore < min) return false;
-      }
-      if (filterMarket !== "all") {
-        const m = rowMarket(r);
-        if (m && m !== filterMarket) return false;
-      }
-      if (filterSize !== "all") {
-        if (!matchesSize(filterSize, engOpenings(r))) return false;
+      const p = topPerson(r.people);
+      if (contactFilter === "has" && !p) return false;
+      if (contactFilter === "missing" && p) return false;
+      if (q) {
+        const hay = [
+          r.companyName,
+          r.domain,
+          r.whyNow,
+          p?.name,
+          p?.role,
+          p?.email,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
       }
       return true;
     });
-  }, [rows, passOnly, minScore, filterMarket, filterSize]);
+  }, [rows, contactFilter, query]);
 
   const activeTable = tables.find((t) => t.id === tableId) ?? null;
   const drawerRow = rows.find((r) => r.id === drawerRowId);
-  const passedCount = rows.filter((r) => r.pass === true).length;
+  const withContact = rows.filter((r) => topPerson(r.people)).length;
+  const allSelected =
+    filteredRows.length > 0 &&
+    filteredRows.every((r) => selected.has(r.id));
 
   if (!token) {
     return (
@@ -531,159 +511,162 @@ export function ResearchPage() {
   }
 
   return (
-    <div className="mx-auto flex h-full min-h-0 max-w-6xl flex-col gap-5 p-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-balance text-xl font-semibold tracking-tight">
-            Research
-          </h1>
-          <p className="max-w-xl text-pretty text-sm text-muted-foreground">
-            Find companies that match the QE ICP (region + size + hiring
-            signals), score them against the playbook, then get contacts.
-          </p>
+    <div className="flex h-full min-h-0 flex-col bg-background">
+      {/* Table tabs (workspace-style) */}
+      <div className="flex items-center gap-1 border-b bg-muted/20 px-3 pt-2">
+        <div className="flex min-w-0 flex-1 items-end gap-0.5 overflow-x-auto">
+          {tables.map((t) => {
+            const active = t.id === tableId;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => {
+                  setTableId(t.id);
+                  setSelected(new Set());
+                  setDrawerRowId(null);
+                }}
+                className={cn(
+                  "relative max-w-[220px] shrink-0 truncate rounded-t-md border border-b-0 px-3 py-2 text-left text-sm transition-colors",
+                  active
+                    ? "border-border bg-background font-medium text-foreground shadow-[0_-1px_0_0_hsl(var(--background))]"
+                    : "border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                )}
+              >
+                <span className="truncate">{t.name}</span>
+                {typeof t.rowCount === "number" && (
+                  <span className="ml-1.5 text-[11px] tabular-nums text-muted-foreground">
+                    {t.rowCount}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            onClick={() => setPanel("create")}
+            className="mb-1 ml-1 inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            aria-label="New list"
+            title="New list"
+          >
+            <Plus className="size-4" />
+          </button>
         </div>
-        {tables.length > 0 && (
-          <div className="flex items-center gap-2">
-            <Select
-              value={tableId ?? undefined}
-              onValueChange={(v) => {
-                setTableId(v);
-                setSelected(new Set());
-                setDrawerRowId(null);
-              }}
-            >
-              <SelectTrigger className="h-9 w-[200px]">
-                <SelectValue placeholder="List" />
-              </SelectTrigger>
-              <SelectContent>
-                {tables.map((t) => (
-                  <SelectItem key={t.id} value={t.id}>
-                    {t.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button size="sm" variant="outline" onClick={() => setPanel("create")}>
-              <Plus className="size-4" />
-              New list
-            </Button>
-          </div>
-        )}
       </div>
 
-      {/* ── Primary: Find ICP ─────────────────────────────────────────── */}
-      <section className="rounded-xl border bg-card p-4 shadow-sm">
-        <div className="mb-3 flex items-center gap-2">
-          <Search className="size-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Find ICP companies</h2>
-        </div>
-        <p className="mb-4 text-pretty text-xs text-muted-foreground">
-          Searches public boards for QA/SDET/automation hiring — Brazil: Gupy +
-          Workable + Programathor + LinkedIn (via search) + Remotive; Global:
-          Greenhouse/Lever/Ashby/Workable/SmartRecruiters/LinkedIn/Remotive —
-          then scores with the QE playbook.
-        </p>
-
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 [&>div]:min-w-0">
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">
-              Region
-            </label>
-            <Select
-              value={market}
-              onValueChange={(v) => setMarket(v as Market)}
-            >
-              <SelectTrigger className="w-full [&>span]:truncate">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="brazil">
-                  Brazil (Gupy + Workable + Programathor)
-                </SelectItem>
-                <SelectItem value="global">
-                  Global (GH/Lever/Ashby/Workable/SR)
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">
-              Company size (eng signal)
-            </label>
-            <Select value={size} onValueChange={(v) => setSize(v as SizeBand)}>
-              <SelectTrigger className="w-full [&>span]:truncate">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="mid">Mid (~3–50 eng openings)</SelectItem>
-                <SelectItem value="small">Small (≤10 eng openings)</SelectItem>
-                <SelectItem value="large">Large (20+ eng openings)</SelectItem>
-                <SelectItem value="any">Any size</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">
-              How many
-            </label>
-            <Select value={maxCompanies} onValueChange={setMaxCompanies}>
-              <SelectTrigger className="w-full [&>span]:truncate">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="6">6 (fast test)</SelectItem>
-                <SelectItem value="12">12</SelectItem>
-                <SelectItem value="20">20</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">
-              Extra focus (optional)
-            </label>
-            <Input
-              placeholder="fintech, Playwright…"
-              value={focus}
-              onChange={(e) => setFocus(e.target.value)}
-            />
-          </div>
-        </div>
-
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button disabled={running} onClick={() => void runFind()}>
-            {running ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Search className="size-4" />
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+            <h1 className="truncate text-base font-semibold tracking-tight">
+              {activeTable?.name ?? "Lists"}
+            </h1>
+            {activeTable && (
+              <span className="text-xs tabular-nums text-muted-foreground">
+                {rows.length} companies · {withContact} with contact
+                {filteredRows.length !== rows.length
+                  ? ` · ${filteredRows.length} shown`
+                  : ""}
+                {selected.size > 0 ? ` · ${selected.size} selected` : ""}
+              </span>
             )}
-            Find &amp; score ICP
+          </div>
+        </div>
+
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            className="h-8 w-44 pl-8 text-sm md:w-56"
+            placeholder="Search…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+
+        <Select
+          value={contactFilter}
+          onValueChange={(v) => setContactFilter(v as ContactFilter)}
+        >
+          <SelectTrigger className="h-8 w-[140px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All rows</SelectItem>
+            <SelectItem value="has">Has contact</SelectItem>
+            <SelectItem value="missing">Missing contact</SelectItem>
+          </SelectContent>
+        </Select>
+
+        <div className="flex flex-wrap gap-1.5">
+          <Button
+            size="sm"
+            disabled={running || !tableId || rows.length === 0}
+            onClick={() => void runJob("people", { onlyIfPass: false })}
+          >
+            {running ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Users className="size-3.5" />
+            )}
+            Find people
+            {selected.size > 0 ? ` (${selected.size})` : ""}
           </Button>
           <Button
-            variant="outline"
             size="sm"
-            disabled={running}
-            onClick={() => {
-              setMarket("brazil");
-              setSize("mid");
-              setMaxCompanies("6");
-              setFocus("");
-              void runFind();
-            }}
+            variant="outline"
+            disabled={!tableId}
+            onClick={() => setPanel("add")}
           >
-            Quick test: Brazil mid-size (6)
+            <Plus className="size-3.5" />
+            Import
           </Button>
-          <span className="text-xs text-muted-foreground">
-            Creates a list automatically if you don’t have one. Takes a few
-            minutes.
-          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!tableId || rows.length === 0}
+            onClick={exportCsv}
+          >
+            <Download className="size-3.5" />
+            Export
+          </Button>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button size="sm" variant="ghost" aria-label="More">
+                <MoreHorizontal className="size-4" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-52 p-1">
+              <button
+                type="button"
+                className="flex w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+                disabled={running || !tableId}
+                onClick={() => setPanel("find")}
+              >
+                Find ICP companies…
+              </button>
+              <button
+                type="button"
+                className="flex w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+                disabled={running || !tableId}
+                onClick={() => void runJob("research")}
+              >
+                Score pending rows
+              </button>
+              <button
+                type="button"
+                className="flex w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+                disabled={running || !tableId}
+                onClick={() => void runJob("research", { force: true })}
+              >
+                Re-score all
+              </button>
+            </PopoverContent>
+          </Popover>
         </div>
-      </section>
+      </div>
 
       {notice && (
-        <div className="flex items-start justify-between gap-3 rounded-md border bg-muted/30 px-3 py-2 text-sm">
+        <div className="flex items-start justify-between gap-3 border-b bg-muted/30 px-4 py-2 text-sm">
           <span className="text-pretty">{notice}</span>
           <button
             type="button"
@@ -696,266 +679,241 @@ export function ResearchPage() {
         </div>
       )}
 
-      {/* ── Results ───────────────────────────────────────────────────── */}
-      {activeTable && (
-        <>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-medium">{activeTable.name}</span>
-            <Badge variant="secondary" className="text-xs">
-              QE playbook
-            </Badge>
-            <span className="text-xs text-muted-foreground tabular-nums">
-              {rows.length} found · {passedCount} pass ICP
-              {filteredRows.length !== rows.length &&
-                ` · showing ${filteredRows.length}`}
-            </span>
-          </div>
-
-          {/* Filters */}
-          <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-muted/20 px-3 py-2.5">
-            <div className="space-y-1">
-              <label className="text-[11px] font-medium text-muted-foreground">
-                Region
-              </label>
-              <Select
-                value={filterMarket}
-                onValueChange={(v) => setFilterMarket(v as "all" | Market)}
-              >
-                <SelectTrigger className="h-8 w-[130px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  <SelectItem value="brazil">Brazil</SelectItem>
-                  <SelectItem value="global">Global</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-[11px] font-medium text-muted-foreground">
-                Size
-              </label>
-              <Select
-                value={filterSize}
-                onValueChange={(v) => setFilterSize(v as SizeBand | "all")}
-              >
-                <SelectTrigger className="h-8 w-[140px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All sizes</SelectItem>
-                  <SelectItem value="small">Small</SelectItem>
-                  <SelectItem value="mid">Mid</SelectItem>
-                  <SelectItem value="large">Large</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-[11px] font-medium text-muted-foreground">
-                Min score
-              </label>
-              <Input
-                className="h-8 w-20"
-                inputMode="numeric"
-                placeholder="55"
-                value={minScore}
-                onChange={(e) => setMinScore(e.target.value)}
-              />
-            </div>
-            <label className="mb-1.5 flex cursor-pointer items-center gap-1.5 text-xs">
-              <input
-                type="checkbox"
-                className="size-3.5"
-                checked={passOnly}
-                onChange={(e) => setPassOnly(e.target.checked)}
-              />
-              ICP pass only
-            </label>
-
-            <div className="ml-auto flex flex-wrap gap-1.5">
+      {/* Spreadsheet */}
+      <div className="min-h-0 flex-1 overflow-auto">
+        {!activeTable && !loading ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
+            <p className="text-sm text-muted-foreground">
+              No lists yet. Create one and import companies, or find ICP leads.
+            </p>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={() => setPanel("create")}>
+                <Plus className="size-3.5" />
+                New list
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
-                disabled={running || !tableId}
-                onClick={() => void runJob("research")}
+                onClick={() => {
+                  setPanel("find");
+                }}
               >
-                Score pending
+                <Search className="size-3.5" />
+                Find ICP
               </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={running || passedCount === 0}
-                onClick={() => void runJob("people")}
-              >
-                <Users className="size-3.5" />
-                People on pass
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => setPanel("add")}>
-                <Plus className="size-3.5" />
-                Paste domains
-              </Button>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button size="sm" variant="ghost" aria-label="More">
-                    <MoreHorizontal className="size-4" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent align="end" className="w-48 p-1">
-                  <button
-                    type="button"
-                    className="flex w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
-                    onClick={() => void runJob("research", true)}
-                  >
-                    Re-score all
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
-                    onClick={exportCsv}
-                  >
-                    <Download className="size-3.5" />
-                    Export CSV
-                  </button>
-                </PopoverContent>
-              </Popover>
             </div>
           </div>
-
-          <div className="min-h-0 flex-1 overflow-auto rounded-lg border">
-            <Table>
-              <TableHeader>
+        ) : (
+          <Table>
+            <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="w-10 pl-4">
+                  <input
+                    type="checkbox"
+                    className="size-3.5"
+                    checked={allSelected}
+                    onChange={() => {
+                      if (allSelected) setSelected(new Set());
+                      else setSelected(new Set(filteredRows.map((r) => r.id)));
+                    }}
+                    aria-label="Select all"
+                  />
+                </TableHead>
+                <TableHead className="w-10 text-xs text-muted-foreground">
+                  #
+                </TableHead>
+                <TableHead>Company</TableHead>
+                <TableHead className="hidden sm:table-cell">Domain</TableHead>
+                <TableHead>Contact</TableHead>
+                <TableHead className="hidden md:table-cell">Role</TableHead>
+                <TableHead className="hidden lg:table-cell">Email</TableHead>
+                <TableHead className="w-12 hidden md:table-cell">LI</TableHead>
+                <TableHead className="w-16">Score</TableHead>
+                <TableHead className="hidden xl:table-cell max-w-[200px]">
+                  Why now
+                </TableHead>
+                <TableHead className="w-24 pr-4">Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loading && (
                 <TableRow>
-                  <TableHead className="w-10" />
-                  <TableHead>Company</TableHead>
-                  <TableHead className="w-24">Region</TableHead>
-                  <TableHead className="w-16">Eng</TableHead>
-                  <TableHead className="w-16">Score</TableHead>
-                  <TableHead className="w-16">ICP</TableHead>
-                  <TableHead className="hidden md:table-cell">Why now</TableHead>
-                  <TableHead className="w-24">Status</TableHead>
+                  <TableCell
+                    colSpan={11}
+                    className="h-24 text-center text-muted-foreground"
+                  >
+                    <Loader2 className="mr-2 inline size-4 animate-spin" />
+                    Loading…
+                  </TableCell>
                 </TableRow>
-              </TableHeader>
-              <TableBody>
-                {loading && (
-                  <TableRow>
-                    <TableCell
-                      colSpan={8}
-                      className="h-20 text-center text-muted-foreground"
+              )}
+              {!loading && filteredRows.length === 0 && (
+                <TableRow>
+                  <TableCell
+                    colSpan={11}
+                    className="h-32 text-center text-sm text-muted-foreground"
+                  >
+                    {rows.length === 0 ? (
+                      <div className="space-y-2">
+                        <p>Empty list. Import domains or find ICP companies.</p>
+                        <div className="flex justify-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setPanel("add")}
+                          >
+                            Import
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setPanel("find")}
+                          >
+                            Find ICP
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      "No rows match filters."
+                    )}
+                  </TableCell>
+                </TableRow>
+              )}
+              {!loading &&
+                filteredRows.map((r, idx) => {
+                  const p = topPerson(r.people);
+                  return (
+                    <TableRow
+                      key={r.id}
+                      className="cursor-pointer"
+                      onClick={() => void openDrawer(r.id)}
                     >
-                      <Loader2 className="mr-2 inline size-4 animate-spin" />
-                      Loading…
-                    </TableCell>
-                  </TableRow>
-                )}
-                {!loading && filteredRows.length === 0 && (
-                  <TableRow>
-                    <TableCell
-                      colSpan={8}
-                      className="h-28 text-center text-sm text-muted-foreground"
-                    >
-                      {rows.length === 0
-                        ? "No companies yet. Use “Find & score ICP” above."
-                        : "No rows match these filters."}
-                    </TableCell>
-                  </TableRow>
-                )}
-                {!loading &&
-                  filteredRows.map((r) => {
-                    const eng = engOpenings(r);
-                    const m = rowMarket(r);
-                    return (
-                      <TableRow
-                        key={r.id}
-                        className="cursor-pointer"
-                        onClick={() => void openDrawer(r.id)}
+                      <TableCell
+                        className="pl-4"
+                        onClick={(e) => e.stopPropagation()}
                       >
-                        <TableCell onClick={(e) => e.stopPropagation()}>
-                          <input
-                            type="checkbox"
-                            className="size-3.5"
-                            checked={selected.has(r.id)}
-                            onChange={() => {
-                              setSelected((prev) => {
-                                const next = new Set(prev);
-                                if (next.has(r.id)) next.delete(r.id);
-                                else next.add(r.id);
-                                return next;
-                              });
-                            }}
-                            aria-label={`Select ${r.companyName}`}
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-medium">{r.companyName}</span>
-                            {rowHunt(r) && (
-                              <Badge
-                                variant="outline"
-                                className="border-emerald-500/40 px-1 py-0 text-[9px] uppercase text-emerald-700 dark:text-emerald-400"
-                                title={`Sinal: “${rowHunt(r)!.quote.slice(0, 140)}”`}
-                              >
-                                sinal
-                              </Badge>
-                            )}
-                          </div>
-                          <div className="font-mono text-xs text-muted-foreground">
-                            {r.domain ?? "—"}
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-xs capitalize text-muted-foreground">
-                          {m ?? "—"}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs tabular-nums text-muted-foreground">
-                          {eng ?? "—"}
-                        </TableCell>
-                        <TableCell>
-                          <ScoreCell score={r.icpScore} pass={r.pass} />
-                        </TableCell>
-                        <TableCell>
-                          {r.pass === true ? (
-                            <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
-                              <Check className="size-3.5" />
-                              Pass
-                            </span>
-                          ) : r.pass === false ? (
-                            <span className="text-xs text-muted-foreground">
-                              No
-                            </span>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">—</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="hidden max-w-[220px] md:table-cell">
-                          <span className="line-clamp-2 text-xs text-muted-foreground">
-                            {r.antiFlags?.length
-                              ? `Anti: ${r.antiFlags.join(", ")}`
-                              : (r.whyNow ?? "—")}
+                        <input
+                          type="checkbox"
+                          className="size-3.5"
+                          checked={selected.has(r.id)}
+                          onChange={() => {
+                            setSelected((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(r.id)) next.delete(r.id);
+                              else next.add(r.id);
+                              return next;
+                            });
+                          }}
+                          aria-label={`Select ${r.companyName}`}
+                        />
+                      </TableCell>
+                      <TableCell className="font-mono text-xs tabular-nums text-muted-foreground">
+                        {idx + 1}
+                      </TableCell>
+                      <TableCell>
+                        <div className="font-medium leading-tight">
+                          {r.companyName}
+                        </div>
+                        <div className="font-mono text-[11px] text-muted-foreground sm:hidden">
+                          {r.domain ?? "—"}
+                        </div>
+                      </TableCell>
+                      <TableCell className="hidden font-mono text-xs text-muted-foreground sm:table-cell">
+                        {r.domain ? (
+                          <a
+                            href={`https://${r.domain}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 hover:text-foreground hover:underline"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {r.domain}
+                            <ExternalLink className="size-3 opacity-50" />
+                          </a>
+                        ) : (
+                          "—"
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {p ? (
+                          <span className="text-sm font-medium">{p.name}</span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            —
                           </span>
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {r.status === "pending"
-                            ? "Queued"
-                            : r.status === "researching"
-                              ? "Scoring…"
-                              : r.status === "researched"
-                                ? "Done"
-                                : r.status}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-              </TableBody>
-            </Table>
-          </div>
-        </>
-      )}
-
-      {!activeTable && !running && (
-        <p className="text-center text-sm text-muted-foreground">
-          Hit <strong>Find &amp; score ICP</strong> above — a list is created
-          for you.
-        </p>
-      )}
+                        )}
+                      </TableCell>
+                      <TableCell className="hidden max-w-[160px] truncate text-xs text-muted-foreground md:table-cell">
+                        {p?.role ?? "—"}
+                      </TableCell>
+                      <TableCell
+                        className="hidden max-w-[180px] truncate font-mono text-xs lg:table-cell"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {p?.email ? (
+                          <a
+                            href={`mailto:${p.email}`}
+                            className="inline-flex items-center gap-1 text-foreground hover:underline"
+                          >
+                            <Mail className="size-3 shrink-0 text-muted-foreground" />
+                            <span className="truncate">{p.email}</span>
+                          </a>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell
+                        className="hidden md:table-cell"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {p?.linkedin ? (
+                          <a
+                            href={p.linkedin}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex text-muted-foreground hover:text-foreground"
+                            title={p.linkedin}
+                          >
+                            <Link2 className="size-3.5" />
+                          </a>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <ScorePill score={r.icpScore} pass={r.pass} />
+                      </TableCell>
+                      <TableCell className="hidden max-w-[200px] xl:table-cell">
+                        <span className="line-clamp-2 text-xs text-muted-foreground">
+                          {r.whyNow ??
+                            (r.antiFlags?.length
+                              ? `Anti: ${r.antiFlags.join(", ")}`
+                              : "—")}
+                        </span>
+                      </TableCell>
+                      <TableCell className="pr-4 text-xs text-muted-foreground">
+                        {p ? (
+                          <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
+                            <Check className="size-3" />
+                            Contact
+                          </span>
+                        ) : r.status === "researching" ? (
+                          "Scoring…"
+                        ) : r.status === "pending" ? (
+                          "Queued"
+                        ) : r.status === "researched" ? (
+                          "No contact"
+                        ) : (
+                          r.status
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+            </TableBody>
+          </Table>
+        )}
+      </div>
 
       {/* Create list */}
       <Dialog
@@ -966,13 +924,16 @@ export function ResearchPage() {
           <DialogHeader>
             <DialogTitle>New list</DialogTitle>
             <DialogDescription>
-              Optional — Find already creates one. Use this to organize runs.
+              A spreadsheet of companies you can import and enrich.
             </DialogDescription>
           </DialogHeader>
           <Input
-            placeholder="List name"
+            placeholder="e.g. QA leads LATAM"
             value={newTableName}
             onChange={(e) => setNewTableName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void createTable();
+            }}
           />
           <Select value={newRubric} onValueChange={setNewRubric}>
             <SelectTrigger>
@@ -1003,40 +964,137 @@ export function ResearchPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Paste domains */}
+      {/* Import */}
       <Dialog
         open={panel === "add"}
         onOpenChange={(open) => setPanel(open ? "add" : "none")}
       >
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Paste domains</DialogTitle>
+            <DialogTitle>Import companies</DialogTitle>
             <DialogDescription>
-              One per line. Then use “Score pending” to run the playbook.
+              One domain or company per line. Then run{" "}
+              <strong>Find people</strong> to enrich contacts.
             </DialogDescription>
           </DialogHeader>
           <Textarea
             value={importText}
             onChange={(e) => setImportText(e.target.value)}
-            rows={7}
+            rows={8}
             className="font-mono text-sm"
-            placeholder={"omie.com.br\nlinear.app"}
+            placeholder={"finnet.com.br\ncasar.com\npagbrasil.com"}
           />
           <DialogFooter>
             <Button variant="outline" onClick={() => setPanel("none")}>
               Cancel
             </Button>
             <Button
-              disabled={!importText.trim() || importing}
+              disabled={!importText.trim() || importing || !tableId}
               onClick={() => void importDomains()}
             >
-              Add
+              {importing ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                "Add to list"
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Drawer */}
+      {/* Find ICP (secondary) */}
+      <Dialog
+        open={panel === "find"}
+        onOpenChange={(open) => setPanel(open ? "find" : "none")}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Find ICP companies</DialogTitle>
+            <DialogDescription>
+              Optional discovery from public job boards. Prefer importing your
+              own list when you already have targets.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                Region
+              </label>
+              <Select
+                value={market}
+                onValueChange={(v) => setMarket(v as Market)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="brazil">Brazil</SelectItem>
+                  <SelectItem value="global">Global</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                Size
+              </label>
+              <Select
+                value={size}
+                onValueChange={(v) => setSize(v as SizeBand)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="mid">Mid</SelectItem>
+                  <SelectItem value="small">Small</SelectItem>
+                  <SelectItem value="large">Large</SelectItem>
+                  <SelectItem value="any">Any</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                How many
+              </label>
+              <Select value={maxCompanies} onValueChange={setMaxCompanies}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="6">6</SelectItem>
+                  <SelectItem value="12">12</SelectItem>
+                  <SelectItem value="20">20</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                Focus
+              </label>
+              <Input
+                placeholder="fintech, Playwright…"
+                value={focus}
+                onChange={(e) => setFocus(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPanel("none")}>
+              Cancel
+            </Button>
+            <Button disabled={running} onClick={() => void runFind()}>
+              {running ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Search className="size-4" />
+              )}
+              Find &amp; score
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Row drawer */}
       {drawerRowId && drawerRow && (
         <>
           <div
@@ -1051,7 +1109,7 @@ export function ResearchPage() {
                   {drawerRow.companyName}
                 </div>
                 <div className="truncate font-mono text-xs text-muted-foreground">
-                  {drawerRow.domain ?? "—"} · {rowMarket(drawerRow) ?? "?"}
+                  {drawerRow.domain ?? "—"}
                 </div>
               </div>
               <Button
@@ -1066,7 +1124,7 @@ export function ResearchPage() {
             <div className="flex flex-wrap gap-2 border-b px-4 py-2">
               <Button
                 size="sm"
-                variant="outline"
+                variant="secondary"
                 disabled={actionBusy}
                 onClick={() =>
                   void rowAction(drawerRowId, "people", { onlyIfPass: false })
@@ -1086,12 +1144,13 @@ export function ResearchPage() {
               </Button>
               <Button
                 size="sm"
+                variant="outline"
                 disabled={actionBusy}
                 onClick={() =>
                   void rowAction(drawerRowId, "qualify", { force: true })
                 }
               >
-                Qualify
+                Score
               </Button>
             </div>
             <div className="min-h-0 flex-1 space-y-5 overflow-auto p-4">
@@ -1100,193 +1159,120 @@ export function ResearchPage() {
               ) : (
                 <>
                   <section>
-                    <h3 className="mb-2 text-xs font-medium uppercase text-muted-foreground">
-                      Score
-                    </h3>
-                    <div className="flex items-center gap-2">
-                      <ScoreCell
-                        score={drawerRow.icpScore}
-                        pass={drawerRow.pass}
-                      />
-                      {drawerRow.pass === true && (
-                        <Badge
-                          variant="outline"
-                          className="border-emerald-500/40 text-emerald-700 dark:text-emerald-400"
-                        >
-                          ICP pass
-                        </Badge>
-                      )}
-                      {engOpenings(drawerRow) != null && (
-                        <span className="text-xs text-muted-foreground">
-                          ~{engOpenings(drawerRow)} eng openings
-                        </span>
-                      )}
-                    </div>
-                    {drawerRow.whyNow && (
-                      <p className="mt-2 text-sm">{drawerRow.whyNow}</p>
-                    )}
-                  </section>
-                  {rowHunt(drawerRow) && (
-                    <section>
-                      <h3 className="mb-2 text-xs font-medium uppercase text-muted-foreground">
-                        Encontrada via sinal
-                      </h3>
-                      <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm">
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <Badge variant="outline" className="text-[10px]">
-                            {rowHunt(drawerRow)!.source.replace(/_/g, " ")}
-                          </Badge>
-                          <span className="truncate">
-                            busca: “{rowHunt(drawerRow)!.query}”
-                          </span>
-                        </div>
-                        <blockquote className="mt-1.5 border-l-2 border-emerald-500/50 pl-2 text-xs italic">
-                          “{rowHunt(drawerRow)!.quote}”
-                        </blockquote>
-                        <a
-                          href={rowHunt(drawerRow)!.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="mt-1.5 inline-flex items-center gap-1 text-xs text-emerald-700 underline-offset-2 hover:underline dark:text-emerald-400"
-                        >
-                          <ExternalLink className="size-3" />
-                          {rowHunt(drawerRow)!.title ??
-                            hostLabel(rowHunt(drawerRow)!.url)}
-                        </a>
-                      </div>
-                    </section>
-                  )}
-                  {!rowHunt(drawerRow) && rowDiscovery(drawerRow)?.sourceUrl && (
-                    <section>
-                      <h3 className="mb-2 text-xs font-medium uppercase text-muted-foreground">
-                        Origem
-                      </h3>
-                      <a
-                        href={rowDiscovery(drawerRow)!.sourceUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:underline"
-                      >
-                        <ExternalLink className="size-3" />
-                        {hostLabel(rowDiscovery(drawerRow)!.sourceUrl!)}
-                        {rowDiscovery(drawerRow)!.sourceQuery
-                          ? ` — busca: “${rowDiscovery(drawerRow)!.sourceQuery}”`
-                          : ""}
-                      </a>
-                    </section>
-                  )}
-                  <section>
-                    <h3 className="mb-2 text-xs font-medium uppercase text-muted-foreground">
-                      Playbook checklist
-                    </h3>
-                    <ul className="space-y-2">
-                      {evidence.map((e) => (
-                        <li
-                          key={e.criterionId}
-                          className="rounded-md border px-2.5 py-2 text-sm"
-                        >
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={cn(
-                                "size-1.5 shrink-0 rounded-full",
-                                e.status === "pass" && "bg-emerald-500",
-                                e.status === "fail" && "bg-rose-500",
-                                e.status === "unknown" &&
-                                  "bg-muted-foreground/40",
-                              )}
-                            />
-                            <span className="text-xs capitalize text-muted-foreground">
-                              {e.kind}
-                            </span>
-                            <span className="truncate font-mono text-[11px]">
-                              {e.criterionId.replace(/_/g, " ")}
-                            </span>
-                          </div>
-                          {e.evidence && (
-                            <p className="mt-1 text-xs text-muted-foreground">
-                              {e.evidence}
-                            </p>
-                          )}
-                          {e.sources.length > 0 && (
-                            <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
-                              {e.sources.slice(0, 4).map((s, i) => (
-                                <a
-                                  key={i}
-                                  href={s.url}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="inline-flex items-center gap-1 text-[11px] text-primary underline-offset-2 hover:underline"
-                                >
-                                  <ExternalLink className="size-3" />
-                                  {hostLabel(s.url)}
-                                  {s.pack && s.pack !== "llm" ? (
-                                    <span className="text-muted-foreground">
-                                      ({s.pack})
-                                    </span>
-                                  ) : null}
-                                </a>
-                              ))}
-                            </div>
-                          )}
-                          {e.confidence > 0 && (
-                            <div className="mt-1 text-[10px] text-muted-foreground">
-                              confiança {Math.round(e.confidence * 100)}%
-                            </div>
-                          )}
-                        </li>
-                      ))}
-                      {evidence.length === 0 && (
-                        <li className="text-xs text-muted-foreground">
-                          Not scored yet.
-                        </li>
-                      )}
-                    </ul>
-                  </section>
-                  <section>
-                    <h3 className="mb-2 text-xs font-medium uppercase text-muted-foreground">
+                    <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                       People
                     </h3>
                     <ul className="space-y-1.5 text-sm">
-                      {people.map((p, i) => (
-                        <li key={i} className="rounded border px-2 py-1.5">
+                      {(drawerPeople.length
+                        ? drawerPeople
+                        : drawerRow.people ?? []
+                      ).map((p, i) => (
+                        <li
+                          key={p.id ?? i}
+                          className="rounded-md border px-2.5 py-2"
+                        >
                           <div className="font-medium">{p.name}</div>
                           <div className="text-xs text-muted-foreground">
                             {[p.role, p.email].filter(Boolean).join(" · ") ||
                               "—"}
                           </div>
+                          {p.linkedin && (
+                            <a
+                              href={p.linkedin}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="mt-1 inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                            >
+                              <Link2 className="size-3" />
+                              LinkedIn
+                            </a>
+                          )}
                         </li>
                       ))}
-                      {people.length === 0 && (
+                      {(drawerPeople.length
+                        ? drawerPeople
+                        : drawerRow.people ?? []
+                      ).length === 0 && (
                         <li className="text-xs text-muted-foreground">
-                          None yet
+                          No contacts yet. Run Find people.
                         </li>
                       )}
                     </ul>
                   </section>
-                  <section className="space-y-2">
-                    <h3 className="text-xs font-medium uppercase text-muted-foreground">
-                      Ask
-                    </h3>
-                    <div className="flex gap-2">
-                      <Input
-                        placeholder="Use Playwright?"
-                        value={aiPrompt}
-                        onChange={(e) => setAiPrompt(e.target.value)}
-                      />
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        disabled={!aiPrompt.trim() || actionBusy}
-                        onClick={() =>
-                          void rowAction(drawerRowId, "ai_column", {
-                            prompt: aiPrompt.trim(),
-                          })
-                        }
-                      >
-                        Ask
-                      </Button>
-                    </div>
-                  </section>
+
+                  {(drawerRow.whyNow || drawerRow.icpScore != null) && (
+                    <section>
+                      <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                        Context
+                      </h3>
+                      <div className="flex items-center gap-2">
+                        <ScorePill
+                          score={drawerRow.icpScore}
+                          pass={drawerRow.pass}
+                        />
+                        {drawerRow.pass === true && (
+                          <Badge
+                            variant="outline"
+                            className="border-emerald-500/40 text-emerald-700 dark:text-emerald-400"
+                          >
+                            ICP pass
+                          </Badge>
+                        )}
+                      </div>
+                      {drawerRow.whyNow && (
+                        <p className="mt-2 text-sm text-muted-foreground">
+                          {drawerRow.whyNow}
+                        </p>
+                      )}
+                    </section>
+                  )}
+
+                  {evidence.length > 0 && (
+                    <section>
+                      <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                        Evidence
+                      </h3>
+                      <ul className="space-y-2">
+                        {evidence.map((e) => (
+                          <li
+                            key={e.criterionId}
+                            className="rounded-md border px-2.5 py-2 text-sm"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={cn(
+                                  "size-1.5 shrink-0 rounded-full",
+                                  e.status === "pass" && "bg-emerald-500",
+                                  e.status === "fail" && "bg-rose-500",
+                                  e.status === "unknown" &&
+                                    "bg-muted-foreground/40",
+                                )}
+                              />
+                              <span className="truncate font-mono text-[11px]">
+                                {e.criterionId.replace(/_/g, " ")}
+                              </span>
+                            </div>
+                            {e.evidence && (
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {e.evidence}
+                              </p>
+                            )}
+                            {e.sources[0] && (
+                              <a
+                                href={e.sources[0].url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="mt-1 inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+                              >
+                                <ExternalLink className="size-3" />
+                                {hostLabel(e.sources[0].url)}
+                              </a>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  )}
                 </>
               )}
             </div>
