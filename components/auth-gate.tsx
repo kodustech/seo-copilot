@@ -72,42 +72,51 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const pathname = usePathname();
   const [manualToolParam, setManualToolParam] = useState<string | null>(null);
+  // Product IA: AI CMO motions — Command / Attract / Engage / Convert / System
   const navSections = useMemo(
     () => [
       {
-        label: "Workspace",
+        label: "Command",
         items: [
-          { href: "/central", label: "Central de Controle", icon: Inbox },
-          { href: "/", label: "Content Canvas", icon: Sparkles },
+          { href: "/central", label: "Home", icon: Inbox },
           { href: "/goals", label: "Goals", icon: Target },
           { href: "/kanban", label: "Kanban", icon: KanbanSquare },
-          { href: "/dashboard", label: "Dashboard", icon: BarChart3 },
         ],
       },
       {
-        label: "Discovery",
+        label: "Attract",
         items: [
-          { href: "/research", label: "Lists", icon: Search },
-          { href: "/sequences", label: "Sequences", icon: Workflow },
-          { href: "/social-monitoring", label: "Social Monitor", icon: Radar },
-          { href: "/reply-radar", label: "Reply Radar", icon: MessageCircle },
-          { href: "/outreach", label: "Outreach CRM", icon: Send },
-          { href: "/crm", label: "Company CRM", icon: Building2 },
-          { href: "/calendario", label: "Calendar", icon: Calendar },
+          { href: "/", label: "Content", icon: Sparkles },
+          {
+            href: "/manual",
+            label: "SEO & production",
+            icon: Wrench,
+            hasSubmenu: true,
+          },
           { href: "/ideas", label: "Ideas", icon: Lightbulb },
+          { href: "/dashboard", label: "Performance", icon: BarChart3 },
+          { href: "/calendario", label: "Calendar", icon: Calendar },
         ],
       },
       {
-        label: "Production",
+        label: "Engage",
         items: [
-          { href: "/manual", label: "Manual Mode", icon: Wrench, hasSubmenu: true },
+          { href: "/social-monitoring", label: "Social monitor", icon: Radar },
+          { href: "/reply-radar", label: "Social inbox", icon: MessageCircle },
         ],
       },
       {
-        label: "Automation",
+        label: "Convert",
         items: [
-          { href: "/jobs", label: "Scheduled Jobs", icon: Clock },
+          { href: "/sequences", label: "Outbound", icon: Workflow },
+          { href: "/research", label: "ICP lists", icon: Search },
+          { href: "/outreach", label: "Pipeline", icon: Send },
+          { href: "/crm", label: "Accounts", icon: Building2 },
         ],
+      },
+      {
+        label: "System",
+        items: [{ href: "/jobs", label: "Jobs", icon: Clock }],
       },
     ],
     [],
@@ -136,7 +145,9 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       }
     }
     if (pathname === "/settings") return "Settings";
-    if (pathname.startsWith("/manual")) return "Manual Mode";
+    if (pathname.startsWith("/manual")) return "SEO & production";
+    if (pathname.startsWith("/sequences")) return "Outbound";
+    if (pathname.startsWith("/research")) return "ICP lists";
     return "";
   }, [navSections, pathname]);
   const [agentOpen, setAgentOpen] = useState(false);
@@ -490,7 +501,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
               </div>
               <div className="min-w-0 flex-1 leading-tight">
                 <p className="truncate text-sm font-semibold text-white">Kodus</p>
-                <p className="truncate text-[10px] text-neutral-500">Growth workspace</p>
+                <p className="truncate text-[10px] text-neutral-500">AI CMO</p>
               </div>
               <button
                 onClick={toggleSidebar}
