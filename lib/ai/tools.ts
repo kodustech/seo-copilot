@@ -4249,6 +4249,109 @@ export const researchSetCell = tool({
   },
 });
 
+export const researchUpsertPeople = tool({
+  description:
+    "Manually set/replace contacts on a research row (company). Use when the user found the right person by hand (name, role, email, linkedin). Replaces existing people on that row. Optionally syncs contact_linkedin cell. After this, call researchRunColumn for missing LinkedIn if needed.",
+  inputSchema: z.object({
+    row_id: z.string().describe("research_rows id"),
+    people: z
+      .array(
+        z.object({
+          name: z.string(),
+          role: z.string().nullable().optional(),
+          email: z.string().nullable().optional(),
+          linkedin: z.string().nullable().optional(),
+        }),
+      )
+      .optional()
+      .describe("Full list of contacts (replaces existing)"),
+    name: z.string().optional().describe("Shortcut: single primary contact name"),
+    role: z.string().optional(),
+    email: z.string().optional(),
+    linkedin: z.string().optional(),
+  }),
+  execute: async ({ row_id, people, name, role, email, linkedin }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { replacePeople, listPeople, getRow } = await import(
+        "@/lib/research/tables"
+      );
+      const { setCell } = await import("@/lib/research/columns");
+      const row = await getRow(client, row_id);
+      if (!row) {
+        return { success: false as const, message: "Row not found" };
+      }
+
+      let list = people;
+      if ((!list || list.length === 0) && name?.trim()) {
+        list = [
+          {
+            name: name.trim(),
+            role: role ?? null,
+            email: email ?? null,
+            linkedin: linkedin ?? null,
+          },
+        ];
+      }
+      if (!list?.length) {
+        return {
+          success: false as const,
+          message: "Provide people[] or name for primary contact",
+        };
+      }
+
+      const cleaned = list
+        .map((p) => ({
+          name: p.name.trim(),
+          role: p.role ?? null,
+          email: p.email ?? null,
+          linkedin: p.linkedin ?? null,
+          emailSource: "manual" as const,
+          providerUsed: "manual",
+          confidence: 1,
+        }))
+        .filter((p) => p.name.length > 0);
+
+      await replacePeople(client, row_id, cleaned);
+
+      const top =
+        cleaned.find((p) => p.linkedin) ?? cleaned[0];
+      if (top?.linkedin) {
+        try {
+          await setCell(client, row_id, "contact_linkedin", top.linkedin, {
+            status: "done",
+            evidence: `Manual: ${top.name}`,
+          });
+        } catch {
+          /* column optional */
+        }
+      }
+
+      const saved = await listPeople(client, row_id);
+      return {
+        success: true as const,
+        company: row.companyName,
+        domain: row.domain,
+        people: saved.map((p) => ({
+          name: p.name,
+          role: p.role,
+          email: p.email,
+          linkedin: p.linkedin,
+        })),
+        note: top?.linkedin
+          ? "Contact saved with LinkedIn."
+          : "Contact saved. Run researchRunColumn key=contact_linkedin if you want MCP to find LinkedIn next.",
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "Upsert people failed",
+      };
+    }
+  },
+});
+
 export function createAgentTools(userEmail?: string) {
   return {
     generateIdeas,
@@ -4320,6 +4423,7 @@ export function createAgentTools(userEmail?: string) {
     researchDeleteColumn,
     researchRunColumn,
     researchSetCell,
+    researchUpsertPeople,
   };
 }
 
