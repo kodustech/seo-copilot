@@ -213,6 +213,12 @@ export function ResearchPage() {
   const [drawerPeople, setDrawerPeople] = useState<Person[]>([]);
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
+  // Manual contact edit (primary person)
+  const [editName, setEditName] = useState("");
+  const [editRole, setEditRole] = useState("");
+  const [editEmail, setEditEmail] = useState("");
+  const [editLinkedin, setEditLinkedin] = useState("");
+  const [savingContact, setSavingContact] = useState(false);
 
   useEffect(() => {
     supabase?.auth.getSession().then(({ data }) => {
@@ -489,9 +495,43 @@ export function ResearchPage() {
       if (!res.ok) return;
       const data = await res.json();
       setEvidence(data.evidence ?? []);
-      setDrawerPeople(data.people ?? []);
+      const ppl = (data.people ?? []) as Person[];
+      setDrawerPeople(ppl);
+      const primary = topPerson(ppl);
+      setEditName(primary?.name ?? "");
+      setEditRole(primary?.role ?? "");
+      setEditEmail(primary?.email ?? "");
+      setEditLinkedin(primary?.linkedin ?? "");
     } finally {
       setDrawerLoading(false);
+    }
+  };
+
+  const saveContact = async () => {
+    if (!token || !drawerRowId || !editName.trim()) return;
+    setSavingContact(true);
+    try {
+      const res = await fetch(`/api/research/rows/${drawerRowId}/actions`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          action: "upsert_people",
+          name: editName.trim(),
+          role: editRole.trim() || null,
+          email: editEmail.trim() || null,
+          linkedin: editLinkedin.trim() || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setNotice(data.error ?? "Failed to save contact");
+        return;
+      }
+      setDrawerPeople(data.people ?? []);
+      setNotice("Contact saved");
+      await loadRows();
+    } finally {
+      setSavingContact(false);
     }
   };
 
@@ -608,46 +648,46 @@ export function ResearchPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
-      {/* Table tabs (workspace-style) */}
-      <div className="flex items-center gap-1 border-b bg-muted/20 px-3 pt-2">
-        <div className="flex min-w-0 flex-1 items-end gap-0.5 overflow-x-auto">
-          {tables.map((t) => {
-            const active = t.id === tableId;
-            return (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => {
-                  setTableId(t.id);
-                  setSelected(new Set());
-                  setDrawerRowId(null);
-                }}
-                className={cn(
-                  "relative max-w-[220px] shrink-0 truncate rounded-t-md border border-b-0 px-3 py-2 text-left text-sm transition-colors",
-                  active
-                    ? "border-border bg-background font-medium text-foreground shadow-[0_-1px_0_0_hsl(var(--background))]"
-                    : "border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-                )}
-              >
-                <span className="truncate">{t.name}</span>
-                {typeof t.rowCount === "number" && (
-                  <span className="ml-1.5 text-[11px] tabular-nums text-muted-foreground">
-                    {t.rowCount}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-          <button
-            type="button"
-            onClick={() => setPanel("create")}
-            className="mb-1 ml-1 inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-            aria-label="New list"
-            title="New list"
-          >
-            <Plus className="size-4" />
-          </button>
-        </div>
+      {/* List picker — no horizontal tab scroll */}
+      <div className="flex flex-wrap items-center gap-2 border-b bg-muted/15 px-4 py-2.5">
+        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          List
+        </span>
+        <Select
+          value={tableId ?? undefined}
+          onValueChange={(v) => {
+            setTableId(v);
+            setSelected(new Set());
+            setDrawerRowId(null);
+          }}
+        >
+          <SelectTrigger className="h-9 w-full max-w-md sm:w-[min(28rem,100%)]">
+            <SelectValue placeholder="Select a list…" />
+          </SelectTrigger>
+          <SelectContent className="max-h-72">
+            {tables.map((t) => (
+              <SelectItem key={t.id} value={t.id}>
+                <span className="truncate">
+                  {t.name}
+                  {typeof t.rowCount === "number" ? (
+                    <span className="ml-1.5 text-muted-foreground">
+                      ({t.rowCount})
+                    </span>
+                  ) : null}
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setPanel("create")}
+          className="shrink-0"
+        >
+          <Plus className="size-3.5" />
+          New list
+        </Button>
       </div>
 
       {/* Toolbar */}
@@ -1062,7 +1102,7 @@ export function ResearchPage() {
                         ) : r.status === "researching" ? (
                           "Scoring…"
                         ) : r.status === "pending" ? (
-                          "Queued"
+                          "No score"
                         ) : r.status === "researched" ? (
                           "No contact"
                         ) : (
@@ -1320,46 +1360,92 @@ export function ResearchPage() {
                 <Loader2 className="size-4 animate-spin text-muted-foreground" />
               ) : (
                 <>
-                  <section>
-                    <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                      People
-                    </h3>
-                    <ul className="space-y-1.5 text-sm">
-                      {(drawerPeople.length
-                        ? drawerPeople
-                        : drawerRow.people ?? []
-                      ).map((p, i) => (
-                        <li
-                          key={p.id ?? i}
-                          className="rounded-md border px-2.5 py-2"
-                        >
-                          <div className="font-medium">{p.name}</div>
-                          <div className="text-xs text-muted-foreground">
-                            {[p.role, p.email].filter(Boolean).join(" · ") ||
-                              "—"}
-                          </div>
-                          {p.linkedin && (
-                            <a
-                              href={p.linkedin}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="mt-1 inline-flex items-center gap-1 text-xs text-primary hover:underline"
-                            >
-                              <Link2 className="size-3" />
-                              LinkedIn
-                            </a>
-                          )}
-                        </li>
-                      ))}
-                      {(drawerPeople.length
-                        ? drawerPeople
-                        : drawerRow.people ?? []
-                      ).length === 0 && (
-                        <li className="text-xs text-muted-foreground">
-                          No contacts yet. Run Find people.
-                        </li>
-                      )}
-                    </ul>
+                  <section className="space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                        Primary contact
+                      </h3>
+                      <span className="font-mono text-[10px] text-muted-foreground">
+                        row {drawerRowId.slice(0, 8)}…
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Edit by hand (e.g. Finnet) then Save. MCP can keep
+                      enriching LinkedIn after with{" "}
+                      <code className="text-[10px]">researchRunColumn</code>.
+                    </p>
+                    <div className="space-y-2">
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-muted-foreground">
+                          Name
+                        </label>
+                        <Input
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                          placeholder="Full name"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-muted-foreground">
+                          Role
+                        </label>
+                        <Input
+                          value={editRole}
+                          onChange={(e) => setEditRole(e.target.value)}
+                          placeholder="CTO, Head of Eng…"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-muted-foreground">
+                          Email
+                        </label>
+                        <Input
+                          value={editEmail}
+                          onChange={(e) => setEditEmail(e.target.value)}
+                          placeholder="name@company.com"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-muted-foreground">
+                          LinkedIn URL
+                        </label>
+                        <Input
+                          value={editLinkedin}
+                          onChange={(e) => setEditLinkedin(e.target.value)}
+                          placeholder="https://www.linkedin.com/in/…"
+                        />
+                      </div>
+                      <Button
+                        size="sm"
+                        className="w-full"
+                        disabled={savingContact || !editName.trim()}
+                        onClick={() => void saveContact()}
+                      >
+                        {savingContact ? (
+                          <Loader2 className="size-3.5 animate-spin" />
+                        ) : (
+                          <Check className="size-3.5" />
+                        )}
+                        Save contact
+                      </Button>
+                    </div>
+                    {(drawerPeople.length > 1 ||
+                      (drawerPeople.length === 1 &&
+                        drawerPeople[0].name !== editName)) && (
+                      <div className="rounded-md border bg-muted/20 px-2.5 py-2">
+                        <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">
+                          Also on this row
+                        </p>
+                        <ul className="space-y-1 text-xs">
+                          {drawerPeople.map((p, i) => (
+                            <li key={p.id ?? i} className="truncate">
+                              {p.name}
+                              {p.role ? ` · ${p.role}` : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </section>
 
                   {(drawerRow.whyNow || drawerRow.icpScore != null) && (
