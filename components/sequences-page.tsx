@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
   Check,
   Copy,
   ExternalLink,
@@ -87,7 +89,16 @@ type QueueTask = {
 type ResearchTable = { id: string; name: string; slug?: string | null };
 
 const TOKEN_HINT =
-  "Tokens: {{first_name}} {{full_name}} {{company}} {{domain}} {{role}} {{email}} {{linkedin}}";
+  "Personalize with {{first_name}} {{full_name}} {{company}} {{domain}} {{role}} {{email}} {{linkedin}}";
+
+function formatWait(hours: number): string {
+  if (hours <= 0) return "immediately";
+  const d = Math.floor(hours / 24);
+  const h = hours % 24;
+  if (d > 0 && h > 0) return `after ${d}d ${h}h`;
+  if (d > 0) return `after ${d} day${d === 1 ? "" : "s"}`;
+  return `after ${h} hour${h === 1 ? "" : "s"}`;
+}
 
 function useAuthToken() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
@@ -561,9 +572,65 @@ export function SequencesPage() {
             </div>
 
             <div className="space-y-3">
+              <div className="rounded-lg border border-dashed bg-muted/20 p-3 text-xs leading-relaxed text-muted-foreground">
+                <p className="font-medium text-foreground">How a step works</p>
+                <ul className="mt-1.5 list-inside list-disc space-y-1">
+                  <li>
+                    <strong>Channel</strong> — LinkedIn or Email (pick per step).
+                  </li>
+                  <li>
+                    <strong>Wait</strong> — pause before this step runs (days +
+                    hours after the previous one). Step 1 with 0 = now.
+                  </li>
+                  <li>
+                    <strong>LinkedIn → Add connection</strong> — goes to your
+                    human queue: open profile → paste note → send invite → Mark
+                    sent.
+                  </li>
+                  <li>
+                    <strong>LinkedIn → Message</strong> — same queue, but DM
+                    (after you&apos;re connected).
+                  </li>
+                  <li>
+                    <strong>Email → Auto</strong> — sends alone via Gmail in
+                    Settings. <strong>Semi</strong> = you approve/send manually.
+                  </li>
+                  <li>
+                    <strong>Message box</strong> — edit the exact text/template
+                    for that step. {TOKEN_HINT}
+                  </li>
+                </ul>
+              </div>
+
+              {/* Cadence preview */}
+              <div className="rounded-lg border p-3">
+                <p className="mb-2 text-xs font-medium">Cadence preview</p>
+                <ol className="space-y-1 text-xs text-muted-foreground">
+                  {editSteps.map((s, i) => (
+                    <li key={s.key} className="flex flex-wrap gap-x-2">
+                      <span className="font-medium text-foreground">
+                        {i + 1}.
+                      </span>
+                      <span>
+                        {s.channel === "linkedin"
+                          ? s.linkedinAction === "connect_note"
+                            ? "LinkedIn · Add connection + note"
+                            : "LinkedIn · Message"
+                          : s.mode === "auto"
+                            ? "Email · auto-send"
+                            : "Email · semi"}
+                      </span>
+                      <span>· {formatWait(s.delayHours)}</span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <h2 className="text-sm font-medium">Steps & templates</h2>
+                  <h2 className="text-sm font-medium">
+                    Steps — channel, wait, action, message
+                  </h2>
                   <p className="text-xs text-muted-foreground">{TOKEN_HINT}</p>
                 </div>
                 <div className="flex gap-1.5">
@@ -575,7 +642,7 @@ export function SequencesPage() {
                     }
                   >
                     <Plus className="size-3.5" />
-                    LinkedIn step
+                    Add LinkedIn
                   </Button>
                   <Button
                     size="sm"
@@ -585,90 +652,95 @@ export function SequencesPage() {
                     }
                   >
                     <Plus className="size-3.5" />
-                    Email step
+                    Add Email
                   </Button>
                 </div>
               </div>
 
-              {editSteps.map((step, idx) => (
-                <div
-                  key={step.key}
-                  className="space-y-3 rounded-lg border bg-card p-4 shadow-sm"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="secondary">Step {idx + 1}</Badge>
-                      <Badge variant="outline">
-                        {step.channel === "linkedin" ? "LinkedIn" : "Email"}
-                      </Badge>
-                      <span className="text-xs text-muted-foreground">
-                        {step.channel === "linkedin"
-                          ? "semi (you send)"
-                          : "auto (Gmail mailbox)"}
-                      </span>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={editSteps.length <= 1}
-                      onClick={() =>
-                        setEditSteps((p) => p.filter((x) => x.key !== step.key))
-                      }
-                    >
-                      <Trash2 className="size-3.5" />
-                      Remove
-                    </Button>
-                  </div>
+              {editSteps.map((step, idx) => {
+                const waitDays = Math.floor(step.delayHours / 24);
+                const waitHours = step.delayHours % 24;
+                const setWait = (days: number, hours: number) => {
+                  updateStep(step.key, {
+                    delayHours: Math.max(0, days) * 24 + Math.max(0, hours),
+                  });
+                };
+                const move = (dir: -1 | 1) => {
+                  setEditSteps((prev) => {
+                    const i = prev.findIndex((x) => x.key === step.key);
+                    const j = i + dir;
+                    if (i < 0 || j < 0 || j >= prev.length) return prev;
+                    const next = [...prev];
+                    [next[i], next[j]] = [next[j], next[i]];
+                    return next;
+                  });
+                };
 
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <div className="space-y-1">
-                      <label className="text-xs text-muted-foreground">
-                        Channel
-                      </label>
-                      <Select
-                        value={step.channel}
-                        onValueChange={(v) =>
-                          updateStep(step.key, {
-                            channel: v as "email" | "linkedin",
-                          })
-                        }
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="linkedin">LinkedIn</SelectItem>
-                          <SelectItem value="email">Email</SelectItem>
-                        </SelectContent>
-                      </Select>
+                return (
+                  <div
+                    key={step.key}
+                    className="space-y-4 rounded-lg border bg-card p-4 shadow-sm"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="secondary">Step {idx + 1}</Badge>
+                        <Badge variant="outline">
+                          {step.channel === "linkedin" ? "LinkedIn" : "Email"}
+                        </Badge>
+                        <span className="text-xs text-muted-foreground">
+                          {formatWait(step.delayHours)}
+                          {step.channel === "linkedin"
+                            ? " · you send from queue"
+                            : step.mode === "auto"
+                              ? " · auto via Gmail"
+                              : " · you send"}
+                        </span>
+                      </div>
+                      <div className="flex gap-1">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={idx === 0}
+                          onClick={() => move(-1)}
+                          title="Move up"
+                        >
+                          <ArrowUp className="size-3.5" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={idx === editSteps.length - 1}
+                          onClick={() => move(1)}
+                          title="Move down"
+                        >
+                          <ArrowDown className="size-3.5" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={editSteps.length <= 1}
+                          onClick={() =>
+                            setEditSteps((p) =>
+                              p.filter((x) => x.key !== step.key),
+                            )
+                          }
+                        >
+                          <Trash2 className="size-3.5" />
+                          Remove
+                        </Button>
+                      </div>
                     </div>
-                    <div className="space-y-1">
-                      <label className="text-xs text-muted-foreground">
-                        Delay (hours after previous)
-                      </label>
-                      <Input
-                        type="number"
-                        min={0}
-                        value={step.delayHours}
-                        onChange={(e) =>
-                          updateStep(step.key, {
-                            delayHours: Number(e.target.value) || 0,
-                          })
-                        }
-                      />
-                    </div>
-                    {step.channel === "linkedin" ? (
+
+                    <div className="grid gap-3 sm:grid-cols-2">
                       <div className="space-y-1">
-                        <label className="text-xs text-muted-foreground">
-                          LinkedIn action
+                        <label className="text-xs font-medium">
+                          1. Channel (LinkedIn or Email)
                         </label>
                         <Select
-                          value={step.linkedinAction ?? "message"}
+                          value={step.channel}
                           onValueChange={(v) =>
                             updateStep(step.key, {
-                              linkedinAction: v as
-                                | "connect_note"
-                                | "message",
+                              channel: v as "email" | "linkedin",
                             })
                           }
                         >
@@ -676,76 +748,188 @@ export function SequencesPage() {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="connect_note">
-                              Connect note
+                            <SelectItem value="linkedin">
+                              LinkedIn
                             </SelectItem>
-                            <SelectItem value="message">Message</SelectItem>
+                            <SelectItem value="email">Email</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
-                    ) : (
+
+                      {step.channel === "linkedin" ? (
+                        <div className="space-y-1">
+                          <label className="text-xs font-medium">
+                            2. LinkedIn action
+                          </label>
+                          <Select
+                            value={step.linkedinAction ?? "connect_note"}
+                            onValueChange={(v) =>
+                              updateStep(step.key, {
+                                linkedinAction: v as
+                                  | "connect_note"
+                                  | "message",
+                              })
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="connect_note">
+                                Add connection + note (invite)
+                              </SelectItem>
+                              <SelectItem value="message">
+                                Message (DM after connected)
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <p className="text-[11px] text-muted-foreground">
+                            Appears in LinkedIn queue: open profile → copy note
+                            → you send on LinkedIn → Mark sent.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <label className="text-xs font-medium">
+                            2. How email is sent
+                          </label>
+                          <Select
+                            value={step.mode}
+                            onValueChange={(v) =>
+                              updateStep(step.key, {
+                                mode: v as "auto" | "semi",
+                              })
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="auto">
+                                Auto — Gmail mailbox sends
+                              </SelectItem>
+                              <SelectItem value="semi">
+                                Semi — queue for you to send
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium">
+                        3. Wait before this step
+                        {idx === 0
+                          ? " (from enroll)"
+                          : " (after previous step is done)"}
+                      </label>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex items-center gap-1.5">
+                          <Input
+                            type="number"
+                            min={0}
+                            className="w-20"
+                            value={waitDays}
+                            onChange={(e) =>
+                              setWait(Number(e.target.value) || 0, waitHours)
+                            }
+                          />
+                          <span className="text-xs text-muted-foreground">
+                            days
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <Input
+                            type="number"
+                            min={0}
+                            max={23}
+                            className="w-20"
+                            value={waitHours}
+                            onChange={(e) =>
+                              setWait(waitDays, Number(e.target.value) || 0)
+                            }
+                          />
+                          <span className="text-xs text-muted-foreground">
+                            hours
+                          </span>
+                        </div>
+                        <span className="text-xs text-muted-foreground">
+                          = {formatWait(step.delayHours)}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1 pt-1">
+                        {[
+                          [0, "Now"],
+                          [24, "1 day"],
+                          [48, "2 days"],
+                          [72, "3 days"],
+                          [168, "1 week"],
+                        ].map(([h, label]) => (
+                          <Button
+                            key={String(h)}
+                            type="button"
+                            size="sm"
+                            variant={
+                              step.delayHours === h ? "default" : "outline"
+                            }
+                            className="h-7 text-xs"
+                            onClick={() =>
+                              updateStep(step.key, {
+                                delayHours: h as number,
+                              })
+                            }
+                          >
+                            {label}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {step.channel === "email" && (
                       <div className="space-y-1">
-                        <label className="text-xs text-muted-foreground">
-                          Mode
+                        <label className="text-xs font-medium">
+                          4. Email subject
                         </label>
-                        <Select
-                          value={step.mode}
-                          onValueChange={(v) =>
+                        <Input
+                          value={step.subjectTemplate}
+                          onChange={(e) =>
                             updateStep(step.key, {
-                              mode: v as "auto" | "semi",
+                              subjectTemplate: e.target.value,
                             })
                           }
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="auto">
-                              Auto (send via mailbox)
-                            </SelectItem>
-                            <SelectItem value="semi">
-                              Semi (queue for you)
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
+                          placeholder="QA at {{company}}"
+                        />
                       </div>
                     )}
-                  </div>
 
-                  {step.channel === "email" && (
                     <div className="space-y-1">
-                      <label className="text-xs text-muted-foreground">
-                        Subject template
+                      <label className="text-xs font-medium">
+                        {step.channel === "linkedin"
+                          ? step.linkedinAction === "connect_note"
+                            ? "4. Connection note text (what you paste on LinkedIn)"
+                            : "4. LinkedIn message text"
+                          : "5. Email body"}
                       </label>
-                      <Input
-                        value={step.subjectTemplate}
+                      <Textarea
+                        value={step.bodyTemplate}
                         onChange={(e) =>
                           updateStep(step.key, {
-                            subjectTemplate: e.target.value,
+                            bodyTemplate: e.target.value,
                           })
                         }
-                        placeholder="QA at {{company}}"
+                        rows={step.channel === "email" ? 8 : 5}
+                        className="min-h-[100px] text-sm leading-relaxed"
+                        placeholder={
+                          step.channel === "linkedin"
+                            ? "Hey {{first_name}} — …"
+                            : "Hi {{first_name}},\n\n…"
+                        }
                       />
                     </div>
-                  )}
-
-                  <div className="space-y-1">
-                    <label className="text-xs text-muted-foreground">
-                      {step.channel === "linkedin"
-                        ? "Message / connect note template"
-                        : "Email body template"}
-                    </label>
-                    <Textarea
-                      value={step.bodyTemplate}
-                      onChange={(e) =>
-                        updateStep(step.key, { bodyTemplate: e.target.value })
-                      }
-                      rows={step.channel === "email" ? 8 : 4}
-                      className="font-mono text-sm"
-                    />
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -1013,7 +1197,7 @@ export function SequencesPage() {
                         void openEditor(s.id);
                       }}
                     >
-                      Edit
+                      Edit steps
                     </Button>
                   </TableCell>
                 </TableRow>
@@ -1031,8 +1215,9 @@ export function SequencesPage() {
             </TableBody>
           </Table>
           <p className="mt-3 text-xs text-muted-foreground">
-            Click a row (or Edit) to open the sequence editor: channels, delays,
-            LinkedIn/email templates.
+            Click a row or <strong>Edit steps</strong> to set channel per step
+            (LinkedIn / Email), wait time, connection vs message, and the full
+            template text — then Save.
           </p>
         </div>
       )}
