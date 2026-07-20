@@ -14,6 +14,7 @@ import {
   MoreHorizontal,
   Plus,
   Search,
+  Trash2,
   Users,
   X,
 } from "lucide-react";
@@ -213,12 +214,36 @@ export function ResearchPage() {
   const [drawerPeople, setDrawerPeople] = useState<Person[]>([]);
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
-  // Manual contact edit (primary person)
-  const [editName, setEditName] = useState("");
-  const [editRole, setEditRole] = useState("");
-  const [editEmail, setEditEmail] = useState("");
-  const [editLinkedin, setEditLinkedin] = useState("");
+  /** Editable multi-person drafts in the drawer */
+  const [editPeople, setEditPeople] = useState<
+    Array<{
+      key: string;
+      name: string;
+      role: string;
+      email: string;
+      linkedin: string;
+    }>
+  >([]);
   const [savingContact, setSavingContact] = useState(false);
+
+  const emptyPersonDraft = () => ({
+    key: `new-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    name: "",
+    role: "",
+    email: "",
+    linkedin: "",
+  });
+
+  const peopleToDrafts = (ppl: Person[]) => {
+    if (ppl.length === 0) return [emptyPersonDraft()];
+    return ppl.map((p, i) => ({
+      key: p.id ?? `p-${i}-${p.name}`,
+      name: p.name ?? "",
+      role: p.role ?? "",
+      email: p.email ?? "",
+      linkedin: p.linkedin ?? "",
+    }));
+  };
 
   useEffect(() => {
     supabase?.auth.getSession().then(({ data }) => {
@@ -497,18 +522,26 @@ export function ResearchPage() {
       setEvidence(data.evidence ?? []);
       const ppl = (data.people ?? []) as Person[];
       setDrawerPeople(ppl);
-      const primary = topPerson(ppl);
-      setEditName(primary?.name ?? "");
-      setEditRole(primary?.role ?? "");
-      setEditEmail(primary?.email ?? "");
-      setEditLinkedin(primary?.linkedin ?? "");
+      setEditPeople(peopleToDrafts(ppl));
     } finally {
       setDrawerLoading(false);
     }
   };
 
-  const saveContact = async () => {
-    if (!token || !drawerRowId || !editName.trim()) return;
+  const saveContacts = async () => {
+    if (!token || !drawerRowId) return;
+    const cleaned = editPeople
+      .map((p) => ({
+        name: p.name.trim(),
+        role: p.role.trim() || null,
+        email: p.email.trim() || null,
+        linkedin: p.linkedin.trim() || null,
+      }))
+      .filter((p) => p.name.length > 0);
+    if (cleaned.length === 0) {
+      setNotice("Add at least one person with a name");
+      return;
+    }
     setSavingContact(true);
     try {
       const res = await fetch(`/api/research/rows/${drawerRowId}/actions`, {
@@ -516,23 +549,47 @@ export function ResearchPage() {
         headers: headers(),
         body: JSON.stringify({
           action: "upsert_people",
-          name: editName.trim(),
-          role: editRole.trim() || null,
-          email: editEmail.trim() || null,
-          linkedin: editLinkedin.trim() || null,
+          people: cleaned,
         }),
       });
       const data = await res.json();
       if (!res.ok) {
-        setNotice(data.error ?? "Failed to save contact");
+        setNotice(data.error ?? "Failed to save contacts");
         return;
       }
-      setDrawerPeople(data.people ?? []);
-      setNotice("Contact saved");
+      const ppl = (data.people ?? []) as Person[];
+      setDrawerPeople(ppl);
+      setEditPeople(peopleToDrafts(ppl));
+      setNotice(
+        cleaned.length === 1
+          ? "Contact saved"
+          : `${cleaned.length} contacts saved`,
+      );
       await loadRows();
     } finally {
       setSavingContact(false);
     }
+  };
+
+  const updateEditPerson = (
+    key: string,
+    field: "name" | "role" | "email" | "linkedin",
+    value: string,
+  ) => {
+    setEditPeople((prev) =>
+      prev.map((p) => (p.key === key ? { ...p, [field]: value } : p)),
+    );
+  };
+
+  const addEditPerson = () => {
+    setEditPeople((prev) => [...prev, emptyPersonDraft()]);
+  };
+
+  const removeEditPerson = (key: string) => {
+    setEditPeople((prev) => {
+      const next = prev.filter((p) => p.key !== key);
+      return next.length === 0 ? [emptyPersonDraft()] : next;
+    });
   };
 
   const rowAction = async (
@@ -992,7 +1049,17 @@ export function ResearchPage() {
                       </TableCell>
                       <TableCell>
                         {p ? (
-                          <span className="text-sm font-medium">{p.name}</span>
+                          <div className="flex min-w-0 flex-col gap-0.5">
+                            <span className="truncate text-sm font-medium">
+                              {p.name}
+                            </span>
+                            {(r.people?.length ?? 0) > 1 && (
+                              <span className="inline-flex w-fit items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                                <Users className="size-2.5" />
+                                +{(r.people?.length ?? 1) - 1} more
+                              </span>
+                            )}
+                          </div>
                         ) : (
                           <span className="text-xs text-muted-foreground">
                             —
@@ -1097,7 +1164,9 @@ export function ResearchPage() {
                         {p ? (
                           <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
                             <Check className="size-3" />
-                            Contact
+                            {(r.people?.length ?? 0) > 1
+                              ? `${r.people!.length} people`
+                              : "Contact"}
                           </span>
                         ) : r.status === "researching" ? (
                           "Scoring…"
@@ -1363,89 +1432,143 @@ export function ResearchPage() {
                   <section className="space-y-3">
                     <div className="flex items-center justify-between gap-2">
                       <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                        Primary contact
+                        Contacts
+                        {editPeople.filter((p) => p.name.trim()).length > 0 && (
+                          <span className="ml-1.5 font-normal normal-case tabular-nums text-muted-foreground">
+                            ({editPeople.filter((p) => p.name.trim()).length})
+                          </span>
+                        )}
                       </h3>
                       <span className="font-mono text-[10px] text-muted-foreground">
                         row {drawerRowId.slice(0, 8)}…
                       </span>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      Edit by hand (e.g. Finnet) then Save. MCP can keep
-                      enriching LinkedIn after with{" "}
-                      <code className="text-[10px]">researchRunColumn</code>.
+                      Several people per company. First with an email is the
+                      primary in the grid. Add/remove, then Save all.
                     </p>
-                    <div className="space-y-2">
-                      <div className="space-y-1">
-                        <label className="text-[11px] text-muted-foreground">
-                          Name
-                        </label>
-                        <Input
-                          value={editName}
-                          onChange={(e) => setEditName(e.target.value)}
-                          placeholder="Full name"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-[11px] text-muted-foreground">
-                          Role
-                        </label>
-                        <Input
-                          value={editRole}
-                          onChange={(e) => setEditRole(e.target.value)}
-                          placeholder="CTO, Head of Eng…"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-[11px] text-muted-foreground">
-                          Email
-                        </label>
-                        <Input
-                          value={editEmail}
-                          onChange={(e) => setEditEmail(e.target.value)}
-                          placeholder="name@company.com"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-[11px] text-muted-foreground">
-                          LinkedIn URL
-                        </label>
-                        <Input
-                          value={editLinkedin}
-                          onChange={(e) => setEditLinkedin(e.target.value)}
-                          placeholder="https://www.linkedin.com/in/…"
-                        />
-                      </div>
+
+                    <div className="space-y-3">
+                      {editPeople.map((person, index) => (
+                        <div
+                          key={person.key}
+                          className="space-y-2 rounded-lg border bg-card p-3"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[11px] font-medium text-muted-foreground">
+                              Person {index + 1}
+                              {index === 0 && editPeople.length > 1
+                                ? " · primary candidate"
+                                : ""}
+                            </span>
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              className="size-7 text-muted-foreground hover:text-destructive"
+                              disabled={editPeople.length <= 1}
+                              onClick={() => removeEditPerson(person.key)}
+                              aria-label={`Remove person ${index + 1}`}
+                            >
+                              <Trash2 className="size-3.5" />
+                            </Button>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] text-muted-foreground">
+                              Name
+                            </label>
+                            <Input
+                              value={person.name}
+                              onChange={(e) =>
+                                updateEditPerson(
+                                  person.key,
+                                  "name",
+                                  e.target.value,
+                                )
+                              }
+                              placeholder="Full name"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] text-muted-foreground">
+                              Role
+                            </label>
+                            <Input
+                              value={person.role}
+                              onChange={(e) =>
+                                updateEditPerson(
+                                  person.key,
+                                  "role",
+                                  e.target.value,
+                                )
+                              }
+                              placeholder="CTO, Head of Eng…"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] text-muted-foreground">
+                              Email
+                            </label>
+                            <Input
+                              value={person.email}
+                              onChange={(e) =>
+                                updateEditPerson(
+                                  person.key,
+                                  "email",
+                                  e.target.value,
+                                )
+                              }
+                              placeholder="name@company.com"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] text-muted-foreground">
+                              LinkedIn URL
+                            </label>
+                            <Input
+                              value={person.linkedin}
+                              onChange={(e) =>
+                                updateEditPerson(
+                                  person.key,
+                                  "linkedin",
+                                  e.target.value,
+                                )
+                              }
+                              placeholder="https://www.linkedin.com/in/…"
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-col gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="w-full"
+                        onClick={addEditPerson}
+                      >
+                        <Plus className="size-3.5" />
+                        Add person
+                      </Button>
                       <Button
                         size="sm"
                         className="w-full"
-                        disabled={savingContact || !editName.trim()}
-                        onClick={() => void saveContact()}
+                        disabled={
+                          savingContact ||
+                          !editPeople.some((p) => p.name.trim())
+                        }
+                        onClick={() => void saveContacts()}
                       >
                         {savingContact ? (
                           <Loader2 className="size-3.5 animate-spin" />
                         ) : (
                           <Check className="size-3.5" />
                         )}
-                        Save contact
+                        Save all contacts
                       </Button>
                     </div>
-                    {(drawerPeople.length > 1 ||
-                      (drawerPeople.length === 1 &&
-                        drawerPeople[0].name !== editName)) && (
-                      <div className="rounded-md border bg-muted/20 px-2.5 py-2">
-                        <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">
-                          Also on this row
-                        </p>
-                        <ul className="space-y-1 text-xs">
-                          {drawerPeople.map((p, i) => (
-                            <li key={p.id ?? i} className="truncate">
-                              {p.name}
-                              {p.role ? ` · ${p.role}` : ""}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
                   </section>
 
                   {(drawerRow.whyNow || drawerRow.icpScore != null) && (
