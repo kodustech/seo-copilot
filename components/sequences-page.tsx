@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ArrowLeft,
   Check,
   Copy,
   ExternalLink,
@@ -9,6 +10,7 @@ import {
   Plus,
   RefreshCw,
   SkipForward,
+  Trash2,
 } from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
@@ -50,6 +52,16 @@ type Sequence = {
   enrollmentCount?: number;
 };
 
+type StepDraft = {
+  key: string;
+  channel: "email" | "linkedin";
+  mode: "auto" | "semi";
+  delayHours: number;
+  linkedinAction: "connect_note" | "message" | null;
+  subjectTemplate: string;
+  bodyTemplate: string;
+};
+
 type QueueTask = {
   id: string;
   channel: string;
@@ -74,6 +86,9 @@ type QueueTask = {
 
 type ResearchTable = { id: string; name: string; slug?: string | null };
 
+const TOKEN_HINT =
+  "Tokens: {{first_name}} {{full_name}} {{company}} {{domain}} {{role}} {{email}} {{linkedin}}";
+
 function useAuthToken() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const [token, setToken] = useState<string | null>(null);
@@ -83,6 +98,65 @@ function useAuthToken() {
     });
   }, [supabase]);
   return token;
+}
+
+function newStepKey() {
+  return `s_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function blankStep(channel: "email" | "linkedin" = "linkedin"): StepDraft {
+  if (channel === "email") {
+    return {
+      key: newStepKey(),
+      channel: "email",
+      mode: "auto",
+      delayHours: 24,
+      linkedinAction: null,
+      subjectTemplate: "Quick note for {{company}}",
+      bodyTemplate: `Hi {{first_name}},
+
+Noticed {{company}} is investing in quality/engineering. Worth a quick chat?
+
+— Kodus`,
+    };
+  }
+  return {
+    key: newStepKey(),
+    channel: "linkedin",
+    mode: "semi",
+    delayHours: 0,
+    linkedinAction: "connect_note",
+    subjectTemplate: "",
+    bodyTemplate:
+      "Hey {{first_name}} — saw {{company}} is hiring for QA. Open to a quick chat?",
+  };
+}
+
+function mapApiStep(s: {
+  channel: string;
+  mode: string;
+  delayHours?: number;
+  delay_hours?: number;
+  linkedinAction?: string | null;
+  linkedin_action?: string | null;
+  subjectTemplate?: string | null;
+  subject_template?: string | null;
+  bodyTemplate?: string;
+  body_template?: string;
+}): StepDraft {
+  const channel = s.channel === "email" ? "email" : "linkedin";
+  const action = (s.linkedinAction ?? s.linkedin_action ?? "message") as
+    | "connect_note"
+    | "message";
+  return {
+    key: newStepKey(),
+    channel,
+    mode: channel === "linkedin" ? "semi" : s.mode === "semi" ? "semi" : "auto",
+    delayHours: Number(s.delayHours ?? s.delay_hours ?? 0),
+    linkedinAction: channel === "linkedin" ? action : null,
+    subjectTemplate: String(s.subjectTemplate ?? s.subject_template ?? ""),
+    bodyTemplate: String(s.bodyTemplate ?? s.body_template ?? ""),
+  };
 }
 
 export function SequencesPage() {
@@ -95,7 +169,7 @@ export function SequencesPage() {
     [token],
   );
 
-  const [tab, setTab] = useState<"queue" | "sequences">("queue");
+  const [tab, setTab] = useState<"queue" | "sequences">("sequences");
   const [sequences, setSequences] = useState<Sequence[]>([]);
   const [tasks, setTasks] = useState<QueueTask[]>([]);
   const [tables, setTables] = useState<ResearchTable[]>([]);
@@ -103,6 +177,16 @@ export function SequencesPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [mailboxConfigured, setMailboxConfigured] = useState(true);
+
+  // Editor
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editStatus, setEditStatus] = useState("draft");
+  const [editSteps, setEditSteps] = useState<StepDraft[]>([]);
+  const [editLoading, setEditLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [enrollmentCount, setEnrollmentCount] = useState(0);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("QA founders outreach");
@@ -146,6 +230,47 @@ export function SequencesPage() {
     void load();
   }, [load]);
 
+  const openEditor = async (id: string) => {
+    if (!token) return;
+    setEditingId(id);
+    setEditLoading(true);
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/outreach/sequences/${id}`, {
+        headers: headers(),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setNotice(data.error ?? "Failed to load sequence");
+        setEditingId(null);
+        return;
+      }
+      setEditName(data.sequence?.name ?? "");
+      setEditDescription(data.sequence?.description ?? "");
+      setEditStatus(data.sequence?.status ?? "draft");
+      setEnrollmentCount((data.enrollments as unknown[])?.length ?? 0);
+      const steps = (data.steps ?? []).map(
+        (s: Record<string, unknown>) =>
+          mapApiStep({
+            channel: String(s.channel),
+            mode: String(s.mode),
+            delayHours: Number(s.delayHours ?? s.delay_hours ?? 0),
+            linkedinAction: (s.linkedinAction ?? s.linkedin_action) as
+              | string
+              | null,
+            subjectTemplate: (s.subjectTemplate ?? s.subject_template) as
+              | string
+              | null,
+            bodyTemplate: String(s.bodyTemplate ?? s.body_template ?? ""),
+          }),
+      );
+      setEditSteps(steps.length ? steps : [blankStep("linkedin")]);
+      setTab("sequences");
+    } finally {
+      setEditLoading(false);
+    }
+  };
+
   const createSeq = async () => {
     if (!token || !newName.trim()) return;
     setCreating(true);
@@ -161,11 +286,110 @@ export function SequencesPage() {
         return;
       }
       setCreateOpen(false);
-      setNotice(`Sequence created: ${data.sequence?.name}`);
+      setNotice("Sequence created — edit steps and templates below.");
       await load();
+      if (data.sequence?.id) {
+        await openEditor(data.sequence.id);
+      }
     } finally {
       setCreating(false);
     }
+  };
+
+  const saveSequence = async () => {
+    if (!token || !editingId) return;
+    if (!editName.trim()) {
+      setNotice("Name is required");
+      return;
+    }
+    if (editSteps.length === 0) {
+      setNotice("Add at least one step");
+      return;
+    }
+    for (let i = 0; i < editSteps.length; i++) {
+      const s = editSteps[i];
+      if (!s.bodyTemplate.trim()) {
+        setNotice(`Step ${i + 1}: message body is required`);
+        return;
+      }
+      if (s.channel === "linkedin" && !s.linkedinAction) {
+        setNotice(`Step ${i + 1}: pick LinkedIn action`);
+        return;
+      }
+    }
+
+    setSaving(true);
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/outreach/sequences/${editingId}`, {
+        method: "PATCH",
+        headers: headers(),
+        body: JSON.stringify({
+          name: editName.trim(),
+          description: editDescription.trim() || null,
+          status: editStatus,
+          steps: editSteps.map((s) => ({
+            channel: s.channel,
+            mode: s.channel === "linkedin" ? "semi" : s.mode,
+            delayHours: Number(s.delayHours) || 0,
+            linkedinAction:
+              s.channel === "linkedin" ? s.linkedinAction : null,
+            subjectTemplate:
+              s.channel === "email" ? s.subjectTemplate || null : null,
+            bodyTemplate: s.bodyTemplate,
+          })),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setNotice(data.error ?? "Save failed");
+        return;
+      }
+      setNotice("Sequence saved.");
+      await load();
+      if (data.steps) {
+        setEditSteps(
+          data.steps.map((s: Record<string, unknown>) =>
+            mapApiStep({
+              channel: String(s.channel),
+              mode: String(s.mode),
+              delayHours: Number(s.delayHours ?? s.delay_hours ?? 0),
+              linkedinAction: (s.linkedinAction ?? s.linkedin_action) as
+                | string
+                | null,
+              subjectTemplate: (s.subjectTemplate ?? s.subject_template) as
+                | string
+                | null,
+              bodyTemplate: String(s.bodyTemplate ?? s.body_template ?? ""),
+            }),
+          ),
+        );
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updateStep = (key: string, patch: Partial<StepDraft>) => {
+    setEditSteps((prev) =>
+      prev.map((s) => {
+        if (s.key !== key) return s;
+        const next = { ...s, ...patch };
+        if (patch.channel === "linkedin") {
+          next.mode = "semi";
+          next.linkedinAction = next.linkedinAction ?? "connect_note";
+          next.subjectTemplate = "";
+        }
+        if (patch.channel === "email") {
+          next.mode = "auto";
+          next.linkedinAction = null;
+          if (!next.subjectTemplate) {
+            next.subjectTemplate = "Quick note for {{company}}";
+          }
+        }
+        return next;
+      }),
+    );
   };
 
   const enroll = async () => {
@@ -194,6 +418,7 @@ export function SequencesPage() {
         `Enrolled ${data.enrolled}, skipped ${data.skipped}. LinkedIn tasks appear in the queue.`,
       );
       setTab("queue");
+      setEditingId(null);
       await load();
     } finally {
       setEnrolling(false);
@@ -217,7 +442,9 @@ export function SequencesPage() {
         setNotice(data.error ?? "Failed");
         return;
       }
-      setNotice(outcome === "sent" ? "Marked sent — next step scheduled" : "Skipped");
+      setNotice(
+        outcome === "sent" ? "Marked sent — next step scheduled" : "Skipped",
+      );
       await load();
     } finally {
       setBusyId(null);
@@ -242,18 +469,347 @@ export function SequencesPage() {
     );
   }
 
+  // ── Sequence editor ────────────────────────────────────────────
+  if (editingId) {
+    return (
+      <div className="mx-auto flex h-full min-h-0 max-w-3xl flex-col gap-4 p-6">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setEditingId(null);
+              void load();
+            }}
+          >
+            <ArrowLeft className="size-3.5" />
+            All sequences
+          </Button>
+          <div className="flex-1" />
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setEnrollSeqId(editingId);
+              setEnrollOpen(true);
+            }}
+          >
+            Enroll from list
+          </Button>
+          <Button size="sm" disabled={saving} onClick={() => void saveSequence()}>
+            {saving ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Check className="size-3.5" />
+            )}
+            Save sequence
+          </Button>
+        </div>
+
+        {notice && (
+          <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
+            {notice}
+          </div>
+        )}
+
+        {editLoading ? (
+          <div className="py-16 text-center text-sm text-muted-foreground">
+            <Loader2 className="mr-2 inline size-4 animate-spin" />
+            Loading sequence…
+          </div>
+        ) : (
+          <div className="min-h-0 flex-1 space-y-6 overflow-auto pb-10">
+            <div className="space-y-3 rounded-lg border p-4">
+              <h2 className="text-sm font-medium">Sequence</h2>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1 sm:col-span-2">
+                  <label className="text-xs text-muted-foreground">Name</label>
+                  <Input
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1 sm:col-span-2">
+                  <label className="text-xs text-muted-foreground">
+                    Description (optional)
+                  </label>
+                  <Input
+                    value={editDescription}
+                    onChange={(e) => setEditDescription(e.target.value)}
+                    placeholder="e.g. QA founders warm intro"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-muted-foreground">Status</label>
+                  <Select value={editStatus} onValueChange={setEditStatus}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="draft">draft</SelectItem>
+                      <SelectItem value="active">active</SelectItem>
+                      <SelectItem value="paused">paused</SelectItem>
+                      <SelectItem value="archived">archived</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-end text-xs text-muted-foreground">
+                  {enrollmentCount} enrollment(s) loaded · enroll activates
+                  draft → active
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-sm font-medium">Steps & templates</h2>
+                  <p className="text-xs text-muted-foreground">{TOKEN_HINT}</p>
+                </div>
+                <div className="flex gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setEditSteps((p) => [...p, blankStep("linkedin")])
+                    }
+                  >
+                    <Plus className="size-3.5" />
+                    LinkedIn step
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setEditSteps((p) => [...p, blankStep("email")])
+                    }
+                  >
+                    <Plus className="size-3.5" />
+                    Email step
+                  </Button>
+                </div>
+              </div>
+
+              {editSteps.map((step, idx) => (
+                <div
+                  key={step.key}
+                  className="space-y-3 rounded-lg border bg-card p-4 shadow-sm"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="secondary">Step {idx + 1}</Badge>
+                      <Badge variant="outline">
+                        {step.channel === "linkedin" ? "LinkedIn" : "Email"}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">
+                        {step.channel === "linkedin"
+                          ? "semi (you send)"
+                          : "auto (Gmail mailbox)"}
+                      </span>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={editSteps.length <= 1}
+                      onClick={() =>
+                        setEditSteps((p) => p.filter((x) => x.key !== step.key))
+                      }
+                    >
+                      <Trash2 className="size-3.5" />
+                      Remove
+                    </Button>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="space-y-1">
+                      <label className="text-xs text-muted-foreground">
+                        Channel
+                      </label>
+                      <Select
+                        value={step.channel}
+                        onValueChange={(v) =>
+                          updateStep(step.key, {
+                            channel: v as "email" | "linkedin",
+                          })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="linkedin">LinkedIn</SelectItem>
+                          <SelectItem value="email">Email</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs text-muted-foreground">
+                        Delay (hours after previous)
+                      </label>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={step.delayHours}
+                        onChange={(e) =>
+                          updateStep(step.key, {
+                            delayHours: Number(e.target.value) || 0,
+                          })
+                        }
+                      />
+                    </div>
+                    {step.channel === "linkedin" ? (
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">
+                          LinkedIn action
+                        </label>
+                        <Select
+                          value={step.linkedinAction ?? "message"}
+                          onValueChange={(v) =>
+                            updateStep(step.key, {
+                              linkedinAction: v as
+                                | "connect_note"
+                                | "message",
+                            })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="connect_note">
+                              Connect note
+                            </SelectItem>
+                            <SelectItem value="message">Message</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">
+                          Mode
+                        </label>
+                        <Select
+                          value={step.mode}
+                          onValueChange={(v) =>
+                            updateStep(step.key, {
+                              mode: v as "auto" | "semi",
+                            })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="auto">
+                              Auto (send via mailbox)
+                            </SelectItem>
+                            <SelectItem value="semi">
+                              Semi (queue for you)
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                  </div>
+
+                  {step.channel === "email" && (
+                    <div className="space-y-1">
+                      <label className="text-xs text-muted-foreground">
+                        Subject template
+                      </label>
+                      <Input
+                        value={step.subjectTemplate}
+                        onChange={(e) =>
+                          updateStep(step.key, {
+                            subjectTemplate: e.target.value,
+                          })
+                        }
+                        placeholder="QA at {{company}}"
+                      />
+                    </div>
+                  )}
+
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">
+                      {step.channel === "linkedin"
+                        ? "Message / connect note template"
+                        : "Email body template"}
+                    </label>
+                    <Textarea
+                      value={step.bodyTemplate}
+                      onChange={(e) =>
+                        updateStep(step.key, { bodyTemplate: e.target.value })
+                      }
+                      rows={step.channel === "email" ? 8 : 4}
+                      className="font-mono text-sm"
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <Dialog open={enrollOpen} onOpenChange={setEnrollOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Enroll research list</DialogTitle>
+              <DialogDescription>
+                People from the list enter this sequence. First due step goes to
+                the LinkedIn queue or sends email.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">
+                Research list
+              </label>
+              <Select value={enrollTableId} onValueChange={setEnrollTableId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Pick list" />
+                </SelectTrigger>
+                <SelectContent>
+                  {tables.map((t) => (
+                    <SelectItem key={t.id} value={t.slug || t.id}>
+                      {t.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setEnrollOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                disabled={enrolling || !enrollTableId}
+                onClick={() => void enroll()}
+              >
+                {enrolling ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  "Enroll"
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+    );
+  }
+
+  // ── List + queue ───────────────────────────────────────────────
   return (
     <div className="mx-auto flex h-full min-h-0 max-w-5xl flex-col gap-4 p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Sequences</h1>
           <p className="text-sm text-muted-foreground">
-            Multi-step outreach: LinkedIn semi-auto queue + email auto from the
-            mailbox in{" "}
+            Build multi-step cadences (LinkedIn + email templates), enroll
+            lists, work the LinkedIn queue. Email sends from{" "}
             <a href="/settings" className="underline underline-offset-2">
-              Settings
+              Settings → mailbox
             </a>
-            . Enroll from research lists or outreach prospects.
+            .
           </p>
         </div>
         <div className="flex gap-2">
@@ -261,7 +817,11 @@ export function SequencesPage() {
             <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
             Refresh
           </Button>
-          <Button size="sm" variant="outline" onClick={() => setEnrollOpen(true)}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setEnrollOpen(true)}
+          >
             Enroll from list
           </Button>
           <Button size="sm" onClick={() => setCreateOpen(true)}>
@@ -274,9 +834,12 @@ export function SequencesPage() {
       {!mailboxConfigured && (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
           No outreach mailbox configured — email steps won&apos;t send until you
-          add one in{" "}
-          <a href="/settings" className="font-medium underline underline-offset-2">
-            Settings → Outreach email
+          connect Gmail in{" "}
+          <a
+            href="/settings"
+            className="font-medium underline underline-offset-2"
+          >
+            Settings
           </a>
           . LinkedIn queue still works.
         </div>
@@ -291,8 +854,8 @@ export function SequencesPage() {
       <div className="flex gap-1 border-b">
         {(
           [
-            ["queue", `LinkedIn queue (${tasks.length})`],
             ["sequences", `Sequences (${sequences.length})`],
+            ["queue", `LinkedIn queue (${tasks.length})`],
           ] as const
         ).map(([id, label]) => (
           <button
@@ -320,8 +883,8 @@ export function SequencesPage() {
             </div>
           ) : tasks.length === 0 ? (
             <div className="rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground">
-              No LinkedIn tasks ready. Create a sequence, enroll a research
-              list, then come back here to send connect notes / messages.
+              No LinkedIn tasks ready. Open a sequence, edit templates, enroll a
+              list, then work tasks here.
             </div>
           ) : (
             <div className="space-y-3">
@@ -373,9 +936,7 @@ export function SequencesPage() {
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() =>
-                            void copyText(t.renderedBody ?? "")
-                          }
+                          onClick={() => void copyText(t.renderedBody ?? "")}
                         >
                           <Copy className="size-3.5" />
                           Copy
@@ -423,11 +984,16 @@ export function SequencesPage() {
                 <TableHead>Status</TableHead>
                 <TableHead>Steps</TableHead>
                 <TableHead>Active enrollments</TableHead>
+                <TableHead className="w-[100px]" />
               </TableRow>
             </TableHeader>
             <TableBody>
               {sequences.map((s) => (
-                <TableRow key={s.id}>
+                <TableRow
+                  key={s.id}
+                  className="cursor-pointer"
+                  onClick={() => void openEditor(s.id)}
+                >
                   <TableCell className="font-medium">{s.name}</TableCell>
                   <TableCell>
                     <Badge variant="outline">{s.status}</Badge>
@@ -438,20 +1004,36 @@ export function SequencesPage() {
                   <TableCell className="tabular-nums">
                     {s.enrollmentCount ?? "—"}
                   </TableCell>
+                  <TableCell>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void openEditor(s.id);
+                      }}
+                    >
+                      Edit
+                    </Button>
+                  </TableCell>
                 </TableRow>
               ))}
               {sequences.length === 0 && !loading && (
                 <TableRow>
                   <TableCell
-                    colSpan={4}
+                    colSpan={5}
                     className="h-24 text-center text-muted-foreground"
                   >
-                    No sequences yet.
+                    No sequences yet. Create one to edit steps and templates.
                   </TableCell>
                 </TableRow>
               )}
             </TableBody>
           </Table>
+          <p className="mt-3 text-xs text-muted-foreground">
+            Click a row (or Edit) to open the sequence editor: channels, delays,
+            LinkedIn/email templates.
+          </p>
         </div>
       )}
 
@@ -460,14 +1042,17 @@ export function SequencesPage() {
           <DialogHeader>
             <DialogTitle>New sequence</DialogTitle>
             <DialogDescription>
-              Creates a default cadence: LinkedIn connect note (semi) → email
-              (auto) → LinkedIn follow-up (semi).
+              Starts with a default 3-step cadence. You can change every step
+              and template right after create.
             </DialogDescription>
           </DialogHeader>
           <Input
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             placeholder="Sequence name"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void createSeq();
+            }}
           />
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>
@@ -477,7 +1062,7 @@ export function SequencesPage() {
               {creating ? (
                 <Loader2 className="size-4 animate-spin" />
               ) : (
-                "Create"
+                "Create & edit"
               )}
             </Button>
           </DialogFooter>
@@ -489,8 +1074,7 @@ export function SequencesPage() {
           <DialogHeader>
             <DialogTitle>Enroll research list</DialogTitle>
             <DialogDescription>
-              Enrolls every person on companies in the list (or company row if
-              no people). First step tasks go to the LinkedIn queue.
+              Enrolls people into a sequence. Edit templates first if needed.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
