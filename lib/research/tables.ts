@@ -2,6 +2,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { getDefaultRubricId, getRubric, listRubrics } from "@/lib/research/rubrics";
 import type {
+  ResearchCell,
+  ResearchColumn,
   ResearchEvidence,
   ResearchPerson,
   ResearchRow,
@@ -16,9 +18,11 @@ import { normalizeDomain } from "@/lib/crm";
 type TableRow = {
   id: string;
   name: string;
+  slug: string | null;
   rubric_id: string;
   rubric_json: Rubric | null;
   description: string | null;
+  columns: ResearchColumn[] | null;
   created_by_email: string | null;
   created_at: string;
   updated_at: string;
@@ -38,6 +42,7 @@ type DataRow = {
   why_now: string | null;
   pass: boolean | null;
   pack_raw: Record<string, unknown> | null;
+  cells: Record<string, ResearchCell> | null;
   last_researched_at: string | null;
   error: string | null;
   created_at: string;
@@ -48,9 +53,11 @@ function mapTable(r: TableRow, rowCount?: number): ResearchTable {
   return {
     id: r.id,
     name: r.name,
+    slug: r.slug ?? null,
     rubricId: r.rubric_id,
     rubricJson: r.rubric_json ?? null,
     description: r.description,
+    columns: Array.isArray(r.columns) ? r.columns : [],
     createdByEmail: r.created_by_email,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -73,6 +80,7 @@ function mapRow(r: DataRow): ResearchRow {
     whyNow: r.why_now,
     pass: r.pass,
     packRaw: r.pack_raw ?? {},
+    cells: (r.cells as Record<string, ResearchCell>) ?? {},
     lastResearchedAt: r.last_researched_at,
     error: r.error,
     createdAt: r.created_at,
@@ -113,24 +121,51 @@ export async function createTable(
     rubricJson?: Rubric | null;
     description?: string | null;
     createdByEmail?: string | null;
+    slug?: string | null;
   },
 ): Promise<ResearchTable> {
   const rubricId = input.rubricId ?? getDefaultRubricId();
   if (!input.rubricJson) getRubric(rubricId); // validate built-in reference
 
+  const { ensureUniqueSlug, slugifyName } = await import(
+    "@/lib/research/columns"
+  );
+  const baseSlug = slugifyName(input.slug?.trim() || input.name);
+  const slug = await ensureUniqueSlug(client, baseSlug);
+
   const { data, error } = await client
     .from("research_tables")
     .insert({
       name: input.name.trim(),
+      slug,
       rubric_id: input.rubricJson ? (input.rubricJson.id ?? rubricId) : rubricId,
       rubric_json: input.rubricJson ?? null,
       description: input.description ?? null,
+      columns: [],
       created_by_email: input.createdByEmail ?? null,
     })
     .select("*")
     .single();
   if (error) throw new Error(`Failed to create research table: ${error.message}`);
   return mapTable(data as TableRow, 0);
+}
+
+export async function getTableBySlug(
+  client: SupabaseClient,
+  slug: string,
+): Promise<ResearchTable | null> {
+  const { data, error } = await client
+    .from("research_tables")
+    .select("*")
+    .eq("slug", slug.trim().toLowerCase())
+    .maybeSingle();
+  if (error) throw new Error(`Failed to get table by slug: ${error.message}`);
+  if (!data) return null;
+  const { count } = await client
+    .from("research_rows")
+    .select("id", { count: "exact", head: true })
+    .eq("table_id", (data as TableRow).id);
+  return mapTable(data as TableRow, count ?? 0);
 }
 
 export async function getTable(

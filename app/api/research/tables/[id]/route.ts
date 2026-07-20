@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 
+import { resolveTable } from "@/lib/research/columns";
 import {
   deleteTable,
-  getTable,
   listPeopleForRows,
   listRows,
 } from "@/lib/research/tables";
@@ -17,8 +17,10 @@ export async function GET(
       req.headers.get("authorization"),
     );
     const { id } = await ctx.params;
-    const table = await getTable(client, id);
-    if (!table) {
+    let table;
+    try {
+      table = await resolveTable(client, id);
+    } catch {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
     const url = new URL(req.url);
@@ -55,7 +57,14 @@ export async function DELETE(
       req.headers.get("authorization"),
     );
     const { id } = await ctx.params;
-    await deleteTable(client, id);
+    let tableId = id;
+    try {
+      const t = await resolveTable(client, id);
+      tableId = t.id;
+    } catch {
+      /* use raw id */
+    }
+    await deleteTable(client, tableId);
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(

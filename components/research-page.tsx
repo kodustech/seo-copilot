@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Building2,
   Check,
+  Copy,
   Download,
   ExternalLink,
   Link2,
@@ -59,11 +61,28 @@ type Rubric = {
   pass_threshold: number;
 };
 
+type ResearchColumn = {
+  key: string;
+  label: string;
+  type: string;
+  enrich: { kind: string; prompt?: string; field?: string };
+  order: number;
+};
+
+type ResearchCell = {
+  value: string | number | boolean | null;
+  status: string;
+  evidence?: string | null;
+  error?: string | null;
+};
+
 type ResearchTable = {
   id: string;
   name: string;
+  slug?: string | null;
   rubricId: string;
   description: string | null;
+  columns?: ResearchColumn[];
   rowCount?: number;
 };
 
@@ -92,6 +111,7 @@ type ResearchRow = {
   error: string | null;
   packRaw?: Record<string, unknown>;
   people?: Person[];
+  cells?: Record<string, ResearchCell>;
 };
 
 type Evidence = {
@@ -148,8 +168,23 @@ function ScorePill({
   );
 }
 
+function formatCell(cell: ResearchCell | undefined): string {
+  if (!cell || cell.value == null || cell.value === "") {
+    if (cell?.status === "running") return "…";
+    if (cell?.status === "failed") return "err";
+    return "—";
+  }
+  if (typeof cell.value === "boolean") return cell.value ? "yes" : "no";
+  return String(cell.value);
+}
+
 export function ResearchPage() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const tableFromUrl = searchParams.get("table");
+
   const [token, setToken] = useState<string | null>(null);
   const [tables, setTables] = useState<ResearchTable[]>([]);
   const [rubrics, setRubrics] = useState<Rubric[]>([]);
@@ -205,10 +240,32 @@ export function ResearchPage() {
     setTables(nextTables);
     setRubrics(data.rubrics ?? []);
     setTableId((current) => {
+      // URL ?table=slug|id wins when valid
+      if (tableFromUrl) {
+        const hit = nextTables.find(
+          (t) =>
+            t.id === tableFromUrl ||
+            t.slug === tableFromUrl ||
+            t.name.toLowerCase() === tableFromUrl.toLowerCase(),
+        );
+        if (hit) return hit.id;
+      }
       if (current && nextTables.some((t) => t.id === current)) return current;
       return nextTables[0]?.id ?? null;
     });
-  }, [token, headers]);
+  }, [token, headers, tableFromUrl]);
+
+  // Keep URL in sync with selected table (slug preferred)
+  useEffect(() => {
+    if (!tableId) return;
+    const t = tables.find((x) => x.id === tableId);
+    if (!t) return;
+    const ref = t.slug || t.id;
+    if (tableFromUrl === ref || tableFromUrl === t.id) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("table", ref);
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  }, [tableId, tables, tableFromUrl, pathname, router, searchParams]);
 
   const loadRows = useCallback(async () => {
     if (!token || !tableId) {
@@ -227,6 +284,21 @@ export function ResearchPage() {
       }
       const data = await res.json();
       setRows(data.rows ?? []);
+      // Keep column schema in sync (MCP may add columns)
+      if (data.table) {
+        setTables((prev) =>
+          prev.map((t) =>
+            t.id === tableId
+              ? {
+                  ...t,
+                  ...data.table,
+                  columns: data.table.columns ?? t.columns,
+                  slug: data.table.slug ?? t.slug,
+                }
+              : t,
+          ),
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -495,11 +567,35 @@ export function ResearchPage() {
   }, [rows, contactFilter, query]);
 
   const activeTable = tables.find((t) => t.id === tableId) ?? null;
+  const customColumns = useMemo(
+    () =>
+      [...(activeTable?.columns ?? [])].sort(
+        (a, b) => (a.order ?? 0) - (b.order ?? 0),
+      ),
+    [activeTable?.columns],
+  );
   const drawerRow = rows.find((r) => r.id === drawerRowId);
   const withContact = rows.filter((r) => topPerson(r.people)).length;
   const allSelected =
     filteredRows.length > 0 &&
     filteredRows.every((r) => selected.has(r.id));
+
+  const copyTableRef = async () => {
+    if (!activeTable) return;
+    const ref = activeTable.slug || activeTable.id;
+    const url =
+      typeof window !== "undefined"
+        ? `${window.location.origin}/research?table=${encodeURIComponent(ref)}`
+        : `/research?table=${ref}`;
+    try {
+      await navigator.clipboard.writeText(
+        `table_ref: ${ref}\nurl: ${url}`,
+      );
+      setNotice(`Copied table_ref=${ref} for MCP / Codex`);
+    } catch {
+      setNotice(`table_ref=${ref}`);
+    }
+  };
 
   if (!token) {
     return (
@@ -568,6 +664,17 @@ export function ResearchPage() {
                   ? ` · ${filteredRows.length} shown`
                   : ""}
                 {selected.size > 0 ? ` · ${selected.size} selected` : ""}
+                {activeTable.slug ? (
+                  <button
+                    type="button"
+                    className="ml-2 inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] hover:bg-muted"
+                    title="Copy slug + URL for Codex/MCP"
+                    onClick={() => void copyTableRef()}
+                  >
+                    <Copy className="size-3" />
+                    {activeTable.slug}
+                  </button>
+                ) : null}
               </span>
             )}
           </div>
@@ -728,6 +835,15 @@ export function ResearchPage() {
                 <TableHead className="hidden md:table-cell">Role</TableHead>
                 <TableHead className="hidden lg:table-cell">Email</TableHead>
                 <TableHead className="w-12 hidden md:table-cell">LI</TableHead>
+                {customColumns.map((col) => (
+                  <TableHead
+                    key={col.key}
+                    className="min-w-[120px] max-w-[200px] text-xs"
+                    title={`${col.key} · enrich=${col.enrich?.kind ?? "none"}`}
+                  >
+                    {col.label}
+                  </TableHead>
+                ))}
                 <TableHead className="w-16">Score</TableHead>
                 <TableHead className="hidden xl:table-cell max-w-[200px]">
                   Why now
@@ -739,7 +855,7 @@ export function ResearchPage() {
               {loading && (
                 <TableRow>
                   <TableCell
-                    colSpan={11}
+                    colSpan={11 + customColumns.length}
                     className="h-24 text-center text-muted-foreground"
                   >
                     <Loader2 className="mr-2 inline size-4 animate-spin" />
@@ -750,7 +866,7 @@ export function ResearchPage() {
               {!loading && filteredRows.length === 0 && (
                 <TableRow>
                   <TableCell
-                    colSpan={11}
+                    colSpan={11 + customColumns.length}
                     className="h-32 text-center text-sm text-muted-foreground"
                   >
                     {rows.length === 0 ? (
@@ -880,6 +996,52 @@ export function ResearchPage() {
                           <span className="text-xs text-muted-foreground">—</span>
                         )}
                       </TableCell>
+                      {customColumns.map((col) => {
+                        const cell = r.cells?.[col.key];
+                        const text = formatCell(cell);
+                        const isUrl =
+                          col.type === "url" &&
+                          typeof cell?.value === "string" &&
+                          /^https?:\/\//i.test(cell.value);
+                        return (
+                          <TableCell
+                            key={col.key}
+                            className="max-w-[200px] truncate text-xs"
+                            title={
+                              cell?.evidence ||
+                              cell?.error ||
+                              (cell?.value != null ? String(cell.value) : "")
+                            }
+                            onClick={(e) => {
+                              if (isUrl) e.stopPropagation();
+                            }}
+                          >
+                            {isUrl ? (
+                              <a
+                                href={String(cell!.value)}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1 text-primary hover:underline"
+                              >
+                                <Link2 className="size-3 shrink-0" />
+                                <span className="truncate">
+                                  {hostLabel(String(cell!.value))}
+                                </span>
+                              </a>
+                            ) : (
+                              <span
+                                className={cn(
+                                  cell?.status === "failed" && "text-rose-600",
+                                  cell?.status === "running" &&
+                                    "text-muted-foreground",
+                                )}
+                              >
+                                {text}
+                              </span>
+                            )}
+                          </TableCell>
+                        );
+                      })}
                       <TableCell>
                         <ScorePill score={r.icpScore} pass={r.pass} />
                       </TableCell>

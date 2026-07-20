@@ -72,13 +72,50 @@ export type ScoreResult = {
   whyNow: string | null;
 };
 
+/** Dynamic Clay-style column definition (stored on research_tables.columns). */
+export type ResearchColumnType = "text" | "url" | "email" | "boolean" | "number";
+
+export type ResearchColumnEnrich =
+  | { kind: "none" }
+  | { kind: "ai"; prompt: string }
+  | {
+      kind: "people_field";
+      /** Pull from top research_people contact; optionally run people waterfall first. */
+      field: "linkedin" | "email" | "name" | "role";
+      runPeopleIfMissing?: boolean;
+    };
+
+export type ResearchColumn = {
+  key: string;
+  label: string;
+  type: ResearchColumnType;
+  enrich: ResearchColumnEnrich;
+  /** Display order (lower first). */
+  order: number;
+  createdAt: string;
+};
+
+export type CellStatus = "empty" | "running" | "done" | "failed";
+
+export type ResearchCell = {
+  value: string | number | boolean | null;
+  status: CellStatus;
+  evidence?: string | null;
+  sources?: Array<{ url: string; title?: string | null }>;
+  updatedAt?: string;
+  error?: string | null;
+};
+
 export type ResearchTable = {
   id: string;
   name: string;
+  /** Stable slug for MCP + /research?table=slug */
+  slug: string | null;
   rubricId: string;
   /** Custom rubric compiled from a natural-language ICP (overrides rubricId). */
   rubricJson?: Rubric | null;
   description: string | null;
+  columns: ResearchColumn[];
   createdByEmail: string | null;
   createdAt: string;
   updatedAt: string;
@@ -99,6 +136,8 @@ export type ResearchRow = {
   whyNow: string | null;
   pass: boolean | null;
   packRaw: Record<string, unknown>;
+  /** Dynamic column values keyed by column.key */
+  cells: Record<string, ResearchCell>;
   lastResearchedAt: string | null;
   error: string | null;
   createdAt: string;
