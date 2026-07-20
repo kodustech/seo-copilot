@@ -19,7 +19,7 @@ export async function GET(req: Request) {
     let mailboxConfigured = false;
     try {
       const box = await getDefaultMailbox(getSupabaseServiceClient());
-      mailboxConfigured = Boolean(box?.enabled && box.hasPassword);
+      mailboxConfigured = Boolean(box?.enabled && box.connected);
     } catch {
       mailboxConfigured = false;
     }

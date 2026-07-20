@@ -1,8 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Loader2,
   Mail,
   PlugZap,
@@ -11,6 +14,7 @@ import {
 } from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
+import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,13 +25,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 
 function FieldLabel({
   htmlFor,
@@ -51,10 +48,12 @@ type Mailbox = {
   label: string;
   fromName: string | null;
   fromEmail: string;
-  provider: "smtp" | "gmail";
+  provider: "smtp" | "gmail" | "google_oauth";
+  authMethod: "smtp" | "oauth";
   smtpHost: string;
   smtpPort: number;
-  smtpUser: string;
+  smtpUser: string | null;
+  connected: boolean;
   hasPassword: boolean;
   dailyCap: number;
   enabled: boolean;
@@ -76,8 +75,32 @@ function useAuthToken() {
   return token;
 }
 
+function GoogleIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden>
+      <path
+        fill="#4285F4"
+        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+      />
+      <path
+        fill="#34A853"
+        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
+      />
+      <path
+        fill="#EA4335"
+        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+      />
+    </svg>
+  );
+}
+
 export function OutreachMailboxSettings() {
   const token = useAuthToken();
+  const searchParams = useSearchParams();
   const headers = useCallback(
     () => ({
       Authorization: `Bearer ${token}`,
@@ -87,21 +110,22 @@ export function OutreachMailboxSettings() {
   );
 
   const [mailbox, setMailbox] = useState<Mailbox | null>(null);
+  const [googleOAuthConfigured, setGoogleOAuthConfigured] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [connecting, setConnecting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showSmtp, setShowSmtp] = useState(false);
 
-  const [label, setLabel] = useState("Outreach");
   const [fromName, setFromName] = useState("");
-  const [fromEmail, setFromEmail] = useState("");
-  const [provider, setProvider] = useState<"gmail" | "smtp">("gmail");
-  const [smtpHost, setSmtpHost] = useState("smtp.gmail.com");
-  const [smtpPort, setSmtpPort] = useState("587");
+  const [dailyCap, setDailyCap] = useState("40");
+  const [smtpFromEmail, setSmtpFromEmail] = useState("");
   const [smtpUser, setSmtpUser] = useState("");
   const [smtpPass, setSmtpPass] = useState("");
-  const [dailyCap, setDailyCap] = useState("40");
+  const [smtpHost, setSmtpHost] = useState("smtp.gmail.com");
+  const [smtpPort, setSmtpPort] = useState("587");
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -114,18 +138,17 @@ export function OutreachMailboxSettings() {
         setError(data.error ?? "Failed to load");
         return;
       }
+      setGoogleOAuthConfigured(data.googleOAuthConfigured !== false);
       const m = (data.mailboxes as Mailbox[])?.[0] ?? null;
       setMailbox(m);
       if (m) {
-        setLabel(m.label);
         setFromName(m.fromName ?? "");
-        setFromEmail(m.fromEmail);
-        setProvider(m.provider === "smtp" ? "smtp" : "gmail");
+        setDailyCap(String(m.dailyCap));
+        setSmtpFromEmail(m.fromEmail);
+        setSmtpUser(m.smtpUser ?? m.fromEmail);
         setSmtpHost(m.smtpHost);
         setSmtpPort(String(m.smtpPort));
-        setSmtpUser(m.smtpUser);
-        setDailyCap(String(m.dailyCap));
-        setSmtpPass("");
+        if (m.authMethod === "smtp") setShowSmtp(true);
       }
     } finally {
       setLoading(false);
@@ -136,24 +159,95 @@ export function OutreachMailboxSettings() {
     void load();
   }, [load]);
 
-  const save = async () => {
+  useEffect(() => {
+    const status = searchParams.get("mailbox");
+    if (!status) return;
+    if (status === "connected") {
+      const email = searchParams.get("email");
+      setNotice(
+        email
+          ? `Connected ${email}. Sequences will send from this Gmail.`
+          : "Google mailbox connected.",
+      );
+      void load();
+    } else if (status === "error") {
+      setError(
+        searchParams.get("reason") ?? "Google connection failed",
+      );
+    }
+  }, [searchParams, load]);
+
+  const connectGoogle = async () => {
     if (!token) return;
-    setSaving(true);
+    setConnecting(true);
+    setError(null);
     setNotice(null);
+    try {
+      const res = await fetch("/api/outreach/mailbox/google/start", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          fromName: fromName || undefined,
+          dailyCap: Number(dailyCap) || 40,
+          label: "Outreach",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.url) {
+        setError(data.error ?? "Could not start Google sign-in");
+        return;
+      }
+      window.location.href = data.url as string;
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const saveMeta = async () => {
+    if (!token || !mailbox?.id) return;
+    setSaving(true);
     setError(null);
     try {
       const res = await fetch("/api/outreach/mailbox", {
         method: "POST",
         headers: headers(),
         body: JSON.stringify({
-          id: mailbox?.id,
-          label,
+          metaOnly: true,
+          id: mailbox.id,
           fromName: fromName || null,
-          fromEmail,
-          provider,
-          smtpHost: provider === "gmail" ? "smtp.gmail.com" : smtpHost,
+          dailyCap: Number(dailyCap) || 40,
+          label: mailbox.label,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Save failed");
+        return;
+      }
+      setMailbox(data.mailbox);
+      setNotice("Saved.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveSmtp = async () => {
+    if (!token) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/outreach/mailbox", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          id: mailbox?.authMethod === "smtp" ? mailbox.id : undefined,
+          label: "Outreach",
+          fromName: fromName || null,
+          fromEmail: smtpFromEmail,
+          provider: "gmail",
+          smtpHost,
           smtpPort: Number(smtpPort) || 587,
-          smtpUser: smtpUser || fromEmail,
+          smtpUser: smtpUser || smtpFromEmail,
           smtpPass: smtpPass || undefined,
           dailyCap: Number(dailyCap) || 40,
           isDefault: true,
@@ -167,7 +261,7 @@ export function OutreachMailboxSettings() {
       }
       setMailbox(data.mailbox);
       setSmtpPass("");
-      setNotice("Mailbox saved. Run Test connection before enrolling sequences.");
+      setNotice("SMTP mailbox saved.");
       await load();
     } finally {
       setSaving(false);
@@ -176,11 +270,10 @@ export function OutreachMailboxSettings() {
 
   const test = async () => {
     if (!token || !mailbox?.id) {
-      setError("Save the mailbox first, then test.");
+      setError("Connect a mailbox first.");
       return;
     }
     setTesting(true);
-    setNotice(null);
     setError(null);
     try {
       const res = await fetch("/api/outreach/mailbox/test", {
@@ -194,7 +287,7 @@ export function OutreachMailboxSettings() {
         await load();
         return;
       }
-      setNotice("Connection OK — sequences can send from this mailbox.");
+      setNotice("Connection OK.");
       await load();
     } finally {
       setTesting(false);
@@ -203,7 +296,7 @@ export function OutreachMailboxSettings() {
 
   const remove = async () => {
     if (!token || !mailbox?.id) return;
-    if (!confirm("Remove this outreach mailbox?")) return;
+    if (!confirm("Disconnect this outreach mailbox?")) return;
     setSaving(true);
     try {
       const res = await fetch(
@@ -212,12 +305,11 @@ export function OutreachMailboxSettings() {
       );
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error ?? "Delete failed");
+        setError(data.error ?? "Disconnect failed");
         return;
       }
       setMailbox(null);
-      setSmtpPass("");
-      setNotice("Mailbox removed.");
+      setNotice("Mailbox disconnected.");
     } finally {
       setSaving(false);
     }
@@ -231,11 +323,15 @@ export function OutreachMailboxSettings() {
             <Mail className="size-4" />
             Outreach email
           </CardTitle>
-          <CardDescription>Sign in to configure the sending mailbox.</CardDescription>
+          <CardDescription>Sign in to connect a mailbox.</CardDescription>
         </CardHeader>
       </Card>
     );
   }
+
+  const isOauthConnected =
+    mailbox?.connected &&
+    (mailbox.authMethod === "oauth" || mailbox.provider === "google_oauth");
 
   return (
     <Card>
@@ -247,13 +343,11 @@ export function OutreachMailboxSettings() {
               Outreach email
             </CardTitle>
             <CardDescription className="mt-1">
-              Mailbox used by sequences to auto-send email steps. Password is
-              encrypted and never shown again after save. Use a Google{" "}
-              <span className="font-medium">App Password</span> for Workspace /
-              Gmail.
+              Connect the Gmail / Workspace inbox used by sequences. One click
+              with Google — no app password.
             </CardDescription>
           </div>
-          {mailbox && (
+          {mailbox?.connected && (
             <div className="flex flex-wrap gap-1.5">
               {mailbox.lastTestOk === true && (
                 <Badge variant="secondary" className="gap-1">
@@ -262,7 +356,7 @@ export function OutreachMailboxSettings() {
                 </Badge>
               )}
               {mailbox.lastTestOk === false && (
-                <Badge variant="destructive">Test failed</Badge>
+                <Badge variant="destructive">Needs reconnect</Badge>
               )}
               <Badge variant="outline">
                 {mailbox.sentToday}/{mailbox.dailyCap} today
@@ -271,7 +365,7 @@ export function OutreachMailboxSettings() {
           )}
         </div>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-5">
         {loading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" />
@@ -279,128 +373,212 @@ export function OutreachMailboxSettings() {
           </div>
         ) : (
           <>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <FieldLabel htmlFor="mb-label">Label</FieldLabel>
-                <Input
-                  id="mb-label"
-                  value={label}
-                  onChange={(e) => setLabel(e.target.value)}
-                  placeholder="Outreach"
-                />
+            {isOauthConnected ? (
+              <div className="space-y-4">
+                <div className="rounded-lg border bg-muted/30 px-4 py-3">
+                  <div className="text-sm font-medium">{mailbox.fromEmail}</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    Google OAuth · sequences send as this address
+                  </div>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <FieldLabel htmlFor="from-name">From name</FieldLabel>
+                    <Input
+                      id="from-name"
+                      value={fromName}
+                      onChange={(e) => setFromName(e.target.value)}
+                      placeholder="Gabriel from Kodus"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <FieldLabel htmlFor="cap">Daily send cap</FieldLabel>
+                    <Input
+                      id="cap"
+                      type="number"
+                      min={1}
+                      max={500}
+                      value={dailyCap}
+                      onChange={(e) => setDailyCap(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button disabled={saving} onClick={() => void saveMeta()}>
+                    {saving ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Save className="size-4" />
+                    )}
+                    Save
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={testing}
+                    onClick={() => void test()}
+                  >
+                    {testing ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <PlugZap className="size-4" />
+                    )}
+                    Test
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={connecting}
+                    onClick={() => void connectGoogle()}
+                  >
+                    {connecting ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <GoogleIcon className="size-4" />
+                    )}
+                    Reconnect Google
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    disabled={saving}
+                    onClick={() => void remove()}
+                  >
+                    <Trash2 className="size-4" />
+                    Disconnect
+                  </Button>
+                </div>
               </div>
-              <div className="space-y-1.5">
-                <FieldLabel>Provider</FieldLabel>
-                <Select
-                  value={provider}
-                  onValueChange={(v) => {
-                    const p = v as "gmail" | "smtp";
-                    setProvider(p);
-                    if (p === "gmail") {
-                      setSmtpHost("smtp.gmail.com");
-                      setSmtpPort("587");
-                    }
-                  }}
+            ) : (
+              <div className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <FieldLabel htmlFor="from-name-pre">
+                      From name (optional)
+                    </FieldLabel>
+                    <Input
+                      id="from-name-pre"
+                      value={fromName}
+                      onChange={(e) => setFromName(e.target.value)}
+                      placeholder="Gabriel from Kodus"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <FieldLabel htmlFor="cap-pre">Daily send cap</FieldLabel>
+                    <Input
+                      id="cap-pre"
+                      type="number"
+                      min={1}
+                      max={500}
+                      value={dailyCap}
+                      onChange={(e) => setDailyCap(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <Button
+                  size="lg"
+                  className="w-full sm:w-auto"
+                  disabled={connecting || !googleOAuthConfigured}
+                  onClick={() => void connectGoogle()}
                 >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="gmail">
-                      Google Workspace / Gmail
-                    </SelectItem>
-                    <SelectItem value="smtp">Custom SMTP</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1.5">
-                <FieldLabel htmlFor="mb-from-name">From name</FieldLabel>
-                <Input
-                  id="mb-from-name"
-                  value={fromName}
-                  onChange={(e) => setFromName(e.target.value)}
-                  placeholder="Gabriel from Kodus"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <FieldLabel htmlFor="mb-from-email">From email</FieldLabel>
-                <Input
-                  id="mb-from-email"
-                  type="email"
-                  value={fromEmail}
-                  onChange={(e) => {
-                    setFromEmail(e.target.value);
-                    if (!smtpUser) setSmtpUser(e.target.value);
-                  }}
-                  placeholder="outreach@yourdomain.com"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <FieldLabel htmlFor="mb-user">SMTP username</FieldLabel>
-                <Input
-                  id="mb-user"
-                  value={smtpUser}
-                  onChange={(e) => setSmtpUser(e.target.value)}
-                  placeholder="Usually the same as from email"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <FieldLabel htmlFor="mb-pass">
-                  App password
-                  {mailbox?.hasPassword ? " (leave blank to keep)" : ""}
-                </FieldLabel>
-                <Input
-                  id="mb-pass"
-                  type="password"
-                  autoComplete="new-password"
-                  value={smtpPass}
-                  onChange={(e) => setSmtpPass(e.target.value)}
-                  placeholder={
-                    mailbox?.hasPassword ? "••••••••••••" : "Google App Password"
-                  }
-                />
-              </div>
-              {provider === "smtp" && (
-                <>
-                  <div className="space-y-1.5">
-                    <FieldLabel htmlFor="mb-host">SMTP host</FieldLabel>
-                    <Input
-                      id="mb-host"
-                      value={smtpHost}
-                      onChange={(e) => setSmtpHost(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <FieldLabel htmlFor="mb-port">Port</FieldLabel>
-                    <Input
-                      id="mb-port"
-                      value={smtpPort}
-                      onChange={(e) => setSmtpPort(e.target.value)}
-                    />
-                  </div>
-                </>
-              )}
-              <div className="space-y-1.5">
-                <FieldLabel htmlFor="mb-cap">Daily send cap</FieldLabel>
-                <Input
-                  id="mb-cap"
-                  type="number"
-                  min={1}
-                  max={500}
-                  value={dailyCap}
-                  onChange={(e) => setDailyCap(e.target.value)}
-                />
+                  {connecting ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <GoogleIcon className="size-4" />
+                  )}
+                  Connect with Google
+                </Button>
+
+                {!googleOAuthConfigured && (
+                  <p className="text-sm text-amber-600 dark:text-amber-400">
+                    Server missing{" "}
+                    <code className="text-xs">GOOGLE_OAUTH_CLIENT_ID</code> /{" "}
+                    <code className="text-xs">GOOGLE_OAUTH_CLIENT_SECRET</code>.
+                    Add them in Railway, or use SMTP below.
+                  </p>
+                )}
+
                 <p className="text-xs text-muted-foreground">
-                  Sequences stop sending when the cap is hit (resets daily).
+                  You&apos;ll approve Gmail send access for the outreach
+                  mailbox. Tokens are encrypted; we never store your Google
+                  password.
                 </p>
               </div>
+            )}
+
+            {/* Advanced SMTP fallback */}
+            <div className="border-t pt-3">
+              <button
+                type="button"
+                className={cn(
+                  "flex w-full items-center justify-between text-left text-sm text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setShowSmtp((v) => !v)}
+              >
+                <span>Advanced: SMTP / app password</span>
+                {showSmtp ? (
+                  <ChevronUp className="size-4" />
+                ) : (
+                  <ChevronDown className="size-4" />
+                )}
+              </button>
+              {showSmtp && (
+                <div className="mt-3 space-y-3">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <FieldLabel htmlFor="smtp-email">From email</FieldLabel>
+                      <Input
+                        id="smtp-email"
+                        value={smtpFromEmail}
+                        onChange={(e) => {
+                          setSmtpFromEmail(e.target.value);
+                          if (!smtpUser) setSmtpUser(e.target.value);
+                        }}
+                        placeholder="outreach@yourdomain.com"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <FieldLabel htmlFor="smtp-user">SMTP user</FieldLabel>
+                      <Input
+                        id="smtp-user"
+                        value={smtpUser}
+                        onChange={(e) => setSmtpUser(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <FieldLabel htmlFor="smtp-pass">App password</FieldLabel>
+                      <Input
+                        id="smtp-pass"
+                        type="password"
+                        autoComplete="new-password"
+                        value={smtpPass}
+                        onChange={(e) => setSmtpPass(e.target.value)}
+                        placeholder="Google App Password"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <FieldLabel htmlFor="smtp-host">Host</FieldLabel>
+                      <Input
+                        id="smtp-host"
+                        value={smtpHost}
+                        onChange={(e) => setSmtpHost(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    disabled={saving}
+                    onClick={() => void saveSmtp()}
+                  >
+                    {saving ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Save className="size-4" />
+                    )}
+                    Save SMTP mailbox
+                  </Button>
+                </div>
+              )}
             </div>
 
-            {mailbox?.lastTestError && mailbox.lastTestOk === false && (
-              <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-                Last test: {mailbox.lastTestError}
-              </p>
-            )}
             {notice && (
               <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
                 {notice}
@@ -411,45 +589,6 @@ export function OutreachMailboxSettings() {
                 {error}
               </p>
             )}
-
-            <div className="flex flex-wrap gap-2">
-              <Button disabled={saving} onClick={() => void save()}>
-                {saving ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <Save className="size-4" />
-                )}
-                Save mailbox
-              </Button>
-              <Button
-                variant="outline"
-                disabled={testing || !mailbox?.id}
-                onClick={() => void test()}
-              >
-                {testing ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <PlugZap className="size-4" />
-                )}
-                Test connection
-              </Button>
-              {mailbox?.id && (
-                <Button
-                  variant="ghost"
-                  disabled={saving}
-                  onClick={() => void remove()}
-                >
-                  <Trash2 className="size-4" />
-                  Remove
-                </Button>
-              )}
-            </div>
-
-            <p className="text-xs text-muted-foreground">
-              Google: Account → Security → 2-Step Verification → App passwords.
-              Create one for “Mail” and paste it above. Sequences use this
-              mailbox automatically for email steps.
-            </p>
           </>
         )}
       </CardContent>
