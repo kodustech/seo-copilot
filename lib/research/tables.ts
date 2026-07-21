@@ -598,20 +598,42 @@ function normalizePersonKey(name: string): string {
     .trim();
 }
 
+function linkedInSlug(url: string | null | undefined): string | null {
+  const li = url?.trim().toLowerCase().replace(/\/$/, "");
+  if (!li) return null;
+  const m = li.match(/linkedin\.com\/in\/([^/?#]+)/i);
+  if (m) return m[1].toLowerCase();
+  if (li.includes("linkedin")) return li;
+  return null;
+}
+
+/**
+ * All identity keys for a person. Matching uses ANY shared key so adding an
+ * email does not create a second row (previous bug: only primary key was used,
+ * and email beat name so Genevieve-without-email ≠ Genevieve-with-email).
+ */
+export function personIdentityKeys(p: {
+  name: string;
+  email?: string | null;
+  linkedin?: string | null;
+}): string[] {
+  const keys: string[] = [];
+  const email = p.email?.trim().toLowerCase();
+  if (email) keys.push(`e:${email}`);
+  const slug = linkedInSlug(p.linkedin);
+  if (slug) keys.push(`li:${slug}`);
+  const n = normalizePersonKey(p.name);
+  if (n) keys.push(`n:${n}`);
+  return keys;
+}
+
+/** @deprecated Prefer personIdentityKeys — kept for callers that want one key. */
 function personMatchKey(p: {
   name: string;
   email?: string | null;
   linkedin?: string | null;
 }): string {
-  const email = p.email?.trim().toLowerCase();
-  if (email) return `e:${email}`;
-  const li = p.linkedin?.trim().toLowerCase().replace(/\/$/, "");
-  if (li) {
-    const m = li.match(/linkedin\.com\/in\/([^/?#]+)/i);
-    if (m) return `li:${m[1].toLowerCase()}`;
-    return `li:${li}`;
-  }
-  return `n:${normalizePersonKey(p.name)}`;
+  return personIdentityKeys(p)[0] ?? `n:${normalizePersonKey(p.name)}`;
 }
 
 function pickBetter(
@@ -626,49 +648,106 @@ function pickBetter(
   return bv.length > av.length ? bv : av;
 }
 
+function mergeTwoPeople(
+  a: PersonWriteInput,
+  b: PersonWriteInput,
+): PersonWriteInput {
+  // Prefer email that is verified valid over bare address
+  let email = a.email ?? b.email ?? null;
+  let emailStatus = a.emailStatus ?? b.emailStatus ?? null;
+  let emailSource = a.emailSource ?? b.emailSource ?? null;
+  if (a.email && b.email && a.email.toLowerCase() !== b.email.toLowerCase()) {
+    const rank = (s: string | null | undefined) =>
+      s === "valid" ? 3 : s === "catchall" ? 2 : s === "unknown" ? 1 : 0;
+    if (rank(b.emailStatus) > rank(a.emailStatus)) {
+      email = b.email;
+      emailStatus = b.emailStatus ?? null;
+      emailSource = b.emailSource ?? null;
+    } else {
+      email = a.email;
+      emailStatus = a.emailStatus ?? null;
+      emailSource = a.emailSource ?? null;
+    }
+  } else if (!a.email && b.email) {
+    email = b.email;
+    emailStatus = b.emailStatus ?? null;
+    emailSource = b.emailSource ?? null;
+  } else if (a.email && !b.email) {
+    email = a.email;
+    emailStatus = a.emailStatus ?? null;
+    emailSource = a.emailSource ?? null;
+  } else if (a.email && b.email) {
+    emailStatus = pickBetter(a.emailStatus, b.emailStatus);
+    emailSource = pickBetter(a.emailSource, b.emailSource);
+  }
+
+  return {
+    name: a.name.length >= b.name.length ? a.name : b.name,
+    role: pickBetter(a.role, b.role),
+    linkedin: pickBetter(a.linkedin, b.linkedin),
+    email,
+    emailStatus,
+    emailSource,
+    providerUsed: pickBetter(a.providerUsed, b.providerUsed),
+    confidence: (() => {
+      const m = Math.max(a.confidence ?? 0, b.confidence ?? 0);
+      if (m > 0) return m;
+      return a.confidence ?? b.confidence ?? null;
+    })(),
+    notes: pickBetter(a.notes, b.notes),
+  };
+}
+
+/**
+ * Collapse duplicates within a list: same person if they share email, LinkedIn
+ * slug, or normalized name. Keeps the richest fields.
+ */
+export function dedupePersonList(
+  people: PersonWriteInput[],
+): PersonWriteInput[] {
+  const clusters: PersonWriteInput[] = [];
+  const keyToIdx = new Map<string, number>();
+
+  for (const raw of people) {
+    if (!raw.name?.trim()) continue;
+    const p: PersonWriteInput = { ...raw, name: raw.name.trim() };
+    const keys = personIdentityKeys(p);
+    if (keys.length === 0) continue;
+
+    let idx: number | undefined;
+    for (const k of keys) {
+      if (keyToIdx.has(k)) {
+        idx = keyToIdx.get(k);
+        break;
+      }
+    }
+
+    if (idx === undefined) {
+      idx = clusters.length;
+      clusters.push(p);
+    } else {
+      clusters[idx] = mergeTwoPeople(clusters[idx], p);
+    }
+
+    // Re-index all keys of the (possibly merged) person
+    for (const k of personIdentityKeys(clusters[idx])) {
+      keyToIdx.set(k, idx);
+    }
+  }
+
+  return clusters;
+}
+
 /**
  * Merge existing people with incoming. Never drops an existing contact.
- * Matches by email → LinkedIn slug → normalized name.
- * Incoming fills null/empty fields and can upgrade role/notes.
+ * Matches on ANY of email / LinkedIn / normalized name (multi-key).
  */
 export function mergePersonLists(
   existing: PersonWriteInput[],
   incoming: PersonWriteInput[],
 ): PersonWriteInput[] {
-  const byKey = new Map<string, PersonWriteInput>();
-
-  for (const p of existing) {
-    if (!p.name?.trim()) continue;
-    byKey.set(personMatchKey(p), { ...p, name: p.name.trim() });
-  }
-
-  for (const raw of incoming) {
-    if (!raw.name?.trim()) continue;
-    const p: PersonWriteInput = { ...raw, name: raw.name.trim() };
-    const key = personMatchKey(p);
-    const prev = byKey.get(key);
-    if (!prev) {
-      byKey.set(key, p);
-      continue;
-    }
-    byKey.set(key, {
-      name: prev.name.length >= p.name.length ? prev.name : p.name,
-      role: pickBetter(prev.role, p.role),
-      linkedin: pickBetter(prev.linkedin, p.linkedin),
-      email: pickBetter(prev.email, p.email),
-      emailStatus: pickBetter(prev.emailStatus, p.emailStatus),
-      emailSource: pickBetter(prev.emailSource, p.emailSource),
-      providerUsed: pickBetter(prev.providerUsed, p.providerUsed),
-      confidence: (() => {
-        const m = Math.max(prev.confidence ?? 0, p.confidence ?? 0);
-        if (m > 0) return m;
-        return prev.confidence ?? p.confidence ?? null;
-      })(),
-      notes: pickBetter(prev.notes, p.notes),
-    });
-  }
-
-  return [...byKey.values()];
+  // Dedupe each side first, then union — same multi-key identity.
+  return dedupePersonList([...existing, ...incoming]);
 }
 
 function peopleToJson(people: PersonWriteInput[]) {
@@ -802,23 +881,24 @@ export async function savePeople(
     }))
     .filter((p) => p.name.length > 0);
 
-  const next: PersonWriteInput[] =
+  const existingWrite: PersonWriteInput[] = existing.map((p) => ({
+    name: p.name,
+    role: p.role,
+    linkedin: p.linkedin,
+    email: p.email,
+    emailStatus: p.emailStatus,
+    emailSource: p.emailSource,
+    providerUsed: p.providerUsed,
+    confidence: p.confidence,
+    notes: p.notes,
+  }));
+
+  // Always multi-key dedupe so fill_email / enrich cannot fork identity.
+  const next: PersonWriteInput[] = dedupePersonList(
     mode === "replace"
       ? cleaned
-      : mergePersonLists(
-          existing.map((p) => ({
-            name: p.name,
-            role: p.role,
-            linkedin: p.linkedin,
-            email: p.email,
-            emailStatus: p.emailStatus,
-            emailSource: p.emailSource,
-            providerUsed: p.providerUsed,
-            confidence: p.confidence,
-            notes: p.notes,
-          })),
-          cleaned,
-        );
+      : mergePersonLists(existingWrite, cleaned),
+  );
 
   // Hard replace of the table rows with the merged set (IDs rotate — OK)
   await client.from("research_people").delete().eq("row_id", rowId);
@@ -841,6 +921,44 @@ export async function savePeople(
   }
 
   return listPeople(client, rowId);
+}
+
+/**
+ * Collapse duplicate contacts on one company row (name/LI/email multi-key).
+ * Snapshots first. Safe to re-run.
+ */
+export async function dedupePeopleOnRow(
+  client: SupabaseClient,
+  rowId: string,
+  opts: { createdBy?: string | null } = {},
+): Promise<{ before: number; after: number; people: ResearchPerson[] }> {
+  const existing = await listPeople(client, rowId);
+  const before = existing.length;
+  if (before <= 1) {
+    return { before, after: before, people: existing };
+  }
+  const people = await savePeople(
+    client,
+    rowId,
+    existing.map((p) => ({
+      name: p.name,
+      role: p.role,
+      linkedin: p.linkedin,
+      email: p.email,
+      emailStatus: p.emailStatus,
+      emailSource: p.emailSource,
+      providerUsed: p.providerUsed,
+      confidence: p.confidence,
+      notes: p.notes,
+    })),
+    {
+      // merge with empty incoming still runs dedupePersonList on existing
+      mode: "merge",
+      reason: "dedupe_people",
+      createdBy: opts.createdBy,
+    },
+  );
+  return { before, after: people.length, people };
 }
 
 /**
