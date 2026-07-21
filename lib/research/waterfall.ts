@@ -76,7 +76,8 @@ export async function enrichPeopleForRow(
   ];
   const maxPeople = opts.maxPeople ?? 3;
 
-  const cacheKey = domainCacheKey(row.domain, "people:v1");
+  // v2: LinkedIn profiles must pass company verification
+  const cacheKey = domainCacheKey(row.domain, "people:v2");
   const cached = await getCached<WaterfallPerson[]>(client, cacheKey);
   if (cached && cached.length > 0) {
     await replacePeople(client, rowId, cached);
@@ -177,9 +178,87 @@ export async function enrichPeopleForRow(
     }
   }
 
+  // LinkedIn: drop unverified profile URLs, then Exa-search + company match.
+  people = await attachVerifiedLinkedIn(people, {
+    companyName: row.companyName,
+    domain: row.domain,
+  });
+
   await replacePeople(client, rowId, people);
   await setCache(client, cacheKey, people, 60 * 60 * 24 * 14);
   return people;
+}
+
+/**
+ * Only keep LinkedIn URLs that look like real /in/ profiles and can be tied
+ * to the company (page scrape). If missing/unverified, search and require
+ * company evidence in title/snippet — never name-only matches.
+ */
+async function attachVerifiedLinkedIn(
+  people: WaterfallPerson[],
+  company: { companyName: string; domain: string | null },
+): Promise<WaterfallPerson[]> {
+  const {
+    findVerifiedLinkedIn,
+    verifyLinkedInBelongsToCompany,
+  } = await import("@/lib/research/linkedin-finder");
+
+  const out: WaterfallPerson[] = [];
+  for (const p of people) {
+    let linkedin = p.linkedin;
+    let notes = p.notes;
+    let confidence = p.confidence;
+    let providerUsed = p.providerUsed;
+
+    if (linkedin) {
+      const v = await verifyLinkedInBelongsToCompany({
+        url: linkedin,
+        name: p.name,
+        companyName: company.companyName,
+        domain: company.domain,
+      });
+      if (!v.ok) {
+        // Drop wrong-person URL — better empty than false positive for outreach
+        notes = [notes, `linkedin_rejected:${v.evidence}`]
+          .filter(Boolean)
+          .join(" | ");
+        linkedin = null;
+      } else {
+        notes = [notes, `linkedin_ok:${v.evidence}`].filter(Boolean).join(" | ");
+        confidence = Math.max(confidence ?? 0, v.confidence);
+      }
+    }
+
+    if (!linkedin) {
+      try {
+        const found = await findVerifiedLinkedIn({
+          name: p.name,
+          companyName: company.companyName,
+          domain: company.domain,
+          role: p.role,
+        });
+        if (found) {
+          linkedin = found.url;
+          confidence = Math.max(confidence ?? 0, found.confidence);
+          providerUsed = `${providerUsed}+linkedin_finder`;
+          notes = [notes, `linkedin_found:${found.evidence}`]
+            .filter(Boolean)
+            .join(" | ");
+        }
+      } catch (err) {
+        console.warn("[research/waterfall] linkedin finder failed:", err);
+      }
+    }
+
+    out.push({
+      ...p,
+      linkedin,
+      notes,
+      confidence,
+      providerUsed,
+    });
+  }
+  return out;
 }
 
 /**

@@ -381,7 +381,10 @@ export async function searchWebContent({
     numResults,
     ...(domains?.length ? { includeDomains: domains } : {}),
     ...(excludeDomains?.length ? { excludeDomains } : {}),
-    ...(typeof daysBack === "number" ? { startPublishedDate: makeStartDate(daysBack) } : {}),
+    // daysBack <= 0 skips date filter (needed for evergreen pages e.g. LinkedIn profiles)
+    ...(typeof daysBack === "number" && daysBack > 0
+      ? { startPublishedDate: makeStartDate(daysBack) }
+      : {}),
     useAutoprompt: true,
     text: { maxCharacters: textMaxCharacters },
     highlights: {
