@@ -17,9 +17,8 @@ import {
   Clock,
   KanbanSquare,
   Loader2,
-  MessageCircle,
+  Radar,
   RefreshCw,
-  Send,
   Target,
   Workflow,
   XCircle,
@@ -55,7 +54,7 @@ const KIND_LABEL: Record<AttentionItem["kind"], string> = {
   outreach_followup: "Outbound",
   goal_at_risk: "Goals",
   job_failed: "Jobs",
-  reply_pending: "Social inbox",
+  reply_pending: "Engage", // legacy; social inbox removed from product surface
 };
 
 // ---------------------------------------------------------------------------
@@ -111,6 +110,8 @@ export function UserCenterPage() {
     const warning: AttentionItem[] = [];
     const info: AttentionItem[] = [];
     for (const a of overview.attention) {
+      // Social inbox removed from product surface
+      if (a.kind === "reply_pending") continue;
       if (a.severity === "error") error.push(a);
       else if (a.severity === "warning") warning.push(a);
       else info.push(a);
@@ -121,14 +122,6 @@ export function UserCenterPage() {
   const topAction = useMemo(() => {
     if (!overview) return null;
     // Highest leverage signal first — real product priorities
-    if (overview.replyRadar.pending > 0) {
-      return {
-        href: "/reply-radar",
-        label: "Clear social inbox",
-        detail: `${overview.replyRadar.pending} replies waiting`,
-        tone: "sky" as const,
-      };
-    }
     if (overview.kanban.overdue > 0) {
       return {
         href: "/kanban",
@@ -151,6 +144,14 @@ export function UserCenterPage() {
         label: "Touch idle accounts",
         detail: `${overview.crm.idle} quiet accounts`,
         tone: "amber" as const,
+      };
+    }
+    if (overview.outreach.followupDue > 0) {
+      return {
+        href: "/crm",
+        label: "Review accounts",
+        detail: `${overview.outreach.followupDue} legacy follow-ups · open Accounts`,
+        tone: "sky" as const,
       };
     }
     return {
@@ -209,17 +210,17 @@ export function UserCenterPage() {
           <section className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-white/[0.06] bg-white/[0.04] sm:grid-cols-4">
             <Snap
               label="Attention"
-              value={overview.attention.length}
+              value={overview.attention.filter((a) => a.kind !== "reply_pending").length}
               hint="items open"
               href="#attention"
-              hot={overview.attention.length > 0}
+              hot={overview.attention.some((a) => a.kind !== "reply_pending")}
             />
             <Snap
-              label="Social inbox"
-              value={overview.replyRadar.pending}
-              hint="replies pending"
-              href="/reply-radar"
-              hot={overview.replyRadar.pending > 0}
+              label="Idle accounts"
+              value={overview.crm.idle}
+              hint={`${overview.crm.total} accounts`}
+              href="/crm"
+              hot={overview.crm.idle > 0}
             />
             <Snap
               label="Kanban overdue"
@@ -386,14 +387,11 @@ export function UserCenterPage() {
                         : null,
                   },
                   {
-                    href: "/outreach",
-                    icon: Send,
-                    title: "Pipeline",
-                    stat: `${overview.outreach.total}`,
-                    alert:
-                      overview.outreach.followupDue > 0
-                        ? `${overview.outreach.followupDue} due`
-                        : null,
+                    href: "/sequences",
+                    icon: Workflow,
+                    title: "Outbound",
+                    stat: "queue",
+                    alert: null,
                   },
                 ]}
               />
@@ -403,12 +401,11 @@ export function UserCenterPage() {
                 description="Social presence"
                 items={[
                   {
-                    href: "/reply-radar",
-                    icon: MessageCircle,
-                    title: "Social inbox",
-                    stat: `${overview.replyRadar.pending}`,
-                    alert:
-                      overview.replyRadar.pending > 0 ? "waiting" : null,
+                    href: "/social-monitoring",
+                    icon: Radar,
+                    title: "Social monitor",
+                    stat: "live",
+                    alert: null,
                   },
                 ]}
               />
@@ -506,18 +503,15 @@ export function UserCenterPage() {
                 ))}
               </StreamPanel>
               <StreamPanel
-                href="/outreach"
-                title="Pipeline"
-                empty={overview.outreach.prospects.length === 0}
+                href="/sequences"
+                title="Outbound"
+                empty={false}
               >
-                {overview.outreach.prospects.slice(0, 5).map((p) => (
-                  <StreamRow
-                    key={p.id}
-                    label={p.domain}
-                    tag={p.status}
-                    danger={p.due}
-                  />
-                ))}
+                <StreamRow
+                  label="Today queue"
+                  tag="sequences"
+                  danger={false}
+                />
               </StreamPanel>
             </div>
           </section>

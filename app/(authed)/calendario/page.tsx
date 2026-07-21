@@ -1,5 +1,6 @@
-import { CalendarPage } from "@/components/calendar-page";
+import { redirect } from "next/navigation";
 
+/** Growth calendar removed from product IA — keep URL for old bookmarks. */
 export default function Page() {
-  return <CalendarPage />;
+  redirect("/central");
 }

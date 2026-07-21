@@ -1,10 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import {
-  createContact,
-  upsertCompanyFromWebhook,
-} from "@/lib/crm";
-import { createProspect } from "@/lib/outreach";
+import { upsertAccountByDomain } from "@/lib/crm";
 import {
   getRow,
   listEvidence,
@@ -12,6 +8,10 @@ import {
   listRows,
 } from "@/lib/research/tables";
 
+/**
+ * Push a research row into Accounts (CRM) — Convert system of record.
+ * Company by domain + contacts from research_people.
+ */
 export async function pushRowToCrm(
   client: SupabaseClient,
   rowId: string,
@@ -22,16 +22,24 @@ export async function pushRowToCrm(
   const evidence = await listEvidence(client, rowId);
   const people = await listPeople(client, rowId);
 
-  const { company } = await upsertCompanyFromWebhook(client, {
+  let contactsCreated = 0;
+  let companyId: string | null = null;
+
+  // Create/update company once
+  const first = people[0];
+  const base = await upsertAccountByDomain(client, {
     name: row.companyName,
     domain: row.domain,
     website: row.domain ? `https://${row.domain}` : null,
+    status: row.pass ? "qualified" : "lead",
+    priority: row.pass ? "high" : "medium",
     tags: [
       "research",
       row.pass ? "icp-pass" : "icp-research",
       ...(row.antiFlags ?? []).map((f) => `anti:${f}`),
     ],
-    source: "agent",
+    source: "research",
+    notes: row.whyNow ? `Why now: ${row.whyNow}` : null,
     enrichment: {
       research: {
         icp_score: row.icpScore,
@@ -49,94 +57,51 @@ export async function pushRowToCrm(
         researched_at: row.lastResearchedAt,
       },
     },
+    contact: first
+      ? {
+          name: first.name,
+          email: first.email,
+          role: first.role,
+          linkedin: first.linkedin,
+        }
+      : null,
   });
+  companyId = base.company.id;
+  if (base.contactCreated) contactsCreated += 1;
 
-  let contactsCreated = 0;
-  const existing = await client
-    .from("crm_contacts")
-    .select("email, name")
-    .eq("company_id", company.id);
-  const existingKeys = new Set(
-    (existing.data ?? []).map(
-      (c) =>
-        `${(c.email as string | null)?.toLowerCase() ?? ""}|${(c.name as string).toLowerCase()}`,
-    ),
-  );
-
-  for (const p of people) {
-    const key = `${p.email?.toLowerCase() ?? ""}|${p.name.toLowerCase()}`;
-    if (existingKeys.has(key)) continue;
-    await createContact(client, company.id, {
-      name: p.name,
-      email: p.email,
-      role: p.role,
-      linkedin: p.linkedin,
-      isPrimary: contactsCreated === 0,
+  // Remaining people as contacts
+  for (const p of people.slice(1)) {
+    const more = await upsertAccountByDomain(client, {
+      name: row.companyName,
+      domain: row.domain,
+      source: "research",
+      contact: {
+        name: p.name,
+        email: p.email,
+        role: p.role,
+        linkedin: p.linkedin,
+      },
     });
-    contactsCreated += 1;
-    existingKeys.add(key);
+    if (more.contactCreated) contactsCreated += 1;
   }
 
-  return { companyId: company.id, contactsCreated };
+  return { companyId: companyId!, contactsCreated };
 }
 
+/**
+ * @deprecated Pipeline board removed — Convert is Accounts (CRM).
+ * Kept for API compatibility; same as pushRowToCrm.
+ */
 export async function pushRowToOutreach(
   client: SupabaseClient,
   rowId: string,
-  opts: { createdByEmail?: string | null } = {},
-): Promise<{ created: number }> {
-  const row = await getRow(client, rowId);
-  if (!row) throw new Error("Row not found");
-  const people = await listPeople(client, rowId);
-
-  let created = 0;
-  const targets = people.length > 0
-    ? people
-    : [
-        {
-          name: row.companyName,
-          email: null as string | null,
-          role: null as string | null,
-          linkedin: null as string | null,
-        },
-      ];
-
-  if (!row.domain) {
-    throw new Error("Row has no domain — cannot push to outreach");
-  }
-
-  for (const p of targets) {
-    try {
-      await createProspect(client, {
-        domain: row.domain,
-        url: `https://${row.domain}`,
-        contactName: p.name !== row.companyName ? p.name : null,
-        contactEmail: p.email,
-        contactUrl: p.linkedin,
-        status: "prospect",
-        priority: row.pass ? "high" : "medium",
-        targetType: "partnership",
-        niche: row.companyName,
-        notes: [
-          row.whyNow ? `Why now: ${row.whyNow}` : null,
-          row.icpScore != null ? `ICP score: ${row.icpScore}` : null,
-          p.role ? `Role: ${p.role}` : null,
-          row.antiFlags?.length
-            ? `Anti flags: ${row.antiFlags.join(", ")}`
-            : null,
-        ]
-          .filter(Boolean)
-          .join("\n"),
-        source: "research",
-        createdByEmail: opts.createdByEmail ?? null,
-      });
-      created += 1;
-    } catch (err) {
-      console.warn("[research/actions] outreach create failed:", err);
-    }
-  }
-
-  return { created };
+  _opts: { createdByEmail?: string | null } = {},
+): Promise<{ created: number; companyId: string }> {
+  const result = await pushRowToCrm(client, rowId);
+  return {
+    created: Math.max(result.contactsCreated, 1),
+    companyId: result.companyId,
+  };
 }
 
 export function rowsToCsv(
@@ -167,23 +132,28 @@ export function rowsToCsv(
   const lines = [headers.join(",")];
   for (const r of rows) {
     const people = peopleByRow.get(r.id) ?? [];
+    const peopleNames = people.map((p) => p.name).join("; ");
+    const emails = people
+      .map((p) => p.email)
+      .filter(Boolean)
+      .join("; ");
     lines.push(
       [
         r.companyName,
         r.domain ?? "",
         r.status,
-        r.pass == null ? "" : String(r.pass),
+        r.pass == null ? "" : r.pass ? "pass" : "fail",
         r.icpScore ?? "",
         r.triggerScore ?? "",
         r.fitScore ?? "",
         (r.antiFlags ?? []).join("|"),
         r.whyNow ?? "",
-        people.map((p) => `${p.name}${p.role ? ` (${p.role})` : ""}`).join("; "),
-        people.map((p) => p.email).filter(Boolean).join("; "),
-        r.source,
+        peopleNames,
+        emails,
+        r.source ?? "",
         r.lastResearchedAt ?? "",
       ]
-        .map((x) => escape(String(x)))
+        .map((v) => escape(String(v)))
         .join(","),
     );
   }

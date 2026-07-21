@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Star, ExternalLink, Trash2, Sparkles, Calendar } from "lucide-react";
+import { Star, ExternalLink, Trash2, Sparkles } from "lucide-react";
 import Link from "next/link";
 
 import { useFavorites, type FavoriteIdea } from "@/lib/use-favorites";
@@ -75,14 +75,7 @@ export function FavoritesPage() {
         </div>
         <div className="flex items-center gap-2">
           <Link
-            href="/calendario"
-            className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-neutral-200 transition hover:bg-white/10"
-          >
-            <Calendar className="h-4 w-4" />
-            View calendar
-          </Link>
-          <Link
-            href="/ideias"
+            href="/ideas"
             className="flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-violet-500"
           >
             <Sparkles className="h-4 w-4" />

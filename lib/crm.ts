@@ -15,7 +15,13 @@ export type CompanyStatus =
 
 export type CompanyPriority = "high" | "medium" | "low";
 
-export type CompanySource = "manual" | "webhook" | "agent";
+export type CompanySource =
+  | "manual"
+  | "webhook"
+  | "agent"
+  | "research"
+  | "pipeline"
+  | "social";
 
 export const COMPANY_STATUSES: CompanyStatus[] = [
   "lead",
@@ -534,6 +540,187 @@ export async function deleteCompany(
 // ---------------------------------------------------------------------------
 // Webhook upsert — idempotent by org_id, then domain.
 // ---------------------------------------------------------------------------
+
+/**
+ * Upsert an account by domain (system of record for Convert).
+ * Used by research, social monitor, and legacy pipeline import.
+ */
+export async function upsertAccountByDomain(
+  client: SupabaseClient,
+  input: CreateCompanyInput & {
+    contact?: {
+      name: string;
+      email?: string | null;
+      role?: string | null;
+      linkedin?: string | null;
+    } | null;
+  },
+): Promise<{ company: CrmCompany; created: boolean; contactCreated: boolean }> {
+  const domain = normalizeDomain(input.domain);
+  let existing: CrmCompany | null = null;
+  if (domain) {
+    const { data } = await client
+      .from("crm_companies")
+      .select("*")
+      .eq("domain", domain)
+      .maybeSingle();
+    existing = data ? rowToCompany(data as CompanyRow) : null;
+  }
+
+  let company: CrmCompany;
+  let created = false;
+  if (existing) {
+    const patch: UpdateCompanyInput = {};
+    if (input.name) patch.name = input.name;
+    if (input.website != null) patch.website = input.website;
+    if (input.notes != null && !existing.notes) patch.notes = input.notes;
+    if (input.priority != null) patch.priority = input.priority;
+    if (input.status != null && existing.status === "lead") {
+      // Don't downgrade a later-stage account
+      patch.status = input.status;
+    }
+    if (input.tags?.length) {
+      patch.tags = [...new Set([...(existing.tags ?? []), ...input.tags])];
+    }
+    if (input.enrichment) {
+      patch.enrichment = { ...(existing.enrichment ?? {}), ...input.enrichment };
+    }
+    if (input.ownerEmail != null && !existing.ownerEmail) {
+      patch.ownerEmail = input.ownerEmail;
+    }
+    company =
+      Object.keys(patch).length > 0
+        ? await updateCompany(client, existing.id, patch)
+        : existing;
+  } else {
+    company = await createCompany(client, {
+      ...input,
+      domain,
+      source: input.source ?? "manual",
+    });
+    created = true;
+  }
+
+  let contactCreated = false;
+  const contact = input.contact;
+  if (contact?.name?.trim()) {
+    const existingContacts = await listContacts(client, company.id);
+    const emailKey = contact.email?.toLowerCase().trim() ?? "";
+    const nameKey = contact.name.toLowerCase().trim();
+    const dup = existingContacts.some(
+      (c) =>
+        (emailKey && c.email?.toLowerCase() === emailKey) ||
+        c.name.toLowerCase() === nameKey,
+    );
+    if (!dup) {
+      await createContact(client, company.id, {
+        name: contact.name,
+        email: contact.email,
+        role: contact.role,
+        linkedin: contact.linkedin,
+        isPrimary: existingContacts.length === 0,
+      });
+      contactCreated = true;
+    }
+  }
+
+  return { company, created, contactCreated };
+}
+
+/** Map legacy outreach_prospect status → CRM company status. */
+export function mapProspectStatusToCompany(
+  status: string | null | undefined,
+): CompanyStatus {
+  switch (status) {
+    case "won":
+      return "customer";
+    case "lost":
+      return "lost";
+    case "replied":
+    case "contacted":
+      return "qualified";
+    case "drafted":
+    case "researching":
+    case "prospect":
+    case "snoozed":
+    default:
+      return "lead";
+  }
+}
+
+/**
+ * One-shot: pull outreach_prospects into Accounts (crm_companies + contacts).
+ * Idempotent by domain. Does not delete legacy prospects.
+ */
+export async function importPipelineProspectsToAccounts(
+  client: SupabaseClient,
+  opts: { limit?: number } = {},
+): Promise<{
+  imported: number;
+  updated: number;
+  contactsCreated: number;
+  total: number;
+}> {
+  const { listProspects } = await import("@/lib/outreach");
+  const prospects = await listProspects(client, {
+    limit: opts.limit ?? 500,
+  });
+
+  let imported = 0;
+  let updated = 0;
+  let contactsCreated = 0;
+
+  for (const p of prospects) {
+    if (!p.domain) continue;
+    const name = p.niche?.trim() || p.domain;
+    const result = await upsertAccountByDomain(client, {
+      name,
+      domain: p.domain,
+      website: p.url ?? `https://${p.domain}`,
+      status: mapProspectStatusToCompany(p.status),
+      priority: p.priority,
+      notes: [
+        p.notes,
+        p.source ? `Legacy pipeline source: ${p.source}` : null,
+        p.targetType ? `Target type: ${p.targetType}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      tags: ["pipeline-import", p.targetType].filter(Boolean) as string[],
+      source: "pipeline",
+      ownerEmail: p.responsibleEmail,
+      createdByEmail: p.createdByEmail,
+      enrichment: {
+        pipeline: {
+          prospect_id: p.id,
+          status: p.status,
+          target_type: p.targetType,
+          last_touch_at: p.lastTouchAt,
+          next_followup_at: p.nextFollowupAt,
+          imported_at: new Date().toISOString(),
+        },
+      },
+      contact:
+        p.contactName || p.contactEmail || p.contactUrl
+          ? {
+              name: p.contactName?.trim() || p.domain,
+              email: p.contactEmail,
+              linkedin: p.contactUrl,
+            }
+          : null,
+    });
+    if (result.created) imported += 1;
+    else updated += 1;
+    if (result.contactCreated) contactsCreated += 1;
+  }
+
+  return {
+    imported,
+    updated,
+    contactsCreated,
+    total: prospects.length,
+  };
+}
 
 export async function upsertCompanyFromWebhook(
   client: SupabaseClient,

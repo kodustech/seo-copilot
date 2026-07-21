@@ -439,23 +439,32 @@ export function SocialMonitoringPage() {
     ].filter(Boolean);
 
     try {
-      const res = await fetch("/api/outreach/prospects", {
+      // Convert system of record is Accounts (CRM), not the old pipeline board
+      const res = await fetch("/api/crm/companies", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          upsert: true,
+          name: domain,
           domain,
-          url: mention.url,
-          targetType,
-          contactName: mention.author,
-          contactUrl: mention.author_profile_url,
-          status: "researching",
+          website: mention.url,
+          status: "lead",
           priority: mention.relevance === "high" ? "high" : "medium",
-          notes: noteParts.length > 0 ? noteParts.join("\n\n") : null,
-          source: `social_monitor:${mention.platform}`,
-          sourceMentionId: mention.id,
+          notes: [
+            noteParts.length > 0 ? noteParts.join("\n\n") : null,
+            `Target type: ${targetType}`,
+            `Social: ${mention.platform}`,
+            mention.url ? `URL: ${mention.url}` : null,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          tags: ["social", mention.platform, targetType].filter(Boolean),
+          source: "social",
+          contactName: mention.author || domain,
+          contactLinkedin: mention.author_profile_url,
         }),
       });
 
@@ -1164,7 +1173,7 @@ function MentionCard({
                 title={
                   alreadySent
                     ? "Already added as a prospect"
-                    : "Create an outreach prospect from this mention"
+                    : "Add this mention to Accounts"
                 }
               >
                 {sending ? (
@@ -1178,7 +1187,7 @@ function MentionCard({
                   ? "Sending…"
                   : alreadySent
                     ? "Sent to CRM"
-                    : "Send to CRM"}
+                    : "Send to Accounts"}
               </button>
             )}
             {mention.status !== "contacted" && (

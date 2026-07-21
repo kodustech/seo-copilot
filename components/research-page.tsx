@@ -1411,7 +1411,7 @@ export function ResearchPage() {
                 onClick={() => void rowAction(drawerRowId, "crm")}
               >
                 <Building2 className="size-3.5" />
-                To CRM
+                To Accounts
               </Button>
               <Button
                 size="sm"

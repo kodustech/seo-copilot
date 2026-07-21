@@ -6,7 +6,6 @@ import { usePathname } from "next/navigation";
 import type { Session } from "@supabase/supabase-js";
 import {
   BarChart3,
-  Calendar,
   Building2,
   ChevronRight,
   Clock,
@@ -15,13 +14,11 @@ import {
   Lightbulb,
   Loader2,
   LogOut,
-  MessageCircle,
   MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
   Radar,
   Search,
-  Send,
   Settings,
   Sparkles,
   Target,
@@ -95,22 +92,19 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           },
           { href: "/ideas", label: "Ideas", icon: Lightbulb },
           { href: "/dashboard", label: "Performance", icon: BarChart3 },
-          { href: "/calendario", label: "Calendar", icon: Calendar },
         ],
       },
       {
         label: "Engage",
         items: [
           { href: "/social-monitoring", label: "Social monitor", icon: Radar },
-          { href: "/reply-radar", label: "Social inbox", icon: MessageCircle },
         ],
       },
       {
         label: "Convert",
         items: [
-          { href: "/sequences", label: "Outbound", icon: Workflow },
           { href: "/research", label: "ICP lists", icon: Search },
-          { href: "/outreach", label: "Pipeline", icon: Send },
+          { href: "/sequences", label: "Outbound", icon: Workflow },
           { href: "/crm", label: "Accounts", icon: Building2 },
         ],
       },
@@ -148,6 +142,8 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     if (pathname.startsWith("/manual")) return "SEO & production";
     if (pathname.startsWith("/sequences")) return "Outbound";
     if (pathname.startsWith("/research")) return "ICP lists";
+    if (pathname.startsWith("/crm") || pathname.startsWith("/outreach"))
+      return "Accounts";
     return "";
   }, [navSections, pathname]);
   const [agentOpen, setAgentOpen] = useState(false);

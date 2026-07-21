@@ -139,6 +139,8 @@ export function CrmPage() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [importingPipeline, setImportingPipeline] = useState(false);
+  const [importNotice, setImportNotice] = useState<string | null>(null);
 
   // ── auth token ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -222,19 +224,69 @@ export function CrmPage() {
     void load();
   }
 
+  async function importPipeline() {
+    if (
+      !confirm(
+        "Import legacy Pipeline prospects into Accounts? Companies match by domain; existing accounts are updated, not duplicated.",
+      )
+    ) {
+      return;
+    }
+    setImportingPipeline(true);
+    setImportNotice(null);
+    setError(null);
+    try {
+      const res = await authFetch("/api/crm/import-pipeline", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "Import failed");
+      setImportNotice(json.message ?? "Import complete");
+      void load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Import failed");
+    } finally {
+      setImportingPipeline(false);
+    }
+  }
+
   return (
     <div className="mx-auto max-w-[1400px] px-5 py-6">
       {/* Header */}
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="flex items-center gap-2 text-lg font-semibold text-white">
-            <Building2 className="size-5 text-violet-300" /> Company CRM
+            <Building2 className="size-5 text-violet-300" /> Accounts
           </h2>
-          <p className="text-sm text-neutral-500">
-            Accounts, product signals and follow-up tracking.
+          <p className="max-w-xl text-sm text-pretty text-neutral-500">
+            System of record for Convert — companies, contacts, and stage.
+            Discover in{" "}
+            <a href="/research" className="text-neutral-300 underline-offset-2 hover:underline">
+              ICP lists
+            </a>
+            , run{" "}
+            <a href="/sequences" className="text-neutral-300 underline-offset-2 hover:underline">
+              Outbound
+            </a>
+            , manage here.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={importingPipeline}
+            onClick={() => void importPipeline()}
+            className="h-8 gap-1.5 border-white/10 text-neutral-300"
+          >
+            {importingPipeline ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Zap className="size-3.5" />
+            )}
+            Import pipeline
+          </Button>
           <WebhookDocs />
           <Button
             variant="ghost"
@@ -249,17 +301,23 @@ export function CrmPage() {
             onClick={() => setCreateOpen(true)}
             className="h-8 gap-1.5 bg-white text-neutral-900 hover:bg-neutral-200"
           >
-            <Plus className="size-3.5" /> New company
+            <Plus className="size-3.5" /> New account
           </Button>
         </div>
       </div>
 
+      {importNotice && (
+        <div className="mb-3 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
+          {importNotice}
+        </div>
+      )}
+
       {/* Stat tiles */}
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatTile label="Companies" value={stats.total} />
+        <StatTile label="Accounts" value={stats.total} />
         <StatTile label="Customers" value={stats.byStatus.customer ?? 0} accent="emerald" />
         <StatTile
-          label="In pipeline"
+          label="Open stage"
           value={
             (stats.byStatus.lead ?? 0) +
             (stats.byStatus.qualified ?? 0) +
@@ -359,7 +417,8 @@ export function CrmPage() {
             ) : companies.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={6} className="py-10 text-center text-neutral-500">
-                  No companies yet. Create one or wire the enrichment webhook.
+                  No accounts yet. Push from ICP lists, import the old pipeline,
+                  or create one.
                 </TableCell>
               </TableRow>
             ) : (
