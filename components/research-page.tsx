@@ -463,42 +463,147 @@ export function ResearchPage() {
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
   }, [tableId, tables, tableFromUrl, pathname, router, searchParams]);
 
-  const loadRows = useCallback(async () => {
-    if (!token || !tableId) {
-      setRows([]);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    try {
-      const res = await fetch(`/api/research/tables/${tableId}`, {
-        headers: headers(),
-      });
-      if (!res.ok) {
-        setNotice((await res.json()).error ?? "Failed to load companies");
+  const loadRows = useCallback(
+    async (opts?: { quiet?: boolean }) => {
+      if (!token || !tableId) {
+        setRows([]);
+        setLoading(false);
         return;
       }
-      const data = await res.json();
-      setRows(data.rows ?? []);
-      // Keep column schema in sync (MCP may add columns)
-      if (data.table) {
-        setTables((prev) =>
-          prev.map((t) =>
-            t.id === tableId
-              ? {
-                  ...t,
-                  ...data.table,
-                  columns: data.table.columns ?? t.columns,
-                  slug: data.table.slug ?? t.slug,
-                }
-              : t,
-          ),
+      // quiet = no full-table spinner (in-place updates, background refresh)
+      if (!opts?.quiet) setLoading(true);
+      try {
+        const res = await fetch(`/api/research/tables/${tableId}`, {
+          headers: headers(),
+        });
+        if (!res.ok) {
+          setNotice((await res.json()).error ?? "Failed to load companies");
+          return;
+        }
+        const data = await res.json();
+        setRows(data.rows ?? []);
+        // Keep column schema in sync (MCP may add columns)
+        if (data.table) {
+          setTables((prev) =>
+            prev.map((t) =>
+              t.id === tableId
+                ? {
+                    ...t,
+                    ...data.table,
+                    columns: data.table.columns ?? t.columns,
+                    slug: data.table.slug ?? t.slug,
+                  }
+                : t,
+            ),
+          );
+        }
+      } finally {
+        if (!opts?.quiet) setLoading(false);
+      }
+    },
+    [token, tableId, headers],
+  );
+
+  /** Patch one person on a company row without reloading the grid. */
+  const patchPersonOnRow = useCallback(
+    (rowId: string, person: Person, match: { personId?: string; name: string }) => {
+      const nameKey = match.name.trim().toLowerCase();
+      const emailKey = person.email?.trim().toLowerCase();
+      setRows((prev) =>
+        prev.map((r) => {
+          if (r.id !== rowId) return r;
+          const people = r.people ?? [];
+          let hit = false;
+          const next = people.map((p) => {
+            const sameId = match.personId && p.id === match.personId;
+            const sameName = p.name.trim().toLowerCase() === nameKey;
+            const sameEmail =
+              emailKey && p.email?.trim().toLowerCase() === emailKey;
+            if (!sameId && !sameName && !sameEmail) return p;
+            hit = true;
+            return {
+              ...p,
+              id: person.id ?? p.id,
+              name: person.name || p.name,
+              role: person.role ?? p.role,
+              email: person.email ?? p.email,
+              emailStatus: person.emailStatus ?? p.emailStatus,
+              linkedin: person.linkedin ?? p.linkedin,
+            };
+          });
+          // Drop name-only duplicate if we just attached email to the same person
+          const deduped =
+            hit && emailKey
+              ? next.filter((p, i, arr) => {
+                  const n = p.name.trim().toLowerCase();
+                  if (n !== nameKey) return true;
+                  const hasEmail = Boolean(p.email?.trim());
+                  if (hasEmail) return true;
+                  // keep at most one email-less twin if another with same name has email
+                  return !arr.some(
+                    (o, j) =>
+                      j !== i &&
+                      o.name.trim().toLowerCase() === n &&
+                      o.email?.trim(),
+                  );
+                })
+              : next;
+          if (!hit && person.name) {
+            deduped.push({
+              id: person.id,
+              name: person.name,
+              role: person.role ?? null,
+              email: person.email ?? null,
+              emailStatus: person.emailStatus ?? null,
+              linkedin: person.linkedin ?? null,
+            });
+          }
+          return { ...r, people: deduped };
+        }),
+      );
+      if (drawerRowId === rowId) {
+        setDrawerPeople((prev) => {
+          const mapped = prev.map((p) => {
+            if (
+              (match.personId && p.id === match.personId) ||
+              p.name.trim().toLowerCase() === nameKey ||
+              (emailKey && p.email?.trim().toLowerCase() === emailKey)
+            ) {
+              return {
+                ...p,
+                id: person.id ?? p.id,
+                name: person.name || p.name,
+                role: person.role ?? p.role,
+                email: person.email ?? p.email,
+                emailStatus: person.emailStatus ?? p.emailStatus,
+                linkedin: person.linkedin ?? p.linkedin,
+              };
+            }
+            return p;
+          });
+          return mapped;
+        });
+        setEditPeople((prev) =>
+          prev.map((p) => {
+            if (
+              p.name.trim().toLowerCase() === nameKey ||
+              (match.personId && p.key === match.personId)
+            ) {
+              return {
+                ...p,
+                name: person.name || p.name,
+                role: person.role ?? p.role,
+                email: person.email ?? p.email,
+                linkedin: person.linkedin ?? p.linkedin,
+              };
+            }
+            return p;
+          }),
         );
       }
-    } finally {
-      setLoading(false);
-    }
-  }, [token, tableId, headers]);
+    },
+    [drawerRowId],
+  );
 
   useEffect(() => {
     void loadTables();
@@ -521,12 +626,12 @@ export function ResearchPage() {
         const state = await res.json();
         if (state.running) {
           setNotice(state.lastSummary ?? "Working…");
-          await loadRows();
+          await loadRows({ quiet: true });
           continue;
         }
         if (state.lastError) setNotice(state.lastError);
         else if (state.lastSummary) setNotice(state.lastSummary);
-        await loadRows();
+        await loadRows({ quiet: true });
         await loadTables();
         break;
       } catch {
@@ -631,7 +736,7 @@ export function ResearchPage() {
       setImportText("");
       setPanel("none");
       setNotice(`Added ${data.added} companies${data.skipped ? ` (${data.skipped} skipped)` : ""}.`);
-      await loadRows();
+      await loadRows({ quiet: true });
       await loadTables();
     } finally {
       setImporting(false);
@@ -760,7 +865,7 @@ export function ResearchPage() {
       setDrawerPeople(ppl);
       setEditPeople(peopleToDrafts(ppl));
       setNotice(`Restored ${data.count ?? ppl.length} contacts from history`);
-      await loadRows();
+      await loadRows({ quiet: true });
       await loadPeopleHistory();
     } finally {
       setRestoringId(null);
@@ -804,7 +909,7 @@ export function ResearchPage() {
           ? "Contact saved"
           : `${cleaned.length} contacts saved`,
       );
-      await loadRows();
+      await loadRows({ quiet: true });
     } finally {
       setSavingContact(false);
     }
@@ -854,8 +959,20 @@ export function ResearchPage() {
           ? `Found ${(data.people ?? []).length} people`
           : "Done",
       );
-      if (drawerRowId === rowId) await openDrawer(rowId);
-      await loadRows();
+      // Prefer in-place people update when API returns the list
+      if (Array.isArray(data.people)) {
+        const ppl = data.people as Person[];
+        setRows((prev) =>
+          prev.map((r) => (r.id === rowId ? { ...r, people: ppl } : r)),
+        );
+        if (drawerRowId === rowId) {
+          setDrawerPeople(ppl);
+          setEditPeople(peopleToDrafts(ppl));
+        }
+      } else {
+        if (drawerRowId === rowId) await openDrawer(rowId);
+        await loadRows({ quiet: true });
+      }
     } finally {
       setActionBusy(false);
     }
@@ -885,9 +1002,16 @@ export function ResearchPage() {
         setNotice(data.error ?? "Email lookup failed");
         return;
       }
-      setNotice(data.message ?? (data.found ? "Email found" : "No email found"));
-      if (drawerRowId === opts.rowId) await openDrawer(opts.rowId);
-      await loadRows();
+      setNotice(
+        data.message ?? (data.found ? "Email found" : "No email found"),
+      );
+      // In-place patch — never flash the whole grid via loadRows spinner
+      if (data.person) {
+        patchPersonOnRow(opts.rowId, data.person as Person, {
+          personId: opts.personId,
+          name: opts.personName,
+        });
+      }
     } finally {
       setEmailBusyKey(null);
     }
@@ -1087,7 +1211,7 @@ export function ResearchPage() {
       setSelected(new Set());
       await loadTables();
       if (data.target?.id) setTableId(data.target.id);
-      await loadRows();
+      await loadRows({ quiet: true });
     } finally {
       setActionBusy(false);
     }
@@ -1133,7 +1257,7 @@ export function ResearchPage() {
           (data.failed ? `, ${data.failed} failed` : "") +
           (data.skipped ? `, ${data.skipped} skipped` : ""),
       );
-      await loadRows();
+      await loadRows({ quiet: true });
     } finally {
       setRunningColumnKey(null);
       setActionBusy(false);
@@ -1218,7 +1342,7 @@ export function ResearchPage() {
       }
       setNotice(`Deleted column “${label}”`);
       await loadTables();
-      await loadRows();
+      await loadRows({ quiet: true });
     } finally {
       setActionBusy(false);
     }
