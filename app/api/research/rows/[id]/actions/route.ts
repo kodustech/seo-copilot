@@ -129,11 +129,49 @@ export async function POST(
         const crm = await pushRowToCrm(client, id);
         return NextResponse.json({ crm, accounts: crm });
       }
+      case "people_history": {
+        const { listPeopleSnapshots, listPeople: listP } = await import(
+          "@/lib/research/tables"
+        );
+        const [current, snapshots] = await Promise.all([
+          listP(client, id),
+          listPeopleSnapshots(client, id, Number(body.limit) || 20),
+        ]);
+        return NextResponse.json({
+          current_count: current.length,
+          current,
+          snapshots,
+        });
+      }
+      case "people_restore": {
+        const snapshotId = String(body.snapshot_id ?? body.snapshotId ?? "");
+        if (!snapshotId) {
+          return NextResponse.json(
+            { error: "snapshot_id required" },
+            { status: 400 },
+          );
+        }
+        const { restorePeopleSnapshot } = await import("@/lib/research/tables");
+        const mode =
+          body.mode === "merge" || body.mode === "replace"
+            ? body.mode
+            : "replace";
+        const people = await restorePeopleSnapshot(client, id, snapshotId, {
+          mode,
+          createdBy: userEmail,
+        });
+        return NextResponse.json({
+          ok: true,
+          mode,
+          people,
+          count: people.length,
+        });
+      }
       default:
         return NextResponse.json(
           {
             error:
-              "action must be crm | outreach | people | upsert_people | ai_column | qualify",
+              "action must be crm | outreach | people | upsert_people | ai_column | qualify | people_history | people_restore",
           },
           { status: 400 },
         );

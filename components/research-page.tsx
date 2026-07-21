@@ -8,11 +8,13 @@ import {
   Copy,
   Download,
   ExternalLink,
+  History,
   Link2,
   Loader2,
   Mail,
   MoreHorizontal,
   Plus,
+  RotateCcw,
   Search,
   Trash2,
   Users,
@@ -214,6 +216,18 @@ export function ResearchPage() {
   const [drawerPeople, setDrawerPeople] = useState<Person[]>([]);
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
+  const [peopleSnapshots, setPeopleSnapshots] = useState<
+    Array<{
+      id: string;
+      reason: string;
+      personCount: number;
+      createdAt: string;
+      people: Array<{ name?: string; email?: string | null }>;
+    }>
+  >([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [restoringId, setRestoringId] = useState<string | null>(null);
   /** Editable multi-person drafts in the drawer */
   const [editPeople, setEditPeople] = useState<
     Array<{
@@ -513,6 +527,8 @@ export function ResearchPage() {
     if (!token) return;
     setDrawerRowId(rowId);
     setDrawerLoading(true);
+    setHistoryOpen(false);
+    setPeopleSnapshots([]);
     try {
       const res = await fetch(`/api/research/rows/${rowId}`, {
         headers: headers(),
@@ -525,6 +541,71 @@ export function ResearchPage() {
       setEditPeople(peopleToDrafts(ppl));
     } finally {
       setDrawerLoading(false);
+    }
+  };
+
+  const loadPeopleHistory = async () => {
+    if (!token || !drawerRowId) return;
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(`/api/research/rows/${drawerRowId}/actions`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ action: "people_history", limit: 30 }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setNotice(data.error ?? "Could not load history");
+        return;
+      }
+      setPeopleSnapshots(
+        ((data.snapshots ?? []) as Array<Record<string, unknown>>).map((s) => ({
+          id: String(s.id),
+          reason: String(s.reason ?? "save"),
+          personCount: Number(s.personCount ?? s.person_count ?? 0),
+          createdAt: String(s.createdAt ?? s.created_at ?? ""),
+          people: (s.people as Array<{ name?: string; email?: string | null }>) ?? [],
+        })),
+      );
+      setHistoryOpen(true);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const restorePeopleVersion = async (snapshotId: string) => {
+    if (!token || !drawerRowId) return;
+    if (
+      !confirm(
+        "Restore this contacts version? Current list is snapshotted first so you can undo.",
+      )
+    ) {
+      return;
+    }
+    setRestoringId(snapshotId);
+    try {
+      const res = await fetch(`/api/research/rows/${drawerRowId}/actions`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          action: "people_restore",
+          snapshot_id: snapshotId,
+          mode: "replace",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setNotice(data.error ?? "Restore failed");
+        return;
+      }
+      const ppl = (data.people ?? []) as Person[];
+      setDrawerPeople(ppl);
+      setEditPeople(peopleToDrafts(ppl));
+      setNotice(`Restored ${data.count ?? ppl.length} contacts from history`);
+      await loadRows();
+      await loadPeopleHistory();
+    } finally {
+      setRestoringId(null);
     }
   };
 
@@ -1568,7 +1649,94 @@ export function ResearchPage() {
                         )}
                         Save all contacts
                       </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="w-full text-muted-foreground"
+                        disabled={historyLoading}
+                        onClick={() => void loadPeopleHistory()}
+                      >
+                        {historyLoading ? (
+                          <Loader2 className="size-3.5 animate-spin" />
+                        ) : (
+                          <History className="size-3.5" />
+                        )}
+                        Contact history
+                      </Button>
                     </div>
+
+                    {historyOpen && (
+                      <div className="space-y-2 rounded-lg border border-dashed p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                            Snapshots
+                          </h4>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => setHistoryOpen(false)}
+                          >
+                            Hide
+                          </Button>
+                        </div>
+                        {peopleSnapshots.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">
+                            No snapshots yet. They appear after save, enrich, or
+                            agent edits.
+                          </p>
+                        ) : (
+                          <ul className="space-y-2">
+                            {peopleSnapshots.map((s) => (
+                              <li
+                                key={s.id}
+                                className="rounded-md border bg-muted/30 px-2.5 py-2 text-xs"
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <p className="font-medium text-foreground">
+                                      {s.personCount} people · {s.reason}
+                                    </p>
+                                    <p className="text-muted-foreground">
+                                      {s.createdAt
+                                        ? new Date(s.createdAt).toLocaleString()
+                                        : "—"}
+                                    </p>
+                                    <p className="mt-1 truncate text-muted-foreground">
+                                      {s.people
+                                        .slice(0, 5)
+                                        .map((p) => p.name)
+                                        .filter(Boolean)
+                                        .join(", ") || "—"}
+                                      {s.people.length > 5 ? "…" : ""}
+                                    </p>
+                                  </div>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 shrink-0 gap-1"
+                                    disabled={restoringId === s.id}
+                                    onClick={() =>
+                                      void restorePeopleVersion(s.id)
+                                    }
+                                  >
+                                    {restoringId === s.id ? (
+                                      <Loader2 className="size-3 animate-spin" />
+                                    ) : (
+                                      <RotateCcw className="size-3" />
+                                    )}
+                                    Restore
+                                  </Button>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
                   </section>
 
                   {(drawerRow.whyNow || drawerRow.icpScore != null) && (
