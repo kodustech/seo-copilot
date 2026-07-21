@@ -3763,6 +3763,79 @@ export const researchListRows = tool({
   },
 });
 
+export const researchSplitByMarket = tool({
+  description:
+    "Split a research list into Brazil vs Global (rest of world) for language/outbound. Classification uses HQ country (firmo), .br domains, Brazilian job boards (Gupy…), and pack text. dry_run=true only previews counts. dry_run=false creates new lists and MOVES rows (people stay on the same company rows). Unknown-market rows go to a third list unless unknown_into_world=true.",
+  inputSchema: z.object({
+    table_ref: z.string().describe("Source list id, slug, or name"),
+    dry_run: z
+      .boolean()
+      .optional()
+      .describe("Default true — preview only. Set false to actually split."),
+    brazil_name: z.string().optional(),
+    world_name: z.string().optional(),
+    unknown_name: z.string().optional(),
+    unknown_into_world: z
+      .boolean()
+      .optional()
+      .describe("If true, put unknown-market companies into Global"),
+    user_email: z.string().optional(),
+  }),
+  execute: async ({
+    table_ref,
+    dry_run,
+    brazil_name,
+    world_name,
+    unknown_name,
+    unknown_into_world,
+    user_email,
+  }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { resolveTable } = await import("@/lib/research/columns");
+      const { splitTableByMarket } = await import("@/lib/research/split");
+      const table = await resolveTable(client, table_ref);
+      const result = await splitTableByMarket(client, table.id, {
+        dryRun: dry_run !== false,
+        brazilName: brazil_name,
+        worldName: world_name,
+        unknownName: unknown_name,
+        unknownIntoWorld: unknown_into_world === true,
+        createdByEmail: user_email,
+      });
+      if ("dryRun" in result && result.dryRun) {
+        return {
+          success: true as const,
+          dry_run: true as const,
+          source: result.sourceName,
+          preview: result.preview,
+          next: "Review counts. Call again with dry_run=false to create Brasil + Global lists and move companies.",
+        };
+      }
+      const r = result as import("@/lib/research/split").SplitResult;
+      return {
+        success: true as const,
+        dry_run: false as const,
+        brazil: r.brazilTable,
+        world: r.worldTable,
+        unknown: r.unknownTable,
+        preview: r.preview,
+        open_brazil: r.brazilTable.slug
+          ? `/research?table=${encodeURIComponent(r.brazilTable.slug)}`
+          : `/research?table=${r.brazilTable.id}`,
+        open_world: r.worldTable.slug
+          ? `/research?table=${encodeURIComponent(r.worldTable.slug)}`
+          : `/research?table=${r.worldTable.id}`,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Split failed",
+      };
+    }
+  },
+});
+
 export const researchCreateFromIcp = tool({
   description:
     "Create a research table from a FREE-TEXT ICP description (Clay-style). Compiles the ICP into a custom scoring rubric (triggers, fits, anti-criteria with veto) + signal-first discovery queries, creates the table, and optionally runs discovery right away. Use when the user describes who they want to find in natural language — including exclusions like 'não quero fábricas de software'.",
@@ -5099,6 +5172,7 @@ export function createAgentTools(userEmail?: string) {
     researchAddDomains,
     researchCompany,
     researchListRows,
+    researchSplitByMarket,
     researchFindIcp,
     researchEnrichPeople,
     researchGetTable,

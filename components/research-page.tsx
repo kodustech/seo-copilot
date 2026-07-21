@@ -752,6 +752,65 @@ export function ResearchPage() {
       ),
     [activeTable?.columns],
   );
+
+  /** Preview then split list into Brasil / Global for language. */
+  const splitByMarket = async () => {
+    if (!token || !tableId || !activeTable) return;
+    setActionBusy(true);
+    try {
+      const previewRes = await fetch(
+        `/api/research/tables/${tableId}/split`,
+        {
+          method: "POST",
+          headers: headers(),
+          body: JSON.stringify({ dry_run: true }),
+        },
+      );
+      const previewData = await previewRes.json();
+      if (!previewRes.ok) {
+        setNotice(previewData.error ?? "Preview failed");
+        return;
+      }
+      const p = previewData.preview ?? previewData;
+      const br = p.brazil ?? 0;
+      const world = p.world ?? 0;
+      const unk = p.unknown ?? 0;
+      const ok = confirm(
+        `Split “${activeTable.name}” by market?\n\n` +
+          `🇧🇷 Brasil: ${br}\n` +
+          `🌍 Global: ${world}\n` +
+          `❓ Unknown: ${unk}\n\n` +
+          `Creates two (or three) new lists and MOVES companies (people stay attached). ` +
+          `Unknown goes to its own list. Source list will be empty of moved rows.`,
+      );
+      if (!ok) return;
+
+      const res = await fetch(`/api/research/tables/${tableId}/split`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ confirm: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setNotice(data.error ?? "Split failed");
+        return;
+      }
+      setNotice(
+        `Split done → “${data.brazilTable?.name}” (${data.brazilTable?.moved}) · “${data.worldTable?.name}” (${data.worldTable?.moved})` +
+          (data.unknownTable
+            ? ` · “${data.unknownTable.name}” (${data.unknownTable.moved})`
+            : ""),
+      );
+      await loadTables();
+      if (data.brazilTable?.id) {
+        setTableId(data.brazilTable.id);
+      }
+      await loadRows();
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   const drawerRow = rows.find((r) => r.id === drawerRowId);
   const withContact = rows.filter((r) => topPerson(r.people)).length;
   const allSelected =
@@ -936,6 +995,14 @@ export function ResearchPage() {
                 onClick={() => void runJob("research")}
               >
                 Score pending rows
+              </button>
+              <button
+                type="button"
+                className="flex w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+                disabled={actionBusy || running || !tableId || rows.length === 0}
+                onClick={() => void splitByMarket()}
+              >
+                Split Brasil / Global…
               </button>
               <button
                 type="button"
