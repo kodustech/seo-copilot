@@ -4557,7 +4557,7 @@ export const sequenceCreate = tool({
 
 export const sequenceUpdate = tool({
   description:
-    "Update sequence metadata and/or replace all steps (full cadence rewrite). Use to refine copy after reviewing the list ICP. Pass steps to replace the entire step list.",
+    "Update sequence metadata, status, and/or replace all steps. Status is intentional and never auto-set on enroll: draft (editing), active (runs queue + email auto-send), paused (holds tasks), archived (hidden). Changing status applies immediately (pause pulls ready tasks off the queue; active releases due LinkedIn/manual work).",
   inputSchema: z.object({
     sequence_id: z.string(),
     name: z.string().optional(),
@@ -4608,6 +4608,41 @@ export const sequenceUpdate = tool({
           subject_template: s.subjectTemplate,
           body_template: s.bodyTemplate,
         })),
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed",
+      };
+    }
+  },
+});
+
+export const sequenceDelete = tool({
+  description:
+    "Permanently delete an outreach sequence and all its steps, enrollments, and pending/sent tasks (hard delete, cascade). Prefer status=archived via sequenceUpdate if you only want to hide it. Confirm with the user before calling when enrollments > 0.",
+  inputSchema: z.object({
+    sequence_id: z.string(),
+    confirm: z
+      .boolean()
+      .describe("Must be true to actually delete — safety guard for agents"),
+  }),
+  execute: async ({ sequence_id, confirm }) => {
+    try {
+      if (!confirm) {
+        return {
+          success: false as const,
+          message:
+            "Pass confirm=true to permanently delete. This removes steps, enrollments, and queue tasks.",
+        };
+      }
+      const client = getSupabaseServiceClient();
+      const { deleteSequence } = await import("@/lib/outreach/sequences");
+      const result = await deleteSequence(client, sequence_id);
+      return {
+        success: true as const,
+        ...result,
+        message: `Deleted sequence "${result.name}" (${result.deletedSteps} steps, ${result.deletedEnrollments} enrollments).`,
       };
     } catch (error) {
       return {
@@ -4776,7 +4811,7 @@ export const sequencePreview = tool({
 
 export const sequenceEnrollResearch = tool({
   description:
-    "Enroll people from a research ICP list into a sequence (start the campaign). Creates send tasks for step 1. Returns enrolled/skipped counts, missing LinkedIn/email warnings. Use table_ref = list slug or id from researchListTables.",
+    "Enroll people from a research ICP list into a sequence. Creates send tasks for step 1 but does NOT auto-activate — if the sequence is draft/paused/archived, tasks stay held until status is set to active via sequenceUpdate. Returns enrolled/skipped counts, missing LinkedIn/email warnings, and sequenceStatus. Use table_ref = list slug or id from researchListTables.",
   inputSchema: z.object({
     sequence_id: z.string(),
     table_ref: z.string().describe("Research table id or slug"),
@@ -4808,7 +4843,9 @@ export const sequenceEnrollResearch = tool({
         success: true as const,
         ...result,
         next:
-          "Use sequenceListQueue for LinkedIn/manual tasks. Email auto-send depends on Settings → mailbox email_auto_send.",
+          result.sequenceStatus === "active"
+            ? "Sequence is active. Use sequenceListQueue for LinkedIn/manual tasks. Email auto-send depends on Settings → mailbox email_auto_send."
+            : `Sequence is "${result.sequenceStatus}" — people are enrolled but work is held. Call sequenceUpdate with status="active" when ready to run the campaign.`,
       };
     } catch (error) {
       return {
@@ -4978,6 +5015,7 @@ export function createAgentTools(userEmail?: string) {
     sequenceGet,
     sequenceCreate,
     sequenceUpdate,
+    sequenceDelete,
     sequencePreview,
     sequenceEnrollResearch,
     sequenceListQueue,

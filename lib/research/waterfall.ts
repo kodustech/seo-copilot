@@ -4,8 +4,11 @@ import { discoverContacts } from "@/lib/contact-discovery";
 import { verifyEmails } from "@/lib/email-verifier";
 import {
   findWorkEmail,
+  lookupPersonEmployment,
   ninjapearEnabled,
   searchEmployees,
+  splitPersonName,
+  type NinjapearEmployee,
 } from "@/lib/ninjapear";
 import { getCached, setCache, domainCacheKey } from "@/lib/research/cache";
 import { resolveRubric } from "@/lib/research/rubrics";
@@ -42,13 +45,18 @@ function rankPerson(role: string | null, personas: string[]): number {
   return score;
 }
 
+function appendNote(notes: string | null, bit: string): string {
+  return [notes, bit].filter(Boolean).join(" | ");
+}
+
 /**
- * People + email waterfall (P0 free path):
+ * People + email waterfall:
  * 1. team-page scrape + LLM extract (contact-discovery)
- * 2. email pattern guess already inside discoverContacts
- * 3. NeverBounce verify top candidates
- *
- * Optional P1: HUNTER_API_KEY / APOLLO_API_KEY can be wired later in providers.
+ * 2. NinjaPear employee search by buyer personas + work-email + person profile
+ *    (employment verification via work_history — no LinkedIn URL from Nubela)
+ * 3. Hunter domain search if still empty / missing emails
+ * 4. NeverBounce verify
+ * 5. LinkedIn via Exa with company evidence (NinjaPear cannot return /in/ URLs)
  */
 export async function enrichPeopleForRow(
   client: SupabaseClient,
@@ -76,8 +84,8 @@ export async function enrichPeopleForRow(
   ];
   const maxPeople = opts.maxPeople ?? 3;
 
-  // v2: LinkedIn profiles must pass company verification
-  const cacheKey = domainCacheKey(row.domain, "people:v2");
+  // v3: NinjaPear person profile employment + multi-persona search
+  const cacheKey = domainCacheKey(row.domain, "people:v3");
   const cached = await getCached<WaterfallPerson[]>(client, cacheKey);
   if (cached && cached.length > 0) {
     await replacePeople(client, rowId, cached);
@@ -116,18 +124,25 @@ export async function enrichPeopleForRow(
     )
     .slice(0, maxPeople);
 
-  // Provider 2: NinjaPear employee search by buyer persona + work-email
-  // lookup. Credit-billed — only runs when scrape found nobody relevant.
-  if (ninjapearEnabled() && people.length < maxPeople) {
+  // Provider 2: NinjaPear — search + profile employment + work email
+  if (ninjapearEnabled()) {
     try {
-      const npPeople = await ninjapearPeople(
-        row.domain,
-        personas,
-        maxPeople - people.length,
-      );
-      if (npPeople.length > 0) {
-        people = mergePeople(people, npPeople, maxPeople, personas);
+      if (people.length < maxPeople) {
+        const npPeople = await ninjapearPeople(
+          row.domain,
+          row.companyName,
+          personas,
+          maxPeople - people.length,
+        );
+        if (npPeople.length > 0) {
+          people = mergePeople(people, npPeople, maxPeople, personas);
+        }
       }
+      // Enrich everyone we keep: missing email + employment verify via profile
+      people = await enrichPeopleViaNinjapear(people, {
+        domain: row.domain,
+        companyName: row.companyName,
+      });
     } catch (err) {
       console.warn("[research/waterfall] NinjaPear failed:", err);
     }
@@ -179,6 +194,7 @@ export async function enrichPeopleForRow(
   }
 
   // LinkedIn: drop unverified profile URLs, then Exa-search + company match.
+  // NinjaPear does not return linkedin.com/in — employment notes help ranking only.
   people = await attachVerifiedLinkedIn(people, {
     companyName: row.companyName,
     domain: row.domain,
@@ -209,6 +225,10 @@ async function attachVerifiedLinkedIn(
     let notes = p.notes;
     let confidence = p.confidence;
     let providerUsed = p.providerUsed;
+    const employmentOk = Boolean(
+      notes?.includes("employment_ok:ninjapear") ||
+        notes?.includes("employment_current:ninjapear"),
+    );
 
     if (linkedin) {
       const v = await verifyLinkedInBelongsToCompany({
@@ -219,13 +239,15 @@ async function attachVerifiedLinkedIn(
       });
       if (!v.ok) {
         // Drop wrong-person URL — better empty than false positive for outreach
-        notes = [notes, `linkedin_rejected:${v.evidence}`]
-          .filter(Boolean)
-          .join(" | ");
+        notes = appendNote(notes, `linkedin_rejected:${v.evidence}`);
         linkedin = null;
       } else {
-        notes = [notes, `linkedin_ok:${v.evidence}`].filter(Boolean).join(" | ");
+        notes = appendNote(notes, `linkedin_ok:${v.evidence}`);
         confidence = Math.max(confidence ?? 0, v.confidence);
+        if (employmentOk) {
+          confidence = Math.max(confidence, 0.9);
+          notes = appendNote(notes, "linkedin+employment_crosscheck");
+        }
       }
     }
 
@@ -240,10 +262,11 @@ async function attachVerifiedLinkedIn(
         if (found) {
           linkedin = found.url;
           confidence = Math.max(confidence ?? 0, found.confidence);
+          if (employmentOk) {
+            confidence = Math.max(confidence, 0.9);
+          }
           providerUsed = `${providerUsed}+linkedin_finder`;
-          notes = [notes, `linkedin_found:${found.evidence}`]
-            .filter(Boolean)
-            .join(" | ");
+          notes = appendNote(notes, `linkedin_found:${found.evidence}`);
         }
       } catch (err) {
         console.warn("[research/waterfall] linkedin finder failed:", err);
@@ -262,44 +285,257 @@ async function attachVerifiedLinkedIn(
 }
 
 /**
- * NinjaPear provider: search employees by the rubric's top buyer persona,
- * then resolve work emails for up to `max` matches. Credit cost per row:
- * one search (2 + 1/result) + up to `max` email lookups (2 hit / 0.5 miss).
+ * NinjaPear provider: search employees across buyer personas, then resolve
+ * person profile (employment) + work emails for kept matches.
  */
 async function ninjapearPeople(
   domain: string,
+  companyName: string,
   personas: string[],
   max: number,
 ): Promise<WaterfallPerson[]> {
-  const role = personas[0] ?? "CTO";
-  const employees = await searchEmployees({ companyWebsite: domain, role });
-  const top = employees.slice(0, Math.max(max, 1));
+  if (max <= 0) return [];
 
+  const rolesToTry = [
+    ...new Set(
+      personas
+        .map((p) => p.trim())
+        .filter(Boolean)
+        .slice(0, 3),
+    ),
+  ];
+  if (rolesToTry.length === 0) rolesToTry.push("CTO");
+
+  const seen = new Set<string>();
+  const employees: NinjapearEmployee[] = [];
+
+  for (const role of rolesToTry) {
+    if (employees.length >= max * 2) break;
+    try {
+      const batch = await searchEmployees({ companyWebsite: domain, role });
+      for (const e of batch) {
+        const key = `${e.first_name}|${e.last_name ?? ""}`.toLowerCase();
+        if (!e.first_name || seen.has(key)) continue;
+        seen.add(key);
+        employees.push(e);
+      }
+    } catch (err) {
+      console.warn(
+        `[research/waterfall] employee search role="${role}" failed:`,
+        err,
+      );
+    }
+  }
+
+  const top = employees.slice(0, Math.max(max, 1));
   const out: WaterfallPerson[] = [];
+
   for (const e of top) {
+    const name = [e.first_name, e.last_name].filter(Boolean).join(" ");
     let email: string | null = null;
+    let role = e.role || null;
+    let notes: string | null = "source:ninjapear_search";
+    let confidence = 0.6;
+    let providerUsed = "ninjapear";
+
     try {
       email = await findWorkEmail({
         firstName: e.first_name,
         lastName: e.last_name,
         domain,
       });
+      if (email) {
+        confidence = 0.85;
+        notes = appendNote(notes, "work_email:ninjapear");
+      }
     } catch (err) {
       console.warn("[research/waterfall] work-email lookup failed:", err);
     }
+
+    try {
+      const hit = await lookupPersonEmployment({
+        domain,
+        companyName,
+        firstName: e.first_name,
+        lastName: e.last_name,
+        workEmail: email,
+        role: e.role,
+      });
+      if (hit) {
+        providerUsed = "ninjapear+profile";
+        if (hit.employment.ok) {
+          const tag = hit.employment.current
+            ? "employment_current:ninjapear"
+            : "employment_ok:ninjapear";
+          notes = appendNote(notes, `${tag}:${hit.employment.evidence}`);
+          confidence = Math.max(
+            confidence,
+            hit.employment.current ? 0.92 : 0.8,
+          );
+          if (hit.employment.role) role = hit.employment.role;
+          if (hit.profile.full_name) {
+            notes = appendNote(
+              notes,
+              `canonical_name:${hit.profile.full_name}`,
+            );
+          }
+        } else {
+          notes = appendNote(
+            notes,
+            `employment_miss:ninjapear:${hit.employment.evidence}`,
+          );
+          // Still keep the search hit — search is company-scoped, but flag it
+          confidence = Math.min(confidence, 0.55);
+        }
+        if (hit.profile.x_profile_url) {
+          notes = appendNote(notes, `x:${hit.profile.x_profile_url}`);
+        }
+      }
+    } catch (err) {
+      console.warn("[research/waterfall] person profile failed:", err);
+    }
+
     out.push({
-      name: [e.first_name, e.last_name].filter(Boolean).join(" "),
-      role: e.role,
+      name: name || e.first_name,
+      role,
       linkedin: null,
       email,
       emailStatus: null,
       emailSource: email ? "provider" : null,
-      providerUsed: "ninjapear",
-      confidence: email ? 0.85 : 0.6,
-      notes: null,
+      providerUsed,
+      confidence,
+      notes,
     });
   }
   return out;
+}
+
+/**
+ * For people already found (scrape etc.): fill work email + verify employment
+ * via Person Profile. Caps profile calls to list size (typically ≤ maxPeople).
+ */
+async function enrichPeopleViaNinjapear(
+  people: WaterfallPerson[],
+  company: { domain: string; companyName: string },
+): Promise<WaterfallPerson[]> {
+  if (!ninjapearEnabled() || people.length === 0) return people;
+
+  const out: WaterfallPerson[] = [];
+  for (const p of people) {
+    // Already fully verified by ninjapear path
+    if (
+      p.notes?.includes("employment_current:ninjapear") ||
+      p.notes?.includes("employment_ok:ninjapear")
+    ) {
+      // Still try email if missing
+      if (!p.email) {
+        const filled = await tryWorkEmail(p, company.domain);
+        out.push(filled);
+      } else {
+        out.push(p);
+      }
+      continue;
+    }
+
+    let next = p;
+    if (!next.email) {
+      next = await tryWorkEmail(next, company.domain);
+    }
+
+    const { firstName, lastName } = splitPersonName(next.name);
+    if (!firstName) {
+      out.push(next);
+      continue;
+    }
+
+    const hit = await lookupPersonEmployment({
+      domain: company.domain,
+      companyName: company.companyName,
+      firstName,
+      lastName,
+      workEmail: next.email,
+      role: next.role,
+    });
+
+    if (!hit) {
+      out.push(next);
+      continue;
+    }
+
+    let notes = next.notes;
+    let confidence = next.confidence;
+    let role = next.role;
+    let providerUsed = `${next.providerUsed ?? "unknown"}+ninjapear_profile`;
+
+    if (hit.employment.ok) {
+      const tag = hit.employment.current
+        ? "employment_current:ninjapear"
+        : "employment_ok:ninjapear";
+      notes = appendNote(notes, `${tag}:${hit.employment.evidence}`);
+      confidence = Math.max(
+        confidence ?? 0,
+        hit.employment.current ? 0.9 : 0.78,
+      );
+      if (hit.employment.role && !role) role = hit.employment.role;
+      else if (
+        hit.employment.role &&
+        role &&
+        hit.employment.role.length > role.length
+      ) {
+        // Prefer richer title from profile when available
+        role = hit.employment.role;
+      }
+    } else {
+      notes = appendNote(
+        notes,
+        `employment_miss:ninjapear:${hit.employment.evidence}`,
+      );
+    }
+    if (hit.profile.x_profile_url) {
+      notes = appendNote(notes, `x:${hit.profile.x_profile_url}`);
+    }
+    if (hit.profile.full_name && hit.profile.full_name.length > next.name.length) {
+      // keep original name for LinkedIn search stability; note canonical
+      notes = appendNote(notes, `canonical_name:${hit.profile.full_name}`);
+    }
+
+    out.push({
+      ...next,
+      role,
+      notes,
+      confidence,
+      providerUsed,
+    });
+  }
+  return out;
+}
+
+async function tryWorkEmail(
+  p: WaterfallPerson,
+  domain: string,
+): Promise<WaterfallPerson> {
+  if (p.email) return p;
+  const { firstName, lastName } = splitPersonName(p.name);
+  if (!firstName) return p;
+  try {
+    const email = await findWorkEmail({
+      firstName,
+      lastName,
+      domain,
+    });
+    if (!email) return p;
+    return {
+      ...p,
+      email,
+      emailSource: "provider",
+      confidence: Math.max(p.confidence ?? 0, 0.8),
+      notes: appendNote(p.notes, "work_email:ninjapear"),
+      providerUsed: `${p.providerUsed ?? "unknown"}+ninjapear_email`,
+    };
+  } catch (err) {
+    console.warn("[research/waterfall] work-email enrich failed:", err);
+    return p;
+  }
 }
 
 function mergePeople(
@@ -314,6 +550,19 @@ function mergePeople(
     const prev = byKey.get(key);
     if (!prev || (p.confidence ?? 0) > (prev.confidence ?? 0)) {
       byKey.set(key, p);
+    } else if (prev && (p.confidence ?? 0) === (prev.confidence ?? 0)) {
+      // Merge notes / fill missing fields
+      byKey.set(key, {
+        ...prev,
+        email: prev.email ?? p.email,
+        linkedin: prev.linkedin ?? p.linkedin,
+        role: prev.role ?? p.role,
+        notes: [prev.notes, p.notes].filter(Boolean).join(" | ") || null,
+        providerUsed:
+          prev.providerUsed && p.providerUsed && prev.providerUsed !== p.providerUsed
+            ? `${prev.providerUsed}+${p.providerUsed}`
+            : prev.providerUsed ?? p.providerUsed,
+      });
     }
   }
   return [...byKey.values()]
@@ -351,7 +600,10 @@ async function hunterDomainSearch(
   };
 
   return (data.data?.emails ?? []).map((e) => ({
-    name: [e.first_name, e.last_name].filter(Boolean).join(" ") || e.value || "Unknown",
+    name:
+      [e.first_name, e.last_name].filter(Boolean).join(" ") ||
+      e.value ||
+      "Unknown",
     role: e.position ?? null,
     linkedin: e.linkedin ?? null,
     email: e.value ?? null,
