@@ -3802,7 +3802,7 @@ const rowConditionSchema = z.discriminatedUnion("kind", [
 
 export const researchMoveRows = tool({
   description:
-    "Horizontal primitive: MOVE company rows between research lists (people stay on the same rows). Provide row_ids + either target_table_ref (existing list) OR new_table_name (creates list cloned from source_table_ref). Use after filtering/classifying however you want (score, domain, AI column, manual ids).",
+    "MOVE companies from one research list to another (or into a newly created list). People stay on the same rows. This is the only list-reorg primitive — do not invent split engines. Flow: researchListRows → pick row_ids (any criteria you or the user decide) → researchMoveRows. Prefer confirming the destination name with the user before bulk moves.",
   inputSchema: z.object({
     row_ids: z.array(z.string()).min(1),
     source_table_ref: z
@@ -5257,7 +5257,8 @@ export function createAgentTools(userEmail?: string) {
     researchCompany,
     researchListRows,
     researchMoveRows,
-    researchSplitByRules,
+    // researchSplitByRules kept in codebase for rare advanced use but NOT
+    // registered on the agent — product primitive is move by row_ids only.
     researchFindIcp,
     researchEnrichPeople,
     researchGetTable,
