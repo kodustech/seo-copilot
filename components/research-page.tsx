@@ -255,6 +255,17 @@ function formatCell(cell: ResearchCell | undefined): string {
   return String(cell.value);
 }
 
+function emailStatusHint(status: string | null | undefined): string | null {
+  if (!status) return null;
+  const s = status.toLowerCase();
+  if (s === "valid") return "valid";
+  if (s === "invalid") return "invalid";
+  if (s === "catchall") return "catchall";
+  if (s === "disposable") return "disposable";
+  if (s === "unknown") return "unknown";
+  return s;
+}
+
 export function ResearchPage() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const router = useRouter();
@@ -332,6 +343,7 @@ export function ResearchPage() {
   const [colRunNow, setColRunNow] = useState(true);
   const [colBusy, setColBusy] = useState(false);
   const [runningColumnKey, setRunningColumnKey] = useState<string | null>(null);
+  const [emailBusyKey, setEmailBusyKey] = useState<string | null>(null);
 
   const emptyPersonDraft = () => ({
     key: `new-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -846,6 +858,38 @@ export function ResearchPage() {
       await loadRows();
     } finally {
       setActionBusy(false);
+    }
+  };
+
+  /** Find + verify work email for one person (empty email cell shortcut). */
+  const findEmailForPerson = async (opts: {
+    rowId: string;
+    personId?: string;
+    personName: string;
+    busyKey: string;
+  }) => {
+    if (!token) return;
+    setEmailBusyKey(opts.busyKey);
+    try {
+      const res = await fetch(`/api/research/rows/${opts.rowId}/actions`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          action: "find_email",
+          personId: opts.personId,
+          personName: opts.personName,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setNotice(data.error ?? "Email lookup failed");
+        return;
+      }
+      setNotice(data.message ?? (data.found ? "Email found" : "No email found"));
+      if (drawerRowId === opts.rowId) await openDrawer(opts.rowId);
+      await loadRows();
+    } finally {
+      setEmailBusyKey(null);
     }
   };
 
@@ -1663,19 +1707,62 @@ export function ResearchPage() {
                       {p.role ?? "—"}
                     </TableCell>
                     <TableCell
-                      className="max-w-[200px] truncate font-mono text-xs"
+                      className="max-w-[220px] font-mono text-xs"
                       onClick={(e) => e.stopPropagation()}
                     >
                       {p.email ? (
-                        <a
-                          href={`mailto:${p.email}`}
-                          className="inline-flex items-center gap-1 text-foreground hover:underline"
-                        >
-                          <Mail className="size-3 shrink-0 text-muted-foreground" />
-                          <span className="truncate">{p.email}</span>
-                        </a>
+                        <div className="flex min-w-0 flex-col gap-0.5">
+                          <a
+                            href={`mailto:${p.email}`}
+                            className="inline-flex min-w-0 items-center gap-1 text-foreground hover:underline"
+                          >
+                            <Mail className="size-3 shrink-0 text-muted-foreground" />
+                            <span className="truncate">{p.email}</span>
+                          </a>
+                          {emailStatusHint(p.emailStatus) && (
+                            <span
+                              className={cn(
+                                "text-[10px] font-medium uppercase tracking-wide",
+                                p.emailStatus === "valid" &&
+                                  "text-emerald-600 dark:text-emerald-400",
+                                p.emailStatus === "invalid" && "text-rose-600",
+                                p.emailStatus === "catchall" &&
+                                  "text-amber-600 dark:text-amber-400",
+                                (p.emailStatus === "unknown" ||
+                                  p.emailStatus === "error") &&
+                                  "text-muted-foreground",
+                              )}
+                            >
+                              {emailStatusHint(p.emailStatus)}
+                            </span>
+                          )}
+                        </div>
                       ) : (
-                        <span className="text-muted-foreground">—</span>
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 rounded-md border border-dashed px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground hover:border-foreground/30 hover:bg-muted hover:text-foreground disabled:opacity-50"
+                          disabled={
+                            emailBusyKey === p.key ||
+                            actionBusy ||
+                            !p.name.trim()
+                          }
+                          title="Find work email and verify (NeverBounce)"
+                          onClick={() =>
+                            void findEmailForPerson({
+                              rowId: p.rowId,
+                              personId: p.personId,
+                              personName: p.name,
+                              busyKey: p.key,
+                            })
+                          }
+                        >
+                          {emailBusyKey === p.key ? (
+                            <Loader2 className="size-3 animate-spin" />
+                          ) : (
+                            <Mail className="size-3" />
+                          )}
+                          Find email
+                        </button>
                       )}
                     </TableCell>
                     <TableCell onClick={(e) => e.stopPropagation()}>
@@ -1987,17 +2074,59 @@ export function ResearchPage() {
                         {p?.role ?? "—"}
                       </TableCell>
                       <TableCell
-                        className="hidden max-w-[180px] truncate font-mono text-xs lg:table-cell"
+                        className="hidden max-w-[200px] font-mono text-xs lg:table-cell"
                         onClick={(e) => e.stopPropagation()}
                       >
                         {p?.email ? (
-                          <a
-                            href={`mailto:${p.email}`}
-                            className="inline-flex items-center gap-1 text-foreground hover:underline"
+                          <div className="flex min-w-0 flex-col gap-0.5">
+                            <a
+                              href={`mailto:${p.email}`}
+                              className="inline-flex min-w-0 items-center gap-1 text-foreground hover:underline"
+                            >
+                              <Mail className="size-3 shrink-0 text-muted-foreground" />
+                              <span className="truncate">{p.email}</span>
+                            </a>
+                            {emailStatusHint(p.emailStatus) && (
+                              <span
+                                className={cn(
+                                  "text-[10px] font-medium uppercase tracking-wide",
+                                  p.emailStatus === "valid" &&
+                                    "text-emerald-600 dark:text-emerald-400",
+                                  p.emailStatus === "invalid" &&
+                                    "text-rose-600",
+                                  p.emailStatus === "catchall" &&
+                                    "text-amber-600 dark:text-amber-400",
+                                )}
+                              >
+                                {emailStatusHint(p.emailStatus)}
+                              </span>
+                            )}
+                          </div>
+                        ) : p ? (
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1 rounded-md border border-dashed px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground hover:border-foreground/30 hover:bg-muted hover:text-foreground disabled:opacity-50"
+                            disabled={
+                              emailBusyKey === `${r.id}:${p.id ?? p.name}` ||
+                              actionBusy
+                            }
+                            title="Find work email and verify"
+                            onClick={() =>
+                              void findEmailForPerson({
+                                rowId: r.id,
+                                personId: p.id,
+                                personName: p.name,
+                                busyKey: `${r.id}:${p.id ?? p.name}`,
+                              })
+                            }
                           >
-                            <Mail className="size-3 shrink-0 text-muted-foreground" />
-                            <span className="truncate">{p.email}</span>
-                          </a>
+                            {emailBusyKey === `${r.id}:${p.id ?? p.name}` ? (
+                              <Loader2 className="size-3 animate-spin" />
+                            ) : (
+                              <Mail className="size-3" />
+                            )}
+                            Find email
+                          </button>
                         ) : (
                           <span className="text-muted-foreground">—</span>
                         )}

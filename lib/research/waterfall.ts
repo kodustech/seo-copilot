@@ -17,7 +17,9 @@ import {
   getTable,
   listPeople,
   replacePeople,
+  savePeople,
 } from "@/lib/research/tables";
+import type { ResearchPerson } from "@/lib/research/types";
 
 export type WaterfallPerson = {
   name: string;
@@ -714,6 +716,223 @@ export async function enrichPeopleForRows(
     }
   }
   return { ok, failed, totalPeople };
+}
+
+/** Ranked email patterns for a name@domain (SaaS-ish). */
+function emailPatternsForName(name: string, domain: string): string[] {
+  const parts = name
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z\s-]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  if (parts.length === 0) return [];
+  const first = parts[0];
+  const last = parts[parts.length - 1];
+  const fi = first[0];
+  const li = last[0];
+  if (parts.length === 1 || first === last) return [`${first}@${domain}`];
+  return [
+    ...new Set([
+      `${first}.${last}@${domain}`,
+      `${first}@${domain}`,
+      `${fi}${last}@${domain}`,
+      `${first}${last}@${domain}`,
+      `${first}_${last}@${domain}`,
+      `${fi}.${last}@${domain}`,
+      `${first}.${li}@${domain}`,
+      `${last}@${domain}`,
+    ]),
+  ];
+}
+
+export type FillEmailResult = {
+  person: ResearchPerson;
+  found: boolean;
+  email: string | null;
+  emailStatus: string | null;
+  message: string;
+};
+
+/**
+ * Find + verify work email for one contact on a company row.
+ * Order: NinjaPear work-email → pattern guesses + NeverBounce → re-verify existing.
+ */
+export async function fillEmailForPerson(
+  client: SupabaseClient,
+  rowId: string,
+  opts: { personId?: string; personName?: string },
+): Promise<FillEmailResult> {
+  const row = await getRow(client, rowId);
+  if (!row) throw new Error("Row not found");
+  if (!row.domain?.trim()) {
+    throw new Error("Company has no domain — cannot guess email");
+  }
+  const domain = row.domain.replace(/^www\./, "").toLowerCase();
+
+  const people = await listPeople(client, rowId);
+  const target =
+    (opts.personId
+      ? people.find((p) => p.id === opts.personId)
+      : undefined) ??
+    (opts.personName
+      ? people.find(
+          (p) =>
+            p.name.trim().toLowerCase() ===
+            opts.personName!.trim().toLowerCase(),
+        )
+      : undefined);
+
+  if (!target) throw new Error("Person not found on this company");
+
+  let email = target.email?.trim() || null;
+  let emailStatus = target.emailStatus;
+  let emailSource = target.emailSource;
+  let notes = target.notes;
+  let providerUsed = target.providerUsed;
+  let confidence = target.confidence;
+  let foundNew = false;
+
+  // 1) Provider work-email if missing
+  if (!email && ninjapearEnabled()) {
+    const filled = await tryWorkEmail(
+      {
+        name: target.name,
+        role: target.role,
+        linkedin: target.linkedin,
+        email: null,
+        emailStatus: null,
+        emailSource: null,
+        providerUsed: target.providerUsed,
+        confidence: target.confidence,
+        notes: target.notes,
+      },
+      domain,
+    );
+    if (filled.email) {
+      email = filled.email;
+      emailSource = filled.emailSource;
+      notes = filled.notes;
+      providerUsed = filled.providerUsed;
+      confidence = filled.confidence;
+      foundNew = true;
+    }
+  }
+
+  // 2) Pattern + verify until valid / catchall
+  if (!email) {
+    const patterns = emailPatternsForName(target.name, domain).slice(0, 8);
+    if (patterns.length === 0) {
+      throw new Error("Could not build email patterns from name");
+    }
+    const verified = await verifyEmails(patterns);
+    const pick =
+      verified.find((v) => v.status === "valid") ??
+      verified.find((v) => v.status === "catchall") ??
+      verified.find((v) => v.status === "unknown" && !v.error) ??
+      null;
+    if (pick && (pick.status === "valid" || pick.status === "catchall" || pick.status === "unknown")) {
+      email = pick.email;
+      emailStatus = pick.status;
+      emailSource = "pattern";
+      notes = appendNote(notes, `email_pattern:${pick.status}`);
+      providerUsed = `${providerUsed ?? "pattern"}+neverbounce`;
+      confidence =
+        pick.status === "valid" ? 0.95 : pick.status === "catchall" ? 0.6 : 0.4;
+      foundNew = true;
+    } else {
+      await savePeople(
+        client,
+        rowId,
+        [
+          {
+            name: target.name,
+            role: target.role,
+            linkedin: target.linkedin,
+            email: null,
+            emailStatus: null,
+            emailSource: null,
+            providerUsed: target.providerUsed,
+            confidence: target.confidence,
+            notes: appendNote(target.notes, "email_lookup:no_valid_pattern"),
+          },
+        ],
+        { mode: "merge", reason: "fill_email_miss" },
+      );
+      const after = await listPeople(client, rowId);
+      const person =
+        after.find((p) => p.name === target.name) ??
+        after.find(
+          (p) =>
+            p.name.trim().toLowerCase() === target.name.trim().toLowerCase(),
+        ) ??
+        target;
+      return {
+        person,
+        found: false,
+        email: null,
+        emailStatus: null,
+        message: "No valid email found (provider + patterns)",
+      };
+    }
+  }
+
+  // 3) Verify (or re-verify) with NeverBounce
+  if (email && (!emailStatus || foundNew || emailStatus === "unknown")) {
+    const [v] = await verifyEmails([email]);
+    if (v) {
+      emailStatus = v.status;
+      providerUsed = `${providerUsed ?? "unknown"}+neverbounce`;
+      if (v.status === "valid") confidence = Math.max(confidence ?? 0, 0.95);
+      else if (v.status === "catchall")
+        confidence = Math.max(confidence ?? 0, 0.6);
+      else if (v.status === "invalid") confidence = 0.1;
+      notes = appendNote(notes, `verify:${v.status}`);
+      if (v.status === "invalid" && foundNew) {
+        // Pattern said something but NB invalid — keep email with status so user sees it
+        notes = appendNote(notes, "nb_invalid");
+      }
+    }
+  }
+
+  await savePeople(
+    client,
+    rowId,
+    [
+      {
+        name: target.name,
+        role: target.role,
+        linkedin: target.linkedin,
+        email,
+        emailStatus,
+        emailSource,
+        providerUsed,
+        confidence,
+        notes,
+      },
+    ],
+    { mode: "merge", reason: "fill_email" },
+  );
+
+  const after = await listPeople(client, rowId);
+  const person =
+    after.find(
+      (p) =>
+        (email && p.email?.toLowerCase() === email.toLowerCase()) ||
+        p.name.trim().toLowerCase() === target.name.trim().toLowerCase(),
+    ) ?? after[0] ??
+    target;
+
+  return {
+    person,
+    found: Boolean(email),
+    email: person.email,
+    emailStatus: person.emailStatus,
+    message: email
+      ? `Email ${email}${emailStatus ? ` (${emailStatus})` : ""}`
+      : "No email found",
+  };
 }
 
 export async function getPeople(

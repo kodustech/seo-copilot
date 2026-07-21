@@ -10,7 +10,10 @@ import {
   getRow,
   listPeople,
 } from "@/lib/research/tables";
-import { enrichPeopleForRow } from "@/lib/research/waterfall";
+import {
+  enrichPeopleForRow,
+  fillEmailForPerson,
+} from "@/lib/research/waterfall";
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 
 export async function POST(
@@ -167,11 +170,39 @@ export async function POST(
           count: people.length,
         });
       }
+      case "find_email": {
+        // Find + NeverBounce-verify email for one person (or re-verify if present)
+        const personId =
+          typeof body.personId === "string"
+            ? body.personId
+            : typeof body.person_id === "string"
+              ? body.person_id
+              : undefined;
+        const personName =
+          typeof body.personName === "string"
+            ? body.personName
+            : typeof body.person_name === "string"
+              ? body.person_name
+              : typeof body.name === "string"
+                ? body.name
+                : undefined;
+        if (!personId && !personName) {
+          return NextResponse.json(
+            { error: "personId or personName required" },
+            { status: 400 },
+          );
+        }
+        const result = await fillEmailForPerson(client, id, {
+          personId,
+          personName,
+        });
+        return NextResponse.json({ ok: true, ...result });
+      }
       default:
         return NextResponse.json(
           {
             error:
-              "action must be crm | outreach | people | upsert_people | ai_column | qualify | people_history | people_restore",
+              "action must be crm | outreach | people | upsert_people | ai_column | qualify | people_history | people_restore | find_email",
           },
           { status: 400 },
         );
