@@ -4251,7 +4251,7 @@ export const researchSetCell = tool({
 
 export const researchUpsertPeople = tool({
   description:
-    "Manually set/replace contacts on a research row (company). Use when the user found the right person by hand (name, role, email, linkedin). Replaces existing people on that row. Optionally syncs contact_linkedin cell. After this, call researchRunColumn for missing LinkedIn if needed.",
+    "Add or update contacts on a research row (company). DEFAULT is merge: never deletes existing people — fills email/linkedin/role gaps and adds new names. Only pass replace_existing=true for a deliberate full wipe (a snapshot is still saved first). Prefer merge when finding emails. Optionally syncs contact_linkedin cell.",
   inputSchema: z.object({
     row_id: z.string().describe("research_rows id"),
     people: z
@@ -4264,16 +4264,30 @@ export const researchUpsertPeople = tool({
         }),
       )
       .optional()
-      .describe("Full list of contacts (replaces existing)"),
+      .describe("Contacts to merge in (default) or full list if replace_existing"),
     name: z.string().optional().describe("Shortcut: single primary contact name"),
     role: z.string().optional(),
     email: z.string().optional(),
     linkedin: z.string().optional(),
+    replace_existing: z
+      .boolean()
+      .optional()
+      .describe(
+        "DANGEROUS: if true, replaces entire people list (snapshot kept). Default false = merge only.",
+      ),
   }),
-  execute: async ({ row_id, people, name, role, email, linkedin }) => {
+  execute: async ({
+    row_id,
+    people,
+    name,
+    role,
+    email,
+    linkedin,
+    replace_existing,
+  }) => {
     try {
       const client = getSupabaseServiceClient();
-      const { replacePeople, listPeople, getRow } = await import(
+      const { savePeople, listPeople, getRow } = await import(
         "@/lib/research/tables"
       );
       const { setCell } = await import("@/lib/research/columns");
@@ -4312,10 +4326,14 @@ export const researchUpsertPeople = tool({
         }))
         .filter((p) => p.name.length > 0);
 
-      await replacePeople(client, row_id, cleaned);
+      const before = await listPeople(client, row_id);
+      const saved = await savePeople(client, row_id, cleaned, {
+        mode: replace_existing === true ? "replace" : "merge",
+        reason:
+          replace_existing === true ? "agent_replace" : "agent_merge",
+      });
 
-      const top =
-        cleaned.find((p) => p.linkedin) ?? cleaned[0];
+      const top = saved.find((p) => p.linkedin) ?? saved[0];
       if (top?.linkedin) {
         try {
           await setCell(client, row_id, "contact_linkedin", top.linkedin, {
@@ -4327,26 +4345,105 @@ export const researchUpsertPeople = tool({
         }
       }
 
-      const saved = await listPeople(client, row_id);
       return {
         success: true as const,
+        mode: replace_existing === true ? "replace" : "merge",
         company: row.companyName,
         domain: row.domain,
+        before_count: before.length,
+        after_count: saved.length,
         people: saved.map((p) => ({
           name: p.name,
           role: p.role,
           email: p.email,
           linkedin: p.linkedin,
         })),
-        note: top?.linkedin
-          ? "Contact saved with LinkedIn."
-          : "Contact saved. Run researchRunColumn key=contact_linkedin if you want MCP to find LinkedIn next.",
+        note:
+          replace_existing === true
+            ? "Full replace done (prior list snapshotted). Prefer merge next time."
+            : `Merged ${cleaned.length} contact(s) into ${before.length} existing → ${saved.length} total. Nobody was deleted.`,
       };
     } catch (error) {
       return {
         success: false as const,
         message:
           error instanceof Error ? error.message : "Upsert people failed",
+      };
+    }
+  },
+});
+
+export const researchPeopleHistory = tool({
+  description:
+    "List people snapshots for a research company row (history before enrich/upsert). Use before restore if contacts were lost.",
+  inputSchema: z.object({
+    row_id: z.string(),
+    limit: z.number().optional(),
+  }),
+  execute: async ({ row_id, limit }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { listPeopleSnapshots, listPeople } = await import(
+        "@/lib/research/tables"
+      );
+      const [current, snapshots] = await Promise.all([
+        listPeople(client, row_id),
+        listPeopleSnapshots(client, row_id, limit ?? 20),
+      ]);
+      return {
+        success: true as const,
+        current_count: current.length,
+        current: current.map((p) => ({
+          name: p.name,
+          email: p.email,
+          linkedin: p.linkedin,
+        })),
+        snapshots: snapshots.map((s) => ({
+          id: s.id,
+          reason: s.reason,
+          person_count: s.personCount,
+          created_at: s.createdAt,
+          people_preview: s.people.slice(0, 8).map((p) => p.name),
+        })),
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "History failed",
+      };
+    }
+  },
+});
+
+export const researchRestorePeople = tool({
+  description:
+    "Restore a research row's people list from a snapshot id (from researchPeopleHistory). Default mode=replace restores exactly that snapshot (prior list is snapshotted first).",
+  inputSchema: z.object({
+    row_id: z.string(),
+    snapshot_id: z.string(),
+    mode: z.enum(["merge", "replace"]).optional(),
+  }),
+  execute: async ({ row_id, snapshot_id, mode }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { restorePeopleSnapshot } = await import("@/lib/research/tables");
+      const saved = await restorePeopleSnapshot(client, row_id, snapshot_id, {
+        mode: mode ?? "replace",
+      });
+      return {
+        success: true as const,
+        count: saved.length,
+        people: saved.map((p) => ({
+          name: p.name,
+          email: p.email,
+          linkedin: p.linkedin,
+          role: p.role,
+        })),
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Restore failed",
       };
     }
   },
@@ -5011,6 +5108,8 @@ export function createAgentTools(userEmail?: string) {
     researchRunColumn,
     researchSetCell,
     researchUpsertPeople,
+    researchPeopleHistory,
+    researchRestorePeople,
     sequenceList,
     sequenceGet,
     sequenceCreate,

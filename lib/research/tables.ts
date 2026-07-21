@@ -574,36 +574,293 @@ export async function getLatestRun(
   };
 }
 
+export type PersonWriteInput = {
+  name: string;
+  role?: string | null;
+  linkedin?: string | null;
+  email?: string | null;
+  emailStatus?: string | null;
+  emailSource?: string | null;
+  providerUsed?: string | null;
+  confidence?: number | null;
+  notes?: string | null;
+};
+
+export type SavePeopleMode = "merge" | "replace";
+
+function normalizePersonKey(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function personMatchKey(p: {
+  name: string;
+  email?: string | null;
+  linkedin?: string | null;
+}): string {
+  const email = p.email?.trim().toLowerCase();
+  if (email) return `e:${email}`;
+  const li = p.linkedin?.trim().toLowerCase().replace(/\/$/, "");
+  if (li) {
+    const m = li.match(/linkedin\.com\/in\/([^/?#]+)/i);
+    if (m) return `li:${m[1].toLowerCase()}`;
+    return `li:${li}`;
+  }
+  return `n:${normalizePersonKey(p.name)}`;
+}
+
+function pickBetter(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): string | null {
+  const av = a?.trim() || null;
+  const bv = b?.trim() || null;
+  if (!av) return bv;
+  if (!bv) return av;
+  // Prefer longer / more complete
+  return bv.length > av.length ? bv : av;
+}
+
+/**
+ * Merge existing people with incoming. Never drops an existing contact.
+ * Matches by email → LinkedIn slug → normalized name.
+ * Incoming fills null/empty fields and can upgrade role/notes.
+ */
+export function mergePersonLists(
+  existing: PersonWriteInput[],
+  incoming: PersonWriteInput[],
+): PersonWriteInput[] {
+  const byKey = new Map<string, PersonWriteInput>();
+
+  for (const p of existing) {
+    if (!p.name?.trim()) continue;
+    byKey.set(personMatchKey(p), { ...p, name: p.name.trim() });
+  }
+
+  for (const raw of incoming) {
+    if (!raw.name?.trim()) continue;
+    const p: PersonWriteInput = { ...raw, name: raw.name.trim() };
+    const key = personMatchKey(p);
+    const prev = byKey.get(key);
+    if (!prev) {
+      byKey.set(key, p);
+      continue;
+    }
+    byKey.set(key, {
+      name: prev.name.length >= p.name.length ? prev.name : p.name,
+      role: pickBetter(prev.role, p.role),
+      linkedin: pickBetter(prev.linkedin, p.linkedin),
+      email: pickBetter(prev.email, p.email),
+      emailStatus: pickBetter(prev.emailStatus, p.emailStatus),
+      emailSource: pickBetter(prev.emailSource, p.emailSource),
+      providerUsed: pickBetter(prev.providerUsed, p.providerUsed),
+      confidence: (() => {
+        const m = Math.max(prev.confidence ?? 0, p.confidence ?? 0);
+        if (m > 0) return m;
+        return prev.confidence ?? p.confidence ?? null;
+      })(),
+      notes: pickBetter(prev.notes, p.notes),
+    });
+  }
+
+  return [...byKey.values()];
+}
+
+function peopleToJson(people: PersonWriteInput[]) {
+  return people.map((p) => ({
+    name: p.name,
+    role: p.role ?? null,
+    linkedin: p.linkedin ?? null,
+    email: p.email ?? null,
+    emailStatus: p.emailStatus ?? null,
+    emailSource: p.emailSource ?? null,
+    providerUsed: p.providerUsed ?? null,
+    confidence: p.confidence ?? null,
+    notes: p.notes ?? null,
+  }));
+}
+
+/** Snapshot current people for a row (append-only history). Soft-fail if table missing. */
+export async function snapshotPeople(
+  client: SupabaseClient,
+  rowId: string,
+  opts: { reason?: string; createdBy?: string | null } = {},
+): Promise<string | null> {
+  const current = await listPeople(client, rowId);
+  if (current.length === 0) return null;
+  const payload = peopleToJson(current);
+  const { data, error } = await client
+    .from("research_people_snapshots")
+    .insert({
+      row_id: rowId,
+      reason: opts.reason ?? "save",
+      people: payload,
+      person_count: payload.length,
+      created_by: opts.createdBy ?? null,
+    })
+    .select("id")
+    .maybeSingle();
+  if (error) {
+    // Table may not be migrated yet — don't block the write path
+    console.warn("[research] snapshotPeople failed:", error.message);
+    return null;
+  }
+  return (data?.id as string | undefined) ?? null;
+}
+
+export async function listPeopleSnapshots(
+  client: SupabaseClient,
+  rowId: string,
+  limit = 20,
+): Promise<
+  Array<{
+    id: string;
+    reason: string;
+    personCount: number;
+    people: PersonWriteInput[];
+    createdBy: string | null;
+    createdAt: string;
+  }>
+> {
+  const { data, error } = await client
+    .from("research_people_snapshots")
+    .select("*")
+    .eq("row_id", rowId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(`Failed to list people snapshots: ${error.message}`);
+  return (data ?? []).map((r) => ({
+    id: r.id as string,
+    reason: (r.reason as string) ?? "save",
+    personCount: Number(r.person_count ?? 0),
+    people: (r.people as PersonWriteInput[]) ?? [],
+    createdBy: (r.created_by as string | null) ?? null,
+    createdAt: r.created_at as string,
+  }));
+}
+
+/**
+ * Restore people from a snapshot (merge by default so restore is additive-safe).
+ */
+export async function restorePeopleSnapshot(
+  client: SupabaseClient,
+  rowId: string,
+  snapshotId: string,
+  opts: { mode?: SavePeopleMode; createdBy?: string | null } = {},
+): Promise<ResearchPerson[]> {
+  const { data, error } = await client
+    .from("research_people_snapshots")
+    .select("*")
+    .eq("id", snapshotId)
+    .eq("row_id", rowId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) throw new Error("Snapshot not found");
+  const people = (data.people as PersonWriteInput[]) ?? [];
+  return savePeople(client, rowId, people, {
+    mode: opts.mode ?? "replace",
+    reason: `restore:${snapshotId}`,
+    createdBy: opts.createdBy,
+  });
+}
+
+/**
+ * Safe people write:
+ * - Always snapshots existing people first (when any exist)
+ * - mode "merge" (default): never drops existing contacts; fills gaps
+ * - mode "replace": full replace (still snapshotted first)
+ */
+export async function savePeople(
+  client: SupabaseClient,
+  rowId: string,
+  people: PersonWriteInput[],
+  opts: {
+    mode?: SavePeopleMode;
+    reason?: string;
+    createdBy?: string | null;
+  } = {},
+): Promise<ResearchPerson[]> {
+  const mode: SavePeopleMode = opts.mode ?? "merge";
+  const existing = await listPeople(client, rowId);
+
+  if (existing.length > 0) {
+    await snapshotPeople(client, rowId, {
+      reason: opts.reason ?? mode,
+      createdBy: opts.createdBy,
+    });
+  }
+
+  const cleaned = people
+    .map((p) => ({
+      ...p,
+      name: p.name.trim(),
+    }))
+    .filter((p) => p.name.length > 0);
+
+  const next: PersonWriteInput[] =
+    mode === "replace"
+      ? cleaned
+      : mergePersonLists(
+          existing.map((p) => ({
+            name: p.name,
+            role: p.role,
+            linkedin: p.linkedin,
+            email: p.email,
+            emailStatus: p.emailStatus,
+            emailSource: p.emailSource,
+            providerUsed: p.providerUsed,
+            confidence: p.confidence,
+            notes: p.notes,
+          })),
+          cleaned,
+        );
+
+  // Hard replace of the table rows with the merged set (IDs rotate — OK)
+  await client.from("research_people").delete().eq("row_id", rowId);
+  if (next.length > 0) {
+    const { error } = await client.from("research_people").insert(
+      next.map((p) => ({
+        row_id: rowId,
+        name: p.name,
+        role: p.role ?? null,
+        linkedin: p.linkedin ?? null,
+        email: p.email ?? null,
+        email_status: p.emailStatus ?? null,
+        email_source: p.emailSource ?? null,
+        provider_used: p.providerUsed ?? null,
+        confidence: p.confidence ?? null,
+        notes: p.notes ?? null,
+      })),
+    );
+    if (error) throw new Error(`Failed to save people: ${error.message}`);
+  }
+
+  return listPeople(client, rowId);
+}
+
+/**
+ * @deprecated Use savePeople({ mode: "merge" }). Kept for callers — now MERGES
+ * by default so enrich/agent cannot silently wipe contacts. Pass mode:"replace"
+ * only when an explicit full replace is intended (and a snapshot is still taken).
+ */
 export async function replacePeople(
   client: SupabaseClient,
   rowId: string,
-  people: Array<{
-    name: string;
-    role?: string | null;
-    linkedin?: string | null;
-    email?: string | null;
-    emailStatus?: string | null;
-    emailSource?: string | null;
-    providerUsed?: string | null;
-    confidence?: number | null;
-    notes?: string | null;
-  }>,
+  people: PersonWriteInput[],
+  opts: {
+    mode?: SavePeopleMode;
+    reason?: string;
+    createdBy?: string | null;
+  } = {},
 ): Promise<void> {
-  await client.from("research_people").delete().eq("row_id", rowId);
-  if (people.length === 0) return;
-  const { error } = await client.from("research_people").insert(
-    people.map((p) => ({
-      row_id: rowId,
-      name: p.name,
-      role: p.role ?? null,
-      linkedin: p.linkedin ?? null,
-      email: p.email ?? null,
-      email_status: p.emailStatus ?? null,
-      email_source: p.emailSource ?? null,
-      provider_used: p.providerUsed ?? null,
-      confidence: p.confidence ?? null,
-      notes: p.notes ?? null,
-    })),
-  );
-  if (error) throw new Error(`Failed to save people: ${error.message}`);
+  await savePeople(client, rowId, people, {
+    mode: opts.mode ?? "merge",
+    reason: opts.reason ?? "replacePeople",
+    createdBy: opts.createdBy,
+  });
 }

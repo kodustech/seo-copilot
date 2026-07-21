@@ -9,7 +9,6 @@ import { setCell } from "@/lib/research/columns";
 import {
   getRow,
   listPeople,
-  replacePeople,
 } from "@/lib/research/tables";
 import { enrichPeopleForRow } from "@/lib/research/waterfall";
 import { getSupabaseUserClient } from "@/lib/supabase-server";
@@ -44,9 +43,8 @@ export async function POST(
         return NextResponse.json({ people });
       }
       case "upsert_people": {
-        // Manual edit: replace people list for this company row.
-        // Body: { people: [{ name, role?, email?, linkedin? }, ...] }
-        // or single primary contact: { name, role?, email?, linkedin? }
+        // Manual edit: MERGE by default (never silent wipe). Pass replace:true for full replace.
+        // Body: { people: [{ name, role?, email?, linkedin? }, ...], replace?: boolean }
         const row = await getRow(client, id);
         if (!row) {
           return NextResponse.json({ error: "Row not found" }, { status: 404 });
@@ -92,7 +90,12 @@ export async function POST(
             { status: 400 },
           );
         }
-        await replacePeople(client, id, cleaned);
+        const { savePeople } = await import("@/lib/research/tables");
+        await savePeople(client, id, cleaned, {
+          mode: body.replace === true ? "replace" : "merge",
+          reason: body.replace === true ? "api_replace" : "api_merge",
+          createdBy: userEmail,
+        });
         // Keep contact_linkedin cell in sync if that column exists
         const top = cleaned.find((p: { linkedin: string | null }) => p.linkedin) ?? cleaned[0];
         if (top.linkedin) {
