@@ -311,7 +311,112 @@ export async function updateSequence(
     .select("*")
     .single();
   if (error) throw new Error(error.message);
-  return mapSequence(data as Record<string, unknown>);
+  const sequence = mapSequence(data as Record<string, unknown>);
+
+  // Status is intentional — never auto-activate on enroll. Side effects hold/release queue.
+  if (patch.status != null) {
+    await applySequenceStatusSideEffects(client, id, patch.status);
+  }
+  return sequence;
+}
+
+async function getSequenceStatus(
+  client: SupabaseClient,
+  sequenceId: string,
+): Promise<SequenceStatus | null> {
+  const { data } = await client
+    .from("outreach_sequences")
+    .select("status")
+    .eq("id", sequenceId)
+    .maybeSingle();
+  return (data?.status as SequenceStatus | undefined) ?? null;
+}
+
+/**
+ * Hold or release tasks when the sequence status changes.
+ * - not active → demote ready tasks back to scheduled (hidden from human queue)
+ * - active → promote due scheduled tasks (LI / email semi) to ready
+ */
+async function applySequenceStatusSideEffects(
+  client: SupabaseClient,
+  sequenceId: string,
+  status: SequenceStatus,
+): Promise<void> {
+  const { data: enrs } = await client
+    .from("outreach_enrollments")
+    .select("id")
+    .eq("sequence_id", sequenceId);
+  const enrollmentIds = (enrs ?? []).map((e) => e.id as string);
+  if (enrollmentIds.length === 0) return;
+
+  const now = new Date().toISOString();
+
+  if (status !== "active") {
+    // Pull work off the human queue until sequence is active again
+    await client
+      .from("outreach_send_tasks")
+      .update({ status: "scheduled", updated_at: now })
+      .in("enrollment_id", enrollmentIds)
+      .eq("status", "ready");
+    return;
+  }
+
+  // Activate: release due LinkedIn (and manual email) to the queue.
+  // Auto email stays "scheduled" so processDueSequenceTasks can send it.
+  await client
+    .from("outreach_send_tasks")
+    .update({ status: "ready", updated_at: now })
+    .in("enrollment_id", enrollmentIds)
+    .eq("status", "scheduled")
+    .eq("channel", "linkedin")
+    .lte("scheduled_for", now);
+
+  await client
+    .from("outreach_send_tasks")
+    .update({ status: "ready", updated_at: now })
+    .in("enrollment_id", enrollmentIds)
+    .eq("status", "scheduled")
+    .eq("channel", "email")
+    .eq("mode", "semi")
+    .lte("scheduled_for", now);
+}
+
+/**
+ * Hard-delete a sequence. Cascades to steps, enrollments, and send_tasks
+ * (FK ON DELETE CASCADE). Returns counts for UI/agent confirmation messaging.
+ */
+export async function deleteSequence(
+  client: SupabaseClient,
+  id: string,
+): Promise<{
+  ok: true;
+  id: string;
+  name: string;
+  deletedEnrollments: number;
+  deletedSteps: number;
+}> {
+  const existing = await getSequence(client, id);
+  if (!existing) throw new Error("Sequence not found");
+
+  const { count: enrollmentCount } = await client
+    .from("outreach_enrollments")
+    .select("id", { count: "exact", head: true })
+    .eq("sequence_id", id);
+  const stepCount = existing.steps.length;
+
+  const { error } = await client
+    .from("outreach_sequences")
+    .delete()
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+
+  return {
+    ok: true,
+    id,
+    name: existing.sequence.name,
+    deletedEnrollments: enrollmentCount ?? 0,
+    deletedSteps: stepCount,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -397,7 +502,12 @@ async function insertEnrollment(
   }
 
   const enrollment = mapEnrollment(enr as Record<string, unknown>);
-  const task = await createTaskForStep(client, enrollment, firstStep, new Date());
+  const task = await createTaskForStep(
+    client,
+    enrollment,
+    firstStep,
+    new Date(),
+  );
   return { enrollment, task, warning };
 }
 
@@ -413,9 +523,17 @@ async function createTaskForStep(
     : null;
 
   const due = when;
+  // Only active sequences put work on the human queue / auto-send path.
+  // Draft/paused/archived keep tasks scheduled until you activate.
+  const seqStatus = await getSequenceStatus(client, enrollment.sequenceId);
+  const sequenceLive = seqStatus === "active";
   let status: OutreachSendTask["status"] = "scheduled";
-  // If already due, LI semi goes straight to the human queue.
-  if (step.channel === "linkedin" && step.mode === "semi" && due.getTime() <= Date.now() + 1000) {
+  if (
+    sequenceLive &&
+    step.channel === "linkedin" &&
+    step.mode === "semi" &&
+    due.getTime() <= Date.now() + 1000
+  ) {
     status = "ready";
   }
 
@@ -464,6 +582,7 @@ export async function enrollFromResearch(
   warnings: string[];
   missingLinkedin: number;
   missingEmail: number;
+  sequenceStatus: SequenceStatus;
 }> {
   const seq = await getSequence(client, input.sequenceId);
   if (!seq) throw new Error("Sequence not found");
@@ -552,9 +671,11 @@ export async function enrollFromResearch(
     }
   }
 
-  // activate sequence if still draft
-  if (seq.sequence.status === "draft" && enrolled > 0) {
-    await updateSequence(client, input.sequenceId, { status: "active" });
+  // Do NOT auto-activate — user must set status to active intentionally.
+  if (seq.sequence.status !== "active" && enrolled > 0) {
+    warnings.push(
+      `Sequence is "${seq.sequence.status}" — people enrolled but tasks stay held until you set status to active.`,
+    );
   }
 
   return {
@@ -564,6 +685,7 @@ export async function enrollFromResearch(
     warnings: warnings.slice(0, 30),
     missingLinkedin,
     missingEmail,
+    sequenceStatus: seq.sequence.status,
   };
 }
 
@@ -574,7 +696,12 @@ export async function enrollFromProspects(
     prospectIds: string[];
     enrolledByEmail?: string | null;
   },
-): Promise<{ enrolled: number; skipped: number; errors: string[] }> {
+): Promise<{
+  enrolled: number;
+  skipped: number;
+  errors: string[];
+  sequenceStatus: SequenceStatus;
+}> {
   const seq = await getSequence(client, input.sequenceId);
   if (!seq) throw new Error("Sequence not found");
   if (seq.steps.length === 0) throw new Error("Sequence has no steps");
@@ -621,11 +748,12 @@ export async function enrollFromProspects(
     }
   }
 
-  if (seq.sequence.status === "draft" && enrolled > 0) {
-    await updateSequence(client, input.sequenceId, { status: "active" });
-  }
-
-  return { enrolled, skipped, errors: errors.slice(0, 20) };
+  return {
+    enrolled,
+    skipped,
+    errors: errors.slice(0, 20),
+    sequenceStatus: seq.sequence.status,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -650,6 +778,8 @@ export async function listReadyQueue(
   const tasks = (data ?? []).map((r) => mapTask(r as Record<string, unknown>));
 
   const seqNameCache = new Map<string, string>();
+  const seqStatusCache = new Map<string, SequenceStatus | null>();
+  const live: OutreachSendTask[] = [];
 
   for (const t of tasks) {
     const { data: enr } = await client
@@ -669,17 +799,29 @@ export async function listReadyQueue(
         if (!seqNameCache.has(seqId)) {
           const { data: seq } = await client
             .from("outreach_sequences")
-            .select("name")
+            .select("name, status")
             .eq("id", seqId)
             .maybeSingle();
           seqNameCache.set(seqId, (seq?.name as string) ?? "Sequence");
+          seqStatusCache.set(
+            seqId,
+            (seq?.status as SequenceStatus | undefined) ?? null,
+          );
+        }
+        if (!seqStatusCache.has(seqId)) {
+          seqStatusCache.set(seqId, await getSequenceStatus(client, seqId));
+        }
+        // Hide tasks from draft/paused/archived sequences
+        if (seqStatusCache.get(seqId) !== "active") {
+          continue;
         }
         t.sequenceName = seqNameCache.get(seqId) ?? null;
       }
     }
     if (step) t.step = mapStep(step as Record<string, unknown>);
+    live.push(t);
   }
-  return tasks;
+  return live;
 }
 
 /** Counts for the daily activity board. */
@@ -874,6 +1016,24 @@ export async function processDueSequenceTasks(
 
   for (const raw of data ?? []) {
     const task = mapTask(raw as Record<string, unknown>);
+
+    // Respect sequence status: only active sequences run / hit the queue
+    const { data: enrRaw } = await client
+      .from("outreach_enrollments")
+      .select("sequence_id, status")
+      .eq("id", task.enrollmentId)
+      .maybeSingle();
+    if (!enrRaw) continue;
+    if ((enrRaw.status as string) !== "active") continue;
+    const seqStatus = await getSequenceStatus(
+      client,
+      enrRaw.sequence_id as string,
+    );
+    if (seqStatus !== "active") {
+      // leave scheduled — will resume when sequence is activated
+      continue;
+    }
+
     if (task.channel === "linkedin") {
       await client
         .from("outreach_send_tasks")

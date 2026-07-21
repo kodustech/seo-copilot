@@ -289,6 +289,9 @@ export function SequencesPage() {
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
 
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
   const [enrollOpen, setEnrollOpen] = useState(false);
   const [enrollSeqId, setEnrollSeqId] = useState("");
   const [enrollTableId, setEnrollTableId] = useState("");
@@ -507,6 +510,72 @@ export function SequencesPage() {
     }
   };
 
+  const deleteSequence = async () => {
+    if (!token || !editingId) return;
+    setDeleting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/outreach/sequences/${editingId}`, {
+        method: "DELETE",
+        headers: headers(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(
+          (data as { error?: string }).error ?? "Failed to delete sequence",
+        );
+        setDeleteOpen(false);
+        return;
+      }
+      setDeleteOpen(false);
+      setEditingId(null);
+      setView("list");
+      setNotice(
+        `Deleted “${(data as { name?: string }).name ?? "sequence"}”` +
+          ((data as { deletedEnrollments?: number }).deletedEnrollments
+            ? ` · ${(data as { deletedEnrollments: number }).deletedEnrollments} people removed`
+            : ""),
+      );
+      await load();
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  /** Status is intentional — applies immediately (does not wait for Save). */
+  const changeStatus = async (status: string) => {
+    if (!token || !editingId) return;
+    const prev = editStatus;
+    setEditStatus(status);
+    setError(null);
+    setNotice(null);
+    setBusyId("status");
+    try {
+      const res = await fetch(`/api/outreach/sequences/${editingId}`, {
+        method: "PATCH",
+        headers: headers(),
+        body: JSON.stringify({ status }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setEditStatus(prev);
+        setError((data as { error?: string }).error ?? "Failed to update status");
+        return;
+      }
+      const labels: Record<string, string> = {
+        draft: "Draft — not running. Activate when ready.",
+        active: "Active — queue and auto-email will run.",
+        paused: "Paused — tasks held until you activate again.",
+        archived: "Archived — hidden from normal use.",
+      };
+      setNotice(labels[status] ?? `Status → ${status}`);
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const updateStep = (key: string, patch: Partial<StepDraft>) => {
     setEditSteps((prev) =>
       prev.map((s) => {
@@ -552,6 +621,7 @@ export function SequencesPage() {
         return;
       }
       setEnrollOpen(false);
+      const seqStatus = String(data.sequenceStatus ?? editStatus ?? "draft");
       const parts = [
         `Enrolled ${data.enrolled}`,
         data.skipped ? `skipped ${data.skipped}` : null,
@@ -559,6 +629,9 @@ export function SequencesPage() {
           ? `${data.missingLinkedin} without LinkedIn`
           : null,
         data.missingEmail ? `${data.missingEmail} without email` : null,
+        seqStatus !== "active"
+          ? `sequence is ${seqStatus} — Activate to start outreach`
+          : null,
       ].filter(Boolean);
       setNotice(
         `${parts.join(" · ")}. Check People for warnings.`,
@@ -705,8 +778,12 @@ export function SequencesPage() {
                 placeholder="Sequence name"
               />
             </div>
-            <div className="flex items-center gap-2">
-              <Select value={editStatus} onValueChange={setEditStatus}>
+            <div className="flex flex-wrap items-center gap-2">
+              <Select
+                value={editStatus}
+                onValueChange={(v) => void changeStatus(v)}
+                disabled={busyId === "status"}
+              >
                 <SelectTrigger className="h-8 w-[120px] text-xs">
                   <SelectValue />
                 </SelectTrigger>
@@ -717,6 +794,28 @@ export function SequencesPage() {
                   <SelectItem value="archived">Archived</SelectItem>
                 </SelectContent>
               </Select>
+              {editStatus !== "active" && editStatus !== "archived" && (
+                <Button
+                  size="sm"
+                  disabled={busyId === "status"}
+                  onClick={() => void changeStatus("active")}
+                >
+                  {busyId === "status" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : null}
+                  Activate
+                </Button>
+              )}
+              {editStatus === "active" && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busyId === "status"}
+                  onClick={() => void changeStatus("paused")}
+                >
+                  Pause
+                </Button>
+              )}
               <Button
                 size="sm"
                 variant="outline"
@@ -738,8 +837,43 @@ export function SequencesPage() {
                   Save
                 </Button>
               )}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-muted-foreground hover:text-destructive"
+                onClick={() => setDeleteOpen(true)}
+                title="Delete sequence"
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
             </div>
           </div>
+
+          {editStatus !== "active" && (
+            <div className="mx-auto mt-3 max-w-6xl rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-pretty text-muted-foreground">
+              {editStatus === "draft" && (
+                <>
+                  <span className="font-medium text-foreground">Draft</span> —
+                  you can enroll people and edit steps, but nothing runs until
+                  you hit <span className="font-medium text-foreground">Activate</span>.
+                </>
+              )}
+              {editStatus === "paused" && (
+                <>
+                  <span className="font-medium text-foreground">Paused</span> —
+                  people stay enrolled; queue work and auto-email are held.
+                  Activate to resume.
+                </>
+              )}
+              {editStatus === "archived" && (
+                <>
+                  <span className="font-medium text-foreground">Archived</span> —
+                  this sequence is inactive. Set Active to run it again, or
+                  delete it.
+                </>
+              )}
+            </div>
+          )}
 
           {/* Steps | People tabs */}
           <div className="mx-auto mt-3 flex max-w-6xl gap-1 border-b border-border">
@@ -1569,6 +1703,46 @@ export function SequencesPage() {
           onEnroll={() => void enroll()}
           hideSequencePick
         />
+
+        <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Delete sequence?</DialogTitle>
+              <DialogDescription>
+                This permanently removes{" "}
+                <span className="font-medium text-foreground">
+                  {editName || "this sequence"}
+                </span>
+                , all steps, {enrollmentCount} enrolled{" "}
+                {enrollmentCount === 1 ? "person" : "people"}, and their queue
+                tasks. This cannot be undone. Prefer{" "}
+                <span className="font-medium text-foreground">Archived</span>{" "}
+                status if you only want to hide it.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                disabled={deleting}
+                onClick={() => setDeleteOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={deleting}
+                onClick={() => void deleteSequence()}
+              >
+                {deleting ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="size-3.5" />
+                )}
+                Delete forever
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     );
   }

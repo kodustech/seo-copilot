@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import {
+  deleteSequence,
   getSequence,
   listEnrollments,
   replaceSteps,
@@ -64,5 +65,20 @@ export async function PATCH(req: Request, ctx: Ctx) {
       { error: err instanceof Error ? err.message : "Failed" },
       { status: 400 },
     );
+  }
+}
+
+export async function DELETE(req: Request, ctx: Ctx) {
+  try {
+    const { client } = await getSupabaseUserClient(
+      req.headers.get("authorization"),
+    );
+    const { id } = await ctx.params;
+    const result = await deleteSequence(client, id);
+    return NextResponse.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Failed";
+    const status = msg === "Sequence not found" ? 404 : 400;
+    return NextResponse.json({ error: msg }, { status });
   }
 }
