@@ -3763,69 +3763,153 @@ export const researchListRows = tool({
   },
 });
 
-export const researchSplitByMarket = tool({
+const rowConditionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("domain_suffix"), value: z.string() }),
+  z.object({ kind: z.literal("domain_includes"), value: z.string() }),
+  z.object({ kind: z.literal("company_includes"), value: z.string() }),
+  z.object({ kind: z.literal("company_regex"), value: z.string() }),
+  z.object({ kind: z.literal("source"), value: z.string() }),
+  z.object({ kind: z.literal("pass"), value: z.boolean() }),
+  z.object({ kind: z.literal("min_score"), value: z.number() }),
+  z.object({ kind: z.literal("max_score"), value: z.number() }),
+  z.object({ kind: z.literal("status"), value: z.string() }),
+  z.object({
+    kind: z.literal("cell_eq"),
+    key: z.string(),
+    value: z.string(),
+  }),
+  z.object({
+    kind: z.literal("cell_includes"),
+    key: z.string(),
+    value: z.string(),
+  }),
+  z.object({
+    kind: z.literal("pack_path_eq"),
+    path: z.string(),
+    value: z.string(),
+  }),
+  z.object({
+    kind: z.literal("pack_path_includes"),
+    path: z.string(),
+    value: z.string(),
+  }),
+  z.object({ kind: z.literal("pack_text_includes"), value: z.string() }),
+  z.object({
+    kind: z.literal("row_ids"),
+    value: z.array(z.string()),
+  }),
+]);
+
+export const researchMoveRows = tool({
   description:
-    "Split a research list into Brazil vs Global (rest of world) for language/outbound. Classification uses HQ country (firmo), .br domains, Brazilian job boards (Gupy…), and pack text. dry_run=true only previews counts. dry_run=false creates new lists and MOVES rows (people stay on the same company rows). Unknown-market rows go to a third list unless unknown_into_world=true.",
+    "Horizontal primitive: MOVE company rows between research lists (people stay on the same rows). Provide row_ids + either target_table_ref (existing list) OR new_table_name (creates list cloned from source_table_ref). Use after filtering/classifying however you want (score, domain, AI column, manual ids).",
   inputSchema: z.object({
-    table_ref: z.string().describe("Source list id, slug, or name"),
-    dry_run: z
-      .boolean()
+    row_ids: z.array(z.string()).min(1),
+    source_table_ref: z
+      .string()
       .optional()
-      .describe("Default true — preview only. Set false to actually split."),
-    brazil_name: z.string().optional(),
-    world_name: z.string().optional(),
-    unknown_name: z.string().optional(),
-    unknown_into_world: z
-      .boolean()
+      .describe("Required when creating a new list (shell/columns/rubric)"),
+    target_table_ref: z
+      .string()
       .optional()
-      .describe("If true, put unknown-market companies into Global"),
+      .describe("Existing destination list id/slug/name"),
+    new_table_name: z
+      .string()
+      .optional()
+      .describe("Create a new list with this name and move rows into it"),
     user_email: z.string().optional(),
   }),
   execute: async ({
-    table_ref,
-    dry_run,
-    brazil_name,
-    world_name,
-    unknown_name,
-    unknown_into_world,
+    row_ids,
+    source_table_ref,
+    target_table_ref,
+    new_table_name,
     user_email,
   }) => {
     try {
       const client = getSupabaseServiceClient();
       const { resolveTable } = await import("@/lib/research/columns");
-      const { splitTableByMarket } = await import("@/lib/research/split");
-      const table = await resolveTable(client, table_ref);
-      const result = await splitTableByMarket(client, table.id, {
-        dryRun: dry_run !== false,
-        brazilName: brazil_name,
-        worldName: world_name,
-        unknownName: unknown_name,
-        unknownIntoWorld: unknown_into_world === true,
+      const { moveRowsToTable } = await import("@/lib/research/split");
+      let targetTableId: string | undefined;
+      let sourceTableId: string | undefined;
+      if (target_table_ref) {
+        targetTableId = (await resolveTable(client, target_table_ref)).id;
+      }
+      if (source_table_ref || new_table_name) {
+        const src = await resolveTable(
+          client,
+          source_table_ref || target_table_ref || "",
+        );
+        sourceTableId = src.id;
+      }
+      const result = await moveRowsToTable(client, {
+        rowIds: row_ids,
+        targetTableId,
+        newTableName: new_table_name,
+        sourceTableId,
         createdByEmail: user_email,
       });
-      if ("dryRun" in result && result.dryRun) {
-        return {
-          success: true as const,
-          dry_run: true as const,
-          source: result.sourceName,
-          preview: result.preview,
-          next: "Review counts. Call again with dry_run=false to create Brasil + Global lists and move companies.",
-        };
-      }
-      const r = result as import("@/lib/research/split").SplitResult;
       return {
         success: true as const,
-        dry_run: false as const,
-        brazil: r.brazilTable,
-        world: r.worldTable,
-        unknown: r.unknownTable,
-        preview: r.preview,
-        open_brazil: r.brazilTable.slug
-          ? `/research?table=${encodeURIComponent(r.brazilTable.slug)}`
-          : `/research?table=${r.brazilTable.id}`,
-        open_world: r.worldTable.slug
-          ? `/research?table=${encodeURIComponent(r.worldTable.slug)}`
-          : `/research?table=${r.worldTable.id}`,
+        ...result,
+        open_url: result.target.slug
+          ? `/research?table=${encodeURIComponent(result.target.slug)}`
+          : `/research?table=${result.target.id}`,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Move failed",
+      };
+    }
+  },
+});
+
+export const researchSplitByRules = tool({
+  description:
+    "Horizontal split: partition a research list into N named buckets by generic rules (first matching rule wins). Conditions: domain_suffix, domain_includes, company_includes, company_regex, source, pass, min_score, max_score, status, cell_eq, cell_includes, pack_path_eq, pack_path_includes, pack_text_includes, row_ids. dry_run defaults true. remainder=leave keeps unmatched in source; remainder=new_list creates another list. Example language split: rules=[{name:'Brasil', match:'any', conditions:[{kind:'domain_suffix',value:'.br'},{kind:'pack_path_eq',path:'firmo.meta.hqCountry',value:'BR'}]}], remainder='new_list', remainder_name:'Global'.",
+  inputSchema: z.object({
+    table_ref: z.string(),
+    rules: z
+      .array(
+        z.object({
+          name: z.string(),
+          match: z.enum(["all", "any"]).optional(),
+          conditions: z.array(rowConditionSchema).min(1),
+        }),
+      )
+      .min(1),
+    remainder: z.enum(["leave", "new_list"]).optional(),
+    remainder_name: z.string().optional(),
+    dry_run: z.boolean().optional(),
+    user_email: z.string().optional(),
+  }),
+  execute: async ({
+    table_ref,
+    rules,
+    remainder,
+    remainder_name,
+    dry_run,
+    user_email,
+  }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { resolveTable } = await import("@/lib/research/columns");
+      const { splitTableByRules } = await import("@/lib/research/split");
+      const table = await resolveTable(client, table_ref);
+      const result = await splitTableByRules(client, table.id, {
+        rules,
+        remainder: remainder ?? "leave",
+        remainderName: remainder_name,
+        dryRun: dry_run !== false,
+        createdByEmail: user_email,
+      });
+      return {
+        success: true as const,
+        ...result,
+        next: result.dryRun
+          ? "Looks good? Call again with dry_run=false to create lists and move rows."
+          : "Open the new lists via slug/id. Source may still hold remainder rows if remainder=leave.",
       };
     } catch (error) {
       return {
@@ -5172,7 +5256,8 @@ export function createAgentTools(userEmail?: string) {
     researchAddDomains,
     researchCompany,
     researchListRows,
-    researchSplitByMarket,
+    researchMoveRows,
+    researchSplitByRules,
     researchFindIcp,
     researchEnrichPeople,
     researchGetTable,
