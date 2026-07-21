@@ -288,19 +288,7 @@ export async function getUserOverview(
     }),
   );
 
-  // ── Reply radar ───────────────────────────────────────────────────────────
-  if (replyPending > 0) {
-    attention.push({
-      kind: "reply_pending",
-      source: "reply_radar",
-      severity: "info",
-      title: `${replyPending} reply(s) waiting in Social inbox`,
-      body: "Candidates ready to review and send.",
-      sourceId: userEmail,
-      link: "/reply-radar",
-      dedupeKey: `reply_pending:${userEmail}:${startOfTodayIso()}`,
-    });
-  }
+  // Social inbox (reply-radar) removed from product surface — no attention items.
 
   // Severity ordering for the feed: error → warning → info.
   const sevRank: Record<Severity, number> = { error: 0, warning: 1, info: 2 };

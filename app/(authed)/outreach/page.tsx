@@ -1,5 +1,9 @@
-import { OutreachPage } from "@/components/outreach-page";
+import { redirect } from "next/navigation";
 
+/**
+ * Pipeline board removed from product IA.
+ * Convert system of record is Accounts (/crm).
+ */
 export default function Page() {
-  return <OutreachPage />;
+  redirect("/crm");
 }

@@ -1,5 +1,6 @@
-import { ReplyRadarPage } from "@/components/reply-radar-page";
+import { redirect } from "next/navigation";
 
+/** Social inbox removed from product IA — keep URL for old bookmarks. */
 export default function Page() {
-  return <ReplyRadarPage />;
+  redirect("/central");
 }

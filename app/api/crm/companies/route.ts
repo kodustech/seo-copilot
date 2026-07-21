@@ -95,6 +95,61 @@ export async function POST(req: Request) {
       : undefined;
 
   try {
+    const tags = Array.isArray(body.tags)
+      ? (body.tags.filter((t) => typeof t === "string") as string[])
+      : undefined;
+    const source =
+      typeof body.source === "string" ? (body.source as "manual" | "webhook" | "agent" | "research" | "pipeline" | "social") : undefined;
+
+    // Upsert by domain so social / research re-sends don't 500 on unique
+    if (body.upsert === true || body.upsert === "true") {
+      const { upsertAccountByDomain } = await import("@/lib/crm");
+      const result = await upsertAccountByDomain(client, {
+        name,
+        domain: typeof body.domain === "string" ? body.domain : null,
+        orgId: typeof body.orgId === "string" ? body.orgId : null,
+        status,
+        priority,
+        ownerEmail:
+          typeof body.ownerEmail === "string" ? body.ownerEmail : null,
+        industry: typeof body.industry === "string" ? body.industry : null,
+        size: typeof body.size === "string" ? body.size : null,
+        devCount: typeof body.devCount === "number" ? body.devCount : null,
+        country: typeof body.country === "string" ? body.country : null,
+        website: typeof body.website === "string" ? body.website : null,
+        linkedin: typeof body.linkedin === "string" ? body.linkedin : null,
+        arr: typeof body.arr === "number" ? body.arr : null,
+        tags,
+        notes: typeof body.notes === "string" ? body.notes : null,
+        source: source ?? "manual",
+        createdByEmail: userEmail,
+        contact:
+          typeof body.contactName === "string" && body.contactName.trim()
+            ? {
+                name: body.contactName,
+                email:
+                  typeof body.contactEmail === "string"
+                    ? body.contactEmail
+                    : null,
+                linkedin:
+                  typeof body.contactLinkedin === "string"
+                    ? body.contactLinkedin
+                    : null,
+                role:
+                  typeof body.contactRole === "string" ? body.contactRole : null,
+              }
+            : null,
+      });
+      return NextResponse.json(
+        {
+          company: result.company,
+          created: result.created,
+          contactCreated: result.contactCreated,
+        },
+        { status: result.created ? 201 : 200 },
+      );
+    }
+
     const company = await createCompany(client, {
       name,
       domain: typeof body.domain === "string" ? body.domain : null,
@@ -110,10 +165,9 @@ export async function POST(req: Request) {
       website: typeof body.website === "string" ? body.website : null,
       linkedin: typeof body.linkedin === "string" ? body.linkedin : null,
       arr: typeof body.arr === "number" ? body.arr : null,
-      tags: Array.isArray(body.tags)
-        ? (body.tags.filter((t) => typeof t === "string") as string[])
-        : undefined,
+      tags,
       notes: typeof body.notes === "string" ? body.notes : null,
+      source: source ?? "manual",
       createdByEmail: userEmail,
     });
     return NextResponse.json({ company }, { status: 201 });

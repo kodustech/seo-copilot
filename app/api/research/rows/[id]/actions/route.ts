@@ -119,15 +119,12 @@ export async function POST(
         return NextResponse.json(result);
       }
       case "qualify": {
-        // people (if pass or forced) → CRM + outreach
+        // people (if pass or forced) → Accounts (CRM) — single Convert system of record
         await enrichPeopleForRow(client, id, {
           onlyIfPass: body.force !== true,
         });
         const crm = await pushRowToCrm(client, id);
-        const outreach = await pushRowToOutreach(client, id, {
-          createdByEmail: userEmail,
-        });
-        return NextResponse.json({ crm, outreach });
+        return NextResponse.json({ crm, accounts: crm });
       }
       default:
         return NextResponse.json(
