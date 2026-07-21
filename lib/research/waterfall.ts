@@ -71,8 +71,20 @@ export async function enrichPeopleForRow(
   if (!row) throw new Error(`Row ${rowId} not found`);
   if (!row.domain) throw new Error("Row has no domain — cannot find people");
 
+  // Soft skip research for fail rows, but never erase people already saved.
   if (opts.onlyIfPass !== false && row.pass === false) {
-    return [];
+    const existingOnly = await listPeople(client, rowId);
+    return existingOnly.map((p) => ({
+      name: p.name,
+      role: p.role,
+      linkedin: p.linkedin,
+      email: p.email,
+      emailStatus: p.emailStatus,
+      emailSource: p.emailSource,
+      providerUsed: p.providerUsed,
+      confidence: p.confidence,
+      notes: p.notes,
+    }));
   }
 
   const table = await getTable(client, row.tableId);
@@ -82,14 +94,51 @@ export async function enrichPeopleForRow(
     "CTO",
     "Founder",
   ];
+  // Soft cap for NEW discoveries only — existing people are never dropped.
   const maxPeople = opts.maxPeople ?? 3;
+
+  // Preserve anyone already on the row (manual / prior enrich). Merge-only writes.
+  const existing = await listPeople(client, rowId);
+  const existingAsWaterfall: WaterfallPerson[] = existing.map((p) => ({
+    name: p.name,
+    role: p.role,
+    linkedin: p.linkedin,
+    email: p.email,
+    emailStatus: p.emailStatus,
+    emailSource: p.emailSource,
+    providerUsed: p.providerUsed,
+    confidence: p.confidence,
+    notes: p.notes,
+  }));
 
   // v3: NinjaPear person profile employment + multi-persona search
   const cacheKey = domainCacheKey(row.domain, "people:v3");
   const cached = await getCached<WaterfallPerson[]>(client, cacheKey);
+  // Never wipe existing with cache alone — merge cache into what we already have.
+  if (cached && cached.length > 0 && existingAsWaterfall.length === 0) {
+    await replacePeople(client, rowId, cached, {
+      mode: "merge",
+      reason: "people_cache_hit",
+    });
+    return (await listPeople(client, rowId)).map((p) => ({
+      name: p.name,
+      role: p.role,
+      linkedin: p.linkedin,
+      email: p.email,
+      emailStatus: p.emailStatus,
+      emailSource: p.emailSource,
+      providerUsed: p.providerUsed,
+      confidence: p.confidence,
+      notes: p.notes,
+    }));
+  }
+
+  // Cap only applies to how many *new* contacts we pull — never shrinks the set.
+  const cap = Math.max(maxPeople, existingAsWaterfall.length + maxPeople, 50);
+
+  let people: WaterfallPerson[] = [...existingAsWaterfall];
   if (cached && cached.length > 0) {
-    await replacePeople(client, rowId, cached);
-    return cached;
+    people = mergePeople(people, cached, cap, personas);
   }
 
   // Provider 1: scrape + guess
@@ -97,8 +146,7 @@ export async function enrichPeopleForRow(
     domain: row.domain,
     maxPages: 6,
   });
-
-  let people: WaterfallPerson[] = discovered.contacts
+  const discoveredMapped: WaterfallPerson[] = discovered.contacts
     .map((c) => ({
       name: c.name,
       role: c.role,
@@ -123,19 +171,23 @@ export async function enrichPeopleForRow(
         (b.confidence ?? 0) - (a.confidence ?? 0),
     )
     .slice(0, maxPeople);
+  people = mergePeople(people, discoveredMapped, cap, personas);
 
   // Provider 2: NinjaPear — search + profile employment + work email
   if (ninjapearEnabled()) {
     try {
-      if (people.length < maxPeople) {
+      const slots = Math.max(0, maxPeople - Math.max(0, people.length - existingAsWaterfall.length));
+      // Always try a few more if we have capacity for new names
+      const want = Math.max(slots, people.length < maxPeople ? maxPeople - people.length : 0);
+      if (want > 0) {
         const npPeople = await ninjapearPeople(
           row.domain,
           row.companyName,
           personas,
-          maxPeople - people.length,
+          want,
         );
         if (npPeople.length > 0) {
-          people = mergePeople(people, npPeople, maxPeople, personas);
+          people = mergePeople(people, npPeople, cap, personas);
         }
       }
       // Enrich everyone we keep: missing email + employment verify via profile
@@ -156,7 +208,7 @@ export async function enrichPeopleForRow(
     try {
       const hunterPeople = await hunterDomainSearch(row.domain, maxPeople);
       if (hunterPeople.length > 0) {
-        people = mergePeople(people, hunterPeople, maxPeople, personas);
+        people = mergePeople(people, hunterPeople, cap, personas);
       }
     } catch (err) {
       console.warn("[research/waterfall] Hunter failed:", err);
@@ -200,9 +252,26 @@ export async function enrichPeopleForRow(
     domain: row.domain,
   });
 
-  await replacePeople(client, rowId, people);
-  await setCache(client, cacheKey, people, 60 * 60 * 24 * 14);
-  return people;
+  // Merge-only write + snapshot of prior list (never silent wipe)
+  await replacePeople(client, rowId, people, {
+    mode: "merge",
+    reason: "people_enrich",
+  });
+  // Cache the merged result, not a truncated discovery-only set
+  const saved = await listPeople(client, rowId);
+  const out: WaterfallPerson[] = saved.map((p) => ({
+    name: p.name,
+    role: p.role,
+    linkedin: p.linkedin,
+    email: p.email,
+    emailStatus: p.emailStatus,
+    emailSource: p.emailSource,
+    providerUsed: p.providerUsed,
+    confidence: p.confidence,
+    notes: p.notes,
+  }));
+  await setCache(client, cacheKey, out, 60 * 60 * 24 * 14);
+  return out;
 }
 
 /**
@@ -545,13 +614,14 @@ function mergePeople(
   personas: string[],
 ): WaterfallPerson[] {
   const byKey = new Map<string, WaterfallPerson>();
+  // Prefer keys that keep all of `a` (existing) even when max is small
   for (const p of [...a, ...b]) {
-    const key = (p.email ?? p.name).toLowerCase();
+    const key = (p.email ?? p.name).toLowerCase().trim();
+    if (!key) continue;
     const prev = byKey.get(key);
     if (!prev || (p.confidence ?? 0) > (prev.confidence ?? 0)) {
-      byKey.set(key, p);
-    } else if (prev && (p.confidence ?? 0) === (prev.confidence ?? 0)) {
-      // Merge notes / fill missing fields
+      byKey.set(key, prev ? { ...p, email: p.email ?? prev.email, linkedin: p.linkedin ?? prev.linkedin, role: p.role ?? prev.role, notes: [prev.notes, p.notes].filter(Boolean).join(" | ") || null } : p);
+    } else {
       byKey.set(key, {
         ...prev,
         email: prev.email ?? p.email,
@@ -565,13 +635,23 @@ function mergePeople(
       });
     }
   }
-  return [...byKey.values()]
-    .sort(
-      (x, y) =>
-        rankPerson(y.role, personas) - rankPerson(x.role, personas) ||
-        (y.confidence ?? 0) - (x.confidence ?? 0),
-    )
-    .slice(0, max);
+  const sorted = [...byKey.values()].sort(
+    (x, y) =>
+      rankPerson(y.role, personas) - rankPerson(x.role, personas) ||
+      (y.confidence ?? 0) - (x.confidence ?? 0),
+  );
+  // Never drop anyone from set `a` (existing contacts on the row)
+  const aKeys = new Set(
+    a.map((p) => (p.email ?? p.name).toLowerCase().trim()).filter(Boolean),
+  );
+  const mustKeep = sorted.filter((p) =>
+    aKeys.has((p.email ?? p.name).toLowerCase().trim()),
+  );
+  const extras = sorted.filter(
+    (p) => !aKeys.has((p.email ?? p.name).toLowerCase().trim()),
+  );
+  const room = Math.max(0, max - mustKeep.length);
+  return [...mustKeep, ...extras.slice(0, room)];
 }
 
 async function hunterDomainSearch(
