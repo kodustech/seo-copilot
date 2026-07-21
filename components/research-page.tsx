@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Building2,
   Check,
+  Columns3,
   Copy,
   Download,
   ExternalLink,
@@ -13,9 +14,11 @@ import {
   Loader2,
   Mail,
   MoreHorizontal,
+  Play,
   Plus,
   RotateCcw,
   Search,
+  Sparkles,
   Trash2,
   Users,
   X,
@@ -56,6 +59,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Switch } from "@/components/ui/switch";
 
 type Rubric = {
   id: string;
@@ -131,11 +135,81 @@ type Panel = "none" | "add" | "create" | "find";
 type Market = "global" | "brazil";
 type SizeBand = "any" | "small" | "mid" | "large";
 type ContactFilter = "all" | "has" | "missing";
+/** Grid unit: companies (1 row = account) or people (1 row = contact). */
+type ViewMode = "companies" | "people";
+
+type PersonFlat = {
+  key: string;
+  personId?: string;
+  rowId: string;
+  companyName: string;
+  domain: string | null;
+  name: string;
+  role: string | null;
+  email: string | null;
+  emailStatus: string | null;
+  linkedin: string | null;
+  companyStatus: string;
+  icpScore: number | null;
+  pass: boolean | null;
+  whyNow: string | null;
+};
 
 function topPerson(people: Person[] | undefined): Person | null {
   if (!people?.length) return null;
   const withEmail = people.find((p) => p.email?.trim());
   return withEmail ?? people[0] ?? null;
+}
+
+function personFlatKey(rowId: string, person: Person, index: number): string {
+  return person.id?.trim() || `${rowId}::${index}`;
+}
+
+function defaultViewMode(name: string, slug?: string | null): ViewMode {
+  const s = `${name} ${slug ?? ""}`.toLowerCase();
+  if (/people|person|contact|lead/.test(s)) return "people";
+  return "companies";
+}
+
+/** Map person-row selection keys → unique company research_row ids. */
+function companyIdsFromPersonSelection(
+  selected: Set<string>,
+  rows: ResearchRow[],
+): string[] {
+  const ids = new Set<string>();
+  for (const r of rows) {
+    const people = r.people ?? [];
+    people.forEach((p, i) => {
+      if (selected.has(personFlatKey(r.id, p, i))) ids.add(r.id);
+    });
+  }
+  return [...ids];
+}
+
+function flattenPeople(rows: ResearchRow[]): PersonFlat[] {
+  const out: PersonFlat[] = [];
+  for (const r of rows) {
+    const people = r.people ?? [];
+    people.forEach((p, i) => {
+      out.push({
+        key: personFlatKey(r.id, p, i),
+        personId: p.id,
+        rowId: r.id,
+        companyName: r.companyName,
+        domain: r.domain,
+        name: p.name,
+        role: p.role,
+        email: p.email,
+        emailStatus: p.emailStatus,
+        linkedin: p.linkedin ?? null,
+        companyStatus: r.status,
+        icpScore: r.icpScore,
+        pass: r.pass,
+        whyNow: r.whyNow,
+      });
+    });
+  }
+  return out;
 }
 
 function hostLabel(url: string): string {
@@ -198,6 +272,7 @@ export function ResearchPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [contactFilter, setContactFilter] = useState<ContactFilter>("all");
+  const [viewMode, setViewMode] = useState<ViewMode>("companies");
   const [query, setQuery] = useState("");
   const [importText, setImportText] = useState("");
   const [panel, setPanel] = useState<Panel>("none");
@@ -240,6 +315,24 @@ export function ResearchPage() {
   >([]);
   const [savingContact, setSavingContact] = useState(false);
 
+  /** Pack ICP score / why-now — off by default; use dynamic AI columns instead */
+  const [showIcpMeta, setShowIcpMeta] = useState(false);
+  const [columnDialogOpen, setColumnDialogOpen] = useState(false);
+  const [colLabel, setColLabel] = useState("");
+  const [colType, setColType] = useState<"text" | "url" | "email" | "boolean" | "number">(
+    "text",
+  );
+  const [colEnrichKind, setColEnrichKind] = useState<"ai" | "people_field" | "none">(
+    "ai",
+  );
+  const [colPrompt, setColPrompt] = useState("");
+  const [colPeopleField, setColPeopleField] = useState<
+    "linkedin" | "email" | "name" | "role"
+  >("linkedin");
+  const [colRunNow, setColRunNow] = useState(true);
+  const [colBusy, setColBusy] = useState(false);
+  const [runningColumnKey, setRunningColumnKey] = useState<string | null>(null);
+
   const emptyPersonDraft = () => ({
     key: `new-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     name: "",
@@ -264,6 +357,52 @@ export function ResearchPage() {
       setToken(data.session?.access_token ?? null);
     });
   }, [supabase]);
+
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem("research.showIcpMeta");
+      if (v === "1") setShowIcpMeta(true);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Per-list view preference (people vs companies)
+  useEffect(() => {
+    if (!tableId) return;
+    const t = tables.find((x) => x.id === tableId);
+    try {
+      const saved = localStorage.getItem(`research.viewMode.${tableId}`);
+      if (saved === "people" || saved === "companies") {
+        setViewMode(saved);
+        return;
+      }
+    } catch {
+      // ignore
+    }
+    setViewMode(defaultViewMode(t?.name ?? "", t?.slug));
+  }, [tableId, tables]);
+
+  const toggleIcpMeta = (on: boolean) => {
+    setShowIcpMeta(on);
+    try {
+      localStorage.setItem("research.showIcpMeta", on ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  };
+
+  const changeViewMode = (mode: ViewMode) => {
+    setViewMode(mode);
+    setSelected(new Set());
+    if (tableId) {
+      try {
+        localStorage.setItem(`research.viewMode.${tableId}`, mode);
+      } catch {
+        // ignore
+      }
+    }
+  };
 
   const headers = useCallback(
     () => ({
@@ -492,13 +631,19 @@ export function ResearchPage() {
     opts: { force?: boolean; onlyIfPass?: boolean } = {},
   ) => {
     if (!token || !tableId) return;
-    const rowIds = selected.size > 0 ? [...selected] : undefined;
+    // Always company row ids for API (map from people selection when needed)
+    const companyIds =
+      selected.size > 0
+        ? viewMode === "people"
+          ? companyIdsFromPersonSelection(selected, rows)
+          : [...selected]
+        : undefined;
     const res = await fetch(`/api/research/tables/${tableId}/run`, {
       method: "POST",
       headers: headers(),
       body: JSON.stringify({
         kind,
-        rowIds,
+        rowIds: companyIds,
         force: Boolean(opts.force),
         // Clay default: enrich everyone unless caller restricts
         onlyIfPass: opts.onlyIfPass === true,
@@ -513,10 +658,11 @@ export function ResearchPage() {
       setNotice(data.error ?? "Failed");
       return;
     }
+    const n = companyIds?.length ?? 0;
     setNotice(
       kind === "people"
-        ? selected.size
-          ? `Finding people on ${selected.size} selected…`
+        ? n
+          ? `Finding people on ${n} compan${n === 1 ? "y" : "ies"}…`
           : "Finding people on all rows…"
         : "Running…",
     );
@@ -705,6 +851,46 @@ export function ResearchPage() {
 
   const exportCsv = () => {
     if (!token || !tableId) return;
+    if (viewMode === "people") {
+      const people =
+        selected.size > 0
+          ? flattenPeople(rows).filter((p) => selected.has(p.key))
+          : flattenPeople(rows);
+      const header = [
+        "name",
+        "role",
+        "email",
+        "linkedin",
+        "company",
+        "domain",
+      ];
+      const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
+      const lines = [
+        header.join(","),
+        ...people.map((p) =>
+          [
+            p.name,
+            p.role ?? "",
+            p.email ?? "",
+            p.linkedin ?? "",
+            p.companyName,
+            p.domain ?? "",
+          ]
+            .map((c) => esc(String(c)))
+            .join(","),
+        ),
+      ];
+      const blob = new Blob([lines.join("\n")], {
+        type: "text/csv;charset=utf-8",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `people-${tableId.slice(0, 8)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      return;
+    }
     void (async () => {
       const res = await fetch(`/api/research/tables/${tableId}/export`, {
         headers: headers(),
@@ -734,6 +920,7 @@ export function ResearchPage() {
           p?.name,
           p?.role,
           p?.email,
+          ...(r.people ?? []).flatMap((x) => [x.name, x.role, x.email]),
         ]
           .filter(Boolean)
           .join(" ")
@@ -744,6 +931,24 @@ export function ResearchPage() {
     });
   }, [rows, contactFilter, query]);
 
+  const flatPeople = useMemo(() => flattenPeople(rows), [rows]);
+
+  const filteredPeople = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return flatPeople.filter((p) => {
+      if (contactFilter === "has" && !p.email?.trim()) return false;
+      if (contactFilter === "missing" && p.email?.trim()) return false;
+      if (q) {
+        const hay = [p.name, p.role, p.email, p.companyName, p.domain, p.linkedin]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [flatPeople, contactFilter, query]);
+
   const activeTable = tables.find((t) => t.id === tableId) ?? null;
   const customColumns = useMemo(
     () =>
@@ -753,18 +958,40 @@ export function ResearchPage() {
     [activeTable?.columns],
   );
 
+  /** Company row ids for bulk APIs, regardless of view. */
+  const selectedCompanyIds = useMemo(() => {
+    if (selected.size === 0) return [] as string[];
+    if (viewMode === "companies") return [...selected];
+    return companyIdsFromPersonSelection(selected, rows);
+  }, [selected, viewMode, rows]);
+
   /** Move selected companies to a new or existing list. */
   const moveSelectedToList = async () => {
     if (!token || !tableId || !activeTable) return;
     if (selected.size === 0) {
-      setNotice("Select the companies you want to move first (checkboxes).");
+      setNotice(
+        viewMode === "people"
+          ? "Select people first (their companies will be moved)."
+          : "Select the companies you want to move first (checkboxes).",
+      );
       return;
     }
-    const ids = [...selected];
+    const ids =
+      viewMode === "people"
+        ? companyIdsFromPersonSelection(selected, rows)
+        : [...selected];
+    if (ids.length === 0) {
+      setNotice("Nothing to move.");
+      return;
+    }
 
     const others = tables.filter((t) => t.id !== tableId);
+    const peopleNote =
+      viewMode === "people" && selected.size !== ids.length
+        ? ` (${selected.size} people → ${ids.length} companies)`
+        : "";
     const choice = window.prompt(
-      `Move ${ids.length} selected compan${ids.length === 1 ? "y" : "ies"}:\n\n` +
+      `Move ${ids.length} compan${ids.length === 1 ? "y" : "ies"}${peopleNote}:\n\n` +
         `• Type a NEW list name, or\n` +
         `• Existing list slug/id:\n` +
         others
@@ -822,11 +1049,152 @@ export function ResearchPage() {
     }
   };
 
+  const resetColumnForm = () => {
+    setColLabel("");
+    setColType("text");
+    setColEnrichKind("ai");
+    setColPrompt("");
+    setColPeopleField("linkedin");
+    setColRunNow(true);
+  };
+
+  const runDynamicColumn = async (
+    key: string,
+    opts?: { onlyMissing?: boolean; rowIds?: string[] },
+  ) => {
+    if (!token || !tableId) return;
+    setRunningColumnKey(key);
+    setActionBusy(true);
+    try {
+      const res = await fetch(`/api/research/tables/${tableId}/columns`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          action: "run",
+          key,
+          onlyMissing: opts?.onlyMissing !== false,
+          rowIds: opts?.rowIds,
+          maxRows: opts?.rowIds?.length
+            ? Math.min(opts.rowIds.length, 50)
+            : 30,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setNotice(data.error ?? "Column run failed");
+        return;
+      }
+      setNotice(
+        `Column “${data.column?.label ?? key}”: ${data.ok ?? 0} filled` +
+          (data.failed ? `, ${data.failed} failed` : "") +
+          (data.skipped ? `, ${data.skipped} skipped` : ""),
+      );
+      await loadRows();
+    } finally {
+      setRunningColumnKey(null);
+      setActionBusy(false);
+    }
+  };
+
+  const createDynamicColumn = async () => {
+    if (!token || !tableId) return;
+    const label = colLabel.trim();
+    if (!label) {
+      setNotice("Column name is required");
+      return;
+    }
+    if (colEnrichKind === "ai" && !colPrompt.trim()) {
+      setNotice("AI columns need a prompt (what to fill for each company)");
+      return;
+    }
+
+    setColBusy(true);
+    try {
+      const enrich =
+        colEnrichKind === "ai"
+          ? { kind: "ai" as const, prompt: colPrompt.trim() }
+          : colEnrichKind === "people_field"
+            ? {
+                kind: "people_field" as const,
+                field: colPeopleField,
+                runPeopleIfMissing: true,
+              }
+            : { kind: "none" as const };
+
+      const res = await fetch(`/api/research/tables/${tableId}/columns`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({
+          label,
+          type: colType,
+          enrich,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setNotice(data.error ?? "Could not create column");
+        return;
+      }
+      const key = data.column?.key as string | undefined;
+      setColumnDialogOpen(false);
+      resetColumnForm();
+      await loadTables();
+      setNotice(`Column “${label}” added`);
+      if (colRunNow && key && colEnrichKind !== "none") {
+        await runDynamicColumn(key, {
+          onlyMissing: true,
+          rowIds:
+            selectedCompanyIds.length > 0 ? selectedCompanyIds : undefined,
+        });
+      }
+    } finally {
+      setColBusy(false);
+    }
+  };
+
+  const deleteDynamicColumn = async (key: string, label: string) => {
+    if (!token || !tableId) return;
+    if (
+      !window.confirm(
+        `Delete column “${label}”? Cell values for this column will be removed.`,
+      )
+    ) {
+      return;
+    }
+    setActionBusy(true);
+    try {
+      const res = await fetch(
+        `/api/research/tables/${tableId}/columns?key=${encodeURIComponent(key)}`,
+        { method: "DELETE", headers: headers() },
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        setNotice(data.error ?? "Could not delete column");
+        return;
+      }
+      setNotice(`Deleted column “${label}”`);
+      await loadTables();
+      await loadRows();
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   const drawerRow = rows.find((r) => r.id === drawerRowId);
   const withContact = rows.filter((r) => topPerson(r.people)).length;
+  const companiesWithoutPeople = rows.filter(
+    (r) => !(r.people && r.people.length > 0),
+  ).length;
   const allSelected =
-    filteredRows.length > 0 &&
-    filteredRows.every((r) => selected.has(r.id));
+    viewMode === "people"
+      ? filteredPeople.length > 0 &&
+        filteredPeople.every((p) => selected.has(p.key))
+      : filteredRows.length > 0 &&
+        filteredRows.every((r) => selected.has(r.id));
+  const tableColSpan =
+    viewMode === "people"
+      ? 9 + (showIcpMeta ? 1 : 0)
+      : 9 + customColumns.length + (showIcpMeta ? 2 : 0);
 
   const copyTableRef = async () => {
     if (!activeTable) return;
@@ -907,10 +1275,24 @@ export function ResearchPage() {
             </h1>
             {activeTable && (
               <span className="text-xs tabular-nums text-muted-foreground">
-                {rows.length} companies · {withContact} with contact
-                {filteredRows.length !== rows.length
-                  ? ` · ${filteredRows.length} shown`
-                  : ""}
+                {viewMode === "people" ? (
+                  <>
+                    {flatPeople.length} people · {rows.length} companies
+                    {companiesWithoutPeople > 0
+                      ? ` · ${companiesWithoutPeople} w/o people`
+                      : ""}
+                    {filteredPeople.length !== flatPeople.length
+                      ? ` · ${filteredPeople.length} shown`
+                      : ""}
+                  </>
+                ) : (
+                  <>
+                    {rows.length} companies · {withContact} with contact
+                    {filteredRows.length !== rows.length
+                      ? ` · ${filteredRows.length} shown`
+                      : ""}
+                  </>
+                )}
                 {selected.size > 0 ? ` · ${selected.size} selected` : ""}
                 {activeTable.slug ? (
                   <button
@@ -928,11 +1310,42 @@ export function ResearchPage() {
           </div>
         </div>
 
+        <div className="inline-flex h-8 items-center rounded-md border bg-muted/40 p-0.5">
+          <button
+            type="button"
+            className={cn(
+              "rounded-sm px-2.5 py-1 text-xs font-medium transition-colors",
+              viewMode === "people"
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+            onClick={() => changeViewMode("people")}
+          >
+            People
+          </button>
+          <button
+            type="button"
+            className={cn(
+              "rounded-sm px-2.5 py-1 text-xs font-medium transition-colors",
+              viewMode === "companies"
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+            onClick={() => changeViewMode("companies")}
+          >
+            Companies
+          </button>
+        </div>
+
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             className="h-8 w-44 pl-8 text-sm md:w-56"
-            placeholder="Search…"
+            placeholder={
+              viewMode === "people"
+                ? "Search name, role, email…"
+                : "Search company…"
+            }
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -942,13 +1355,19 @@ export function ResearchPage() {
           value={contactFilter}
           onValueChange={(v) => setContactFilter(v as ContactFilter)}
         >
-          <SelectTrigger className="h-8 w-[140px]">
+          <SelectTrigger className="h-8 w-[150px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All rows</SelectItem>
-            <SelectItem value="has">Has contact</SelectItem>
-            <SelectItem value="missing">Missing contact</SelectItem>
+            <SelectItem value="all">
+              {viewMode === "people" ? "All people" : "All companies"}
+            </SelectItem>
+            <SelectItem value="has">
+              {viewMode === "people" ? "Has email" : "Has contact"}
+            </SelectItem>
+            <SelectItem value="missing">
+              {viewMode === "people" ? "Missing email" : "Missing contact"}
+            </SelectItem>
           </SelectContent>
         </Select>
 
@@ -964,7 +1383,21 @@ export function ResearchPage() {
               <Users className="size-3.5" />
             )}
             Find people
-            {selected.size > 0 ? ` (${selected.size})` : ""}
+            {selectedCompanyIds.length > 0
+              ? ` (${selectedCompanyIds.length})`
+              : ""}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!tableId}
+            onClick={() => {
+              resetColumnForm();
+              setColumnDialogOpen(true);
+            }}
+          >
+            <Columns3 className="size-3.5" />
+            Add column
           </Button>
           <Button
             size="sm"
@@ -990,7 +1423,7 @@ export function ResearchPage() {
                 <MoreHorizontal className="size-4" />
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="end" className="w-52 p-1">
+            <PopoverContent align="end" className="w-60 p-1">
               <button
                 type="button"
                 className="flex w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
@@ -1002,21 +1435,38 @@ export function ResearchPage() {
               <button
                 type="button"
                 className="flex w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
-                disabled={running || !tableId}
-                onClick={() => void runJob("research")}
-              >
-                Score pending rows
-              </button>
-              <button
-                type="button"
-                className="flex w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
                 disabled={
                   actionBusy || running || !tableId || selected.size === 0
                 }
                 onClick={() => void moveSelectedToList()}
               >
                 Move selected
-                {selected.size > 0 ? ` (${selected.size})` : ""} to list…
+                {selectedCompanyIds.length > 0
+                  ? ` (${selectedCompanyIds.length} co.)`
+                  : ""}{" "}
+                to list…
+              </button>
+              <div className="my-1 border-t" />
+              <div className="flex items-center justify-between gap-2 px-2 py-1.5">
+                <label
+                  htmlFor="show-icp-meta"
+                  className="text-sm leading-tight"
+                >
+                  Show pack score &amp; why
+                </label>
+                <Switch
+                  id="show-icp-meta"
+                  checked={showIcpMeta}
+                  onCheckedChange={toggleIcpMeta}
+                />
+              </div>
+              <button
+                type="button"
+                className="flex w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+                disabled={running || !tableId}
+                onClick={() => void runJob("research")}
+              >
+                Run pack score (pending)
               </button>
               <button
                 type="button"
@@ -1024,7 +1474,7 @@ export function ResearchPage() {
                 disabled={running || !tableId}
                 onClick={() => void runJob("research", { force: true })}
               >
-                Re-score all
+                Re-run pack score (all)
               </button>
             </PopoverContent>
           </Popover>
@@ -1069,6 +1519,217 @@ export function ResearchPage() {
               </Button>
             </div>
           </div>
+        ) : viewMode === "people" ? (
+          <Table>
+            <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="w-10 pl-4">
+                  <input
+                    type="checkbox"
+                    className="size-3.5"
+                    checked={allSelected}
+                    onChange={() => {
+                      if (allSelected) setSelected(new Set());
+                      else
+                        setSelected(
+                          new Set(filteredPeople.map((p) => p.key)),
+                        );
+                    }}
+                    aria-label="Select all people"
+                  />
+                </TableHead>
+                <TableHead className="w-10 text-xs text-muted-foreground">
+                  #
+                </TableHead>
+                <TableHead>Name</TableHead>
+                <TableHead className="hidden md:table-cell">Role</TableHead>
+                <TableHead>Email</TableHead>
+                <TableHead className="w-12">LI</TableHead>
+                <TableHead>Company</TableHead>
+                <TableHead className="hidden sm:table-cell">Domain</TableHead>
+                {showIcpMeta && (
+                  <TableHead className="w-16 text-xs text-muted-foreground">
+                    Score
+                  </TableHead>
+                )}
+                <TableHead className="w-20 pr-4">Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loading && (
+                <TableRow>
+                  <TableCell
+                    colSpan={tableColSpan}
+                    className="h-24 text-center text-muted-foreground"
+                  >
+                    <Loader2 className="mr-2 inline size-4 animate-spin" />
+                    Loading…
+                  </TableCell>
+                </TableRow>
+              )}
+              {!loading && filteredPeople.length === 0 && (
+                <TableRow>
+                  <TableCell
+                    colSpan={tableColSpan}
+                    className="h-32 text-center text-sm text-muted-foreground"
+                  >
+                    {rows.length === 0 ? (
+                      <div className="space-y-2">
+                        <p>Empty list. Import companies first.</p>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setPanel("add")}
+                        >
+                          Import
+                        </Button>
+                      </div>
+                    ) : flatPeople.length === 0 ? (
+                      <div className="space-y-2">
+                        <p>
+                          No people yet on these companies. Run Find people, or
+                          switch to Companies view.
+                        </p>
+                        <div className="flex justify-center gap-2">
+                          <Button
+                            size="sm"
+                            onClick={() =>
+                              void runJob("people", { onlyIfPass: false })
+                            }
+                            disabled={running}
+                          >
+                            <Users className="size-3.5" />
+                            Find people
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => changeViewMode("companies")}
+                          >
+                            Companies view
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      "No people match filters."
+                    )}
+                  </TableCell>
+                </TableRow>
+              )}
+              {!loading &&
+                filteredPeople.map((p, idx) => (
+                  <TableRow
+                    key={p.key}
+                    className="cursor-pointer"
+                    onClick={() => void openDrawer(p.rowId)}
+                  >
+                    <TableCell
+                      className="pl-4"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="checkbox"
+                        className="size-3.5"
+                        checked={selected.has(p.key)}
+                        onChange={() => {
+                          setSelected((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(p.key)) next.delete(p.key);
+                            else next.add(p.key);
+                            return next;
+                          });
+                        }}
+                        aria-label={`Select ${p.name}`}
+                      />
+                    </TableCell>
+                    <TableCell className="font-mono text-xs tabular-nums text-muted-foreground">
+                      {idx + 1}
+                    </TableCell>
+                    <TableCell>
+                      <div className="font-medium leading-tight">{p.name}</div>
+                      <div className="text-[11px] text-muted-foreground md:hidden">
+                        {p.role ?? "—"}
+                      </div>
+                    </TableCell>
+                    <TableCell className="hidden max-w-[180px] truncate text-xs text-muted-foreground md:table-cell">
+                      {p.role ?? "—"}
+                    </TableCell>
+                    <TableCell
+                      className="max-w-[200px] truncate font-mono text-xs"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {p.email ? (
+                        <a
+                          href={`mailto:${p.email}`}
+                          className="inline-flex items-center gap-1 text-foreground hover:underline"
+                        >
+                          <Mail className="size-3 shrink-0 text-muted-foreground" />
+                          <span className="truncate">{p.email}</span>
+                        </a>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell onClick={(e) => e.stopPropagation()}>
+                      {p.linkedin ? (
+                        <a
+                          href={p.linkedin}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex text-muted-foreground hover:text-foreground"
+                          title={p.linkedin}
+                        >
+                          <Link2 className="size-3.5" />
+                        </a>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <div className="truncate text-sm font-medium">
+                        {p.companyName}
+                      </div>
+                      <div className="font-mono text-[11px] text-muted-foreground sm:hidden">
+                        {p.domain ?? "—"}
+                      </div>
+                    </TableCell>
+                    <TableCell className="hidden font-mono text-xs text-muted-foreground sm:table-cell">
+                      {p.domain ? (
+                        <a
+                          href={`https://${p.domain}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 hover:text-foreground hover:underline"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {p.domain}
+                          <ExternalLink className="size-3 opacity-50" />
+                        </a>
+                      ) : (
+                        "—"
+                      )}
+                    </TableCell>
+                    {showIcpMeta && (
+                      <TableCell>
+                        <ScorePill score={p.icpScore} pass={p.pass} />
+                      </TableCell>
+                    )}
+                    <TableCell className="pr-4 text-xs text-muted-foreground">
+                      {p.email ? (
+                        <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
+                          <Check className="size-3" />
+                          Email
+                        </span>
+                      ) : p.linkedin ? (
+                        "LI only"
+                      ) : (
+                        "No email"
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+            </TableBody>
+          </Table>
         ) : (
           <Table>
             <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
@@ -1097,16 +1758,102 @@ export function ResearchPage() {
                 {customColumns.map((col) => (
                   <TableHead
                     key={col.key}
-                    className="min-w-[120px] max-w-[200px] text-xs"
-                    title={`${col.key} · enrich=${col.enrich?.kind ?? "none"}`}
+                    className="min-w-[140px] max-w-[220px] p-1 text-xs"
                   >
-                    {col.label}
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          className="flex w-full max-w-[200px] items-center gap-1 rounded-md px-1.5 py-1 text-left font-medium hover:bg-muted"
+                          title={`${col.key} · ${col.enrich?.kind ?? "none"}`}
+                        >
+                          {col.enrich?.kind === "ai" && (
+                            <Sparkles className="size-3 shrink-0 text-amber-600 dark:text-amber-400" />
+                          )}
+                          <span className="truncate">{col.label}</span>
+                          {runningColumnKey === col.key ? (
+                            <Loader2 className="ml-auto size-3 shrink-0 animate-spin" />
+                          ) : (
+                            <MoreHorizontal className="ml-auto size-3 shrink-0 opacity-50" />
+                          )}
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent align="start" className="w-56 p-1">
+                        <p className="truncate px-2 py-1 text-[11px] text-muted-foreground">
+                          {col.enrich?.kind === "ai"
+                            ? col.enrich.prompt?.slice(0, 80) || "AI column"
+                            : col.enrich?.kind === "people_field"
+                              ? `People · ${col.enrich.field}`
+                              : "Manual column"}
+                        </p>
+                        {col.enrich?.kind !== "none" && (
+                          <>
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent disabled:opacity-50"
+                              disabled={actionBusy || running}
+                              onClick={() =>
+                                void runDynamicColumn(col.key, {
+                                  onlyMissing: true,
+                                })
+                              }
+                            >
+                              <Play className="size-3.5" />
+                              Fill empty cells
+                            </button>
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent disabled:opacity-50"
+                              disabled={
+                                actionBusy || running || selected.size === 0
+                              }
+                              onClick={() =>
+                                void runDynamicColumn(col.key, {
+                                  onlyMissing: false,
+                                  rowIds: selectedCompanyIds,
+                                })
+                              }
+                            >
+                              <Play className="size-3.5" />
+                              Run on selected
+                              {selectedCompanyIds.length > 0
+                                ? ` (${selectedCompanyIds.length})`
+                                : ""}
+                            </button>
+                          </>
+                        )}
+                        <div className="my-1 border-t" />
+                        <button
+                          type="button"
+                          className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm text-rose-600 hover:bg-accent dark:text-rose-400 disabled:opacity-50"
+                          disabled={actionBusy}
+                          onClick={() =>
+                            void deleteDynamicColumn(col.key, col.label)
+                          }
+                        >
+                          <Trash2 className="size-3.5" />
+                          Delete column
+                        </button>
+                      </PopoverContent>
+                    </Popover>
                   </TableHead>
                 ))}
-                <TableHead className="w-16">Score</TableHead>
-                <TableHead className="hidden xl:table-cell max-w-[200px]">
-                  Why now
-                </TableHead>
+                {showIcpMeta && (
+                  <>
+                    <TableHead
+                      className="w-16 text-xs text-muted-foreground"
+                      title="From pack rubric score — optional. Prefer AI columns."
+                    >
+                      Score
+                    </TableHead>
+                    <TableHead
+                      className="hidden max-w-[200px] text-xs text-muted-foreground xl:table-cell"
+                      title="From pack research — optional. Prefer AI columns."
+                    >
+                      Why now
+                    </TableHead>
+                  </>
+                )}
                 <TableHead className="w-24 pr-4">Status</TableHead>
               </TableRow>
             </TableHeader>
@@ -1114,7 +1861,7 @@ export function ResearchPage() {
               {loading && (
                 <TableRow>
                   <TableCell
-                    colSpan={11 + customColumns.length}
+                    colSpan={tableColSpan}
                     className="h-24 text-center text-muted-foreground"
                   >
                     <Loader2 className="mr-2 inline size-4 animate-spin" />
@@ -1125,7 +1872,7 @@ export function ResearchPage() {
               {!loading && filteredRows.length === 0 && (
                 <TableRow>
                   <TableCell
-                    colSpan={11 + customColumns.length}
+                    colSpan={tableColSpan}
                     className="h-32 text-center text-sm text-muted-foreground"
                   >
                     {rows.length === 0 ? (
@@ -1311,17 +2058,21 @@ export function ResearchPage() {
                           </TableCell>
                         );
                       })}
-                      <TableCell>
-                        <ScorePill score={r.icpScore} pass={r.pass} />
-                      </TableCell>
-                      <TableCell className="hidden max-w-[200px] xl:table-cell">
-                        <span className="line-clamp-2 text-xs text-muted-foreground">
-                          {r.whyNow ??
-                            (r.antiFlags?.length
-                              ? `Anti: ${r.antiFlags.join(", ")}`
-                              : "—")}
-                        </span>
-                      </TableCell>
+                      {showIcpMeta && (
+                        <>
+                          <TableCell>
+                            <ScorePill score={r.icpScore} pass={r.pass} />
+                          </TableCell>
+                          <TableCell className="hidden max-w-[200px] xl:table-cell">
+                            <span className="line-clamp-2 text-xs text-muted-foreground">
+                              {r.whyNow ??
+                                (r.antiFlags?.length
+                                  ? `Anti: ${r.antiFlags.join(", ")}`
+                                  : "—")}
+                            </span>
+                          </TableCell>
+                        </>
+                      )}
                       <TableCell className="pr-4 text-xs text-muted-foreground">
                         {p ? (
                           <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
@@ -1331,9 +2082,9 @@ export function ResearchPage() {
                               : "Contact"}
                           </span>
                         ) : r.status === "researching" ? (
-                          "Scoring…"
+                          "Researching…"
                         ) : r.status === "pending" ? (
-                          "No score"
+                          "Pending"
                         ) : r.status === "researched" ? (
                           "No contact"
                         ) : (
@@ -1347,6 +2098,161 @@ export function ResearchPage() {
           </Table>
         )}
       </div>
+
+      {/* Add dynamic column (Clay-style) */}
+      <Dialog
+        open={columnDialogOpen}
+        onOpenChange={(open) => {
+          setColumnDialogOpen(open);
+          if (!open) resetColumnForm();
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add column</DialogTitle>
+            <DialogDescription>
+              Like Clay: name a column and tell AI (or a people field) how to
+              fill each row. Also available via MCP{" "}
+              <code className="text-xs">researchCreateColumn</code>.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                Name
+              </label>
+              <Input
+                placeholder="e.g. Pain de QE, Buying signal…"
+                value={colLabel}
+                onChange={(e) => setColLabel(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Fill with
+                </label>
+                <Select
+                  value={colEnrichKind}
+                  onValueChange={(v) =>
+                    setColEnrichKind(v as "ai" | "people_field" | "none")
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ai">AI prompt</SelectItem>
+                    <SelectItem value="people_field">People field</SelectItem>
+                    <SelectItem value="none">Manual (empty)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Type
+                </label>
+                <Select
+                  value={colType}
+                  onValueChange={(v) =>
+                    setColType(
+                      v as "text" | "url" | "email" | "boolean" | "number",
+                    )
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="text">Text</SelectItem>
+                    <SelectItem value="url">URL</SelectItem>
+                    <SelectItem value="email">Email</SelectItem>
+                    <SelectItem value="boolean">Yes / no</SelectItem>
+                    <SelectItem value="number">Number</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            {colEnrichKind === "ai" && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Prompt
+                </label>
+                <Textarea
+                  value={colPrompt}
+                  onChange={(e) => setColPrompt(e.target.value)}
+                  rows={4}
+                  placeholder="e.g. Em 1 frase: principal dor de quality engineering. Cite evidência."
+                  className="text-sm"
+                />
+              </div>
+            )}
+            {colEnrichKind === "people_field" && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Which contact field
+                </label>
+                <Select
+                  value={colPeopleField}
+                  onValueChange={(v) =>
+                    setColPeopleField(
+                      v as "linkedin" | "email" | "name" | "role",
+                    )
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="linkedin">LinkedIn</SelectItem>
+                    <SelectItem value="email">Email</SelectItem>
+                    <SelectItem value="name">Name</SelectItem>
+                    <SelectItem value="role">Role</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            {colEnrichKind !== "none" && (
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="size-3.5 rounded border"
+                  checked={colRunNow}
+                  onChange={(e) => setColRunNow(e.target.checked)}
+                />
+                Fill now
+                {selected.size > 0
+                  ? ` (${selected.size} selected)`
+                  : " (empty cells, up to 30)"}
+              </label>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setColumnDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={
+                colBusy ||
+                !colLabel.trim() ||
+                (colEnrichKind === "ai" && !colPrompt.trim())
+              }
+              onClick={() => void createDynamicColumn()}
+            >
+              {colBusy ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Sparkles className="size-4" />
+              )}
+              Add column
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Create list */}
       <Dialog
@@ -1583,7 +2489,7 @@ export function ResearchPage() {
                   void rowAction(drawerRowId, "qualify", { force: true })
                 }
               >
-                Score
+                Pack score
               </Button>
             </div>
             <div className="min-h-0 flex-1 space-y-5 overflow-auto p-4">
@@ -1820,30 +2726,75 @@ export function ResearchPage() {
                     )}
                   </section>
 
-                  {(drawerRow.whyNow || drawerRow.icpScore != null) && (
+                  {showIcpMeta &&
+                    (drawerRow.whyNow || drawerRow.icpScore != null) && (
+                      <section>
+                        <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                          Pack score
+                        </h3>
+                        <div className="flex items-center gap-2">
+                          <ScorePill
+                            score={drawerRow.icpScore}
+                            pass={drawerRow.pass}
+                          />
+                          {drawerRow.pass === true && (
+                            <Badge
+                              variant="outline"
+                              className="border-emerald-500/40 text-emerald-700 dark:text-emerald-400"
+                            >
+                              ICP pass
+                            </Badge>
+                          )}
+                        </div>
+                        {drawerRow.whyNow && (
+                          <p className="mt-2 text-sm text-muted-foreground">
+                            {drawerRow.whyNow}
+                          </p>
+                        )}
+                      </section>
+                    )}
+
+                  {customColumns.some((col) => {
+                    const cell = drawerRow.cells?.[col.key];
+                    return (
+                      cell &&
+                      (cell.value != null ||
+                        cell.error ||
+                        cell.status === "running")
+                    );
+                  }) && (
                     <section>
                       <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                        Context
+                        Columns
                       </h3>
-                      <div className="flex items-center gap-2">
-                        <ScorePill
-                          score={drawerRow.icpScore}
-                          pass={drawerRow.pass}
-                        />
-                        {drawerRow.pass === true && (
-                          <Badge
-                            variant="outline"
-                            className="border-emerald-500/40 text-emerald-700 dark:text-emerald-400"
-                          >
-                            ICP pass
-                          </Badge>
-                        )}
-                      </div>
-                      {drawerRow.whyNow && (
-                        <p className="mt-2 text-sm text-muted-foreground">
-                          {drawerRow.whyNow}
-                        </p>
-                      )}
+                      <ul className="space-y-2">
+                        {customColumns.map((col) => {
+                          const cell = drawerRow.cells?.[col.key];
+                          if (
+                            !cell ||
+                            (cell.value == null &&
+                              !cell.error &&
+                              cell.status !== "running")
+                          )
+                            return null;
+                          return (
+                            <li
+                              key={col.key}
+                              className="rounded-md border px-2.5 py-2 text-sm"
+                            >
+                              <div className="text-[11px] font-medium text-muted-foreground">
+                                {col.label}
+                              </div>
+                              <p className="mt-0.5">{formatCell(cell)}</p>
+                              {cell.evidence && (
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                  {cell.evidence}
+                                </p>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
                     </section>
                   )}
 
