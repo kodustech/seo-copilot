@@ -1374,21 +1374,6 @@ export function ResearchPage() {
         <div className="flex flex-wrap gap-1.5">
           <Button
             size="sm"
-            disabled={running || !tableId || rows.length === 0}
-            onClick={() => void runJob("people", { onlyIfPass: false })}
-          >
-            {running ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <Users className="size-3.5" />
-            )}
-            Find people
-            {selectedCompanyIds.length > 0
-              ? ` (${selectedCompanyIds.length})`
-              : ""}
-          </Button>
-          <Button
-            size="sm"
             variant="outline"
             disabled={!tableId}
             onClick={() => {
@@ -1423,7 +1408,30 @@ export function ResearchPage() {
                 <MoreHorizontal className="size-4" />
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="end" className="w-60 p-1">
+            <PopoverContent align="end" className="w-64 p-1">
+              <button
+                type="button"
+                className="flex w-full flex-col rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent disabled:opacity-50"
+                disabled={running || !tableId || rows.length === 0}
+                onClick={() => void runJob("people", { onlyIfPass: false })}
+              >
+                <span className="inline-flex items-center gap-2">
+                  {running ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Users className="size-3.5" />
+                  )}
+                  Enrich contacts
+                  {selectedCompanyIds.length > 0
+                    ? ` (${selectedCompanyIds.length} co.)`
+                    : companiesWithoutPeople > 0
+                      ? ` · ${companiesWithoutPeople} empty`
+                      : ""}
+                </span>
+                <span className="pl-5 text-[11px] text-muted-foreground">
+                  Find people on companies (waterfall)
+                </span>
+              </button>
               <button
                 type="button"
                 className="flex w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
@@ -1587,7 +1595,7 @@ export function ResearchPage() {
                     ) : flatPeople.length === 0 ? (
                       <div className="space-y-2">
                         <p>
-                          No people yet on these companies. Run Find people, or
+                          No contacts yet. Enrich companies to find people, or
                           switch to Companies view.
                         </p>
                         <div className="flex justify-center gap-2">
@@ -1599,7 +1607,7 @@ export function ResearchPage() {
                             disabled={running}
                           >
                             <Users className="size-3.5" />
-                            Find people
+                            Enrich contacts
                           </Button>
                           <Button
                             size="sm"
@@ -2313,7 +2321,7 @@ export function ResearchPage() {
             <DialogTitle>Import companies</DialogTitle>
             <DialogDescription>
               One domain or company per line. Then run{" "}
-              <strong>Find people</strong> to enrich contacts.
+              <strong>⋯ → Enrich contacts</strong> to find people on companies.
             </DialogDescription>
           </DialogHeader>
           <Textarea
@@ -2470,7 +2478,7 @@ export function ResearchPage() {
                 }
               >
                 <Users className="size-3.5" />
-                Find people
+                Find contacts
               </Button>
               <Button
                 size="sm"
