@@ -198,11 +198,18 @@ export async function POST(
         });
         return NextResponse.json({ ok: true, ...result });
       }
+      case "dedupe_people": {
+        const { dedupePeopleOnRow } = await import("@/lib/research/tables");
+        const result = await dedupePeopleOnRow(client, id, {
+          createdBy: userEmail,
+        });
+        return NextResponse.json({ ok: true, ...result });
+      }
       default:
         return NextResponse.json(
           {
             error:
-              "action must be crm | outreach | people | upsert_people | ai_column | qualify | people_history | people_restore | find_email",
+              "action must be crm | outreach | people | upsert_people | ai_column | qualify | people_history | people_restore | find_email | dedupe_people",
           },
           { status: 400 },
         );

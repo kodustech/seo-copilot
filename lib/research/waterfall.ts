@@ -609,48 +609,93 @@ async function tryWorkEmail(
   }
 }
 
+function waterfallIdentityKeys(p: WaterfallPerson): string[] {
+  const keys: string[] = [];
+  if (p.email?.trim()) keys.push(`e:${p.email.trim().toLowerCase()}`);
+  const li = p.linkedin?.trim().toLowerCase().replace(/\/$/, "");
+  if (li) {
+    const m = li.match(/linkedin\.com\/in\/([^/?#]+)/i);
+    keys.push(`li:${(m?.[1] ?? li).toLowerCase()}`);
+  }
+  const n = p.name
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (n) keys.push(`n:${n}`);
+  return keys;
+}
+
+function mergeWaterfallPerson(
+  prev: WaterfallPerson,
+  p: WaterfallPerson,
+): WaterfallPerson {
+  return {
+    name: prev.name.length >= p.name.length ? prev.name : p.name,
+    role: prev.role ?? p.role,
+    linkedin: prev.linkedin ?? p.linkedin,
+    email: prev.email ?? p.email,
+    emailStatus: prev.emailStatus ?? p.emailStatus,
+    emailSource: prev.emailSource ?? p.emailSource,
+    providerUsed:
+      prev.providerUsed &&
+      p.providerUsed &&
+      prev.providerUsed !== p.providerUsed
+        ? `${prev.providerUsed}+${p.providerUsed}`
+        : (prev.providerUsed ?? p.providerUsed),
+    confidence: Math.max(prev.confidence ?? 0, p.confidence ?? 0) || null,
+    notes: [prev.notes, p.notes].filter(Boolean).join(" | ") || null,
+  };
+}
+
 function mergePeople(
   a: WaterfallPerson[],
   b: WaterfallPerson[],
   max: number,
   personas: string[],
 ): WaterfallPerson[] {
-  const byKey = new Map<string, WaterfallPerson>();
-  // Prefer keys that keep all of `a` (existing) even when max is small
+  // Multi-key identity (name/LI/email) so email fill does not fork contacts
+  const clusters: WaterfallPerson[] = [];
+  const keyToIdx = new Map<string, number>();
+
   for (const p of [...a, ...b]) {
-    const key = (p.email ?? p.name).toLowerCase().trim();
-    if (!key) continue;
-    const prev = byKey.get(key);
-    if (!prev || (p.confidence ?? 0) > (prev.confidence ?? 0)) {
-      byKey.set(key, prev ? { ...p, email: p.email ?? prev.email, linkedin: p.linkedin ?? prev.linkedin, role: p.role ?? prev.role, notes: [prev.notes, p.notes].filter(Boolean).join(" | ") || null } : p);
+    const keys = waterfallIdentityKeys(p);
+    if (keys.length === 0) continue;
+    let idx: number | undefined;
+    for (const k of keys) {
+      if (keyToIdx.has(k)) {
+        idx = keyToIdx.get(k);
+        break;
+      }
+    }
+    if (idx === undefined) {
+      idx = clusters.length;
+      clusters.push(p);
     } else {
-      byKey.set(key, {
-        ...prev,
-        email: prev.email ?? p.email,
-        linkedin: prev.linkedin ?? p.linkedin,
-        role: prev.role ?? p.role,
-        notes: [prev.notes, p.notes].filter(Boolean).join(" | ") || null,
-        providerUsed:
-          prev.providerUsed && p.providerUsed && prev.providerUsed !== p.providerUsed
-            ? `${prev.providerUsed}+${p.providerUsed}`
-            : prev.providerUsed ?? p.providerUsed,
-      });
+      clusters[idx] = mergeWaterfallPerson(clusters[idx], p);
+    }
+    for (const k of waterfallIdentityKeys(clusters[idx])) {
+      keyToIdx.set(k, idx);
     }
   }
-  const sorted = [...byKey.values()].sort(
+
+  const sorted = [...clusters].sort(
     (x, y) =>
       rankPerson(y.role, personas) - rankPerson(x.role, personas) ||
       (y.confidence ?? 0) - (x.confidence ?? 0),
   );
+
   // Never drop anyone from set `a` (existing contacts on the row)
-  const aKeys = new Set(
-    a.map((p) => (p.email ?? p.name).toLowerCase().trim()).filter(Boolean),
+  const aNameKeys = new Set(
+    a.flatMap((p) => waterfallIdentityKeys(p)).filter(Boolean),
   );
   const mustKeep = sorted.filter((p) =>
-    aKeys.has((p.email ?? p.name).toLowerCase().trim()),
+    waterfallIdentityKeys(p).some((k) => aNameKeys.has(k)),
   );
   const extras = sorted.filter(
-    (p) => !aKeys.has((p.email ?? p.name).toLowerCase().trim()),
+    (p) => !waterfallIdentityKeys(p).some((k) => aNameKeys.has(k)),
   );
   const room = Math.max(0, max - mustKeep.length);
   return [...mustKeep, ...extras.slice(0, room)];
