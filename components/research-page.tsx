@@ -753,58 +753,74 @@ export function ResearchPage() {
     [activeTable?.columns],
   );
 
-  /** Preview then split list into Brasil / Global for language. */
-  const splitByMarket = async () => {
+  /** Move selected companies to a new or existing list (horizontal primitive). */
+  const moveSelectedToList = async () => {
     if (!token || !tableId || !activeTable) return;
+    const ids =
+      selected.size > 0
+        ? [...selected]
+        : filteredRows.map((r) => r.id);
+    if (ids.length === 0) {
+      setNotice("Select rows (or have rows visible) to move");
+      return;
+    }
+
+    const others = tables.filter((t) => t.id !== tableId);
+    const choice = window.prompt(
+      `Move ${ids.length} compan${ids.length === 1 ? "y" : "ies"}:\n\n` +
+        `• Type a NEW list name, or\n` +
+        `• Paste an existing list id/slug from:\n` +
+        others
+          .slice(0, 12)
+          .map((t) => `  - ${t.slug || t.id.slice(0, 8)}  (${t.name})`)
+          .join("\n") +
+        (others.length > 12 ? "\n  …" : "") +
+        `\n\nLeave empty to cancel.`,
+      selected.size > 0
+        ? `${activeTable.name} — subset`
+        : `${activeTable.name} — filtered`,
+    );
+    if (choice == null || !choice.trim()) return;
+
+    const dest = choice.trim();
+    const existing = tables.find(
+      (t) =>
+        t.id === dest ||
+        t.slug === dest ||
+        t.name.toLowerCase() === dest.toLowerCase(),
+    );
+
     setActionBusy(true);
     try {
-      const previewRes = await fetch(
-        `/api/research/tables/${tableId}/split`,
-        {
-          method: "POST",
-          headers: headers(),
-          body: JSON.stringify({ dry_run: true }),
-        },
-      );
-      const previewData = await previewRes.json();
-      if (!previewRes.ok) {
-        setNotice(previewData.error ?? "Preview failed");
-        return;
-      }
-      const p = previewData.preview ?? previewData;
-      const br = p.brazil ?? 0;
-      const world = p.world ?? 0;
-      const unk = p.unknown ?? 0;
-      const ok = confirm(
-        `Split “${activeTable.name}” by market?\n\n` +
-          `🇧🇷 Brasil: ${br}\n` +
-          `🌍 Global: ${world}\n` +
-          `❓ Unknown: ${unk}\n\n` +
-          `Creates two (or three) new lists and MOVES companies (people stay attached). ` +
-          `Unknown goes to its own list. Source list will be empty of moved rows.`,
-      );
-      if (!ok) return;
-
       const res = await fetch(`/api/research/tables/${tableId}/split`, {
         method: "POST",
         headers: headers(),
-        body: JSON.stringify({ confirm: true }),
+        body: JSON.stringify(
+          existing
+            ? {
+                mode: "move",
+                row_ids: ids,
+                target_table_id: existing.id,
+              }
+            : {
+                mode: "move",
+                row_ids: ids,
+                new_table_name: dest,
+              },
+        ),
       });
       const data = await res.json();
       if (!res.ok) {
-        setNotice(data.error ?? "Split failed");
+        setNotice(data.error ?? "Move failed");
         return;
       }
       setNotice(
-        `Split done → “${data.brazilTable?.name}” (${data.brazilTable?.moved}) · “${data.worldTable?.name}” (${data.worldTable?.moved})` +
-          (data.unknownTable
-            ? ` · “${data.unknownTable.name}” (${data.unknownTable.moved})`
-            : ""),
+        `Moved ${data.moved ?? 0} → “${data.target?.name ?? dest}”` +
+          (data.skipped ? ` (${data.skipped} already there)` : ""),
       );
+      setSelected(new Set());
       await loadTables();
-      if (data.brazilTable?.id) {
-        setTableId(data.brazilTable.id);
-      }
+      if (data.target?.id) setTableId(data.target.id);
       await loadRows();
     } finally {
       setActionBusy(false);
@@ -999,10 +1015,13 @@ export function ResearchPage() {
               <button
                 type="button"
                 className="flex w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
-                disabled={actionBusy || running || !tableId || rows.length === 0}
-                onClick={() => void splitByMarket()}
+                disabled={
+                  actionBusy || running || !tableId || filteredRows.length === 0
+                }
+                onClick={() => void moveSelectedToList()}
               >
-                Split Brasil / Global…
+                Move {selected.size > 0 ? `selected (${selected.size})` : "visible"}{" "}
+                to list…
               </button>
               <button
                 type="button"
