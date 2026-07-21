@@ -134,7 +134,7 @@ Return a JSON array (no prose). Each item:
 - name: full name (required)
 - role: job title or function, if shown
 - email: include ONLY if explicitly visible on the page (do not guess)
-- profileUrl: Twitter / LinkedIn / GitHub URL if linked from the page
+- profileUrl: ONLY if the page HTML clearly links to that person's profile (linkedin.com/in/..., twitter, github). NEVER invent or guess a LinkedIn URL from the name alone. If not explicitly linked, omit profileUrl or set null.
 - sourceUrl: which page header (e.g. "Page 2: ...") this person was found on
 - notes: one short line that helps prioritize (e.g. "founder, technical background")
 
@@ -143,6 +143,7 @@ Skip:
 - Board members of unrelated companies
 - People who clearly left ("formerly", "alumni")
 - Generic placeholder names
+- Guessed LinkedIn URLs (wrong-person risk)
 
 Return at most 15 people. If none, return []. JSON only.`;
 
