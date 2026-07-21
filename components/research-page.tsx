@@ -753,32 +753,27 @@ export function ResearchPage() {
     [activeTable?.columns],
   );
 
-  /** Move selected companies to a new or existing list (horizontal primitive). */
+  /** Move selected companies to a new or existing list. */
   const moveSelectedToList = async () => {
     if (!token || !tableId || !activeTable) return;
-    const ids =
-      selected.size > 0
-        ? [...selected]
-        : filteredRows.map((r) => r.id);
-    if (ids.length === 0) {
-      setNotice("Select rows (or have rows visible) to move");
+    if (selected.size === 0) {
+      setNotice("Select the companies you want to move first (checkboxes).");
       return;
     }
+    const ids = [...selected];
 
     const others = tables.filter((t) => t.id !== tableId);
     const choice = window.prompt(
-      `Move ${ids.length} compan${ids.length === 1 ? "y" : "ies"}:\n\n` +
+      `Move ${ids.length} selected compan${ids.length === 1 ? "y" : "ies"}:\n\n` +
         `• Type a NEW list name, or\n` +
-        `• Paste an existing list id/slug from:\n` +
+        `• Existing list slug/id:\n` +
         others
           .slice(0, 12)
           .map((t) => `  - ${t.slug || t.id.slice(0, 8)}  (${t.name})`)
           .join("\n") +
         (others.length > 12 ? "\n  …" : "") +
-        `\n\nLeave empty to cancel.`,
-      selected.size > 0
-        ? `${activeTable.name} — subset`
-        : `${activeTable.name} — filtered`,
+        `\n\nCancel = empty.`,
+      `${activeTable.name} — moved`,
     );
     if (choice == null || !choice.trim()) return;
 
@@ -1016,12 +1011,12 @@ export function ResearchPage() {
                 type="button"
                 className="flex w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
                 disabled={
-                  actionBusy || running || !tableId || filteredRows.length === 0
+                  actionBusy || running || !tableId || selected.size === 0
                 }
                 onClick={() => void moveSelectedToList()}
               >
-                Move {selected.size > 0 ? `selected (${selected.size})` : "visible"}{" "}
-                to list…
+                Move selected
+                {selected.size > 0 ? ` (${selected.size})` : ""} to list…
               </button>
               <button
                 type="button"
