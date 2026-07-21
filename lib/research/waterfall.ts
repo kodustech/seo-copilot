@@ -865,28 +865,46 @@ export async function fillEmailForPerson(
     }
   }
 
-  // 2) Pattern + verify until valid / catchall
+  // 2) Pattern + verify until valid / catchall (requires NeverBounce)
   if (!email) {
     const patterns = emailPatternsForName(target.name, domain).slice(0, 8);
     if (patterns.length === 0) {
       throw new Error("Could not build email patterns from name");
     }
     const verified = await verifyEmails(patterns);
-    const pick =
-      verified.find((v) => v.status === "valid") ??
-      verified.find((v) => v.status === "catchall") ??
-      verified.find((v) => v.status === "unknown" && !v.error) ??
-      null;
-    if (pick && (pick.status === "valid" || pick.status === "catchall" || pick.status === "unknown")) {
-      email = pick.email;
-      emailStatus = pick.status;
-      emailSource = "pattern";
-      notes = appendNote(notes, `email_pattern:${pick.status}`);
-      providerUsed = `${providerUsed ?? "pattern"}+neverbounce`;
-      confidence =
-        pick.status === "valid" ? 0.95 : pick.status === "catchall" ? 0.6 : 0.4;
-      foundNew = true;
+    // Never persist config_missing as a real verification result
+    const nbConfigured = verified.some((v) => v.status !== "config_missing");
+    if (!nbConfigured) {
+      // Provider path already tried; without NB we won't guess patterns
+      notes = appendNote(notes, "email_lookup:neverbounce_missing");
     } else {
+      const pick =
+        verified.find((v) => v.status === "valid") ??
+        verified.find((v) => v.status === "catchall") ??
+        verified.find((v) => v.status === "unknown" && !v.error) ??
+        null;
+      if (
+        pick &&
+        (pick.status === "valid" ||
+          pick.status === "catchall" ||
+          pick.status === "unknown")
+      ) {
+        email = pick.email;
+        emailStatus = pick.status;
+        emailSource = "pattern";
+        notes = appendNote(notes, `email_pattern:${pick.status}`);
+        providerUsed = `${providerUsed ?? "pattern"}+neverbounce`;
+        confidence =
+          pick.status === "valid"
+            ? 0.95
+            : pick.status === "catchall"
+              ? 0.6
+              : 0.4;
+        foundNew = true;
+      }
+    }
+
+    if (!email) {
       await savePeople(
         client,
         rowId,
@@ -924,9 +942,17 @@ export async function fillEmailForPerson(
   }
 
   // 3) Verify (or re-verify) with NeverBounce
-  if (email && (!emailStatus || foundNew || emailStatus === "unknown")) {
-    const [v] = await verifyEmails([email]);
-    if (v) {
+  // Also re-verify junk statuses left by earlier local runs without API key
+  const needsVerify =
+    email &&
+    (foundNew ||
+      !emailStatus ||
+      emailStatus === "unknown" ||
+      emailStatus === "config_missing" ||
+      emailStatus === "error");
+  if (needsVerify) {
+    const [v] = await verifyEmails([email!]);
+    if (v && v.status !== "config_missing") {
       emailStatus = v.status;
       providerUsed = `${providerUsed ?? "unknown"}+neverbounce`;
       if (v.status === "valid") confidence = Math.max(confidence ?? 0, 0.95);
@@ -935,9 +961,12 @@ export async function fillEmailForPerson(
       else if (v.status === "invalid") confidence = 0.1;
       notes = appendNote(notes, `verify:${v.status}`);
       if (v.status === "invalid" && foundNew) {
-        // Pattern said something but NB invalid — keep email with status so user sees it
         notes = appendNote(notes, "nb_invalid");
       }
+    } else if (v?.status === "config_missing") {
+      // Don't write config_missing into DB — leave unverified
+      if (emailStatus === "config_missing") emailStatus = null;
+      notes = appendNote(notes, "verify:skipped_nb_missing");
     }
   }
 
