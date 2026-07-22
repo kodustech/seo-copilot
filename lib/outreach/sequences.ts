@@ -442,18 +442,14 @@ async function insertEnrollment(
   snap: ContactSnapshot,
   enrolledByEmail: string | null,
   firstStep: OutreachSequenceStep,
+  opts?: { sequenceHasEmailSteps?: boolean },
 ): Promise<
   | { enrollment: OutreachEnrollment; task: OutreachSendTask; warning?: string }
   | null
   | { skipped: true; reason: string }
 > {
-  // Need contact path for first step
-  if (firstStep.channel === "email" && !snap.contactEmail) {
-    return {
-      skipped: true,
-      reason: `${snap.contactName ?? snap.companyName}: missing email (first step is email)`,
-    };
-  }
+  // Always enroll when we have a contact name or company. Missing email no longer blocks —
+  // email steps are skipped with a clear warning/task error.
   if (
     firstStep.channel === "linkedin" &&
     !snap.contactLinkedin &&
@@ -465,12 +461,13 @@ async function insertEnrollment(
     };
   }
 
+  const who = snap.contactName ?? snap.companyName;
   let warning: string | undefined;
   if (firstStep.channel === "linkedin" && !snap.contactLinkedin) {
     warning = "Missing LinkedIn URL — will show in queue without profile link";
   }
-  if (firstStep.channel === "email" && !snap.contactEmail) {
-    warning = "Missing email";
+  if (!snap.contactEmail?.trim() && opts?.sequenceHasEmailSteps !== false) {
+    warning = `${who}: no email — email steps for this lead will be skipped`;
   }
 
   const { data: enr, error } = await client
@@ -501,13 +498,24 @@ async function insertEnrollment(
     throw new Error(error.message);
   }
 
-  const enrollment = mapEnrollment(enr as Record<string, unknown>);
-  const task = await createTaskForStep(
+  let enrollment = mapEnrollment(enr as Record<string, unknown>);
+  let task = await createTaskForStep(
     client,
     enrollment,
     firstStep,
     new Date(),
   );
+
+  // First step email with no address: already skipped — advance past consecutive email steps
+  if (
+    task.status === "skipped" &&
+    firstStep.channel === "email" &&
+    !snap.contactEmail?.trim()
+  ) {
+    const advanced = await advanceEnrollment(client, enrollment.id);
+    if (advanced) enrollment = advanced;
+  }
+
   return { enrollment, task, warning };
 }
 
@@ -528,7 +536,13 @@ async function createTaskForStep(
   const seqStatus = await getSequenceStatus(client, enrollment.sequenceId);
   const sequenceLive = seqStatus === "active";
   let status: OutreachSendTask["status"] = "scheduled";
-  if (
+  let taskError: string | null = null;
+
+  // No email → never put email work on the send queue
+  if (step.channel === "email" && !enrollment.contactEmail?.trim()) {
+    status = "skipped";
+    taskError = "No contact email — email step skipped";
+  } else if (
     sequenceLive &&
     step.channel === "linkedin" &&
     step.mode === "semi" &&
@@ -548,6 +562,7 @@ async function createTaskForStep(
       scheduled_for: due.toISOString(),
       rendered_subject: subject,
       rendered_body: body,
+      error: taskError,
       provider:
         step.channel === "email"
           ? step.mode === "auto"
@@ -557,6 +572,7 @@ async function createTaskForStep(
       meta: {
         linkedin_action: step.linkedinAction,
         profile_url: enrollment.contactLinkedin,
+        skipped_reason: taskError ? "missing_email" : undefined,
       },
     })
     .select("*")
@@ -640,6 +656,7 @@ export async function enrollFromResearch(
           },
           input.enrolledByEmail ?? null,
           first,
+          { sequenceHasEmailSteps: needsEmailLater },
         );
         if (result && "skipped" in result && result.skipped) {
           skipped += 1;
@@ -650,15 +667,18 @@ export async function enrollFromResearch(
           enrolled += 1;
           if (!p.linkedin && needsLinkedinLater) {
             missingLinkedin += 1;
-            warnings.push(
-              `${p.name}: enrolled without LinkedIn`,
-            );
+            warnings.push(`${p.name}: enrolled without LinkedIn`);
           }
           if (!p.email && needsEmailLater) {
             missingEmail += 1;
-            warnings.push(`${p.name}: enrolled without email`);
+            // Prefer the structured warning from insertEnrollment
+            if (!result.warning) {
+              warnings.push(
+                `${p.name}: no email — email steps will be skipped`,
+              );
+            }
           }
-          if (result.warning) warnings.push(`${p.name}: ${result.warning}`);
+          if (result.warning) warnings.push(result.warning);
         } else {
           skipped += 1;
         }
@@ -718,6 +738,7 @@ export async function enrollFromProspects(
         skipped += 1;
         continue;
       }
+      const hasEmailSteps = seq.steps.some((s) => s.channel === "email");
       const result = await insertEnrollment(
         client,
         input.sequenceId,
@@ -733,12 +754,14 @@ export async function enrollFromProspects(
         },
         input.enrolledByEmail ?? null,
         first,
+        { sequenceHasEmailSteps: hasEmailSteps },
       );
       if (result && "skipped" in result && result.skipped) {
         skipped += 1;
         errors.push(result.reason);
       } else if (result && "enrollment" in result) {
         enrolled += 1;
+        if (result.warning) errors.push(result.warning); // surface as notice list
       } else {
         skipped += 1;
       }
@@ -964,14 +987,17 @@ async function advanceEnrollment(
   }
 
   const when = new Date(Date.now() + next.delayHours * 3600 * 1000);
-  await createTaskForStep(client, enrollment, next, when);
-
-  // if next is linkedin semi and delay is 0 / past, already ready
-  // if email auto in future, processDue will handle
-
-  // If linkedin and scheduled in past... createTaskForStep sets ready for LI always
-  // For delayed LI, should stay scheduled until due — fix createTaskForStep
-  // Actually for delay > 0 linkedin we need scheduled first. Fix below in runner.
+  // Use enrollment snapshot with next position for template/skip logic
+  const enrollmentAtNext: OutreachEnrollment = {
+    ...enrollment,
+    currentStepPosition: next.position,
+  };
+  const nextTask = await createTaskForStep(
+    client,
+    enrollmentAtNext,
+    next,
+    when,
+  );
 
   const { data } = await client
     .from("outreach_enrollments")
@@ -984,7 +1010,20 @@ async function advanceEnrollment(
     .select("*")
     .single();
 
-  return data ? mapEnrollment(data as Record<string, unknown>) : enrollment;
+  const updated = data
+    ? mapEnrollment(data as Record<string, unknown>)
+    : enrollmentAtNext;
+
+  // Chain-skip email steps when lead has no email (don't leave dead scheduled tasks)
+  if (
+    nextTask.status === "skipped" &&
+    next.channel === "email" &&
+    !enrollment.contactEmail?.trim()
+  ) {
+    return advanceEnrollment(client, enrollmentId);
+  }
+
+  return updated;
 }
 
 /**
