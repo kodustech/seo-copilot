@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import {
   deleteSequence,
   getSequence,
+  getSequenceHealth,
   listEnrollments,
   replaceSteps,
   updateSequence,
@@ -21,8 +22,11 @@ export async function GET(req: Request, ctx: Ctx) {
     if (!detail) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
-    const enrollments = await listEnrollments(client, id);
-    return NextResponse.json({ ...detail, enrollments });
+    const [enrollments, health] = await Promise.all([
+      listEnrollments(client, id),
+      getSequenceHealth(client, id),
+    ]);
+    return NextResponse.json({ ...detail, enrollments, health });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Unauthorized" },

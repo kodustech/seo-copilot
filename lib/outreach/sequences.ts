@@ -11,6 +11,7 @@ import type {
   SequenceStatus,
   StepChannel,
   StepMode,
+  TaskStatus,
 } from "@/lib/outreach/sequence-types";
 import { listPeople, listRows } from "@/lib/research/tables";
 import { resolveTable } from "@/lib/research/columns";
@@ -1282,9 +1283,323 @@ export async function listEnrollments(
     .select("*")
     .eq("sequence_id", sequenceId)
     .order("created_at", { ascending: false })
-    .limit(200);
+    .limit(500);
   if (error) throw new Error(error.message);
   return (data ?? []).map((r) => mapEnrollment(r as Record<string, unknown>));
+}
+
+export type SequenceStepProgress = {
+  position: number;
+  channel: StepChannel;
+  mode: StepMode;
+  linkedinAction: LinkedinAction | null;
+  /** Best task status for this step (none if not reached) */
+  status: TaskStatus | "pending" | "none";
+  error: string | null;
+  scheduledFor: string | null;
+  sentAt: string | null;
+};
+
+export type SequenceLeadProgress = {
+  enrollment: OutreachEnrollment;
+  steps: SequenceStepProgress[];
+  completedSteps: number;
+  totalSteps: number;
+  /** 0–100 */
+  progressPct: number;
+  lastTaskError: string | null;
+};
+
+export type SequenceHealth = {
+  sequenceId: string;
+  totalSteps: number;
+  enrollments: {
+    total: number;
+    byStatus: Record<string, number>;
+  };
+  tasks: {
+    total: number;
+    byStatus: Record<string, number>;
+    email: Record<string, number>;
+    linkedin: Record<string, number>;
+  };
+  rates: {
+    /** bounced enrollments / total enrollments */
+    bounceRate: number;
+    /** failed email tasks / (sent+failed email tasks) */
+    emailFailRate: number;
+    /** skipped / (sent+skipped+failed) */
+    skipRate: number;
+    /** completed enrollments / total */
+    completionRate: number;
+  };
+  recentErrors: Array<{
+    contactName: string | null;
+    companyName: string;
+    channel: string;
+    error: string;
+    at: string;
+    enrollmentStatus: string;
+  }>;
+  leads: SequenceLeadProgress[];
+  steps: Array<{
+    position: number;
+    channel: StepChannel;
+    mode: StepMode;
+    linkedinAction: LinkedinAction | null;
+  }>;
+};
+
+function emptyCountMap(keys: string[]): Record<string, number> {
+  const m: Record<string, number> = {};
+  for (const k of keys) m[k] = 0;
+  return m;
+}
+
+/**
+ * Health + per-lead progress for a sequence dashboard.
+ */
+export async function getSequenceHealth(
+  client: SupabaseClient,
+  sequenceId: string,
+): Promise<SequenceHealth | null> {
+  const detail = await getSequence(client, sequenceId);
+  if (!detail) return null;
+  const { steps } = detail;
+  const enrollments = await listEnrollments(client, sequenceId);
+
+  const enrByStatus = emptyCountMap([
+    "active",
+    "paused",
+    "completed",
+    "replied",
+    "bounced",
+    "failed",
+    "cancelled",
+  ]);
+  for (const e of enrollments) {
+    enrByStatus[e.status] = (enrByStatus[e.status] ?? 0) + 1;
+  }
+
+  const taskStatusKeys = [
+    "scheduled",
+    "ready",
+    "sending",
+    "sent",
+    "failed",
+    "skipped",
+    "cancelled",
+  ];
+  const tasksByStatus = emptyCountMap(taskStatusKeys);
+  const emailByStatus = emptyCountMap(taskStatusKeys);
+  const linkedinByStatus = emptyCountMap(taskStatusKeys);
+
+  const enrollmentIds = enrollments.map((e) => e.id);
+  let allTasks: OutreachSendTask[] = [];
+  if (enrollmentIds.length > 0) {
+    // chunk in case of many enrollments
+    const chunk = 100;
+    for (let i = 0; i < enrollmentIds.length; i += chunk) {
+      const slice = enrollmentIds.slice(i, i + chunk);
+      const { data, error } = await client
+        .from("outreach_send_tasks")
+        .select("*")
+        .in("enrollment_id", slice)
+        .order("created_at", { ascending: true });
+      if (error) throw new Error(error.message);
+      allTasks = allTasks.concat(
+        (data ?? []).map((r) => mapTask(r as Record<string, unknown>)),
+      );
+    }
+  }
+
+  for (const t of allTasks) {
+    tasksByStatus[t.status] = (tasksByStatus[t.status] ?? 0) + 1;
+    if (t.channel === "email") {
+      emailByStatus[t.status] = (emailByStatus[t.status] ?? 0) + 1;
+    } else {
+      linkedinByStatus[t.status] = (linkedinByStatus[t.status] ?? 0) + 1;
+    }
+  }
+
+  const enrTotal = enrollments.length || 1;
+  const bounced = enrByStatus.bounced ?? 0;
+  const completed = enrByStatus.completed ?? 0;
+  const emailSent = emailByStatus.sent ?? 0;
+  const emailFailed = emailByStatus.failed ?? 0;
+  const emailSkipped = emailByStatus.skipped ?? 0;
+  const emailDecided = emailSent + emailFailed + emailSkipped;
+  const allDecided =
+    (tasksByStatus.sent ?? 0) +
+    (tasksByStatus.failed ?? 0) +
+    (tasksByStatus.skipped ?? 0);
+
+  const tasksByEnrollment = new Map<string, OutreachSendTask[]>();
+  for (const t of allTasks) {
+    const list = tasksByEnrollment.get(t.enrollmentId) ?? [];
+    list.push(t);
+    tasksByEnrollment.set(t.enrollmentId, list);
+  }
+
+  const stepById = new Map(steps.map((s) => [s.id, s]));
+
+  const leads: SequenceLeadProgress[] = enrollments.map((enrollment) => {
+    const tasks = tasksByEnrollment.get(enrollment.id) ?? [];
+    // Best status per step position (prefer sent > failed > skipped > ready > scheduled)
+    const rank = (s: TaskStatus | "pending" | "none") => {
+      const order: Record<string, number> = {
+        sent: 6,
+        failed: 5,
+        skipped: 4,
+        sending: 3,
+        ready: 2,
+        scheduled: 1,
+        cancelled: 0,
+        pending: 0,
+        none: -1,
+      };
+      return order[s] ?? 0;
+    };
+    const byPos = new Map<number, OutreachSendTask>();
+    for (const t of tasks) {
+      const step = stepById.get(t.stepId);
+      const pos = step?.position ?? -1;
+      if (pos < 0) continue;
+      const prev = byPos.get(pos);
+      if (!prev || rank(t.status) >= rank(prev.status)) byPos.set(pos, t);
+    }
+
+    const stepProgress: SequenceStepProgress[] = steps.map((s) => {
+      const t = byPos.get(s.position);
+      if (!t) {
+        // Not started: if current position passed this step and enrollment done, mark pending/none
+        const reached =
+          enrollment.status === "completed" ||
+          enrollment.currentStepPosition > s.position ||
+          (enrollment.currentStepPosition === s.position &&
+            enrollment.status === "active");
+        return {
+          position: s.position,
+          channel: s.channel,
+          mode: s.mode,
+          linkedinAction: s.linkedinAction,
+          status: reached && enrollment.currentStepPosition === s.position
+            ? "pending"
+            : enrollment.currentStepPosition > s.position
+              ? "pending"
+              : "none",
+          error: null,
+          scheduledFor: null,
+          sentAt: null,
+        };
+      }
+      return {
+        position: s.position,
+        channel: s.channel,
+        mode: s.mode,
+        linkedinAction: s.linkedinAction,
+        status: t.status,
+        error: t.error,
+        scheduledFor: t.scheduledFor,
+        sentAt: t.sentAt,
+      };
+    });
+
+    const doneStatuses = new Set(["sent", "skipped", "failed", "cancelled"]);
+    const completedSteps = stepProgress.filter((s) =>
+      doneStatuses.has(s.status),
+    ).length;
+    const totalSteps = steps.length;
+    const progressPct =
+      totalSteps === 0
+        ? 0
+        : enrollment.status === "completed"
+          ? 100
+          : Math.round((completedSteps / totalSteps) * 100);
+
+    const lastTaskError =
+      enrollment.lastError ??
+      [...tasks]
+        .reverse()
+        .find((t) => t.error)?.error ??
+      null;
+
+    return {
+      enrollment,
+      steps: stepProgress,
+      completedSteps,
+      totalSteps,
+      progressPct,
+      lastTaskError,
+    };
+  });
+
+  // Recent errors: failed tasks + bounced enrollments
+  const recentErrors: SequenceHealth["recentErrors"] = [];
+  for (const t of [...allTasks].reverse()) {
+    if (t.status !== "failed" && !(t.status === "skipped" && t.error)) continue;
+    if (!t.error) continue;
+    const enr = enrollments.find((e) => e.id === t.enrollmentId);
+    if (!enr) continue;
+    recentErrors.push({
+      contactName: enr.contactName,
+      companyName: enr.companyName,
+      channel: t.channel,
+      error: t.error,
+      at: t.updatedAt || t.sentAt || t.createdAt,
+      enrollmentStatus: enr.status,
+    });
+    if (recentErrors.length >= 25) break;
+  }
+  for (const e of enrollments) {
+    if (e.status !== "bounced" && e.status !== "failed") continue;
+    if (!e.lastError) continue;
+    if (recentErrors.some((r) => r.error === e.lastError && r.companyName === e.companyName))
+      continue;
+    recentErrors.unshift({
+      contactName: e.contactName,
+      companyName: e.companyName,
+      channel: "email",
+      error: e.lastError,
+      at: e.updatedAt,
+      enrollmentStatus: e.status,
+    });
+  }
+
+  return {
+    sequenceId,
+    totalSteps: steps.length,
+    enrollments: {
+      total: enrollments.length,
+      byStatus: enrByStatus,
+    },
+    tasks: {
+      total: allTasks.length,
+      byStatus: tasksByStatus,
+      email: emailByStatus,
+      linkedin: linkedinByStatus,
+    },
+    rates: {
+      bounceRate: Math.round((bounced / enrTotal) * 1000) / 10,
+      emailFailRate:
+        emailDecided === 0
+          ? 0
+          : Math.round((emailFailed / emailDecided) * 1000) / 10,
+      skipRate:
+        allDecided === 0
+          ? 0
+          : Math.round(((tasksByStatus.skipped ?? 0) / allDecided) * 1000) / 10,
+      completionRate: Math.round((completed / enrTotal) * 1000) / 10,
+    },
+    recentErrors: recentErrors.slice(0, 25),
+    leads,
+    steps: steps.map((s) => ({
+      position: s.position,
+      channel: s.channel,
+      mode: s.mode,
+      linkedinAction: s.linkedinAction,
+    })),
+  };
 }
 
 
