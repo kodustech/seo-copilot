@@ -2,6 +2,8 @@ export type SequenceStatus = "draft" | "active" | "paused" | "archived";
 export type StepChannel = "email" | "linkedin";
 export type StepMode = "auto" | "semi";
 export type LinkedinAction = "connect_note" | "message";
+/** Email steps only: open a new thread or reply to the last email in this enrollment. */
+export type EmailThreadMode = "new" | "reply";
 export type EnrollmentSource = "research" | "outreach" | "manual";
 export type EnrollmentStatus =
   | "active"
@@ -44,6 +46,8 @@ export type OutreachSequenceStep = {
   subjectTemplate: string | null;
   bodyTemplate: string;
   stopOnReply: boolean;
+  /** email only; null on linkedin steps */
+  emailThreadMode: EmailThreadMode | null;
   createdAt: string;
 };
 

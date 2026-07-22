@@ -4626,6 +4626,12 @@ const sequenceStepSchema = z.object({
     .enum(["connect_note", "message"])
     .optional()
     .describe("Required for linkedin steps"),
+  email_thread_mode: z
+    .enum(["new", "reply"])
+    .optional()
+    .describe(
+      "Email only: new = start a new conversation; reply = In-Reply-To previous email for this lead (default reply if omitted)",
+    ),
   subject_template: z
     .string()
     .optional()
@@ -4646,12 +4652,19 @@ function mapStepInput(
   linkedinAction?: "connect_note" | "message" | null;
   subjectTemplate?: string | null;
   bodyTemplate: string;
+  emailThreadMode?: "new" | "reply" | null;
 } {
   const channel = s.channel;
   return {
     channel,
     mode: channel === "linkedin" ? "semi" : s.mode === "semi" ? "semi" : "auto",
     delayHours: s.delay_hours ?? 0,
+    emailThreadMode:
+      channel === "email"
+        ? s.email_thread_mode === "new"
+          ? "new"
+          : "reply"
+        : null,
     linkedinAction:
       channel === "linkedin"
         ? (s.linkedin_action ?? "connect_note")
