@@ -264,6 +264,7 @@ export async function replaceSteps(
   }>,
 ): Promise<OutreachSequenceStep[]> {
   // LinkedIn auto not supported in v1 — force semi
+  let hasPreviousEmail = false;
   const normalized = steps.map((s, i) => {
     const mode: StepMode =
       s.channel === "linkedin" ? "semi" : s.mode === "semi" ? "semi" : "auto";
@@ -273,9 +274,11 @@ export async function replaceSteps(
     if (s.channel === "email" && mode === "auto" && !s.bodyTemplate.trim()) {
       throw new Error(`Step ${i + 1}: body_template required`);
     }
+    const isFirstEmail = s.channel === "email" && !hasPreviousEmail;
+    if (s.channel === "email") hasPreviousEmail = true;
     const emailThreadMode =
       s.channel === "email"
-        ? s.emailThreadMode === "new"
+        ? isFirstEmail || s.emailThreadMode === "new"
           ? "new"
           : "reply"
         : null;
@@ -1206,13 +1209,15 @@ async function sendDueEmailTask(
     .select("email_thread_mode, position")
     .eq("id", task.stepId)
     .maybeSingle();
-  const threadMode =
+  const requestedThreadMode =
     (stepRow?.email_thread_mode as string | null) === "new" ? "new" : "reply";
 
   const priorThread =
-    threadMode === "reply"
+    requestedThreadMode === "reply"
       ? await getEnrollmentEmailThread(client, enrollment.id)
       : null;
+  // A reply cannot exist without an earlier sent email for this enrollment.
+  const threadMode = priorThread ? "reply" : "new";
 
   // Reply mode: subject follows the thread root (Re: original) for client threading
   if (threadMode === "reply" && priorThread?.rootSubject?.trim()) {
@@ -1222,6 +1227,9 @@ async function sendDueEmailTask(
     if (!subject.trim() || /^re:\s/i.test(subject.trim())) {
       subject = desired;
     }
+  } else if (requestedThreadMode === "reply") {
+    // A stale/invalid first-step reply is sent as a fresh conversation.
+    subject = subject.replace(/^(re:\s*)+/i, "");
   }
 
   const send = await sendOutreachEmail(client, {
