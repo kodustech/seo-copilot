@@ -61,6 +61,8 @@ type StepDraft = {
   mode: "auto" | "semi";
   delayHours: number;
   linkedinAction: "connect_note" | "message" | null;
+  /** email only: new conversation vs reply in previous thread */
+  emailThreadMode: "new" | "reply";
   subjectTemplate: string;
   bodyTemplate: string;
 };
@@ -234,6 +236,7 @@ function blankStep(channel: "email" | "linkedin"): StepDraft {
       mode: "auto",
       delayHours: 24,
       linkedinAction: null,
+      emailThreadMode: "new",
       subjectTemplate: "Quick note for {{company}}",
       bodyTemplate: `Hi {{first_name}},
 
@@ -248,6 +251,7 @@ Noticed {{company}} is investing in quality. Worth a quick chat?
     mode: "semi",
     delayHours: 0,
     linkedinAction: "connect_note",
+    emailThreadMode: "new",
     subjectTemplate: "",
     bodyTemplate:
       "Hey {{first_name}} — saw {{company}} is hiring for QA. Open to a quick chat?",
@@ -259,6 +263,9 @@ function mapApiStep(s: Record<string, unknown>): StepDraft {
   const action = String(
     s.linkedinAction ?? s.linkedin_action ?? "message",
   ) as "connect_note" | "message";
+  const threadRaw = String(
+    s.emailThreadMode ?? s.email_thread_mode ?? "reply",
+  );
   return {
     key: newKey(),
     channel,
@@ -270,6 +277,7 @@ function mapApiStep(s: Record<string, unknown>): StepDraft {
           : "auto",
     delayHours: Number(s.delayHours ?? s.delay_hours ?? 0),
     linkedinAction: channel === "linkedin" ? action : null,
+    emailThreadMode: channel === "email" && threadRaw === "new" ? "new" : "reply",
     subjectTemplate: String(s.subjectTemplate ?? s.subject_template ?? ""),
     bodyTemplate: String(s.bodyTemplate ?? s.body_template ?? ""),
   };
@@ -281,7 +289,8 @@ function stepTitle(s: StepDraft): string {
       ? "Connection request"
       : "LinkedIn message";
   }
-  return s.mode === "auto" ? "Auto email" : "Manual email";
+  const mode = s.mode === "auto" ? "Auto email" : "Manual email";
+  return s.emailThreadMode === "reply" ? `${mode} · reply` : `${mode} · new`;
 }
 
 function StatusDot({ status }: { status: string }) {
@@ -582,6 +591,8 @@ export function SequencesPage() {
             subjectTemplate:
               s.channel === "email" ? s.subjectTemplate || null : null,
             bodyTemplate: s.bodyTemplate,
+            emailThreadMode:
+              s.channel === "email" ? s.emailThreadMode : null,
           })),
         }),
       });
@@ -685,6 +696,7 @@ export function SequencesPage() {
         if (patch.channel === "email") {
           next.mode = next.mode === "semi" ? "semi" : "auto";
           next.linkedinAction = null;
+          if (!next.emailThreadMode) next.emailThreadMode = "new";
           if (!next.subjectTemplate) {
             next.subjectTemplate = "Quick note for {{company}}";
           }
@@ -1952,6 +1964,37 @@ export function SequencesPage() {
                                       },
                                     ]}
                                   />
+                                </div>
+                              )}
+
+                              {step.channel === "email" && (
+                                <div className="space-y-1.5">
+                                  <p className="text-[11px] font-medium text-muted-foreground">
+                                    Conversation
+                                  </p>
+                                  <Segmented
+                                    value={step.emailThreadMode}
+                                    onChange={(v) =>
+                                      updateStep(step.key, {
+                                        emailThreadMode: v,
+                                      })
+                                    }
+                                    options={[
+                                      {
+                                        value: "new" as const,
+                                        label: "New thread",
+                                      },
+                                      {
+                                        value: "reply" as const,
+                                        label: "Reply in thread",
+                                      },
+                                    ]}
+                                  />
+                                  <p className="text-[11px] text-muted-foreground">
+                                    {step.emailThreadMode === "reply"
+                                      ? "Sends as a reply to the previous email for this lead (same Gmail thread)."
+                                      : "Starts a brand-new email conversation (no In-Reply-To)."}
+                                  </p>
                                 </div>
                               )}
 

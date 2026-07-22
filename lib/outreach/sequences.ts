@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { renderTemplate } from "@/lib/outreach/renderer";
 import type {
+  EmailThreadMode,
   EnrollmentSource,
   LinkedinAction,
   OutreachEnrollment,
@@ -35,17 +36,24 @@ function mapSequence(r: Record<string, unknown>): OutreachSequence {
 }
 
 function mapStep(r: Record<string, unknown>): OutreachSequenceStep {
+  const channel = r.channel as StepChannel;
+  const rawThread = r.email_thread_mode as string | null | undefined;
+  let emailThreadMode: EmailThreadMode | null = null;
+  if (channel === "email") {
+    emailThreadMode = rawThread === "new" ? "new" : "reply";
+  }
   return {
     id: r.id as string,
     sequenceId: r.sequence_id as string,
     position: Number(r.position),
-    channel: r.channel as StepChannel,
+    channel,
     mode: r.mode as StepMode,
     delayHours: Number(r.delay_hours ?? 0),
     linkedinAction: (r.linkedin_action as LinkedinAction | null) ?? null,
     subjectTemplate: (r.subject_template as string | null) ?? null,
     bodyTemplate: (r.body_template as string) ?? "",
     stopOnReply: Boolean(r.stop_on_reply ?? true),
+    emailThreadMode,
     createdAt: r.created_at as string,
   };
 }
@@ -252,6 +260,7 @@ export async function replaceSteps(
     subjectTemplate?: string | null;
     bodyTemplate: string;
     stopOnReply?: boolean;
+    emailThreadMode?: EmailThreadMode | null;
   }>,
 ): Promise<OutreachSequenceStep[]> {
   // LinkedIn auto not supported in v1 — force semi
@@ -264,6 +273,12 @@ export async function replaceSteps(
     if (s.channel === "email" && mode === "auto" && !s.bodyTemplate.trim()) {
       throw new Error(`Step ${i + 1}: body_template required`);
     }
+    const emailThreadMode =
+      s.channel === "email"
+        ? s.emailThreadMode === "new"
+          ? "new"
+          : "reply"
+        : null;
     return {
       sequence_id: sequenceId,
       position: i,
@@ -274,6 +289,7 @@ export async function replaceSteps(
       subject_template: s.subjectTemplate ?? null,
       body_template: s.bodyTemplate,
       stop_on_reply: s.stopOnReply !== false,
+      email_thread_mode: emailThreadMode,
     };
   });
 
@@ -1184,33 +1200,35 @@ async function sendDueEmailTask(
   let subject = task.renderedSubject ?? "";
   const body = task.renderedBody ?? "";
 
-  // Thread follow-ups with the first email in this enrollment (outbound best practice)
-  const thread = await getEnrollmentEmailThread(client, enrollment.id);
-  if (thread?.rootSubject && subject.trim()) {
-    // Keep user template subject, but prefer Re: root when template looks like a new thread title
-    // Only auto-prefix Re: if subject doesn't already start with Re:
-    if (
-      thread.rootSubject &&
-      !/^re:\s/i.test(subject.trim()) &&
-      subject.trim().toLowerCase() !== thread.rootSubject.trim().toLowerCase()
-    ) {
-      // Follow-up with its own subject still gets threading headers; no force Re:
-    }
-  } else if (thread?.rootSubject && !subject.trim()) {
-    subject = /^re:\s/i.test(thread.rootSubject)
-      ? thread.rootSubject
-      : `Re: ${thread.rootSubject}`;
+  // Per-step: new thread vs reply to previous email in this enrollment
+  const { data: stepRow } = await client
+    .from("outreach_sequence_steps")
+    .select("email_thread_mode, position")
+    .eq("id", task.stepId)
+    .maybeSingle();
+  const threadMode =
+    (stepRow?.email_thread_mode as string | null) === "new" ? "new" : "reply";
+
+  const priorThread =
+    threadMode === "reply"
+      ? await getEnrollmentEmailThread(client, enrollment.id)
+      : null;
+
+  if (priorThread?.rootSubject && !subject.trim()) {
+    subject = /^re:\s/i.test(priorThread.rootSubject)
+      ? priorThread.rootSubject
+      : `Re: ${priorThread.rootSubject}`;
   }
 
   const send = await sendOutreachEmail(client, {
     to,
     subject,
     text: body,
-    thread: thread
+    thread: priorThread
       ? {
-          inReplyTo: thread.lastRfcMessageId,
-          references: thread.references,
-          gmailThreadId: thread.gmailThreadId,
+          inReplyTo: priorThread.lastRfcMessageId,
+          references: priorThread.references,
+          gmailThreadId: priorThread.gmailThreadId,
         }
       : null,
   });
@@ -1267,8 +1285,8 @@ async function sendDueEmailTask(
   }
 
   const nextRefs = [
-    ...(thread?.references
-      ? thread.references.split(/\s+/).filter(Boolean)
+    ...(priorThread?.references
+      ? priorThread.references.split(/\s+/).filter(Boolean)
       : []),
     send.rfcMessageId,
   ]
@@ -1292,9 +1310,10 @@ async function sendDueEmailTask(
         rfc_message_id: send.rfcMessageId,
         gmail_thread_id: send.gmailThreadId,
         thread_root_message_id:
-          thread?.rootRfcMessageId ?? send.rfcMessageId,
+          priorThread?.rootRfcMessageId ?? send.rfcMessageId,
         thread_references: uniqueRefs,
-        threaded: Boolean(thread?.lastRfcMessageId),
+        threaded: Boolean(priorThread?.lastRfcMessageId),
+        email_thread_mode: threadMode,
         subject: subject,
       },
     })
