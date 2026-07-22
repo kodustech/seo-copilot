@@ -628,7 +628,9 @@ export function SequencesPage() {
         data.missingLinkedin
           ? `${data.missingLinkedin} without LinkedIn`
           : null,
-        data.missingEmail ? `${data.missingEmail} without email` : null,
+        data.missingEmail
+          ? `${data.missingEmail} without email (email steps will be skipped)`
+          : null,
         seqStatus !== "active"
           ? `sequence is ${seqStatus} — Activate to start outreach`
           : null,
@@ -940,7 +942,7 @@ export function SequencesPage() {
                     <span className="text-amber-600 dark:text-amber-400">
                       {" "}
                       · {enrollments.filter((e) => !e.contactEmail).length}{" "}
-                      missing email
+                      missing email (email steps skipped)
                     </span>
                   )}
                 </p>
