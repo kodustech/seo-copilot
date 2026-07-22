@@ -1181,13 +1181,38 @@ async function sendDueEmailTask(
     .eq("status", "scheduled");
 
   const { sendOutreachEmail } = await import("@/lib/outreach/send-email");
-  const subject = task.renderedSubject ?? "";
+  let subject = task.renderedSubject ?? "";
   const body = task.renderedBody ?? "";
+
+  // Thread follow-ups with the first email in this enrollment (outbound best practice)
+  const thread = await getEnrollmentEmailThread(client, enrollment.id);
+  if (thread?.rootSubject && subject.trim()) {
+    // Keep user template subject, but prefer Re: root when template looks like a new thread title
+    // Only auto-prefix Re: if subject doesn't already start with Re:
+    if (
+      thread.rootSubject &&
+      !/^re:\s/i.test(subject.trim()) &&
+      subject.trim().toLowerCase() !== thread.rootSubject.trim().toLowerCase()
+    ) {
+      // Follow-up with its own subject still gets threading headers; no force Re:
+    }
+  } else if (thread?.rootSubject && !subject.trim()) {
+    subject = /^re:\s/i.test(thread.rootSubject)
+      ? thread.rootSubject
+      : `Re: ${thread.rootSubject}`;
+  }
 
   const send = await sendOutreachEmail(client, {
     to,
     subject,
     text: body,
+    thread: thread
+      ? {
+          inReplyTo: thread.lastRfcMessageId,
+          references: thread.references,
+          gmailThreadId: thread.gmailThreadId,
+        }
+      : null,
   });
 
   if (!send.ok) {
@@ -1241,12 +1266,22 @@ async function sendDueEmailTask(
     return "failed";
   }
 
+  const nextRefs = [
+    ...(thread?.references
+      ? thread.references.split(/\s+/).filter(Boolean)
+      : []),
+    send.rfcMessageId,
+  ]
+    .filter(Boolean)
+    .map((id) => (id.startsWith("<") ? id : `<${id}>`));
+  const uniqueRefs = [...new Set(nextRefs)].join(" ");
+
   await client
     .from("outreach_send_tasks")
     .update({
       status: "sent",
       sent_at: now,
-      provider: "smtp",
+      provider: send.gmailThreadId ? "gmail" : "smtp",
       provider_message_id: send.messageId,
       error: null,
       updated_at: now,
@@ -1254,6 +1289,13 @@ async function sendDueEmailTask(
         ...(task.meta ?? {}),
         mailbox_id: send.mailboxId,
         from: send.from,
+        rfc_message_id: send.rfcMessageId,
+        gmail_thread_id: send.gmailThreadId,
+        thread_root_message_id:
+          thread?.rootRfcMessageId ?? send.rfcMessageId,
+        thread_references: uniqueRefs,
+        threaded: Boolean(thread?.lastRfcMessageId),
+        subject: subject,
       },
     })
     .eq("id", task.id);
@@ -1272,6 +1314,88 @@ async function sendDueEmailTask(
   }
 
   return "sent";
+}
+
+/**
+ * Prior email in this enrollment for reply-threading (In-Reply-To / References / Gmail threadId).
+ */
+async function getEnrollmentEmailThread(
+  client: SupabaseClient,
+  enrollmentId: string,
+): Promise<{
+  rootRfcMessageId: string;
+  lastRfcMessageId: string;
+  references: string;
+  gmailThreadId: string | null;
+  rootSubject: string | null;
+} | null> {
+  const { data, error } = await client
+    .from("outreach_send_tasks")
+    .select("provider_message_id, rendered_subject, meta, sent_at, created_at")
+    .eq("enrollment_id", enrollmentId)
+    .eq("channel", "email")
+    .eq("status", "sent")
+    .order("sent_at", { ascending: true })
+    .limit(20);
+  if (error || !data?.length) return null;
+
+  const rows = data as Array<Record<string, unknown>>;
+  const first = rows[0];
+  const last = rows[rows.length - 1];
+  const firstMeta = (first.meta ?? {}) as Record<string, unknown>;
+  const lastMeta = (last.meta ?? {}) as Record<string, unknown>;
+
+  const rootRfc =
+    (firstMeta.rfc_message_id as string | undefined) ||
+    (firstMeta.thread_root_message_id as string | undefined) ||
+    (typeof first.provider_message_id === "string" &&
+    first.provider_message_id.includes("@")
+      ? first.provider_message_id
+      : null);
+  if (!rootRfc) return null;
+
+  const lastRfc =
+    (lastMeta.rfc_message_id as string | undefined) ||
+    (typeof last.provider_message_id === "string" &&
+    last.provider_message_id.includes("@")
+      ? last.provider_message_id
+      : rootRfc);
+
+  const chain: string[] = [];
+  for (const r of rows) {
+    const m = (r.meta ?? {}) as Record<string, unknown>;
+    const id =
+      (m.rfc_message_id as string | undefined) ||
+      (typeof r.provider_message_id === "string" &&
+      String(r.provider_message_id).includes("@")
+        ? String(r.provider_message_id)
+        : null);
+    if (id) {
+      const norm = id.startsWith("<") ? id : `<${id}>`;
+      if (!chain.includes(norm)) chain.push(norm);
+    }
+  }
+  if (!chain.length) {
+    chain.push(rootRfc.startsWith("<") ? rootRfc : `<${rootRfc}>`);
+  }
+
+  const gmailThreadId =
+    (lastMeta.gmail_thread_id as string | undefined) ||
+    (firstMeta.gmail_thread_id as string | undefined) ||
+    null;
+
+  const rootSubject =
+    (firstMeta.subject as string | undefined) ||
+    (first.rendered_subject as string | null) ||
+    null;
+
+  return {
+    rootRfcMessageId: rootRfc.startsWith("<") ? rootRfc : `<${rootRfc}>`,
+    lastRfcMessageId: lastRfc.startsWith("<") ? lastRfc : `<${lastRfc}>`,
+    references: chain.join(" "),
+    gmailThreadId,
+    rootSubject,
+  };
 }
 
 export async function listEnrollments(

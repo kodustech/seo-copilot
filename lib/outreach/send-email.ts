@@ -1,3 +1,5 @@
+import { randomBytes } from "crypto";
+
 import nodemailer from "nodemailer";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -60,6 +62,16 @@ export async function testMailboxConnection(
   }
 }
 
+/** Threading context so follow-ups stay in one conversation. */
+export type EmailThreadContext = {
+  /** Previous message RFC Message-ID (In-Reply-To) */
+  inReplyTo?: string | null;
+  /** Full References chain (space-separated Message-IDs) */
+  references?: string | null;
+  /** Gmail-only: keep in same thread */
+  gmailThreadId?: string | null;
+};
+
 export type SendOutreachEmailInput = {
   to: string;
   subject: string;
@@ -67,6 +79,8 @@ export type SendOutreachEmailInput = {
   html?: string | null;
   mailboxId?: string | null;
   skipCap?: boolean;
+  /** Reply-in-thread headers / Gmail threadId */
+  thread?: EmailThreadContext | null;
 };
 
 export type SendOutreachEmailResult =
@@ -75,8 +89,29 @@ export type SendOutreachEmailResult =
       messageId: string;
       mailboxId: string;
       from: string;
+      /** RFC 5322 Message-ID (for In-Reply-To on next send) */
+      rfcMessageId: string;
+      gmailThreadId: string | null;
     }
   | { ok: false; error: string; code?: "no_mailbox" | "cap" | "smtp" };
+
+function domainFromEmail(email: string): string {
+  const at = email.lastIndexOf("@");
+  return at > 0 ? email.slice(at + 1).toLowerCase() : "kodus.local";
+}
+
+/** Generate a unique RFC Message-ID we control. */
+export function generateRfcMessageId(fromEmail: string): string {
+  const id = randomBytes(12).toString("hex");
+  const domain = domainFromEmail(fromEmail);
+  return `<kodus.${id}@${domain}>`;
+}
+
+function normalizeMsgId(id: string): string {
+  const t = id.trim();
+  if (!t) return t;
+  return t.startsWith("<") ? t : `<${t}>`;
+}
 
 export async function sendOutreachEmail(
   client: SupabaseClient,
@@ -117,6 +152,20 @@ export async function sendOutreachEmail(
     ? `${box.fromName} <${box.fromEmail}>`
     : box.fromEmail;
 
+  const rfcMessageId = generateRfcMessageId(box.fromEmail);
+  const inReplyTo = input.thread?.inReplyTo?.trim()
+    ? normalizeMsgId(input.thread.inReplyTo)
+    : null;
+  let references = input.thread?.references?.trim() || null;
+  if (inReplyTo) {
+    const prev = (references ?? "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(normalizeMsgId);
+    if (!prev.includes(inReplyTo)) prev.push(inReplyTo);
+    references = prev.join(" ");
+  }
+
   try {
     if (box.authMethod === "oauth" || box.provider === "google_oauth") {
       const access = await ensureFreshAccessToken(client, box);
@@ -127,12 +176,20 @@ export async function sendOutreachEmail(
         subject: input.subject || "(no subject)",
         text: input.text,
         html: input.html,
+        thread: {
+          messageId: rfcMessageId,
+          inReplyTo,
+          references,
+        },
+        gmailThreadId: input.thread?.gmailThreadId,
       });
       return {
         ok: true,
         messageId: sent.messageId,
         mailboxId: box.id,
         from: box.fromEmail,
+        rfcMessageId: sent.rfcMessageId ?? rfcMessageId,
+        gmailThreadId: sent.gmailThreadId,
       };
     }
 
@@ -143,15 +200,25 @@ export async function sendOutreachEmail(
       subject: input.subject || "(no subject)",
       text: input.text,
       html: input.html ?? undefined,
+      messageId: rfcMessageId.replace(/^<|>$/g, ""),
+      inReplyTo: inReplyTo ?? undefined,
+      references: references ?? undefined,
       headers: {
         "X-Kodus-Outreach": "sequence",
+        ...(inReplyTo ? { "In-Reply-To": inReplyTo } : {}),
+        ...(references ? { References: references } : {}),
       },
     });
+    const smtpMid = info.messageId
+      ? normalizeMsgId(String(info.messageId))
+      : rfcMessageId;
     return {
       ok: true,
-      messageId: String(info.messageId ?? ""),
+      messageId: smtpMid,
       mailboxId: box.id,
       from: box.fromEmail,
+      rfcMessageId: smtpMid,
+      gmailThreadId: null,
     };
   } catch (err) {
     return {
