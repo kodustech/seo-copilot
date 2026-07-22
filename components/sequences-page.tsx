@@ -684,8 +684,9 @@ export function SequencesPage() {
   };
 
   const updateStep = (key: string, patch: Partial<StepDraft>) => {
-    setEditSteps((prev) =>
-      prev.map((s) => {
+    setEditSteps((prev) => {
+      const idx = prev.findIndex((s) => s.key === key);
+      return prev.map((s) => {
         if (s.key !== key) return s;
         const next = { ...s, ...patch };
         if (patch.channel === "linkedin") {
@@ -701,9 +702,29 @@ export function SequencesPage() {
             next.subjectTemplate = "Quick note for {{company}}";
           }
         }
+        // Reply in thread → subject = Re: <previous email step subject>
+        if (
+          patch.emailThreadMode === "reply" &&
+          next.channel === "email" &&
+          idx >= 0
+        ) {
+          const prevEmail = [...prev]
+            .slice(0, idx)
+            .reverse()
+            .find((x) => x.channel === "email");
+          if (prevEmail?.subjectTemplate?.trim()) {
+            const root = prevEmail.subjectTemplate
+              .trim()
+              .replace(/^(re:\s*)+/i, "");
+            next.subjectTemplate = `Re: ${root}`;
+          } else if (!/^re:\s/i.test(next.subjectTemplate.trim())) {
+            const root = next.subjectTemplate.trim() || "Quick note for {{company}}";
+            next.subjectTemplate = `Re: ${root.replace(/^(re:\s*)+/i, "")}`;
+          }
+        }
         return next;
-      }),
-    );
+      });
+    });
   };
 
   const enroll = async () => {
@@ -1992,8 +2013,8 @@ export function SequencesPage() {
                                   />
                                   <p className="text-[11px] text-muted-foreground">
                                     {step.emailThreadMode === "reply"
-                                      ? "Sends as a reply to the previous email for this lead (same Gmail thread)."
-                                      : "Starts a brand-new email conversation (no In-Reply-To)."}
+                                      ? "Reply to the previous email for this lead. Subject is set to Re: … from that step (you can still edit)."
+                                      : "Starts a brand-new conversation. Use your own subject."}
                                   </p>
                                 </div>
                               )}
