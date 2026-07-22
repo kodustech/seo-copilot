@@ -889,10 +889,15 @@ export async function fillEmailForPerson(
     }
   }
 
-  // 2) Patterns only when domain is probeable (random@ is invalid → valid means real)
-  if (!email && probe.kind === "probeable") {
+  // 2) Patterns
+  // - probeable: only save NeverBounce **valid**
+  // - unprobeable / catchall (.br often): save best guess as **unverified**
+  //   so the list is usable for outreach, without pretending it's proven
+  if (!email) {
     const patterns = emailPatternsForName(target.name, domain).slice(0, 8);
-    if (patterns.length > 0) {
+    if (patterns.length === 0) {
+      notes = appendNote(notes, "email_lookup:no_patterns_from_name");
+    } else if (probe.kind === "probeable") {
       const verified = await verifyEmails(patterns);
       const nbConfigured = verified.some((v) => v.status !== "config_missing");
       if (!nbConfigured) {
@@ -912,17 +917,34 @@ export async function fillEmailForPerson(
           notes = appendNote(notes, "email_lookup:no_valid_pattern");
         }
       }
+    } else if (probe.kind === "unprobeable" || probe.kind === "catchall") {
+      // Prefer first.last@ then first@ — standard SaaS/BR corporate guess
+      email = patterns[0];
+      emailStatus = "unverified";
+      emailSource = "pattern_guess";
+      notes = appendNote(
+        notes,
+        `email_pattern_guess:probe=${probe.kind}`,
+      );
+      providerUsed = `${providerUsed ?? "pattern_guess"}`;
+      confidence = probe.kind === "catchall" ? 0.25 : 0.3;
+      foundNew = true;
+      fromPattern = true; // skip re-verify loop that would only re-unknown
+    } else if (probe.kind === "config_missing") {
+      // No verifier — still surface a guess, clearly unverified
+      email = patterns[0];
+      emailStatus = "unverified";
+      emailSource = "pattern_guess";
+      notes = appendNote(notes, "email_pattern_guess:nb_missing");
+      providerUsed = "pattern_guess";
+      confidence = 0.2;
+      foundNew = true;
+      fromPattern = true;
     }
-  } else if (!email && probe.kind === "unprobeable") {
-    notes = appendNote(
-      notes,
-      "email_lookup:domain_unprobeable_skip_patterns",
-    );
-  } else if (!email && probe.kind === "catchall") {
-    notes = appendNote(notes, "email_lookup:domain_catchall_skip_patterns");
   }
 
   if (!email) {
+    // Do not wipe existing fields — only annotate miss
     await savePeople(
       client,
       rowId,
@@ -931,9 +953,9 @@ export async function fillEmailForPerson(
           name: target.name,
           role: target.role,
           linkedin: target.linkedin,
-          email: null,
-          emailStatus: null,
-          emailSource: null,
+          email: target.email,
+          emailStatus: target.emailStatus,
+          emailSource: target.emailSource,
           providerUsed: target.providerUsed,
           confidence: target.confidence,
           notes: appendNote(
@@ -952,18 +974,12 @@ export async function fillEmailForPerson(
           p.name.trim().toLowerCase() === target.name.trim().toLowerCase(),
       ) ??
       target;
-    const why =
-      probe.kind === "unprobeable"
-        ? "Domain not probeable (common on .br) — no proven inbox"
-        : probe.kind === "catchall"
-          ? "Domain is catch-all — pattern guesses not trusted"
-          : "No valid email found (provider + patterns)";
     return {
       person,
       found: false,
       email: null,
       emailStatus: null,
-      message: why,
+      message: "No email found (provider + patterns)",
     };
   }
 
@@ -1075,11 +1091,13 @@ export async function fillEmailForPerson(
 
   const label =
     emailStatus === "valid"
-      ? "valid"
+      ? "valid (proven)"
       : emailStatus === "catchall"
         ? "catchall (domain accepts all)"
         : emailStatus === "unverified"
-          ? "unverified (could not prove inbox)"
+          ? fromPattern
+            ? "unverified guess (domain not SMTP-probeable)"
+            : "unverified (could not prove inbox)"
           : emailStatus ?? "saved";
 
   return {
