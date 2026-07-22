@@ -1,11 +1,12 @@
 /**
- * Clear pattern-guess emails that were never proven (unknown/unverified).
- * Keeps valid / catchall / bounced / invalid (invalid still useful as "don't use").
- * Provider-sourced unverified emails are kept but status normalized to unverified.
+ * Optional hygiene: clear *or* normalize weak pattern emails.
+ *
+ * Default mode = normalize (keep guess, force status unverified).
+ * Pass --clear to delete unproven patterns (empty the cell).
  *
  * Usage:
- *   railway run --service amiable-benevolence -- npx tsx scripts/scrub-unverified-pattern-emails.ts leads-qa-people-discovery-brasil
- *   railway run --service amiable-benevolence -- npx tsx scripts/scrub-unverified-pattern-emails.ts --all
+ *   railway run --service amiable-benevolence -- npx tsx scripts/scrub-unverified-pattern-emails.ts <table>
+ *   railway run --service amiable-benevolence -- npx tsx scripts/scrub-unverified-pattern-emails.ts <table> --clear
  */
 import { resolveTable } from "../lib/research/columns";
 import {
@@ -24,6 +25,7 @@ function isWeakStatus(s: string | null | undefined) {
 async function scrubTable(
   client: ReturnType<typeof getSupabaseServiceClient>,
   ref: string,
+  clear: boolean,
 ) {
   const table = await resolveTable(client, ref);
   const rows = await listRows(client, table.id);
@@ -38,20 +40,36 @@ async function scrubTable(
       const source = (p.emailSource ?? "").toLowerCase();
       const isPattern =
         source === "pattern" ||
+        source === "pattern_guess" ||
         (p.providerUsed ?? "").includes("pattern") ||
-        (p.notes ?? "").includes("email_pattern:");
+        (p.notes ?? "").includes("email_pattern");
 
       if (isPattern && isWeakStatus(p.emailStatus)) {
-        cleared += 1;
-        dirty = true;
-        return {
-          ...p,
-          email: null,
-          emailStatus: null,
-          emailSource: null,
-          confidence: p.confidence,
-          notes: [p.notes, "scrub:cleared_unproven_pattern"].filter(Boolean).join(" | "),
-        };
+        if (clear) {
+          cleared += 1;
+          dirty = true;
+          return {
+            ...p,
+            email: null,
+            emailStatus: null,
+            emailSource: null,
+            confidence: p.confidence,
+            notes: [p.notes, "scrub:cleared_unproven_pattern"]
+              .filter(Boolean)
+              .join(" | "),
+          };
+        }
+        if (p.emailStatus !== "unverified" || source !== "pattern_guess") {
+          normalized += 1;
+          dirty = true;
+          return {
+            ...p,
+            emailStatus: "unverified",
+            emailSource: source || "pattern_guess",
+            confidence: Math.min(p.confidence ?? 0.3, 0.3),
+          };
+        }
+        return p;
       }
       if (isWeakStatus(p.emailStatus) && p.emailStatus !== "unverified") {
         normalized += 1;
@@ -76,22 +94,24 @@ async function scrubTable(
           confidence: p.confidence,
           notes: p.notes,
         })),
-        { mode: "replace", reason: "scrub_unproven_pattern" },
+        { mode: "replace", reason: clear ? "scrub_clear" : "scrub_normalize" },
       );
     }
   }
 
   console.log(
-    `${table.name}: cleared ${cleared} unproven patterns, normalized ${normalized} statuses`,
+    `${table.name}: cleared ${cleared} patterns, normalized ${normalized} (clear=${clear})`,
   );
   return { cleared, normalized };
 }
 
 async function main() {
-  const arg = process.argv[2];
+  const args = process.argv.slice(2);
+  const clear = args.includes("--clear");
+  const arg = args.find((a) => a !== "--clear");
   if (!arg) {
     console.error(
-      "Usage: npx tsx scripts/scrub-unverified-pattern-emails.ts <table|slug|--all>",
+      "Usage: npx tsx scripts/scrub-unverified-pattern-emails.ts <table|slug|--all> [--clear]",
     );
     process.exit(1);
   }
@@ -100,14 +120,14 @@ async function main() {
     let c = 0;
     let n = 0;
     for (const t of await listTables(client)) {
-      const r = await scrubTable(client, t.id);
+      const r = await scrubTable(client, t.id, clear);
       c += r.cleared;
       n += r.normalized;
     }
     console.log(`Total cleared=${c} normalized=${n}`);
     return;
   }
-  await scrubTable(client, arg);
+  await scrubTable(client, arg, clear);
 }
 
 main().catch((e) => {
