@@ -280,6 +280,116 @@ function emailStatusClass(status: string | null | undefined): string {
   return "text-muted-foreground";
 }
 
+type EmailKind = "none" | "valid" | "catchall" | "unverified" | "bad";
+
+function emailKind(
+  email: string | null | undefined,
+  status: string | null | undefined,
+): EmailKind {
+  if (!email?.trim()) return "none";
+  const s = (status ?? "").toLowerCase();
+  if (s === "valid") return "valid";
+  if (s === "catchall") return "catchall";
+  if (s === "invalid" || s === "bounced" || s === "disposable") return "bad";
+  return "unverified";
+}
+
+/**
+ * People-row status: LinkedIn × email completeness for outreach readiness.
+ */
+function contactReadiness(p: {
+  linkedin: string | null;
+  email: string | null;
+  emailStatus: string | null;
+}): {
+  label: string;
+  className: string;
+  title: string;
+  ready: boolean;
+} {
+  const hasLi = Boolean(p.linkedin?.trim());
+  const ek = emailKind(p.email, p.emailStatus);
+
+  if (hasLi && ek === "valid") {
+    return {
+      label: "Ready",
+      className: "text-emerald-700 dark:text-emerald-400",
+      title: "LinkedIn + valid email — good for multi-channel outreach",
+      ready: true,
+    };
+  }
+  if (hasLi && ek === "catchall") {
+    return {
+      label: "LI + catchall",
+      className: "text-amber-600 dark:text-amber-400",
+      title: "Has LinkedIn; email is catch-all (not person-proof)",
+      ready: false,
+    };
+  }
+  if (hasLi && ek === "unverified") {
+    return {
+      label: "LI + unverified",
+      className: "text-amber-600/90 dark:text-amber-400/90",
+      title: "Has LinkedIn; email not proven (guess or unknown)",
+      ready: false,
+    };
+  }
+  if (hasLi && ek === "bad") {
+    return {
+      label: "LI + bad email",
+      className: "text-rose-600 dark:text-rose-400",
+      title: "Has LinkedIn; email invalid/bounced — don't send",
+      ready: false,
+    };
+  }
+  if (hasLi && ek === "none") {
+    return {
+      label: "LI only",
+      className: "text-muted-foreground",
+      title: "LinkedIn only — email steps will be skipped in sequences",
+      ready: false,
+    };
+  }
+  if (!hasLi && ek === "valid") {
+    return {
+      label: "Email only",
+      className: "text-sky-700 dark:text-sky-400",
+      title: "Valid email, no LinkedIn — email sequences OK; LI steps weak",
+      ready: false,
+    };
+  }
+  if (!hasLi && ek === "catchall") {
+    return {
+      label: "Catchall only",
+      className: "text-amber-600 dark:text-amber-400",
+      title: "Catch-all email, no LinkedIn",
+      ready: false,
+    };
+  }
+  if (!hasLi && ek === "unverified") {
+    return {
+      label: "Unverified only",
+      className: "text-muted-foreground",
+      title: "Unverified email, no LinkedIn",
+      ready: false,
+    };
+  }
+  if (!hasLi && ek === "bad") {
+    return {
+      label: "Bad email",
+      className: "text-rose-600 dark:text-rose-400",
+      title: "Invalid/bounced email, no LinkedIn",
+      ready: false,
+    };
+  }
+  return {
+    label: "Empty",
+    className: "text-muted-foreground/80",
+    title: "No LinkedIn and no email",
+    ready: false,
+  };
+}
+
 export function ResearchPage() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const router = useRouter();
@@ -1819,7 +1929,12 @@ export function ResearchPage() {
                     Score
                   </TableHead>
                 )}
-                <TableHead className="w-20 pr-4">Status</TableHead>
+                <TableHead
+                  className="w-28 pr-4"
+                  title="Outreach readiness: LinkedIn + email quality"
+                >
+                  Status
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -2026,26 +2141,22 @@ export function ResearchPage() {
                         <ScorePill score={p.icpScore} pass={p.pass} />
                       </TableCell>
                     )}
-                    <TableCell className="pr-4 text-xs text-muted-foreground">
-                      {p.email ? (
-                        <span
-                          className={cn(
-                            "inline-flex items-center gap-1 text-xs",
-                            p.emailStatus === "valid"
-                              ? "text-emerald-700 dark:text-emerald-400"
-                              : "text-muted-foreground",
-                          )}
-                        >
-                          {p.emailStatus === "valid" ? (
-                            <Check className="size-3" />
-                          ) : null}
-                          {emailStatusHint(p.emailStatus, true) ?? "email"}
-                        </span>
-                      ) : p.linkedin ? (
-                        "LI only"
-                      ) : (
-                        "No email"
-                      )}
+                    <TableCell className="pr-4 text-xs">
+                      {(() => {
+                        const r = contactReadiness(p);
+                        return (
+                          <span
+                            className={cn(
+                              "inline-flex items-center gap-1 font-medium",
+                              r.className,
+                            )}
+                            title={r.title}
+                          >
+                            {r.ready ? <Check className="size-3 shrink-0" /> : null}
+                            {r.label}
+                          </span>
+                        );
+                      })()}
                     </TableCell>
                   </TableRow>
                 ))}
