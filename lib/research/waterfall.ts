@@ -5,8 +5,10 @@ import {
   isPatternAcceptable,
   probeDomainEmailability,
   toStoredEmailStatus,
+  verifyEmailMulti,
   verifyEmails,
 } from "@/lib/email-verifier";
+import { hunterEmailFinder, hunterEnabled } from "@/lib/hunter";
 import {
   findWorkEmail,
   lookupPersonEmployment,
@@ -222,15 +224,19 @@ export async function enrichPeopleForRow(
     }
   }
 
-  // Email verify waterfall step (NeverBounce) — store honest statuses only.
+  // Email verify waterfall (NB → ZeroBounce → Hunter) — honest statuses only.
   if (opts.verifyEmails !== false) {
     const emails = people
       .map((p) => p.email)
       .filter((e): e is string => Boolean(e));
     if (emails.length > 0) {
       const unique = [...new Set(emails)].slice(0, 12);
-      const verified = await verifyEmails(unique);
-      const byEmail = new Map(verified.map((v) => [v.email.toLowerCase(), v]));
+      const verified = await Promise.all(
+        unique.map((e) => verifyEmailMulti(e)),
+      );
+      const byEmail = new Map(
+        verified.map((v) => [v.email.toLowerCase(), v]),
+      );
       people = people.map((p) => {
         if (!p.email) return p;
         const v = byEmail.get(p.email.toLowerCase());
@@ -243,6 +249,10 @@ export async function enrichPeopleForRow(
           };
         }
         const stored = toStoredEmailStatus(v.status);
+        const providers =
+          v.providers?.length > 0
+            ? v.providers.join("+")
+            : "neverbounce";
         return {
           ...p,
           emailStatus: stored,
@@ -256,7 +266,7 @@ export async function enrichPeopleForRow(
                   : stored === "unverified"
                     ? Math.min(p.confidence ?? 0.4, 0.4)
                     : p.confidence,
-          providerUsed: `${p.providerUsed ?? "unknown"}+neverbounce`,
+          providerUsed: `${p.providerUsed ?? "unknown"}+${providers}`,
         };
       });
     }
@@ -863,7 +873,7 @@ export async function fillEmailForPerson(
   const probe = await probeDomainEmailability(domain);
   notes = appendNote(notes, `domain_probe:${probe.kind}`);
 
-  // 1) Provider work-email if missing
+  // 1) Provider work-email (NinjaPear) if missing
   if (!email && ninjapearEnabled()) {
     const filled = await tryWorkEmail(
       {
@@ -886,6 +896,43 @@ export async function fillEmailForPerson(
       providerUsed = filled.providerUsed;
       confidence = filled.confidence;
       foundNew = true;
+    }
+  }
+
+  // 1b) Hunter email finder — best source for BR when SMTP probe fails
+  if (!email && hunterEnabled()) {
+    const { firstName, lastName } = splitPersonName(target.name);
+    if (firstName) {
+      const hit = await hunterEmailFinder({
+        domain,
+        firstName,
+        lastName,
+        fullName: target.name,
+      });
+      if (hit?.email) {
+        email = hit.email;
+        emailSource = "provider";
+        providerUsed = "hunter_finder";
+        confidence = Math.min(0.9, Math.max(0.45, hit.score / 100));
+        notes = appendNote(
+          notes,
+          `hunter_finder:score=${hit.score}:sources=${hit.sources}` +
+            (hit.verificationStatus
+              ? `:hv=${hit.verificationStatus}`
+              : ""),
+        );
+        if (hit.verificationStatus === "valid") {
+          emailStatus = "valid";
+          confidence = Math.max(confidence ?? 0, 0.9);
+        } else if (hit.verificationStatus === "accept_all") {
+          emailStatus = "catchall";
+        } else {
+          emailStatus = null; // will multi-verify below
+        }
+        foundNew = true;
+      } else {
+        notes = appendNote(notes, "hunter_finder:miss");
+      }
     }
   }
 
@@ -983,40 +1030,46 @@ export async function fillEmailForPerson(
     };
   }
 
-  // 3) Verify provider / existing emails
+  // 3) Multi-verify provider / existing emails (NB → ZeroBounce → Hunter)
+  // Pattern guesses on unprobeable domains stay unverified without re-burning credits
+  // on hopeless SMTP; probeable patterns already valid.
   const needsVerify =
     email &&
+    !fromPattern &&
     (foundNew ||
       !emailStatus ||
       emailStatus === "unverified" ||
       emailStatus === "unknown" ||
       emailStatus === "config_missing" ||
       emailStatus === "error");
-  if (needsVerify && !fromPattern) {
-    const [v] = await verifyEmails([email!]);
-    if (v && v.status !== "config_missing" && v.status !== "error") {
+  if (needsVerify) {
+    const v = await verifyEmailMulti(email!);
+    if (v.status !== "config_missing" && v.status !== "error") {
       emailStatus = toStoredEmailStatus(v.status);
-      providerUsed = `${providerUsed ?? "unknown"}+neverbounce`;
+      const p = v.providers?.length ? v.providers.join("+") : "verify";
+      providerUsed = `${providerUsed ?? "unknown"}+${p}`;
       if (emailStatus === "valid") confidence = Math.max(confidence ?? 0, 0.95);
       else if (emailStatus === "catchall")
         confidence = Math.max(confidence ?? 0, 0.55);
       else if (emailStatus === "invalid") confidence = 0.1;
       else if (emailStatus === "unverified")
         confidence = Math.min(confidence ?? 0.35, 0.35);
-      notes = appendNote(notes, `verify:${v.status}`);
-      // Provider hit that is invalid — drop it
+      notes = appendNote(
+        notes,
+        `verify:${v.status}:${v.providers?.join(",") ?? "?"}`,
+      );
       if (emailStatus === "invalid" && foundNew) {
         email = null;
         emailStatus = null;
         emailSource = null;
         notes = appendNote(notes, "provider_email_invalid_dropped");
       }
-    } else if (v?.status === "config_missing" || v?.status === "error") {
+    } else {
       emailStatus = "unverified";
       notes = appendNote(
         notes,
         v.status === "config_missing"
-          ? "verify:skipped_nb_missing"
+          ? "verify:no_verifiers_configured"
           : `verify:error:${v.error ?? "?"}`,
       );
     }
