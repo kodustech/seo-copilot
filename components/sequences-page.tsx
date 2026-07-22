@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowLeft,
   ArrowUp,
@@ -111,6 +112,93 @@ type EnrollmentRow = {
   source: string;
   createdAt: string;
 };
+
+type SequenceStepProgress = {
+  position: number;
+  channel: string;
+  mode: string;
+  status: string;
+  error: string | null;
+  scheduledFor: string | null;
+  sentAt: string | null;
+};
+
+type SequenceLeadProgress = {
+  enrollment: EnrollmentRow;
+  steps: SequenceStepProgress[];
+  completedSteps: number;
+  totalSteps: number;
+  progressPct: number;
+  lastTaskError: string | null;
+};
+
+type SequenceHealth = {
+  sequenceId: string;
+  totalSteps: number;
+  enrollments: { total: number; byStatus: Record<string, number> };
+  tasks: {
+    total: number;
+    byStatus: Record<string, number>;
+    email: Record<string, number>;
+    linkedin: Record<string, number>;
+  };
+  rates: {
+    bounceRate: number;
+    emailFailRate: number;
+    skipRate: number;
+    completionRate: number;
+  };
+  recentErrors: Array<{
+    contactName: string | null;
+    companyName: string;
+    channel: string;
+    error: string;
+    at: string;
+    enrollmentStatus: string;
+  }>;
+  leads: SequenceLeadProgress[];
+  steps: Array<{ position: number; channel: string; mode: string }>;
+};
+
+function stepStatusDot(status: string): string {
+  switch (status) {
+    case "sent":
+      return "bg-emerald-500";
+    case "failed":
+      return "bg-rose-500";
+    case "skipped":
+      return "bg-amber-500";
+    case "ready":
+    case "sending":
+      return "bg-sky-500";
+    case "scheduled":
+    case "pending":
+      return "bg-muted-foreground/40";
+    case "cancelled":
+      return "bg-muted-foreground/30";
+    default:
+      return "bg-border";
+  }
+}
+
+function enrollmentStatusBadge(status: string): string {
+  switch (status) {
+    case "active":
+      return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400";
+    case "completed":
+      return "bg-muted text-muted-foreground";
+    case "bounced":
+    case "failed":
+      return "bg-rose-500/15 text-rose-700 dark:text-rose-400";
+    case "paused":
+    case "cancelled":
+      return "bg-amber-500/15 text-amber-700 dark:text-amber-400";
+    case "replied":
+      return "bg-sky-500/15 text-sky-700 dark:text-sky-400";
+    default:
+      return "bg-muted text-muted-foreground";
+  }
+}
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -276,9 +364,14 @@ export function SequencesPage() {
   const [saving, setSaving] = useState(false);
   const [enrollmentCount, setEnrollmentCount] = useState(0);
   const [enrollments, setEnrollments] = useState<EnrollmentRow[]>([]);
-  const [editorTab, setEditorTab] = useState<"steps" | "people">("steps");
+  const [sequenceHealth, setSequenceHealth] = useState<SequenceHealth | null>(
+    null,
+  );
+  const [editorTab, setEditorTab] = useState<"dashboard" | "steps" | "people">(
+    "dashboard",
+  );
   const [peopleFilter, setPeopleFilter] = useState<
-    "all" | "active" | "completed" | "other"
+    "all" | "active" | "completed" | "bounced" | "other"
   >("all");
   const [selectedStepKey, setSelectedStepKey] = useState<string | null>(null);
   const [previewPersonId, setPreviewPersonId] = useState<string | "sample">(
@@ -352,6 +445,7 @@ export function SequencesPage() {
       setEditName(data.sequence?.name ?? "");
       setEditDescription(data.sequence?.description ?? "");
       setEditStatus(data.sequence?.status ?? "draft");
+      setSequenceHealth((data.health as SequenceHealth) ?? null);
       const enrRaw = (data.enrollments ?? []) as Record<string, unknown>[];
       const enrMapped: EnrollmentRow[] = enrRaw.map((e) => ({
         id: String(e.id),
@@ -376,7 +470,8 @@ export function SequencesPage() {
       }));
       setEnrollments(enrMapped);
       setEnrollmentCount(enrMapped.length);
-      setEditorTab(enrMapped.length > 0 ? "people" : "steps");
+      // Prefer health dashboard when anyone is enrolled
+      setEditorTab(enrMapped.length > 0 ? "dashboard" : "steps");
       // Prefer a real person for sequence preview
       const firstActive =
         enrMapped.find((e) => e.status === "active") ?? enrMapped[0];
@@ -423,6 +518,7 @@ export function SequencesPage() {
     }));
     setEnrollments(enrMapped);
     setEnrollmentCount(enrMapped.length);
+    setSequenceHealth((data.health as SequenceHealth) ?? null);
   };
 
   const createSeq = async () => {
@@ -743,15 +839,66 @@ export function SequencesPage() {
       if (peopleFilter === "all") return true;
       if (peopleFilter === "active") return e.status === "active";
       if (peopleFilter === "completed") return e.status === "completed";
-      return e.status !== "active" && e.status !== "completed";
+      if (peopleFilter === "bounced")
+        return e.status === "bounced" || e.status === "failed";
+      return (
+        e.status !== "active" &&
+        e.status !== "completed" &&
+        e.status !== "bounced" &&
+        e.status !== "failed"
+      );
     });
 
     const activePeople = enrollments.filter((e) => e.status === "active").length;
+    const leadById = new Map(
+      (sequenceHealth?.leads ?? []).map((l) => [l.enrollment.id, l]),
+    );
     const stepLabel = (pos: number) => {
       const s = editSteps[pos];
       if (!s) return `Step ${pos + 1}`;
       return `Step ${pos + 1} · ${stepTitle(s)}`;
     };
+
+    const healthCards = sequenceHealth
+      ? [
+          {
+            label: "Enrolled",
+            value: sequenceHealth.enrollments.total,
+            hint: `${sequenceHealth.enrollments.byStatus.active ?? 0} active`,
+            warn: false,
+          },
+          {
+            label: "Completed",
+            value: sequenceHealth.enrollments.byStatus.completed ?? 0,
+            hint: `${sequenceHealth.rates.completionRate}% of leads`,
+            warn: false,
+          },
+          {
+            label: "Bounced",
+            value: sequenceHealth.enrollments.byStatus.bounced ?? 0,
+            hint: `${sequenceHealth.rates.bounceRate}% bounce rate`,
+            warn: (sequenceHealth.enrollments.byStatus.bounced ?? 0) > 0,
+          },
+          {
+            label: "Email failed",
+            value: sequenceHealth.tasks.email.failed ?? 0,
+            hint: `${sequenceHealth.rates.emailFailRate}% of email decisions`,
+            warn: (sequenceHealth.tasks.email.failed ?? 0) > 0,
+          },
+          {
+            label: "Emails sent",
+            value: sequenceHealth.tasks.email.sent ?? 0,
+            hint: `${sequenceHealth.tasks.email.skipped ?? 0} skipped`,
+            warn: false,
+          },
+          {
+            label: "Skipped tasks",
+            value: sequenceHealth.tasks.byStatus.skipped ?? 0,
+            hint: `${sequenceHealth.rates.skipRate}% of finished tasks`,
+            warn: false,
+          },
+        ]
+      : [];
 
     return (
       <div className="flex h-full min-h-0 flex-col">
@@ -877,10 +1024,11 @@ export function SequencesPage() {
             </div>
           )}
 
-          {/* Steps | People tabs */}
+          {/* Dashboard | Steps | People tabs */}
           <div className="mx-auto mt-3 flex max-w-6xl gap-1 border-b border-border">
             {(
               [
+                ["dashboard", "Dashboard", enrollmentCount],
                 ["steps", "Steps", editSteps.length],
                 ["people", "People", enrollmentCount],
               ] as const
@@ -888,7 +1036,9 @@ export function SequencesPage() {
               <button
                 key={id}
                 type="button"
-                onClick={() => setEditorTab(id)}
+                onClick={() =>
+                  setEditorTab(id as "dashboard" | "steps" | "people")
+                }
                 className={cn(
                   "inline-flex items-center gap-2 border-b-2 px-3 py-2 text-sm",
                   editorTab === id
@@ -922,6 +1072,305 @@ export function SequencesPage() {
           <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
             <Loader2 className="mr-2 size-4 animate-spin" />
             Loading sequence…
+          </div>
+        ) : editorTab === "dashboard" ? (
+          /* ── Dashboard: health + per-lead progress ── */
+          <div className="mx-auto min-h-0 w-full max-w-6xl flex-1 space-y-6 overflow-y-auto px-4 py-6 sm:px-6">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold">Sequence health</h2>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Bounce, failures, skips, and where each lead is in the cadence.
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void reloadEnrollments(editingId)}
+              >
+                <RefreshCw className="size-3.5" />
+                Refresh
+              </Button>
+            </div>
+
+            {!sequenceHealth || sequenceHealth.enrollments.total === 0 ? (
+              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed px-6 py-16 text-center">
+                <Users className="size-8 text-muted-foreground/60" />
+                <p className="mt-4 text-sm font-medium">No enrollments yet</p>
+                <p className="mt-1 max-w-md text-sm text-muted-foreground">
+                  Enroll people from a research list to see health metrics and
+                  progress.
+                </p>
+                <Button
+                  className="mt-5"
+                  onClick={() => {
+                    setEnrollSeqId(editingId);
+                    setEnrollOpen(true);
+                  }}
+                >
+                  <Users className="size-3.5" />
+                  Enroll from list
+                </Button>
+              </div>
+            ) : (
+              <>
+                {(sequenceHealth.rates.bounceRate > 5 ||
+                  sequenceHealth.rates.emailFailRate > 10 ||
+                  (sequenceHealth.enrollments.byStatus.failed ?? 0) > 0) && (
+                  <div className="flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-sm text-rose-800 dark:text-rose-200">
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                    <div>
+                      <p className="font-medium">Delivery looks unhealthy</p>
+                      <p className="mt-0.5 text-xs opacity-90">
+                        Bounce {sequenceHealth.rates.bounceRate}% · email fail{" "}
+                        {sequenceHealth.rates.emailFailRate}% · check recent
+                        errors below and list quality (valid emails).
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {healthCards.map((c) => (
+                    <div
+                      key={c.label}
+                      className={cn(
+                        "rounded-xl border bg-card px-4 py-3",
+                        c.warn
+                          ? "border-rose-500/40 bg-rose-500/5"
+                          : "border-border",
+                      )}
+                    >
+                      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                        {c.label}
+                      </p>
+                      <p
+                        className={cn(
+                          "mt-1 text-2xl font-semibold tabular-nums",
+                          c.warn && "text-rose-700 dark:text-rose-400",
+                        )}
+                      >
+                        {c.value}
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-muted-foreground">
+                        {c.hint}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Task breakdown */}
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Task outcomes
+                  </h3>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    {(
+                      [
+                        ["Email", sequenceHealth.tasks.email],
+                        ["LinkedIn", sequenceHealth.tasks.linkedin],
+                      ] as const
+                    ).map(([label, map]) => (
+                      <div key={label}>
+                        <p className="text-sm font-medium">{label}</p>
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {(
+                            [
+                              ["sent", "Sent"],
+                              ["failed", "Failed"],
+                              ["skipped", "Skipped"],
+                              ["scheduled", "Scheduled"],
+                              ["ready", "Ready"],
+                            ] as const
+                          ).map(([k, lab]) => (
+                            <span
+                              key={k}
+                              className={cn(
+                                "rounded-md px-2 py-0.5 text-[11px] tabular-nums",
+                                k === "failed" && (map[k] ?? 0) > 0
+                                  ? "bg-rose-500/15 text-rose-700 dark:text-rose-400"
+                                  : k === "skipped" && (map[k] ?? 0) > 0
+                                    ? "bg-amber-500/15 text-amber-800 dark:text-amber-400"
+                                    : "bg-muted text-muted-foreground",
+                              )}
+                            >
+                              {lab} {map[k] ?? 0}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Recent errors */}
+                {sequenceHealth.recentErrors.length > 0 && (
+                  <div className="rounded-xl border border-border bg-card p-4">
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Recent errors
+                    </h3>
+                    <ul className="mt-3 max-h-48 space-y-2 overflow-y-auto">
+                      {sequenceHealth.recentErrors.map((err, i) => (
+                        <li
+                          key={`${err.at}-${i}`}
+                          className="rounded-lg border border-border/80 bg-muted/20 px-3 py-2 text-xs"
+                        >
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-medium">
+                              {err.contactName || "—"}
+                            </span>
+                            <span className="text-muted-foreground">
+                              {err.companyName}
+                            </span>
+                            <Badge variant="outline" className="text-[10px]">
+                              {err.channel}
+                            </Badge>
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "text-[10px]",
+                                enrollmentStatusBadge(err.enrollmentStatus),
+                              )}
+                            >
+                              {err.enrollmentStatus}
+                            </Badge>
+                          </div>
+                          <p className="mt-1 font-mono text-[11px] text-rose-700 dark:text-rose-400">
+                            {err.error}
+                          </p>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Per-lead progress */}
+                <div className="rounded-xl border border-border">
+                  <div className="flex items-center justify-between border-b border-border px-4 py-3">
+                    <h3 className="text-sm font-semibold">Lead progress</h3>
+                    <p className="text-[11px] text-muted-foreground">
+                      {sequenceHealth.totalSteps} steps · dots = status
+                    </p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[640px] text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-border bg-muted/40 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                          <th className="px-4 py-2 font-medium">Person</th>
+                          <th className="px-2 py-2 font-medium">Status</th>
+                          <th className="px-2 py-2 font-medium">Progress</th>
+                          <th className="px-2 py-2 font-medium">Steps</th>
+                          <th className="px-4 py-2 font-medium">Issue</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {sequenceHealth.leads.map((lead) => {
+                          const e = lead.enrollment;
+                          return (
+                            <tr key={e.id} className="hover:bg-muted/20">
+                              <td className="px-4 py-2.5">
+                                <p className="truncate font-medium">
+                                  {e.contactName || "—"}
+                                </p>
+                                <p className="truncate text-[11px] text-muted-foreground">
+                                  {e.companyName}
+                                  {e.contactEmail
+                                    ? ` · ${e.contactEmail}`
+                                    : " · no email"}
+                                </p>
+                              </td>
+                              <td className="px-2 py-2.5">
+                                <span
+                                  className={cn(
+                                    "inline-flex rounded-md px-1.5 py-0.5 text-[11px] font-medium capitalize",
+                                    enrollmentStatusBadge(e.status),
+                                  )}
+                                >
+                                  {e.status}
+                                </span>
+                              </td>
+                              <td className="px-2 py-2.5">
+                                <div className="flex items-center gap-2">
+                                  <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+                                    <div
+                                      className={cn(
+                                        "h-full rounded-full",
+                                        e.status === "bounced" ||
+                                          e.status === "failed"
+                                          ? "bg-rose-500"
+                                          : e.status === "completed"
+                                            ? "bg-emerald-500"
+                                            : "bg-foreground/70",
+                                      )}
+                                      style={{ width: `${lead.progressPct}%` }}
+                                    />
+                                  </div>
+                                  <span className="text-[11px] tabular-nums text-muted-foreground">
+                                    {lead.completedSteps}/{lead.totalSteps}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="px-2 py-2.5">
+                                <div className="flex items-center gap-1">
+                                  {lead.steps.map((s) => (
+                                    <span
+                                      key={s.position}
+                                      title={`Step ${s.position + 1} ${s.channel}: ${s.status}${s.error ? ` — ${s.error}` : ""}`}
+                                      className={cn(
+                                        "size-2.5 rounded-full",
+                                        stepStatusDot(s.status),
+                                        s.channel === "email" &&
+                                          "ring-1 ring-offset-1 ring-offset-background ring-foreground/10",
+                                      )}
+                                    />
+                                  ))}
+                                </div>
+                              </td>
+                              <td className="max-w-[180px] px-4 py-2.5">
+                                {lead.lastTaskError ? (
+                                  <p
+                                    className="truncate font-mono text-[10px] text-rose-600 dark:text-rose-400"
+                                    title={lead.lastTaskError}
+                                  >
+                                    {lead.lastTaskError}
+                                  </p>
+                                ) : !e.contactEmail ? (
+                                  <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                                    No email
+                                  </p>
+                                ) : (
+                                  <span className="text-[11px] text-muted-foreground">
+                                    —
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="flex flex-wrap gap-3 border-t border-border px-4 py-2 text-[10px] text-muted-foreground">
+                    <span className="inline-flex items-center gap-1">
+                      <span className="size-2 rounded-full bg-emerald-500" /> sent
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <span className="size-2 rounded-full bg-rose-500" /> failed
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <span className="size-2 rounded-full bg-amber-500" /> skipped
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <span className="size-2 rounded-full bg-sky-500" /> ready
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <span className="size-2 rounded-full bg-muted-foreground/40" />{" "}
+                      scheduled / pending
+                    </span>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         ) : editorTab === "people" ? (
           /* ── People: who is running this sequence ── */
@@ -975,6 +1424,7 @@ export function SequencesPage() {
                   ["all", "All"],
                   ["active", "Active"],
                   ["completed", "Completed"],
+                  ["bounced", "Bounced / failed"],
                   ["other", "Paused / other"],
                 ] as const
               ).map(([id, label]) => (
@@ -1022,10 +1472,11 @@ export function SequencesPage() {
               </div>
             ) : (
               <div className="overflow-hidden rounded-xl border border-border">
-                <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_100px_minmax(0,1fr)_90px_72px] gap-2 border-b border-border bg-muted/40 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                <div className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_88px_minmax(0,0.9fr)_minmax(0,1fr)_80px_64px] gap-2 border-b border-border bg-muted/40 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                   <span>Person</span>
                   <span>Company</span>
                   <span>Status</span>
+                  <span>Progress</span>
                   <span>Current step</span>
                   <span>Next</span>
                   <span />
@@ -1034,7 +1485,7 @@ export function SequencesPage() {
                   {filteredPeople.map((e) => (
                     <li
                       key={e.id}
-                      className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_100px_minmax(0,1fr)_90px_72px] items-center gap-2 px-4 py-3 text-sm"
+                      className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_88px_minmax(0,0.9fr)_minmax(0,1fr)_80px_64px] items-center gap-2 px-4 py-3 text-sm"
                     >
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-1.5">
@@ -1095,17 +1546,43 @@ export function SequencesPage() {
                         <span
                           className={cn(
                             "inline-flex rounded-full px-2 py-0.5 text-[11px] capitalize",
-                            e.status === "active" &&
-                              "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
-                            e.status === "completed" &&
-                              "bg-sky-500/15 text-sky-700 dark:text-sky-400",
-                            e.status !== "active" &&
-                              e.status !== "completed" &&
-                              "bg-muted text-muted-foreground",
+                            enrollmentStatusBadge(e.status),
                           )}
                         >
                           {e.status}
                         </span>
+                      </div>
+                      <div className="min-w-0">
+                        {(() => {
+                          const lead = leadById.get(e.id);
+                          if (!lead) {
+                            return (
+                              <span className="text-[11px] text-muted-foreground">
+                                —
+                              </span>
+                            );
+                          }
+                          return (
+                            <div className="flex flex-col gap-1">
+                              <div className="flex items-center gap-1">
+                                {lead.steps.map((s) => (
+                                  <span
+                                    key={s.position}
+                                    title={`Step ${s.position + 1} ${s.channel}: ${s.status}`}
+                                    className={cn(
+                                      "size-2 rounded-full",
+                                      stepStatusDot(s.status),
+                                    )}
+                                  />
+                                ))}
+                              </div>
+                              <span className="text-[10px] tabular-nums text-muted-foreground">
+                                {lead.completedSteps}/{lead.totalSteps} ·{" "}
+                                {lead.progressPct}%
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </div>
                       <div className="min-w-0 text-xs text-muted-foreground">
                         <p className="truncate text-foreground">
