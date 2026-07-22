@@ -283,6 +283,22 @@ function mapApiStep(s: Record<string, unknown>): StepDraft {
   };
 }
 
+/** The first email has no prior outbound message, so it must start a thread. */
+function normalizeFirstEmailThreadMode(steps: StepDraft[]): StepDraft[] {
+  let hasPreviousEmail = false;
+  return steps.map((step) => {
+    if (step.channel !== "email") return step;
+    if (hasPreviousEmail) return step;
+    hasPreviousEmail = true;
+    if (step.emailThreadMode === "new") return step;
+    return {
+      ...step,
+      emailThreadMode: "new",
+      subjectTemplate: step.subjectTemplate.replace(/^(re:\s*)+/i, ""),
+    };
+  });
+}
+
 function stepTitle(s: StepDraft): string {
   if (s.channel === "linkedin") {
     return s.linkedinAction === "connect_note"
@@ -488,7 +504,9 @@ export function SequencesPage() {
       const steps = ((data.steps ?? []) as Record<string, unknown>[]).map(
         mapApiStep,
       );
-      const next = steps.length ? steps : [blankStep("linkedin")];
+      const next = normalizeFirstEmailThreadMode(
+        steps.length ? steps : [blankStep("linkedin")],
+      );
       setEditSteps(next);
       setSelectedStepKey(next[0]?.key ?? null);
     } finally {
@@ -607,7 +625,7 @@ export function SequencesPage() {
         const mapped = (data.steps as Record<string, unknown>[]).map(
           mapApiStep,
         );
-        setEditSteps(mapped);
+        setEditSteps(normalizeFirstEmailThreadMode(mapped));
         setSelectedStepKey((k) =>
           mapped.some((m) => m.key === k) ? k : mapped[0]?.key ?? null,
         );
@@ -686,7 +704,7 @@ export function SequencesPage() {
   const updateStep = (key: string, patch: Partial<StepDraft>) => {
     setEditSteps((prev) => {
       const idx = prev.findIndex((s) => s.key === key);
-      return prev.map((s) => {
+      const updated = prev.map((s) => {
         if (s.key !== key) return s;
         const next = { ...s, ...patch };
         if (patch.channel === "linkedin") {
@@ -724,6 +742,7 @@ export function SequencesPage() {
         }
         return next;
       });
+      return normalizeFirstEmailThreadMode(updated);
     });
   };
 
@@ -1712,6 +1731,9 @@ export function SequencesPage() {
                   const isSel = selected?.key === step.key;
                   const waitDays = Math.floor(step.delayHours / 24);
                   const waitHours = step.delayHours % 24;
+                  const hasPreviousEmail = editSteps
+                    .slice(0, idx)
+                    .some((candidate) => candidate.channel === "email");
                   const previewPerson =
                     previewPersonId === "sample"
                       ? {
@@ -1886,7 +1908,7 @@ export function SequencesPage() {
                                           n[idx],
                                           n[idx - 1],
                                         ];
-                                        return n;
+                                        return normalizeFirstEmailThreadMode(n);
                                       })
                                     }
                                   >
@@ -1907,7 +1929,7 @@ export function SequencesPage() {
                                           n[idx + 1],
                                           n[idx],
                                         ];
-                                        return n;
+                                        return normalizeFirstEmailThreadMode(n);
                                       })
                                     }
                                   >
@@ -1929,7 +1951,7 @@ export function SequencesPage() {
                                             next[0]?.key ??
                                             null,
                                         );
-                                        return next;
+                                        return normalizeFirstEmailThreadMode(next);
                                       });
                                     }}
                                   >
@@ -1993,28 +2015,36 @@ export function SequencesPage() {
                                   <p className="text-[11px] font-medium text-muted-foreground">
                                     Conversation
                                   </p>
-                                  <Segmented
-                                    value={step.emailThreadMode}
-                                    onChange={(v) =>
-                                      updateStep(step.key, {
-                                        emailThreadMode: v,
-                                      })
-                                    }
-                                    options={[
-                                      {
-                                        value: "new" as const,
-                                        label: "New thread",
-                                      },
-                                      {
-                                        value: "reply" as const,
-                                        label: "Reply in thread",
-                                      },
-                                    ]}
-                                  />
+                                  {hasPreviousEmail ? (
+                                    <Segmented
+                                      value={step.emailThreadMode}
+                                      onChange={(v) =>
+                                        updateStep(step.key, {
+                                          emailThreadMode: v,
+                                        })
+                                      }
+                                      options={[
+                                        {
+                                          value: "new" as const,
+                                          label: "New thread",
+                                        },
+                                        {
+                                          value: "reply" as const,
+                                          label: "Reply in thread",
+                                        },
+                                      ]}
+                                    />
+                                  ) : (
+                                    <p className="text-xs text-muted-foreground">
+                                      First email always starts a new conversation.
+                                    </p>
+                                  )}
                                   <p className="text-[11px] text-muted-foreground">
-                                    {step.emailThreadMode === "reply"
-                                      ? "Reply to the previous email for this lead. Subject is set to Re: … from that step (you can still edit)."
-                                      : "Starts a brand-new conversation. Use your own subject."}
+                                    {!hasPreviousEmail
+                                      ? "Follow-up email steps can reply in this thread."
+                                      : step.emailThreadMode === "reply"
+                                        ? "Reply to the previous email for this lead. Subject is set to Re: … from that step (you can still edit)."
+                                        : "Starts a brand-new conversation. Use your own subject."}
                                   </p>
                                 </div>
                               )}
