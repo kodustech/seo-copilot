@@ -1,7 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { discoverContacts } from "@/lib/contact-discovery";
-import { verifyEmails } from "@/lib/email-verifier";
+import {
+  isPatternAcceptable,
+  probeDomainEmailability,
+  toStoredEmailStatus,
+  verifyEmails,
+} from "@/lib/email-verifier";
 import {
   findWorkEmail,
   lookupPersonEmployment,
@@ -217,7 +222,7 @@ export async function enrichPeopleForRow(
     }
   }
 
-  // Email verify waterfall step (NeverBounce).
+  // Email verify waterfall step (NeverBounce) — store honest statuses only.
   if (opts.verifyEmails !== false) {
     const emails = people
       .map((p) => p.email)
@@ -229,19 +234,29 @@ export async function enrichPeopleForRow(
       people = people.map((p) => {
         if (!p.email) return p;
         const v = byEmail.get(p.email.toLowerCase());
-        if (!v) return p;
+        if (!v || v.status === "config_missing" || v.status === "error") {
+          return {
+            ...p,
+            emailStatus: p.emailStatus
+              ? toStoredEmailStatus(p.emailStatus)
+              : "unverified",
+          };
+        }
+        const stored = toStoredEmailStatus(v.status);
         return {
           ...p,
-          emailStatus: v.status,
+          emailStatus: stored,
           confidence:
-            v.status === "valid"
+            stored === "valid"
               ? Math.max(p.confidence ?? 0, 0.95)
-              : v.status === "catchall"
+              : stored === "catchall"
                 ? Math.max(p.confidence ?? 0, 0.6)
-                : v.status === "invalid"
+                : stored === "invalid"
                   ? 0.1
-                  : p.confidence,
-          providerUsed: `${p.providerUsed}+neverbounce`,
+                  : stored === "unverified"
+                    ? Math.min(p.confidence ?? 0.4, 0.4)
+                    : p.confidence,
+          providerUsed: `${p.providerUsed ?? "unknown"}+neverbounce`,
         };
       });
     }
@@ -802,7 +817,12 @@ export type FillEmailResult = {
 
 /**
  * Find + verify work email for one contact on a company row.
- * Order: NinjaPear work-email → pattern guesses + NeverBounce → re-verify existing.
+ *
+ * Honesty rules:
+ * - Domain probe first (random@domain). unprobeable/catchall → no pattern spam.
+ * - Patterns only saved when NeverBounce returns **valid**.
+ * - Provider emails may be saved as unverified / catchall / valid after verify.
+ * - Never persist config_missing or unknown-as-success.
  */
 export async function fillEmailForPerson(
   client: SupabaseClient,
@@ -832,12 +852,16 @@ export async function fillEmailForPerson(
   if (!target) throw new Error("Person not found on this company");
 
   let email = target.email?.trim() || null;
-  let emailStatus = target.emailStatus;
+  let emailStatus = toStoredEmailStatus(target.emailStatus);
   let emailSource = target.emailSource;
   let notes = target.notes;
   let providerUsed = target.providerUsed;
   let confidence = target.confidence;
   let foundNew = false;
+  let fromPattern = false;
+
+  const probe = await probeDomainEmailability(domain);
+  notes = appendNote(notes, `domain_probe:${probe.kind}`);
 
   // 1) Provider work-email if missing
   if (!email && ninjapearEnabled()) {
@@ -865,109 +889,159 @@ export async function fillEmailForPerson(
     }
   }
 
-  // 2) Pattern + verify until valid / catchall (requires NeverBounce)
-  if (!email) {
+  // 2) Patterns only when domain is probeable (random@ is invalid → valid means real)
+  if (!email && probe.kind === "probeable") {
     const patterns = emailPatternsForName(target.name, domain).slice(0, 8);
-    if (patterns.length === 0) {
-      throw new Error("Could not build email patterns from name");
-    }
-    const verified = await verifyEmails(patterns);
-    // Never persist config_missing as a real verification result
-    const nbConfigured = verified.some((v) => v.status !== "config_missing");
-    if (!nbConfigured) {
-      // Provider path already tried; without NB we won't guess patterns
-      notes = appendNote(notes, "email_lookup:neverbounce_missing");
-    } else {
-      const pick =
-        verified.find((v) => v.status === "valid") ??
-        verified.find((v) => v.status === "catchall") ??
-        verified.find((v) => v.status === "unknown" && !v.error) ??
-        null;
-      if (
-        pick &&
-        (pick.status === "valid" ||
-          pick.status === "catchall" ||
-          pick.status === "unknown")
-      ) {
-        email = pick.email;
-        emailStatus = pick.status;
-        emailSource = "pattern";
-        notes = appendNote(notes, `email_pattern:${pick.status}`);
-        providerUsed = `${providerUsed ?? "pattern"}+neverbounce`;
-        confidence =
-          pick.status === "valid"
-            ? 0.95
-            : pick.status === "catchall"
-              ? 0.6
-              : 0.4;
-        foundNew = true;
+    if (patterns.length > 0) {
+      const verified = await verifyEmails(patterns);
+      const nbConfigured = verified.some((v) => v.status !== "config_missing");
+      if (!nbConfigured) {
+        notes = appendNote(notes, "email_lookup:neverbounce_missing");
+      } else {
+        const pick = verified.find((v) => isPatternAcceptable(v.status));
+        if (pick) {
+          email = pick.email;
+          emailStatus = "valid";
+          emailSource = "pattern";
+          notes = appendNote(notes, "email_pattern:valid");
+          providerUsed = `${providerUsed ?? "pattern"}+neverbounce`;
+          confidence = 0.95;
+          foundNew = true;
+          fromPattern = true;
+        } else {
+          notes = appendNote(notes, "email_lookup:no_valid_pattern");
+        }
       }
     }
-
-    if (!email) {
-      await savePeople(
-        client,
-        rowId,
-        [
-          {
-            name: target.name,
-            role: target.role,
-            linkedin: target.linkedin,
-            email: null,
-            emailStatus: null,
-            emailSource: null,
-            providerUsed: target.providerUsed,
-            confidence: target.confidence,
-            notes: appendNote(target.notes, "email_lookup:no_valid_pattern"),
-          },
-        ],
-        { mode: "merge", reason: "fill_email_miss" },
-      );
-      const after = await listPeople(client, rowId);
-      const person =
-        after.find((p) => p.name === target.name) ??
-        after.find(
-          (p) =>
-            p.name.trim().toLowerCase() === target.name.trim().toLowerCase(),
-        ) ??
-        target;
-      return {
-        person,
-        found: false,
-        email: null,
-        emailStatus: null,
-        message: "No valid email found (provider + patterns)",
-      };
-    }
+  } else if (!email && probe.kind === "unprobeable") {
+    notes = appendNote(
+      notes,
+      "email_lookup:domain_unprobeable_skip_patterns",
+    );
+  } else if (!email && probe.kind === "catchall") {
+    notes = appendNote(notes, "email_lookup:domain_catchall_skip_patterns");
   }
 
-  // 3) Verify (or re-verify) with NeverBounce
-  // Also re-verify junk statuses left by earlier local runs without API key
+  if (!email) {
+    await savePeople(
+      client,
+      rowId,
+      [
+        {
+          name: target.name,
+          role: target.role,
+          linkedin: target.linkedin,
+          email: null,
+          emailStatus: null,
+          emailSource: null,
+          providerUsed: target.providerUsed,
+          confidence: target.confidence,
+          notes: appendNote(
+            target.notes,
+            `email_lookup:miss:probe=${probe.kind}`,
+          ),
+        },
+      ],
+      { mode: "merge", reason: "fill_email_miss" },
+    );
+    const after = await listPeople(client, rowId);
+    const person =
+      after.find((p) => p.name === target.name) ??
+      after.find(
+        (p) =>
+          p.name.trim().toLowerCase() === target.name.trim().toLowerCase(),
+      ) ??
+      target;
+    const why =
+      probe.kind === "unprobeable"
+        ? "Domain not probeable (common on .br) — no proven inbox"
+        : probe.kind === "catchall"
+          ? "Domain is catch-all — pattern guesses not trusted"
+          : "No valid email found (provider + patterns)";
+    return {
+      person,
+      found: false,
+      email: null,
+      emailStatus: null,
+      message: why,
+    };
+  }
+
+  // 3) Verify provider / existing emails
   const needsVerify =
     email &&
     (foundNew ||
       !emailStatus ||
+      emailStatus === "unverified" ||
       emailStatus === "unknown" ||
       emailStatus === "config_missing" ||
       emailStatus === "error");
-  if (needsVerify) {
+  if (needsVerify && !fromPattern) {
     const [v] = await verifyEmails([email!]);
-    if (v && v.status !== "config_missing") {
-      emailStatus = v.status;
+    if (v && v.status !== "config_missing" && v.status !== "error") {
+      emailStatus = toStoredEmailStatus(v.status);
       providerUsed = `${providerUsed ?? "unknown"}+neverbounce`;
-      if (v.status === "valid") confidence = Math.max(confidence ?? 0, 0.95);
-      else if (v.status === "catchall")
-        confidence = Math.max(confidence ?? 0, 0.6);
-      else if (v.status === "invalid") confidence = 0.1;
+      if (emailStatus === "valid") confidence = Math.max(confidence ?? 0, 0.95);
+      else if (emailStatus === "catchall")
+        confidence = Math.max(confidence ?? 0, 0.55);
+      else if (emailStatus === "invalid") confidence = 0.1;
+      else if (emailStatus === "unverified")
+        confidence = Math.min(confidence ?? 0.35, 0.35);
       notes = appendNote(notes, `verify:${v.status}`);
-      if (v.status === "invalid" && foundNew) {
-        notes = appendNote(notes, "nb_invalid");
+      // Provider hit that is invalid — drop it
+      if (emailStatus === "invalid" && foundNew) {
+        email = null;
+        emailStatus = null;
+        emailSource = null;
+        notes = appendNote(notes, "provider_email_invalid_dropped");
       }
-    } else if (v?.status === "config_missing") {
-      // Don't write config_missing into DB — leave unverified
-      if (emailStatus === "config_missing") emailStatus = null;
-      notes = appendNote(notes, "verify:skipped_nb_missing");
+    } else if (v?.status === "config_missing" || v?.status === "error") {
+      emailStatus = "unverified";
+      notes = appendNote(
+        notes,
+        v.status === "config_missing"
+          ? "verify:skipped_nb_missing"
+          : `verify:error:${v.error ?? "?"}`,
+      );
     }
+  }
+
+  // Pattern path already valid; provider-unknown stays unverified not "success"
+  if (email && !emailStatus) emailStatus = "unverified";
+  if (emailStatus === "unknown") emailStatus = "unverified";
+
+  if (!email) {
+    await savePeople(
+      client,
+      rowId,
+      [
+        {
+          name: target.name,
+          role: target.role,
+          linkedin: target.linkedin,
+          email: null,
+          emailStatus: null,
+          emailSource: null,
+          providerUsed,
+          confidence,
+          notes,
+        },
+      ],
+      { mode: "merge", reason: "fill_email_invalid" },
+    );
+    const after = await listPeople(client, rowId);
+    const person =
+      after.find(
+        (p) =>
+          p.name.trim().toLowerCase() === target.name.trim().toLowerCase(),
+      ) ?? target;
+    return {
+      person,
+      found: false,
+      email: null,
+      emailStatus: null,
+      message: "Provider email failed verification",
+    };
   }
 
   await savePeople(
@@ -995,17 +1069,25 @@ export async function fillEmailForPerson(
       (p) =>
         (email && p.email?.toLowerCase() === email.toLowerCase()) ||
         p.name.trim().toLowerCase() === target.name.trim().toLowerCase(),
-    ) ?? after[0] ??
+    ) ??
+    after[0] ??
     target;
+
+  const label =
+    emailStatus === "valid"
+      ? "valid"
+      : emailStatus === "catchall"
+        ? "catchall (domain accepts all)"
+        : emailStatus === "unverified"
+          ? "unverified (could not prove inbox)"
+          : emailStatus ?? "saved";
 
   return {
     person,
     found: Boolean(email),
     email: person.email,
     emailStatus: person.emailStatus,
-    message: email
-      ? `Email ${email}${emailStatus ? ` (${emailStatus})` : ""}`
-      : "No email found",
+    message: `Email ${email} · ${label}`,
   };
 }
 

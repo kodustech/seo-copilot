@@ -924,6 +924,47 @@ export async function savePeople(
 }
 
 /**
+ * Mark research_people rows with this email as hard-bounced (ground-truth).
+ * Also safe no-op when nobody matches.
+ */
+export async function markResearchPeopleEmailBounced(
+  client: SupabaseClient,
+  email: string,
+  opts: { reason?: string } = {},
+): Promise<number> {
+  const normalized = email.trim().toLowerCase();
+  if (!normalized.includes("@")) return 0;
+
+  const { data, error } = await client
+    .from("research_people")
+    .select("id, row_id, name, role, linkedin, email, email_source, provider_used, confidence, notes")
+    .ilike("email", normalized);
+  if (error) {
+    console.warn("[research] mark bounced failed:", error.message);
+    return 0;
+  }
+  const rows = (data ?? []) as Array<Record<string, unknown>>;
+  if (rows.length === 0) return 0;
+
+  const noteBit = `bounced:${opts.reason ?? "hard_bounce"}`;
+  for (const r of rows) {
+    const prevNotes = (r.notes as string | null) ?? null;
+    const notes = prevNotes?.includes("bounced:")
+      ? prevNotes
+      : [prevNotes, noteBit].filter(Boolean).join(" | ");
+    await client
+      .from("research_people")
+      .update({
+        email_status: "bounced",
+        confidence: 0,
+        notes,
+      })
+      .eq("id", r.id as string);
+  }
+  return rows.length;
+}
+
+/**
  * Collapse duplicate contacts on one company row (name/LI/email multi-key).
  * Snapshots first. Safe to re-run.
  */

@@ -1163,6 +1163,10 @@ async function sendDueEmailTask(
         .eq("id", task.id);
       return "skipped";
     }
+
+    const { looksLikeHardBounce } = await import("@/lib/email-verifier");
+    const hardBounce = looksLikeHardBounce(send.error);
+
     await client
       .from("outreach_send_tasks")
       .update({
@@ -1175,10 +1179,25 @@ async function sendDueEmailTask(
     await client
       .from("outreach_enrollments")
       .update({
+        status: hardBounce ? "bounced" : enrollment.status,
         last_error: send.error,
         updated_at: now,
       })
       .eq("id", enrollment.id);
+
+    // Ground-truth: hard bounce updates research_people.email_status
+    if (hardBounce && to) {
+      try {
+        const { markResearchPeopleEmailBounced } = await import(
+          "@/lib/research/tables"
+        );
+        await markResearchPeopleEmailBounced(client, to, {
+          reason: send.error.slice(0, 120),
+        });
+      } catch (err) {
+        console.warn("[sequences] mark bounced failed:", err);
+      }
+    }
     return "failed";
   }
 
