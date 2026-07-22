@@ -1214,10 +1214,14 @@ async function sendDueEmailTask(
       ? await getEnrollmentEmailThread(client, enrollment.id)
       : null;
 
-  if (priorThread?.rootSubject && !subject.trim()) {
-    subject = /^re:\s/i.test(priorThread.rootSubject)
-      ? priorThread.rootSubject
-      : `Re: ${priorThread.rootSubject}`;
+  // Reply mode: subject follows the thread root (Re: original) for client threading
+  if (threadMode === "reply" && priorThread?.rootSubject?.trim()) {
+    const root = priorThread.rootSubject.trim().replace(/^(re:\s*)+/i, "");
+    const desired = `Re: ${root}`;
+    // If empty or already a Re: of something, normalize to root thread subject
+    if (!subject.trim() || /^re:\s/i.test(subject.trim())) {
+      subject = desired;
+    }
   }
 
   const send = await sendOutreachEmail(client, {
