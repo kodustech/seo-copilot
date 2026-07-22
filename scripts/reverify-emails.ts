@@ -4,7 +4,7 @@
  * Usage (prefer Railway so NEVERBOUNCE_API_KEY is present):
  *   railway run --service amiable-benevolence -- npx tsx scripts/reverify-emails.ts leads-qa-people-discovery-global
  */
-import { verifyEmails } from "../lib/email-verifier";
+import { toStoredEmailStatus, verifyEmails } from "../lib/email-verifier";
 import { resolveTable } from "../lib/research/columns";
 import { listPeople, listRows, savePeople } from "../lib/research/tables";
 import { getSupabaseServiceClient } from "../lib/supabase-server";
@@ -50,7 +50,8 @@ async function main() {
         !st ||
         st === "config_missing" ||
         st === "error" ||
-        st === "unknown"
+        st === "unknown" ||
+        st === "unverified"
       ) {
         items.push({
           rowId: row.id,
@@ -83,12 +84,13 @@ async function main() {
       process.stdout.write(
         `[${i + j + 1}/${items.length}] ${item.name} <${item.email}>… `,
       );
-      if (!v || v.status === "config_missing") {
+      if (!v || v.status === "config_missing" || v.status === "error") {
         fail += 1;
-        console.log("SKIP", v?.error ?? "config_missing");
+        console.log("SKIP", v?.error ?? v?.status ?? "config_missing");
         continue;
       }
-      byStatus.set(v.status, (byStatus.get(v.status) ?? 0) + 1);
+      const stored = toStoredEmailStatus(v.status) ?? "unverified";
+      byStatus.set(stored, (byStatus.get(stored) ?? 0) + 1);
       await savePeople(
         client,
         item.rowId,
@@ -98,24 +100,24 @@ async function main() {
             role: item.role,
             linkedin: item.linkedin,
             email: item.email,
-            emailStatus: v.status,
+            emailStatus: stored,
             emailSource: "provider",
             providerUsed: "neverbounce",
             confidence:
-              v.status === "valid"
+              stored === "valid"
                 ? 0.95
-                : v.status === "catchall"
-                  ? 0.6
-                  : v.status === "invalid"
+                : stored === "catchall"
+                  ? 0.55
+                  : stored === "invalid"
                     ? 0.1
-                    : 0.4,
+                    : 0.35,
             notes: `reverify:${v.status}`,
           },
         ],
         { mode: "merge", reason: "reverify_email" },
       );
       ok += 1;
-      console.log(`${item.prevStatus ?? "null"} → ${v.status}`);
+      console.log(`${item.prevStatus ?? "null"} → ${stored}`);
     }
     await new Promise((r) => setTimeout(r, 200));
   }

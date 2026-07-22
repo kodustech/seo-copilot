@@ -255,15 +255,29 @@ function formatCell(cell: ResearchCell | undefined): string {
   return String(cell.value);
 }
 
-function emailStatusHint(status: string | null | undefined): string | null {
-  if (!status) return null;
-  const s = status.toLowerCase();
+/** Honest labels — never imply unknown is “good”. */
+function emailStatusHint(
+  status: string | null | undefined,
+  hasEmail: boolean,
+): string | null {
+  if (!hasEmail) return null;
+  const s = (status ?? "").toLowerCase();
   if (s === "valid") return "valid";
   if (s === "invalid") return "invalid";
+  if (s === "bounced") return "bounced";
   if (s === "catchall") return "catchall";
   if (s === "disposable") return "disposable";
-  if (s === "unknown") return "unknown";
+  if (s === "unverified" || s === "unknown" || !s) return "unverified";
+  if (s === "config_missing" || s === "error") return "unverified";
   return s;
+}
+
+function emailStatusClass(status: string | null | undefined): string {
+  const s = (status ?? "").toLowerCase();
+  if (s === "valid") return "text-emerald-600 dark:text-emerald-400";
+  if (s === "invalid" || s === "bounced") return "text-rose-600 dark:text-rose-400";
+  if (s === "catchall") return "text-amber-600 dark:text-amber-400";
+  return "text-muted-foreground";
 }
 
 export function ResearchPage() {
@@ -1843,21 +1857,23 @@ export function ResearchPage() {
                             <Mail className="size-3 shrink-0 text-muted-foreground" />
                             <span className="truncate">{p.email}</span>
                           </a>
-                          {emailStatusHint(p.emailStatus) && (
+                          {emailStatusHint(p.emailStatus, true) && (
                             <span
                               className={cn(
                                 "text-[10px] font-medium uppercase tracking-wide",
-                                p.emailStatus === "valid" &&
-                                  "text-emerald-600 dark:text-emerald-400",
-                                p.emailStatus === "invalid" && "text-rose-600",
-                                p.emailStatus === "catchall" &&
-                                  "text-amber-600 dark:text-amber-400",
-                                (p.emailStatus === "unknown" ||
-                                  p.emailStatus === "error") &&
-                                  "text-muted-foreground",
+                                emailStatusClass(p.emailStatus),
                               )}
+                              title={
+                                p.emailStatus === "valid"
+                                  ? "Mailbox confirmed"
+                                  : p.emailStatus === "catchall"
+                                    ? "Domain accepts any address — not person-proof"
+                                    : p.emailStatus === "bounced"
+                                      ? "Hard bounce from a real send"
+                                      : "Could not prove this inbox exists"
+                              }
                             >
-                              {emailStatusHint(p.emailStatus)}
+                              {emailStatusHint(p.emailStatus, true)}
                             </span>
                           )}
                         </div>
@@ -1870,7 +1886,7 @@ export function ResearchPage() {
                             actionBusy ||
                             !p.name.trim()
                           }
-                          title="Find work email and verify (NeverBounce)"
+                          title="Find work email (only saves when proven valid or strong provider hit)"
                           onClick={() =>
                             void findEmailForPerson({
                               rowId: p.rowId,
@@ -1935,9 +1951,18 @@ export function ResearchPage() {
                     )}
                     <TableCell className="pr-4 text-xs text-muted-foreground">
                       {p.email ? (
-                        <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
-                          <Check className="size-3" />
-                          Email
+                        <span
+                          className={cn(
+                            "inline-flex items-center gap-1 text-xs",
+                            p.emailStatus === "valid"
+                              ? "text-emerald-700 dark:text-emerald-400"
+                              : "text-muted-foreground",
+                          )}
+                        >
+                          {p.emailStatus === "valid" ? (
+                            <Check className="size-3" />
+                          ) : null}
+                          {emailStatusHint(p.emailStatus, true) ?? "email"}
                         </span>
                       ) : p.linkedin ? (
                         "LI only"
@@ -2210,19 +2235,14 @@ export function ResearchPage() {
                               <Mail className="size-3 shrink-0 text-muted-foreground" />
                               <span className="truncate">{p.email}</span>
                             </a>
-                            {emailStatusHint(p.emailStatus) && (
+                            {emailStatusHint(p.emailStatus, true) && (
                               <span
                                 className={cn(
                                   "text-[10px] font-medium uppercase tracking-wide",
-                                  p.emailStatus === "valid" &&
-                                    "text-emerald-600 dark:text-emerald-400",
-                                  p.emailStatus === "invalid" &&
-                                    "text-rose-600",
-                                  p.emailStatus === "catchall" &&
-                                    "text-amber-600 dark:text-amber-400",
+                                  emailStatusClass(p.emailStatus),
                                 )}
                               >
-                                {emailStatusHint(p.emailStatus)}
+                                {emailStatusHint(p.emailStatus, true)}
                               </span>
                             )}
                           </div>
@@ -2234,7 +2254,7 @@ export function ResearchPage() {
                               emailBusyKey === `${r.id}:${p.id ?? p.name}` ||
                               actionBusy
                             }
-                            title="Find work email and verify"
+                            title="Find work email (saves only when proven)"
                             onClick={() =>
                               void findEmailForPerson({
                                 rowId: r.id,
