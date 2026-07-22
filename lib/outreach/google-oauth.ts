@@ -226,6 +226,21 @@ export function decryptToken(payload: string): string {
   return decryptSecret(payload);
 }
 
+export type GmailThreadHeaders = {
+  /** RFC Message-ID we set (with or without brackets) */
+  messageId?: string | null;
+  /** Reply-to previous message (RFC Message-ID) */
+  inReplyTo?: string | null;
+  /** Space-separated Message-IDs in thread order */
+  references?: string | null;
+};
+
+function normalizeMsgId(id: string): string {
+  const t = id.trim();
+  if (!t) return t;
+  return t.startsWith("<") ? t : `<${t}>`;
+}
+
 /** RFC 2822 raw message → Gmail API base64url */
 export function buildRawGmailMessage(opts: {
   from: string;
@@ -233,15 +248,33 @@ export function buildRawGmailMessage(opts: {
   subject: string;
   text: string;
   html?: string | null;
+  thread?: GmailThreadHeaders | null;
 }): string {
   const subjectEncoded = `=?UTF-8?B?${Buffer.from(opts.subject || "(no subject)", "utf8").toString("base64")}?=`;
   const boundary = `kodus_${Date.now().toString(36)}`;
+  const threadHeaders: string[] = [];
+  if (opts.thread?.messageId?.trim()) {
+    threadHeaders.push(`Message-ID: ${normalizeMsgId(opts.thread.messageId)}`);
+  }
+  if (opts.thread?.inReplyTo?.trim()) {
+    threadHeaders.push(`In-Reply-To: ${normalizeMsgId(opts.thread.inReplyTo)}`);
+  }
+  if (opts.thread?.references?.trim()) {
+    const refs = opts.thread.references
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(normalizeMsgId)
+      .join(" ");
+    threadHeaders.push(`References: ${refs}`);
+  }
+
   let raw: string;
   if (opts.html) {
     raw = [
       `From: ${opts.from}`,
       `To: ${opts.to}`,
       `Subject: ${subjectEncoded}`,
+      ...threadHeaders,
       "MIME-Version: 1.0",
       `Content-Type: multipart/alternative; boundary="${boundary}"`,
       "",
@@ -262,6 +295,7 @@ export function buildRawGmailMessage(opts: {
       `From: ${opts.from}`,
       `To: ${opts.to}`,
       `Subject: ${subjectEncoded}`,
+      ...threadHeaders,
       "MIME-Version: 1.0",
       'Content-Type: text/plain; charset="UTF-8"',
       "",
@@ -282,8 +316,21 @@ export async function sendViaGmailApi(opts: {
   subject: string;
   text: string;
   html?: string | null;
-}): Promise<{ messageId: string }> {
+  /** RFC Message-ID / In-Reply-To / References */
+  thread?: GmailThreadHeaders | null;
+  /** Gmail thread id to keep replies in the same thread */
+  gmailThreadId?: string | null;
+}): Promise<{
+  messageId: string;
+  gmailThreadId: string | null;
+  rfcMessageId: string | null;
+}> {
   const raw = buildRawGmailMessage(opts);
+  const body: Record<string, string> = { raw };
+  if (opts.gmailThreadId?.trim()) {
+    body.threadId = opts.gmailThreadId.trim();
+  }
+
   const res = await fetch(
     "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
     {
@@ -292,15 +339,50 @@ export async function sendViaGmailApi(opts: {
         Authorization: `Bearer ${opts.accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ raw }),
+      body: JSON.stringify(body),
     },
   );
   const data = (await res.json()) as {
     id?: string;
+    threadId?: string;
     error?: { message?: string };
   };
   if (!res.ok) {
     throw new Error(data.error?.message || `Gmail API ${res.status}`);
   }
-  return { messageId: data.id ?? "" };
+
+  const gmailId = data.id ?? "";
+  let rfcMessageId = opts.thread?.messageId
+    ? normalizeMsgId(opts.thread.messageId)
+    : null;
+  let gmailThreadId = data.threadId ?? opts.gmailThreadId ?? null;
+
+  // Fetch Message-ID header + threadId if missing
+  if (gmailId && opts.accessToken) {
+    try {
+      const metaRes = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${gmailId}?format=metadata&metadataHeaders=Message-ID`,
+        { headers: { Authorization: `Bearer ${opts.accessToken}` } },
+      );
+      if (metaRes.ok) {
+        const meta = (await metaRes.json()) as {
+          threadId?: string;
+          payload?: { headers?: Array<{ name?: string; value?: string }> };
+        };
+        if (meta.threadId) gmailThreadId = meta.threadId;
+        const mid = meta.payload?.headers?.find(
+          (h) => h.name?.toLowerCase() === "message-id",
+        )?.value;
+        if (mid) rfcMessageId = normalizeMsgId(mid);
+      }
+    } catch {
+      // ignore metadata fetch errors
+    }
+  }
+
+  return {
+    messageId: gmailId,
+    gmailThreadId,
+    rfcMessageId,
+  };
 }
