@@ -992,6 +992,38 @@ export function ResearchPage() {
     }
   };
 
+  /** Core find-email API call (no busy-key ownership). */
+  const runFindEmail = async (opts: {
+    rowId: string;
+    personId?: string;
+    personName: string;
+  }): Promise<{ found: boolean; message?: string }> => {
+    if (!token) return { found: false, message: "Not signed in" };
+    const res = await fetch(`/api/research/rows/${opts.rowId}/actions`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({
+        action: "find_email",
+        personId: opts.personId,
+        personName: opts.personName,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      return { found: false, message: data.error ?? "Email lookup failed" };
+    }
+    if (data.person) {
+      patchPersonOnRow(opts.rowId, data.person as Person, {
+        personId: opts.personId,
+        name: opts.personName,
+      });
+    }
+    return {
+      found: Boolean(data.found && (data.email || data.person?.email)),
+      message: data.message,
+    };
+  };
+
   /** Find + verify work email for one person (empty email cell shortcut). */
   const findEmailForPerson = async (opts: {
     rowId: string;
@@ -999,33 +1031,47 @@ export function ResearchPage() {
     personName: string;
     busyKey: string;
   }) => {
-    if (!token) return;
+    if (!token || emailBusyKey) return;
     setEmailBusyKey(opts.busyKey);
     try {
-      const res = await fetch(`/api/research/rows/${opts.rowId}/actions`, {
-        method: "POST",
-        headers: headers(),
-        body: JSON.stringify({
-          action: "find_email",
-          personId: opts.personId,
-          personName: opts.personName,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setNotice(data.error ?? "Email lookup failed");
-        return;
+      const result = await runFindEmail(opts);
+      setNotice(
+        result.message ??
+          (result.found ? "Email found" : "No email found"),
+      );
+    } finally {
+      setEmailBusyKey(null);
+    }
+  };
+
+  /** Batch: find emails for everyone in the current people filter missing one. */
+  const findAllMissingEmails = async () => {
+    if (!token || emailBusyKey) return;
+    const missing = filteredPeople.filter(
+      (p) => !p.email?.trim() && p.name.trim(),
+    );
+    if (missing.length === 0) {
+      setNotice("No missing emails in the current view");
+      return;
+    }
+    let found = 0;
+    let miss = 0;
+    try {
+      for (let i = 0; i < missing.length; i++) {
+        const p = missing[i];
+        setEmailBusyKey(p.key);
+        setNotice(`Finding emails ${i + 1}/${missing.length}… ${p.name}`);
+        const res = await runFindEmail({
+          rowId: p.rowId,
+          personId: p.personId,
+          personName: p.name,
+        });
+        if (res.found) found += 1;
+        else miss += 1;
       }
       setNotice(
-        data.message ?? (data.found ? "Email found" : "No email found"),
+        `Email batch done: ${found} found · ${miss} still missing (${missing.length} tried)`,
       );
-      // In-place patch — never flash the whole grid via loadRows spinner
-      if (data.person) {
-        patchPersonOnRow(opts.rowId, data.person as Person, {
-          personId: opts.personId,
-          name: opts.personName,
-        });
-      }
     } finally {
       setEmailBusyKey(null);
     }
@@ -1377,6 +1423,10 @@ export function ResearchPage() {
     viewMode === "people"
       ? 9 + (showIcpMeta ? 1 : 0)
       : 9 + customColumns.length + (showIcpMeta ? 2 : 0);
+  const missingEmailCount = useMemo(
+    () => filteredPeople.filter((p) => !p.email?.trim()).length,
+    [filteredPeople],
+  );
 
   const copyTableRef = async () => {
     if (!activeTable) return;
@@ -1733,7 +1783,34 @@ export function ResearchPage() {
                 </TableHead>
                 <TableHead>Name</TableHead>
                 <TableHead className="hidden md:table-cell">Role</TableHead>
-                <TableHead>Email</TableHead>
+                <TableHead className="min-w-[140px]">
+                  <div className="flex flex-col gap-1 py-0.5">
+                    <span>Email</span>
+                    {missingEmailCount > 1 && (
+                      <button
+                        type="button"
+                        className="inline-flex w-fit items-center gap-1 rounded-md border border-dashed px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:border-foreground/30 hover:bg-muted hover:text-foreground disabled:opacity-50"
+                        disabled={
+                          Boolean(emailBusyKey) ||
+                          actionBusy ||
+                          missingEmailCount === 0
+                        }
+                        title={`Find email for ${missingEmailCount} people missing one (Hunter → verify)`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void findAllMissingEmails();
+                        }}
+                      >
+                        {emailBusyKey ? (
+                          <Loader2 className="size-3 animate-spin" />
+                        ) : (
+                          <Mail className="size-3" />
+                        )}
+                        Find all missing ({missingEmailCount})
+                      </button>
+                    )}
+                  </div>
+                </TableHead>
                 <TableHead className="w-12">LI</TableHead>
                 <TableHead>Company</TableHead>
                 <TableHead className="hidden sm:table-cell">Domain</TableHead>
@@ -2246,31 +2323,6 @@ export function ResearchPage() {
                               </span>
                             )}
                           </div>
-                        ) : p ? (
-                          <button
-                            type="button"
-                            className="inline-flex items-center gap-1 rounded-md border border-dashed px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground hover:border-foreground/30 hover:bg-muted hover:text-foreground disabled:opacity-50"
-                            disabled={
-                              emailBusyKey === `${r.id}:${p.id ?? p.name}` ||
-                              actionBusy
-                            }
-                            title="Find work email (saves only when proven)"
-                            onClick={() =>
-                              void findEmailForPerson({
-                                rowId: r.id,
-                                personId: p.id,
-                                personName: p.name,
-                                busyKey: `${r.id}:${p.id ?? p.name}`,
-                              })
-                            }
-                          >
-                            {emailBusyKey === `${r.id}:${p.id ?? p.name}` ? (
-                              <Loader2 className="size-3 animate-spin" />
-                            ) : (
-                              <Mail className="size-3" />
-                            )}
-                            Find email
-                          </button>
                         ) : (
                           <span className="text-muted-foreground">—</span>
                         )}
