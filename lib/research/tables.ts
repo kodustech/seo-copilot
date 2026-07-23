@@ -190,8 +190,245 @@ export async function deleteTable(
   client: SupabaseClient,
   id: string,
 ): Promise<void> {
+  await snapshotResearchTable(client, id, { reason: "delete" });
   const { error } = await client.from("research_tables").delete().eq("id", id);
   if (error) throw new Error(`Failed to delete research table: ${error.message}`);
+}
+
+/**
+ * Permanently remove selected companies from their lists. The affected lists
+ * are snapshotted first, then every active campaign enrollment for those rows
+ * is cancelled (sent history remains intact).
+ */
+export async function deleteResearchRows(
+  client: SupabaseClient,
+  rowIds: string[],
+): Promise<{ deleted: number; cancelledEnrollments: number }> {
+  const ids = [...new Set(rowIds.filter(Boolean))];
+  if (ids.length === 0) throw new Error("rowIds required");
+  const { data: rows, error: rowsError } = await client
+    .from("research_rows")
+    .select("id, table_id")
+    .in("id", ids);
+  if (rowsError) throw new Error(`Failed to read research rows: ${rowsError.message}`);
+  if (!rows?.length) return { deleted: 0, cancelledEnrollments: 0 };
+
+  const tableIds = [...new Set(rows.map((row) => row.table_id as string))];
+  await Promise.all(
+    tableIds.map((tableId) =>
+      snapshotResearchTable(client, tableId, { reason: `delete_rows:${rows.length}` }),
+    ),
+  );
+
+  const { data: activeEnrollments, error: enrollmentError } = await client
+    .from("outreach_enrollments")
+    .select("id, sequence_id")
+    .in("research_row_id", rows.map((row) => row.id as string))
+    .in("status", ["active", "paused"]);
+  if (enrollmentError) throw new Error(enrollmentError.message);
+
+  const idsBySequence = new Map<string, string[]>();
+  for (const enrollment of activeEnrollments ?? []) {
+    const sequenceId = enrollment.sequence_id as string;
+    const enrollmentIds = idsBySequence.get(sequenceId) ?? [];
+    enrollmentIds.push(enrollment.id as string);
+    idsBySequence.set(sequenceId, enrollmentIds);
+  }
+  if (idsBySequence.size > 0) {
+    const { unenrollFromSequence } = await import("@/lib/outreach/sequences");
+    await Promise.all(
+      [...idsBySequence].map(([sequenceId, enrollmentIds]) =>
+        unenrollFromSequence(client, { sequenceId, enrollmentIds }),
+      ),
+    );
+  }
+
+  const { data: deletedRows, error: deleteError } = await client
+    .from("research_rows")
+    .delete()
+    .in("id", rows.map((row) => row.id as string))
+    .select("id");
+  if (deleteError) throw new Error(`Failed to remove companies from list: ${deleteError.message}`);
+  return {
+    deleted: deletedRows?.length ?? 0,
+    cancelledEnrollments: activeEnrollments?.length ?? 0,
+  };
+}
+
+type ResearchTableSnapshotRow = Record<string, unknown> & {
+  people: Array<Record<string, unknown>>;
+  evidence: Array<Record<string, unknown>>;
+};
+
+/**
+ * Save a complete, self-contained list version before a destructive action.
+ * It intentionally has no FK to research_tables, so deleting a list cannot
+ * delete its recovery point.
+ */
+export async function snapshotResearchTable(
+  client: SupabaseClient,
+  tableId: string,
+  opts: { reason?: string; createdBy?: string | null } = {},
+): Promise<string> {
+  const { data: table, error: tableError } = await client
+    .from("research_tables")
+    .select("*")
+    .eq("id", tableId)
+    .maybeSingle();
+  if (tableError) throw new Error(`Failed to read research list: ${tableError.message}`);
+  if (!table) throw new Error("Research list not found");
+
+  const { data: rows, error: rowsError } = await client
+    .from("research_rows")
+    .select("*")
+    .eq("table_id", tableId);
+  if (rowsError) throw new Error(`Failed to read research rows: ${rowsError.message}`);
+  const rowIds = (rows ?? []).map((row) => row.id as string);
+
+  const [peopleResult, evidenceResult] = rowIds.length
+    ? await Promise.all([
+        client.from("research_people").select("*").in("row_id", rowIds),
+        client.from("research_evidence").select("*").in("row_id", rowIds),
+      ])
+    : [{ data: [], error: null }, { data: [], error: null }];
+  if (peopleResult.error) throw new Error(`Failed to read research people: ${peopleResult.error.message}`);
+  if (evidenceResult.error) throw new Error(`Failed to read research evidence: ${evidenceResult.error.message}`);
+
+  const peopleByRow = new Map<string, Array<Record<string, unknown>>>();
+  for (const person of peopleResult.data ?? []) {
+    const rowId = person.row_id as string;
+    const values = peopleByRow.get(rowId) ?? [];
+    values.push(person as Record<string, unknown>);
+    peopleByRow.set(rowId, values);
+  }
+  const evidenceByRow = new Map<string, Array<Record<string, unknown>>>();
+  for (const evidence of evidenceResult.data ?? []) {
+    const rowId = evidence.row_id as string;
+    const values = evidenceByRow.get(rowId) ?? [];
+    values.push(evidence as Record<string, unknown>);
+    evidenceByRow.set(rowId, values);
+  }
+
+  const rowsData: ResearchTableSnapshotRow[] = (rows ?? []).map((row) => ({
+    ...(row as Record<string, unknown>),
+    people: peopleByRow.get(row.id as string) ?? [],
+    evidence: evidenceByRow.get(row.id as string) ?? [],
+  }));
+  const { data, error } = await client
+    .from("research_table_snapshots")
+    .insert({
+      table_id: tableId,
+      reason: opts.reason ?? "save",
+      table_data: table,
+      rows_data: rowsData,
+      row_count: rowsData.length,
+      created_by: opts.createdBy ?? null,
+    })
+    .select("id")
+    .single();
+  if (error) throw new Error(`Failed to snapshot research list: ${error.message}`);
+  return data.id as string;
+}
+
+export async function listResearchTableSnapshots(
+  client: SupabaseClient,
+  tableId: string,
+  limit = 20,
+): Promise<Array<{ id: string; reason: string; rowCount: number; createdAt: string }>> {
+  const { data, error } = await client
+    .from("research_table_snapshots")
+    .select("id, reason, row_count, created_at")
+    .eq("table_id", tableId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(`Failed to list research list snapshots: ${error.message}`);
+  return (data ?? []).map((snapshot) => ({
+    id: snapshot.id as string,
+    reason: snapshot.reason as string,
+    rowCount: Number(snapshot.row_count ?? 0),
+    createdAt: snapshot.created_at as string,
+  }));
+}
+
+/** Restore an exact list version, snapshotting the current state first. */
+export async function restoreResearchTableSnapshot(
+  client: SupabaseClient,
+  snapshotId: string,
+  opts: { createdBy?: string | null } = {},
+): Promise<ResearchTable> {
+  const { data: snapshot, error } = await client
+    .from("research_table_snapshots")
+    .select("*")
+    .eq("id", snapshotId)
+    .maybeSingle();
+  if (error) throw new Error(`Failed to read research list snapshot: ${error.message}`);
+  if (!snapshot) throw new Error("Research list snapshot not found");
+
+  const table = snapshot.table_data as Record<string, unknown>;
+  const tableId = table.id as string;
+  const rows = (snapshot.rows_data as ResearchTableSnapshotRow[]) ?? [];
+  const current = await getTable(client, tableId);
+  if (current) {
+    await snapshotResearchTable(client, tableId, {
+      reason: `before_restore:${snapshotId}`,
+      createdBy: opts.createdBy,
+    });
+  }
+
+  // Rows can be in another list after a move. Remove those IDs first so the
+  // original IDs can be put back without breaking enrollment references.
+  const rowIds = rows.map((row) => row.id as string).filter(Boolean);
+  if (rowIds.length > 0) {
+    const { error: rowDeleteError } = await client
+      .from("research_rows")
+      .delete()
+      .in("id", rowIds);
+    if (rowDeleteError) throw new Error(`Failed to prepare list restore: ${rowDeleteError.message}`);
+  }
+  if (current) {
+    const { error: tableDeleteError } = await client
+      .from("research_tables")
+      .delete()
+      .eq("id", tableId);
+    if (tableDeleteError) throw new Error(`Failed to replace current list: ${tableDeleteError.message}`);
+  }
+
+  const { error: tableInsertError } = await client
+    .from("research_tables")
+    .insert(table);
+  if (tableInsertError) throw new Error(`Failed to restore research list: ${tableInsertError.message}`);
+
+  const rawRows = rows.map((snapshotRow) => {
+    const row: Record<string, unknown> = { ...snapshotRow };
+    delete row.people;
+    delete row.evidence;
+    return row;
+  });
+  if (rawRows.length > 0) {
+    const { error: rowInsertError } = await client.from("research_rows").insert(rawRows);
+    if (rowInsertError) throw new Error(`Failed to restore research rows: ${rowInsertError.message}`);
+  }
+  const people = rows.flatMap((row) => row.people ?? []);
+  if (people.length > 0) {
+    const { error: peopleInsertError } = await client.from("research_people").insert(people);
+    if (peopleInsertError) throw new Error(`Failed to restore research people: ${peopleInsertError.message}`);
+  }
+  const evidence = rows.flatMap((row) => row.evidence ?? []);
+  if (evidence.length > 0) {
+    const { error: evidenceInsertError } = await client.from("research_evidence").insert(evidence);
+    if (evidenceInsertError) throw new Error(`Failed to restore research evidence: ${evidenceInsertError.message}`);
+  }
+  // Active enrollments use a contact snapshot too; reconcile it with the
+  // restored people so recovery does not leave campaigns with stale emails.
+  const { syncResearchPeopleToEnrollments } = await import(
+    "@/lib/outreach/sequences"
+  );
+  await Promise.all(
+    rowIds.map(async (rowId) =>
+      syncResearchPeopleToEnrollments(client, rowId, await listPeople(client, rowId)),
+    ),
+  );
+  return (await getTable(client, tableId))!;
 }
 
 export async function addRows(
@@ -920,7 +1157,12 @@ export async function savePeople(
     if (error) throw new Error(`Failed to save people: ${error.message}`);
   }
 
-  return listPeople(client, rowId);
+  const saved = await listPeople(client, rowId);
+  const { syncResearchPeopleToEnrollments } = await import(
+    "@/lib/outreach/sequences"
+  );
+  await syncResearchPeopleToEnrollments(client, rowId, saved);
+  return saved;
 }
 
 /**

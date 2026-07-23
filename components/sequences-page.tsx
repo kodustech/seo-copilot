@@ -548,6 +548,34 @@ export function SequencesPage() {
     setSequenceHealth((data.health as SequenceHealth) ?? null);
   };
 
+  const removeEnrollment = async (enrollment: EnrollmentRow) => {
+    if (!token || !editingId) return;
+    if (
+      !confirm(
+        `Remove ${enrollment.contactName || "this person"} from this campaign? Pending tasks will be cancelled; sent history stays visible.`,
+      )
+    ) {
+      return;
+    }
+    setBusyId(enrollment.id);
+    try {
+      const res = await fetch(`/api/outreach/sequences/${editingId}/enroll`, {
+        method: "DELETE",
+        headers: headers(),
+        body: JSON.stringify({ enrollment_ids: [enrollment.id] }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Could not remove person from campaign");
+        return;
+      }
+      setNotice(`Removed ${enrollment.contactName || "person"} from the campaign.`);
+      await Promise.all([reloadEnrollments(editingId), load()]);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const createSeq = async () => {
     if (!token || !newName.trim()) return;
     setCreating(true);
@@ -1657,17 +1685,35 @@ export function SequencesPage() {
                           : "—"}
                       </div>
                       <div>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 px-2 text-[11px]"
-                          onClick={() => {
-                            setPreviewPersonId(e.id);
-                            setEditorTab("steps");
-                          }}
-                        >
-                          Preview
-                        </Button>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-[11px]"
+                            onClick={() => {
+                              setPreviewPersonId(e.id);
+                              setEditorTab("steps");
+                            }}
+                          >
+                            Preview
+                          </Button>
+                          {(e.status === "active" || e.status === "paused") && (
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="size-7 text-muted-foreground hover:text-destructive"
+                              disabled={busyId === e.id}
+                              onClick={() => void removeEnrollment(e)}
+                              aria-label={`Remove ${e.contactName || "person"} from campaign`}
+                            >
+                              {busyId === e.id ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                              ) : (
+                                <Trash2 className="size-3.5" />
+                              )}
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     </li>
                   ))}

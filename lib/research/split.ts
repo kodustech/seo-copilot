@@ -5,7 +5,12 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { createTable, getTable, listRows } from "@/lib/research/tables";
+import {
+  createTable,
+  getTable,
+  listRows,
+  snapshotResearchTable,
+} from "@/lib/research/tables";
 import type { ResearchRow, ResearchTable } from "@/lib/research/types";
 
 // ---------------------------------------------------------------------------
@@ -179,6 +184,26 @@ export async function moveRowsToTable(
     .in("id", ids);
   const alreadySet = new Set((already ?? []).map((r) => r.id as string));
   const toMove = ids.filter((id) => !alreadySet.has(id));
+
+  if (toMove.length > 0) {
+    const { data: sources, error } = await client
+      .from("research_rows")
+      .select("table_id")
+      .in("id", toMove);
+    if (error) throw new Error(`Failed to identify source lists: ${error.message}`);
+    const affectedTableIds = new Set([
+      targetId,
+      ...(sources ?? []).map((row) => row.table_id as string),
+    ]);
+    await Promise.all(
+      [...affectedTableIds].map((tableId) =>
+        snapshotResearchTable(client, tableId, {
+          reason: `move:${targetId}`,
+          createdBy: input.createdByEmail,
+        }),
+      ),
+    );
+  }
 
   const moved = await moveRows(client, toMove, targetId);
   return {

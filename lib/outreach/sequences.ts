@@ -152,6 +152,145 @@ export async function getSequence(
   return { sequence: mapSequence(data as Record<string, unknown>), steps };
 }
 
+/** Store a complete campaign version independently of cascade-deleted tables. */
+export async function snapshotSequence(
+  client: SupabaseClient,
+  sequenceId: string,
+  opts: { reason?: string; createdBy?: string | null } = {},
+): Promise<string> {
+  const { data: sequence, error: sequenceError } = await client
+    .from("outreach_sequences")
+    .select("*")
+    .eq("id", sequenceId)
+    .maybeSingle();
+  if (sequenceError) throw new Error(sequenceError.message);
+  if (!sequence) throw new Error("Sequence not found");
+
+  const [stepsResult, enrollmentsResult] = await Promise.all([
+    client
+      .from("outreach_sequence_steps")
+      .select("*")
+      .eq("sequence_id", sequenceId)
+      .order("position", { ascending: true }),
+    client.from("outreach_enrollments").select("*").eq("sequence_id", sequenceId),
+  ]);
+  if (stepsResult.error) throw new Error(stepsResult.error.message);
+  if (enrollmentsResult.error) throw new Error(enrollmentsResult.error.message);
+  const enrollmentIds = (enrollmentsResult.data ?? []).map((row) => row.id as string);
+  const tasksResult = enrollmentIds.length
+    ? await client.from("outreach_send_tasks").select("*").in("enrollment_id", enrollmentIds)
+    : { data: [], error: null };
+  if (tasksResult.error) throw new Error(tasksResult.error.message);
+
+  const { data, error } = await client
+    .from("outreach_sequence_snapshots")
+    .insert({
+      sequence_id: sequenceId,
+      reason: opts.reason ?? "save",
+      sequence_data: sequence,
+      steps_data: stepsResult.data ?? [],
+      enrollments_data: enrollmentsResult.data ?? [],
+      tasks_data: tasksResult.data ?? [],
+      created_by: opts.createdBy ?? null,
+    })
+    .select("id")
+    .single();
+  if (error) throw new Error(`Failed to snapshot sequence: ${error.message}`);
+  return data.id as string;
+}
+
+export async function listSequenceSnapshots(
+  client: SupabaseClient,
+  sequenceId: string,
+  limit = 20,
+): Promise<Array<{
+  id: string;
+  reason: string;
+  stepCount: number;
+  enrollmentCount: number;
+  taskCount: number;
+  createdAt: string;
+}>> {
+  const { data, error } = await client
+    .from("outreach_sequence_snapshots")
+    .select("id, reason, steps_data, enrollments_data, tasks_data, created_at")
+    .eq("sequence_id", sequenceId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(error.message);
+  return (data ?? []).map((snapshot) => ({
+    id: snapshot.id as string,
+    reason: snapshot.reason as string,
+    stepCount: Array.isArray(snapshot.steps_data) ? snapshot.steps_data.length : 0,
+    enrollmentCount: Array.isArray(snapshot.enrollments_data)
+      ? snapshot.enrollments_data.length
+      : 0,
+    taskCount: Array.isArray(snapshot.tasks_data) ? snapshot.tasks_data.length : 0,
+    createdAt: snapshot.created_at as string,
+  }));
+}
+
+/**
+ * Exact recovery for a campaign, including the people and its queued/sent work.
+ * The current version is snapshotted first so restore itself is undoable.
+ */
+export async function restoreSequenceSnapshot(
+  client: SupabaseClient,
+  snapshotId: string,
+  opts: { createdBy?: string | null } = {},
+): Promise<{ sequence: OutreachSequence; steps: OutreachSequenceStep[] }> {
+  const { data: snapshot, error } = await client
+    .from("outreach_sequence_snapshots")
+    .select("*")
+    .eq("id", snapshotId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!snapshot) throw new Error("Sequence snapshot not found");
+
+  const sequence = snapshot.sequence_data as Record<string, unknown>;
+  const sequenceId = sequence.id as string;
+  const current = await getSequence(client, sequenceId);
+  if (current) {
+    await snapshotSequence(client, sequenceId, {
+      reason: `before_restore:${snapshotId}`,
+      createdBy: opts.createdBy,
+    });
+    // Cascade is intentional: we restore the snapshot's queue exactly below.
+    const { error: deleteError } = await client
+      .from("outreach_sequences")
+      .delete()
+      .eq("id", sequenceId);
+    if (deleteError) throw new Error(deleteError.message);
+  }
+
+  const { error: sequenceInsertError } = await client
+    .from("outreach_sequences")
+    .insert(sequence);
+  if (sequenceInsertError) throw new Error(sequenceInsertError.message);
+  const steps = (snapshot.steps_data as Array<Record<string, unknown>>) ?? [];
+  if (steps.length > 0) {
+    const { error: stepsInsertError } = await client
+      .from("outreach_sequence_steps")
+      .insert(steps);
+    if (stepsInsertError) throw new Error(stepsInsertError.message);
+  }
+  const enrollments = (snapshot.enrollments_data as Array<Record<string, unknown>>) ?? [];
+  if (enrollments.length > 0) {
+    const { error: enrollmentsInsertError } = await client
+      .from("outreach_enrollments")
+      .insert(enrollments);
+    if (enrollmentsInsertError) throw new Error(enrollmentsInsertError.message);
+  }
+  const tasks = (snapshot.tasks_data as Array<Record<string, unknown>>) ?? [];
+  if (tasks.length > 0) {
+    const { error: tasksInsertError } = await client
+      .from("outreach_send_tasks")
+      .insert(tasks);
+    if (tasksInsertError) throw new Error(tasksInsertError.message);
+  }
+  return (await getSequence(client, sequenceId))!;
+}
+
 export async function createSequence(
   client: SupabaseClient,
   input: {
@@ -263,6 +402,7 @@ export async function replaceSteps(
     emailThreadMode?: EmailThreadMode | null;
   }>,
 ): Promise<OutreachSequenceStep[]> {
+  await snapshotSequence(client, sequenceId, { reason: "replace_steps" });
   // LinkedIn auto not supported in v1 — force semi
   let hasPreviousEmail = false;
   const normalized = steps.map((s, i) => {
@@ -317,6 +457,7 @@ export async function updateSequence(
     defaultFromEmail?: string | null;
   },
 ): Promise<OutreachSequence> {
+  await snapshotSequence(client, id, { reason: "update" });
   const body: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (patch.name != null) body.name = patch.name.trim();
   if (patch.description !== undefined) body.description = patch.description;
@@ -417,6 +558,7 @@ export async function deleteSequence(
 }> {
   const existing = await getSequence(client, id);
   if (!existing) throw new Error("Sequence not found");
+  await snapshotSequence(client, id, { reason: "delete" });
 
   const { count: enrollmentCount } = await client
     .from("outreach_enrollments")
@@ -519,7 +661,7 @@ async function insertEnrollment(
   }
 
   let enrollment = mapEnrollment(enr as Record<string, unknown>);
-  let task = await createTaskForStep(
+  const task = await createTaskForStep(
     client,
     enrollment,
     firstStep,
@@ -1443,6 +1585,339 @@ export async function listEnrollments(
   return (data ?? []).map((r) => mapEnrollment(r as Record<string, unknown>));
 }
 
+/**
+ * Remove contacts from a sequence without erasing its delivery history.
+ *
+ * An enrollment is cancelled rather than deleted so any completed/sent work
+ * remains auditable. Pending tasks are cancelled and the contact may be
+ * enrolled in another sequence afterwards.
+ */
+export async function unenrollFromSequence(
+  client: SupabaseClient,
+  input: {
+    sequenceId: string;
+    enrollmentIds?: string[];
+    researchPersonIds?: string[];
+    researchRowIds?: string[];
+  },
+): Promise<{
+  cancelled: number;
+  alreadyInactive: number;
+  pendingTasksCancelled: number;
+  enrollmentIds: string[];
+}> {
+  const queries = [];
+  if (input.enrollmentIds?.length) {
+    queries.push(
+      client
+        .from("outreach_enrollments")
+        .select("id, status")
+        .eq("sequence_id", input.sequenceId)
+        .in("id", input.enrollmentIds),
+    );
+  }
+  if (input.researchPersonIds?.length) {
+    queries.push(
+      client
+        .from("outreach_enrollments")
+        .select("id, status")
+        .eq("sequence_id", input.sequenceId)
+        .in("research_person_id", input.researchPersonIds),
+    );
+  }
+  if (input.researchRowIds?.length) {
+    queries.push(
+      client
+        .from("outreach_enrollments")
+        .select("id, status")
+        .eq("sequence_id", input.sequenceId)
+        .in("research_row_id", input.researchRowIds),
+    );
+  }
+  if (queries.length === 0) {
+    throw new Error("Provide enrollmentIds, researchPersonIds, or researchRowIds");
+  }
+
+  const results = await Promise.all(queries);
+  const matches = new Map<string, string>();
+  for (const { data, error } of results) {
+    if (error) throw new Error(error.message);
+    for (const enrollment of data ?? []) {
+      matches.set(enrollment.id as string, enrollment.status as string);
+    }
+  }
+
+  const activeIds = [...matches]
+    .filter(([, status]) => status === "active" || status === "paused")
+    .map(([id]) => id);
+  const alreadyInactive = matches.size - activeIds.length;
+  if (activeIds.length === 0) {
+    return {
+      cancelled: 0,
+      alreadyInactive,
+      pendingTasksCancelled: 0,
+      enrollmentIds: [],
+    };
+  }
+
+  await snapshotSequence(client, input.sequenceId, {
+    reason: `unenroll:${activeIds.length}`,
+  });
+
+  const now = new Date().toISOString();
+  const { data: cancelledTasks, error: tasksError } = await client
+    .from("outreach_send_tasks")
+    .update({
+      status: "cancelled",
+      error: "Enrollment removed from sequence",
+      updated_at: now,
+    })
+    .in("enrollment_id", activeIds)
+    .in("status", ["scheduled", "ready"])
+    .select("id");
+  if (tasksError) throw new Error(tasksError.message);
+
+  const { error: enrollmentsError } = await client
+    .from("outreach_enrollments")
+    .update({
+      status: "cancelled",
+      next_run_at: null,
+      last_error: "Removed from sequence",
+      updated_at: now,
+    })
+    .in("id", activeIds);
+  if (enrollmentsError) throw new Error(enrollmentsError.message);
+
+  return {
+    cancelled: activeIds.length,
+    alreadyInactive,
+    pendingTasksCancelled: cancelledTasks?.length ?? 0,
+    enrollmentIds: activeIds,
+  };
+}
+
+type ResearchPersonSnapshot = {
+  id: string;
+  name: string;
+  role: string | null;
+  email: string | null;
+  linkedin: string | null;
+};
+
+function normalizedPersonValue(value: string | null | undefined): string {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function enrollmentMatchesResearchPerson(
+  enrollment: OutreachEnrollment,
+  person: ResearchPersonSnapshot,
+): boolean {
+  if (enrollment.researchPersonId === person.id) return true;
+
+  const enrollmentEmail = normalizedPersonValue(enrollment.contactEmail);
+  const personEmail = normalizedPersonValue(person.email);
+  if (enrollmentEmail && personEmail && enrollmentEmail === personEmail) {
+    return true;
+  }
+
+  const enrollmentLinkedin = normalizedPersonValue(enrollment.contactLinkedin);
+  const personLinkedin = normalizedPersonValue(person.linkedin);
+  if (
+    enrollmentLinkedin &&
+    personLinkedin &&
+    enrollmentLinkedin === personLinkedin
+  ) {
+    return true;
+  }
+
+  return (
+    normalizedPersonValue(enrollment.contactName) ===
+    normalizedPersonValue(person.name)
+  );
+}
+
+/**
+ * Keep active campaign snapshots aligned when research_people is rewritten.
+ *
+ * savePeople intentionally replaces research_people rows, so person IDs can
+ * rotate even when the human is the same. We match on stable identity fields,
+ * then refresh the enrollment and its unsent task renderings. If the campaign
+ * skipped its first email only because it was missing, an email discovered
+ * before any send restarts that lead at the skipped email step.
+ */
+export async function syncResearchPeopleToEnrollments(
+  client: SupabaseClient,
+  rowId: string,
+  people: ResearchPersonSnapshot[],
+): Promise<{
+  synchronized: number;
+  pendingTasksRerendered: number;
+  restartedAfterEmailFound: number;
+}> {
+  const { data: rawEnrollments, error: enrollmentsError } = await client
+    .from("outreach_enrollments")
+    .select("*")
+    .eq("research_row_id", rowId)
+    .in("status", ["active", "paused"]);
+  if (enrollmentsError) throw new Error(enrollmentsError.message);
+
+  const enrollments = (rawEnrollments ?? []).map((row) =>
+    mapEnrollment(row as Record<string, unknown>),
+  );
+  if (enrollments.length === 0) {
+    return {
+      synchronized: 0,
+      pendingTasksRerendered: 0,
+      restartedAfterEmailFound: 0,
+    };
+  }
+
+  const enrollmentIds = enrollments.map((enrollment) => enrollment.id);
+  const { data: rawTasks, error: tasksError } = await client
+    .from("outreach_send_tasks")
+    .select("*")
+    .in("enrollment_id", enrollmentIds);
+  if (tasksError) throw new Error(tasksError.message);
+
+  const tasksByEnrollment = new Map<string, OutreachSendTask[]>();
+  for (const rawTask of rawTasks ?? []) {
+    const task = mapTask(rawTask as Record<string, unknown>);
+    const tasks = tasksByEnrollment.get(task.enrollmentId) ?? [];
+    tasks.push(task);
+    tasksByEnrollment.set(task.enrollmentId, tasks);
+  }
+
+  const stepLists = await Promise.all(
+    [...new Set(enrollments.map((enrollment) => enrollment.sequenceId))].map(
+      async (sequenceId) => [sequenceId, await listSteps(client, sequenceId)] as const,
+    ),
+  );
+  const stepsBySequence = new Map(stepLists);
+  const now = new Date().toISOString();
+  let synchronized = 0;
+  let pendingTasksRerendered = 0;
+  let restartedAfterEmailFound = 0;
+
+  for (const enrollment of enrollments) {
+    const person = people.find((candidate) =>
+      enrollmentMatchesResearchPerson(enrollment, candidate),
+    );
+    if (!person) continue;
+
+    const refreshed: OutreachEnrollment = {
+      ...enrollment,
+      researchPersonId: person.id,
+      contactName: person.name,
+      contactRole: person.role,
+      contactEmail: person.email,
+      contactLinkedin: person.linkedin,
+    };
+    const { error: updateEnrollmentError } = await client
+      .from("outreach_enrollments")
+      .update({
+        research_person_id: person.id,
+        contact_name: person.name,
+        contact_role: person.role,
+        contact_email: person.email,
+        contact_linkedin: person.linkedin,
+        updated_at: now,
+      })
+      .eq("id", enrollment.id);
+    if (updateEnrollmentError) throw new Error(updateEnrollmentError.message);
+    synchronized++;
+
+    const steps = stepsBySequence.get(enrollment.sequenceId) ?? [];
+    const stepById = new Map(steps.map((step) => [step.id, step]));
+    const tasks = tasksByEnrollment.get(enrollment.id) ?? [];
+    const hasSentTask = tasks.some((task) => task.status === "sent");
+    const skippedEmail = person.email
+      ? tasks
+          .filter(
+            (task) =>
+              task.status === "skipped" &&
+              task.error === "No contact email — email step skipped",
+          )
+          .sort((a, b) => a.scheduledFor.localeCompare(b.scheduledFor))[0]
+      : undefined;
+
+    if (skippedEmail && !hasSentTask) {
+      const skippedStep = stepById.get(skippedEmail.stepId);
+      if (skippedStep) {
+        const resetTaskIds = tasks
+          .filter(
+            (task) => task.status === "scheduled" || task.status === "ready")
+          .map((task) => task.id);
+        if (resetTaskIds.length > 0) {
+          const { error } = await client
+            .from("outreach_send_tasks")
+            .update({
+              status: "cancelled",
+              error: "Reset after contact email was found",
+              updated_at: now,
+            })
+            .in("id", resetTaskIds);
+          if (error) throw new Error(error.message);
+        }
+
+        const { error: restartTaskError } = await client
+          .from("outreach_send_tasks")
+          .update({
+            status: "scheduled",
+            error: null,
+            rendered_subject: skippedStep.subjectTemplate
+              ? renderTemplate(skippedStep.subjectTemplate, refreshed)
+              : null,
+            rendered_body: renderTemplate(skippedStep.bodyTemplate, refreshed),
+            meta: {
+              linkedin_action: skippedStep.linkedinAction,
+              profile_url: refreshed.contactLinkedin,
+            },
+            updated_at: now,
+          })
+          .eq("id", skippedEmail.id);
+        if (restartTaskError) throw new Error(restartTaskError.message);
+
+        const { error: restartEnrollmentError } = await client
+          .from("outreach_enrollments")
+          .update({
+            current_step_position: skippedStep.position,
+            next_run_at: skippedEmail.scheduledFor,
+            updated_at: now,
+          })
+          .eq("id", enrollment.id);
+        if (restartEnrollmentError) throw new Error(restartEnrollmentError.message);
+        restartedAfterEmailFound++;
+        continue;
+      }
+    }
+
+    for (const task of tasks) {
+      if (task.status !== "scheduled" && task.status !== "ready") continue;
+      const step = stepById.get(task.stepId);
+      if (!step) continue;
+      const { error } = await client
+        .from("outreach_send_tasks")
+        .update({
+          rendered_subject: step.subjectTemplate
+            ? renderTemplate(step.subjectTemplate, refreshed)
+            : null,
+          rendered_body: renderTemplate(step.bodyTemplate, refreshed),
+          meta: {
+            ...task.meta,
+            linkedin_action: step.linkedinAction,
+            profile_url: refreshed.contactLinkedin,
+          },
+          updated_at: now,
+        })
+        .eq("id", task.id);
+      if (error) throw new Error(error.message);
+      pendingTasksRerendered++;
+    }
+  }
+
+  return { synchronized, pendingTasksRerendered, restartedAfterEmailFound };
+}
+
 export type SequenceStepProgress = {
   position: number;
   channel: StepChannel;
@@ -1756,5 +2231,3 @@ export async function getSequenceHealth(
     })),
   };
 }
-
-
