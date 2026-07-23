@@ -152,6 +152,145 @@ export async function getSequence(
   return { sequence: mapSequence(data as Record<string, unknown>), steps };
 }
 
+/** Store a complete campaign version independently of cascade-deleted tables. */
+export async function snapshotSequence(
+  client: SupabaseClient,
+  sequenceId: string,
+  opts: { reason?: string; createdBy?: string | null } = {},
+): Promise<string> {
+  const { data: sequence, error: sequenceError } = await client
+    .from("outreach_sequences")
+    .select("*")
+    .eq("id", sequenceId)
+    .maybeSingle();
+  if (sequenceError) throw new Error(sequenceError.message);
+  if (!sequence) throw new Error("Sequence not found");
+
+  const [stepsResult, enrollmentsResult] = await Promise.all([
+    client
+      .from("outreach_sequence_steps")
+      .select("*")
+      .eq("sequence_id", sequenceId)
+      .order("position", { ascending: true }),
+    client.from("outreach_enrollments").select("*").eq("sequence_id", sequenceId),
+  ]);
+  if (stepsResult.error) throw new Error(stepsResult.error.message);
+  if (enrollmentsResult.error) throw new Error(enrollmentsResult.error.message);
+  const enrollmentIds = (enrollmentsResult.data ?? []).map((row) => row.id as string);
+  const tasksResult = enrollmentIds.length
+    ? await client.from("outreach_send_tasks").select("*").in("enrollment_id", enrollmentIds)
+    : { data: [], error: null };
+  if (tasksResult.error) throw new Error(tasksResult.error.message);
+
+  const { data, error } = await client
+    .from("outreach_sequence_snapshots")
+    .insert({
+      sequence_id: sequenceId,
+      reason: opts.reason ?? "save",
+      sequence_data: sequence,
+      steps_data: stepsResult.data ?? [],
+      enrollments_data: enrollmentsResult.data ?? [],
+      tasks_data: tasksResult.data ?? [],
+      created_by: opts.createdBy ?? null,
+    })
+    .select("id")
+    .single();
+  if (error) throw new Error(`Failed to snapshot sequence: ${error.message}`);
+  return data.id as string;
+}
+
+export async function listSequenceSnapshots(
+  client: SupabaseClient,
+  sequenceId: string,
+  limit = 20,
+): Promise<Array<{
+  id: string;
+  reason: string;
+  stepCount: number;
+  enrollmentCount: number;
+  taskCount: number;
+  createdAt: string;
+}>> {
+  const { data, error } = await client
+    .from("outreach_sequence_snapshots")
+    .select("id, reason, steps_data, enrollments_data, tasks_data, created_at")
+    .eq("sequence_id", sequenceId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(error.message);
+  return (data ?? []).map((snapshot) => ({
+    id: snapshot.id as string,
+    reason: snapshot.reason as string,
+    stepCount: Array.isArray(snapshot.steps_data) ? snapshot.steps_data.length : 0,
+    enrollmentCount: Array.isArray(snapshot.enrollments_data)
+      ? snapshot.enrollments_data.length
+      : 0,
+    taskCount: Array.isArray(snapshot.tasks_data) ? snapshot.tasks_data.length : 0,
+    createdAt: snapshot.created_at as string,
+  }));
+}
+
+/**
+ * Exact recovery for a campaign, including the people and its queued/sent work.
+ * The current version is snapshotted first so restore itself is undoable.
+ */
+export async function restoreSequenceSnapshot(
+  client: SupabaseClient,
+  snapshotId: string,
+  opts: { createdBy?: string | null } = {},
+): Promise<{ sequence: OutreachSequence; steps: OutreachSequenceStep[] }> {
+  const { data: snapshot, error } = await client
+    .from("outreach_sequence_snapshots")
+    .select("*")
+    .eq("id", snapshotId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!snapshot) throw new Error("Sequence snapshot not found");
+
+  const sequence = snapshot.sequence_data as Record<string, unknown>;
+  const sequenceId = sequence.id as string;
+  const current = await getSequence(client, sequenceId);
+  if (current) {
+    await snapshotSequence(client, sequenceId, {
+      reason: `before_restore:${snapshotId}`,
+      createdBy: opts.createdBy,
+    });
+    // Cascade is intentional: we restore the snapshot's queue exactly below.
+    const { error: deleteError } = await client
+      .from("outreach_sequences")
+      .delete()
+      .eq("id", sequenceId);
+    if (deleteError) throw new Error(deleteError.message);
+  }
+
+  const { error: sequenceInsertError } = await client
+    .from("outreach_sequences")
+    .insert(sequence);
+  if (sequenceInsertError) throw new Error(sequenceInsertError.message);
+  const steps = (snapshot.steps_data as Array<Record<string, unknown>>) ?? [];
+  if (steps.length > 0) {
+    const { error: stepsInsertError } = await client
+      .from("outreach_sequence_steps")
+      .insert(steps);
+    if (stepsInsertError) throw new Error(stepsInsertError.message);
+  }
+  const enrollments = (snapshot.enrollments_data as Array<Record<string, unknown>>) ?? [];
+  if (enrollments.length > 0) {
+    const { error: enrollmentsInsertError } = await client
+      .from("outreach_enrollments")
+      .insert(enrollments);
+    if (enrollmentsInsertError) throw new Error(enrollmentsInsertError.message);
+  }
+  const tasks = (snapshot.tasks_data as Array<Record<string, unknown>>) ?? [];
+  if (tasks.length > 0) {
+    const { error: tasksInsertError } = await client
+      .from("outreach_send_tasks")
+      .insert(tasks);
+    if (tasksInsertError) throw new Error(tasksInsertError.message);
+  }
+  return (await getSequence(client, sequenceId))!;
+}
+
 export async function createSequence(
   client: SupabaseClient,
   input: {
@@ -263,6 +402,7 @@ export async function replaceSteps(
     emailThreadMode?: EmailThreadMode | null;
   }>,
 ): Promise<OutreachSequenceStep[]> {
+  await snapshotSequence(client, sequenceId, { reason: "replace_steps" });
   // LinkedIn auto not supported in v1 — force semi
   let hasPreviousEmail = false;
   const normalized = steps.map((s, i) => {
@@ -317,6 +457,7 @@ export async function updateSequence(
     defaultFromEmail?: string | null;
   },
 ): Promise<OutreachSequence> {
+  await snapshotSequence(client, id, { reason: "update" });
   const body: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (patch.name != null) body.name = patch.name.trim();
   if (patch.description !== undefined) body.description = patch.description;
@@ -417,6 +558,7 @@ export async function deleteSequence(
 }> {
   const existing = await getSequence(client, id);
   if (!existing) throw new Error("Sequence not found");
+  await snapshotSequence(client, id, { reason: "delete" });
 
   const { count: enrollmentCount } = await client
     .from("outreach_enrollments")
@@ -1518,6 +1660,10 @@ export async function unenrollFromSequence(
     };
   }
 
+  await snapshotSequence(client, input.sequenceId, {
+    reason: `unenroll:${activeIds.length}`,
+  });
+
   const now = new Date().toISOString();
   const { data: cancelledTasks, error: tasksError } = await client
     .from("outreach_send_tasks")
@@ -2085,4 +2231,3 @@ export async function getSequenceHealth(
     })),
   };
 }
-

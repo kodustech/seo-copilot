@@ -3865,6 +3865,65 @@ export const researchMoveRows = tool({
   },
 });
 
+export const researchListHistory = tool({
+  description:
+    "List recovery snapshots for a research list. Every move and list deletion creates one automatically. Use researchRestoreListSnapshot to return a list to an exact earlier version.",
+  inputSchema: z.object({
+    table_ref: z.string(),
+    limit: z.number().optional(),
+  }),
+  execute: async ({ table_ref, limit }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { resolveTable } = await import("@/lib/research/columns");
+      const { listResearchTableSnapshots } = await import(
+        "@/lib/research/tables"
+      );
+      const table = await resolveTable(client, table_ref);
+      const snapshots = await listResearchTableSnapshots(client, table.id, limit ?? 20);
+      return { success: true as const, table, snapshots };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "History failed",
+      };
+    }
+  },
+});
+
+export const researchRestoreListSnapshot = tool({
+  description:
+    "Restore a research list exactly from a recovery snapshot. This replaces the current list state, including its companies, people, and evidence; the current state is snapshotted first, so the restore can itself be undone. Confirm before calling.",
+  inputSchema: z.object({
+    snapshot_id: z.string(),
+    confirm: z.boolean().describe("Must be true to perform the exact restore"),
+    user_email: z.string().optional(),
+  }),
+  execute: async ({ snapshot_id, confirm, user_email }) => {
+    if (!confirm) {
+      return {
+        success: false as const,
+        message: "Pass confirm=true to replace the current list with this snapshot.",
+      };
+    }
+    try {
+      const client = getSupabaseServiceClient();
+      const { restoreResearchTableSnapshot } = await import(
+        "@/lib/research/tables"
+      );
+      const table = await restoreResearchTableSnapshot(client, snapshot_id, {
+        createdBy: user_email,
+      });
+      return { success: true as const, table };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Restore failed",
+      };
+    }
+  },
+});
+
 export const researchSplitByRules = tool({
   description:
     "Horizontal split: partition a research list into N named buckets by generic rules (first matching rule wins). Conditions: domain_suffix, domain_includes, company_includes, company_regex, source, pass, min_score, max_score, status, cell_eq, cell_includes, pack_path_eq, pack_path_includes, pack_text_includes, row_ids. dry_run defaults true. remainder=leave keeps unmatched in source; remainder=new_list creates another list. Example language split: rules=[{name:'Brasil', match:'any', conditions:[{kind:'domain_suffix',value:'.br'},{kind:'pack_path_eq',path:'firmo.meta.hqCountry',value:'BR'}]}], remainder='new_list', remainder_name:'Global'.",
@@ -4920,6 +4979,59 @@ export const sequenceDelete = tool({
   },
 });
 
+export const sequenceHistory = tool({
+  description:
+    "List recovery snapshots for an outreach sequence. Updates, step replacements, contact removals, and deletes create snapshots automatically.",
+  inputSchema: z.object({
+    sequence_id: z.string(),
+    limit: z.number().optional(),
+  }),
+  execute: async ({ sequence_id, limit }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { listSequenceSnapshots } = await import("@/lib/outreach/sequences");
+      const snapshots = await listSequenceSnapshots(client, sequence_id, limit ?? 20);
+      return { success: true as const, snapshots };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "History failed",
+      };
+    }
+  },
+});
+
+export const sequenceRestoreSnapshot = tool({
+  description:
+    "Restore an outreach sequence exactly from a recovery snapshot, including steps, enrolled people, and send tasks. The current campaign is snapshotted first so this is undoable. Confirm before calling because it replaces the current campaign state.",
+  inputSchema: z.object({
+    snapshot_id: z.string(),
+    confirm: z.boolean().describe("Must be true to perform the exact restore"),
+    user_email: z.string().optional(),
+  }),
+  execute: async ({ snapshot_id, confirm, user_email }) => {
+    if (!confirm) {
+      return {
+        success: false as const,
+        message: "Pass confirm=true to replace the current campaign with this snapshot.",
+      };
+    }
+    try {
+      const client = getSupabaseServiceClient();
+      const { restoreSequenceSnapshot } = await import("@/lib/outreach/sequences");
+      const restored = await restoreSequenceSnapshot(client, snapshot_id, {
+        createdBy: user_email,
+      });
+      return { success: true as const, ...restored };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Restore failed",
+      };
+    }
+  },
+});
+
 export const sequencePreview = tool({
   description:
     "Preview how sequence templates render for a real person (enrollment) or a sample contact from a research list. Use before enroll to validate pt-BR copy and tokens.",
@@ -5331,6 +5443,8 @@ export function createAgentTools(userEmail?: string) {
     researchCompany,
     researchListRows,
     researchMoveRows,
+    researchListHistory,
+    researchRestoreListSnapshot,
     // researchSplitByRules kept in codebase for rare advanced use but NOT
     // registered on the agent — product primitive is move by row_ids only.
     researchFindIcp,
@@ -5348,6 +5462,8 @@ export function createAgentTools(userEmail?: string) {
     sequenceGet,
     sequenceCreate,
     sequenceUpdate,
+    sequenceHistory,
+    sequenceRestoreSnapshot,
     sequenceDelete,
     sequencePreview,
     sequenceEnrollResearch,
