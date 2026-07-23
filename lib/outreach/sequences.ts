@@ -519,7 +519,7 @@ async function insertEnrollment(
   }
 
   let enrollment = mapEnrollment(enr as Record<string, unknown>);
-  let task = await createTaskForStep(
+  const task = await createTaskForStep(
     client,
     enrollment,
     firstStep,
@@ -1441,6 +1441,113 @@ export async function listEnrollments(
     .limit(500);
   if (error) throw new Error(error.message);
   return (data ?? []).map((r) => mapEnrollment(r as Record<string, unknown>));
+}
+
+/**
+ * Remove contacts from a sequence without erasing its delivery history.
+ *
+ * An enrollment is cancelled rather than deleted so any completed/sent work
+ * remains auditable. Pending tasks are cancelled and the contact may be
+ * enrolled in another sequence afterwards.
+ */
+export async function unenrollFromSequence(
+  client: SupabaseClient,
+  input: {
+    sequenceId: string;
+    enrollmentIds?: string[];
+    researchPersonIds?: string[];
+    researchRowIds?: string[];
+  },
+): Promise<{
+  cancelled: number;
+  alreadyInactive: number;
+  pendingTasksCancelled: number;
+  enrollmentIds: string[];
+}> {
+  const queries = [];
+  if (input.enrollmentIds?.length) {
+    queries.push(
+      client
+        .from("outreach_enrollments")
+        .select("id, status")
+        .eq("sequence_id", input.sequenceId)
+        .in("id", input.enrollmentIds),
+    );
+  }
+  if (input.researchPersonIds?.length) {
+    queries.push(
+      client
+        .from("outreach_enrollments")
+        .select("id, status")
+        .eq("sequence_id", input.sequenceId)
+        .in("research_person_id", input.researchPersonIds),
+    );
+  }
+  if (input.researchRowIds?.length) {
+    queries.push(
+      client
+        .from("outreach_enrollments")
+        .select("id, status")
+        .eq("sequence_id", input.sequenceId)
+        .in("research_row_id", input.researchRowIds),
+    );
+  }
+  if (queries.length === 0) {
+    throw new Error("Provide enrollmentIds, researchPersonIds, or researchRowIds");
+  }
+
+  const results = await Promise.all(queries);
+  const matches = new Map<string, string>();
+  for (const { data, error } of results) {
+    if (error) throw new Error(error.message);
+    for (const enrollment of data ?? []) {
+      matches.set(enrollment.id as string, enrollment.status as string);
+    }
+  }
+
+  const activeIds = [...matches]
+    .filter(([, status]) => status === "active" || status === "paused")
+    .map(([id]) => id);
+  const alreadyInactive = matches.size - activeIds.length;
+  if (activeIds.length === 0) {
+    return {
+      cancelled: 0,
+      alreadyInactive,
+      pendingTasksCancelled: 0,
+      enrollmentIds: [],
+    };
+  }
+
+  const now = new Date().toISOString();
+  const { data: cancelledTasks, error: tasksError } = await client
+    .from("outreach_send_tasks")
+    .update({
+      status: "cancelled",
+      error: "Enrollment removed from sequence",
+      updated_at: now,
+    })
+    .in("enrollment_id", activeIds)
+    .in("status", ["scheduled", "ready"])
+    .select("id");
+  if (tasksError) throw new Error(tasksError.message);
+
+  const { error: enrollmentsError } = await client
+    .from("outreach_enrollments")
+    .update({
+      status: "cancelled",
+      next_run_at: null,
+      last_error: "Removed from sequence",
+      updated_at: now,
+    })
+    .in("id", activeIds);
+  if (enrollmentsError) throw new Error(enrollmentsError.message);
+
+  return {
+    cancelled: activeIds.length,
+    alreadyInactive,
+    pendingTasksCancelled: cancelledTasks?.length ?? 0,
+    enrollmentIds: activeIds,
+  };
 }
 
 export type SequenceStepProgress = {

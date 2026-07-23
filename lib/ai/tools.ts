@@ -5123,6 +5123,67 @@ export const sequenceEnrollResearch = tool({
   },
 });
 
+export const sequenceUnenroll = tool({
+  description:
+    "Remove specific people or companies from an outreach sequence. It cancels active/paused enrollments and their pending tasks, while preserving completed and sent-task history. Use enrollment_ids, research_person_ids, or research_row_ids; do not delete the whole sequence. Confirm before bulk removal.",
+  inputSchema: z
+    .object({
+      sequence_id: z.string(),
+      enrollment_ids: z.array(z.string()).min(1).optional(),
+      research_person_ids: z.array(z.string()).min(1).optional(),
+      research_row_ids: z.array(z.string()).min(1).optional(),
+      confirm: z
+        .boolean()
+        .describe("Must be true to cancel the selected enrollments and pending tasks"),
+    })
+    .refine(
+      (input) =>
+        Boolean(
+          input.enrollment_ids?.length ||
+            input.research_person_ids?.length ||
+            input.research_row_ids?.length,
+        ),
+      "Provide enrollment_ids, research_person_ids, or research_row_ids",
+    ),
+  execute: async ({
+    sequence_id,
+    enrollment_ids,
+    research_person_ids,
+    research_row_ids,
+    confirm,
+  }) => {
+    try {
+      if (!confirm) {
+        return {
+          success: false as const,
+          message:
+            "Pass confirm=true to cancel the selected enrollments and their pending tasks.",
+        };
+      }
+      const client = getSupabaseServiceClient();
+      const { unenrollFromSequence } = await import(
+        "@/lib/outreach/sequences"
+      );
+      const result = await unenrollFromSequence(client, {
+        sequenceId: sequence_id,
+        enrollmentIds: enrollment_ids,
+        researchPersonIds: research_person_ids,
+        researchRowIds: research_row_ids,
+      });
+      return {
+        success: true as const,
+        ...result,
+        message: `Removed ${result.cancelled} enrollment(s) and cancelled ${result.pendingTasksCancelled} pending task(s).`,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed",
+      };
+    }
+  },
+});
+
 export const sequenceListQueue = tool({
   description:
     "List ready Today-queue tasks (LinkedIn semi + manual email). After campaign enroll, call this to work the human queue. Returns copy-ready body/subject and LinkedIn URLs.",
@@ -5290,6 +5351,7 @@ export function createAgentTools(userEmail?: string) {
     sequenceDelete,
     sequencePreview,
     sequenceEnrollResearch,
+    sequenceUnenroll,
     sequenceListQueue,
     sequenceCompleteTask,
   };
