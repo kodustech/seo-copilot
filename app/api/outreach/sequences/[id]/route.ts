@@ -50,6 +50,7 @@ export async function PATCH(req: Request, ctx: Ctx) {
         description: body.description,
         status: body.status,
         defaultFromEmail: body.defaultFromEmail,
+        mailboxId: body.mailboxId,
       }).catch(async () => {
         const d = await getSequence(client, id);
         return d!.sequence;
@@ -62,6 +63,7 @@ export async function PATCH(req: Request, ctx: Ctx) {
       description: body.description,
       status: body.status,
       defaultFromEmail: body.defaultFromEmail,
+      mailboxId: body.mailboxId,
     });
     return NextResponse.json({ sequence });
   } catch (err) {
