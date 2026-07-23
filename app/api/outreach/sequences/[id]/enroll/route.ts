@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import {
   enrollFromProspects,
   enrollFromResearch,
+  unenrollFromSequence,
 } from "@/lib/outreach/sequences";
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 
@@ -60,6 +61,38 @@ export async function POST(req: Request, ctx: Ctx) {
       { error: 'source must be "research" or "outreach"' },
       { status: 400 },
     );
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Failed" },
+      { status: 400 },
+    );
+  }
+}
+
+export async function DELETE(req: Request, ctx: Ctx) {
+  try {
+    const { client } = await getSupabaseUserClient(
+      req.headers.get("authorization"),
+    );
+    const { id } = await ctx.params;
+    const body = await req.json().catch(() => ({}));
+    const rawEnrollmentIds: unknown[] = Array.isArray(body.enrollment_ids)
+      ? body.enrollment_ids
+      : [];
+    const enrollmentIds = rawEnrollmentIds.filter(
+      (value): value is string => typeof value === "string",
+    );
+    if (enrollmentIds.length === 0) {
+      return NextResponse.json(
+        { error: "enrollment_ids required" },
+        { status: 400 },
+      );
+    }
+    const result = await unenrollFromSequence(client, {
+      sequenceId: id,
+      enrollmentIds,
+    });
+    return NextResponse.json({ ok: true, ...result });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed" },

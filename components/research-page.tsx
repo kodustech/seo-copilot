@@ -1102,6 +1102,41 @@ export function ResearchPage() {
     }
   };
 
+  const deleteRowFromList = async (rowId: string) => {
+    if (!token) return;
+    if (
+      !confirm(
+        "Remove this company from the list? A snapshot is saved first, and any active campaign enrollments for it will be cancelled.",
+      )
+    ) {
+      return;
+    }
+    setActionBusy(true);
+    try {
+      const res = await fetch(`/api/research/rows/${rowId}`, {
+        method: "DELETE",
+        headers: headers(),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setNotice(data.error ?? "Could not remove company");
+        return;
+      }
+      setDrawerRowId(null);
+      setSelected((prev) => {
+        const next = new Set(prev);
+        next.delete(rowId);
+        return next;
+      });
+      setNotice(
+        `Removed company${data.cancelledEnrollments ? ` and cancelled ${data.cancelledEnrollments} campaign enrollment(s)` : ""}.`,
+      );
+      await Promise.all([loadRows({ quiet: true }), loadTables()]);
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   /** Core find-email API call (no busy-key ownership). */
   const runFindEmail = async (opts: {
     rowId: string;
@@ -2934,6 +2969,16 @@ export function ResearchPage() {
                 }
               >
                 Pack score
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-destructive hover:text-destructive"
+                disabled={actionBusy}
+                onClick={() => void deleteRowFromList(drawerRowId)}
+              >
+                <Trash2 className="size-3.5" />
+                Remove from list
               </Button>
             </div>
             <div className="min-h-0 flex-1 space-y-5 overflow-auto p-4">

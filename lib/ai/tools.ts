@@ -3865,6 +3865,38 @@ export const researchMoveRows = tool({
   },
 });
 
+export const researchDeleteRows = tool({
+  description:
+    "Permanently remove selected companies from their research lists. A full list snapshot is saved first. Any active/paused enrollments for those companies are cancelled, while sent history stays intact. Confirm before calling.",
+  inputSchema: z.object({
+    row_ids: z.array(z.string()).min(1),
+    confirm: z.boolean().describe("Must be true to delete the selected companies"),
+  }),
+  execute: async ({ row_ids, confirm }) => {
+    if (!confirm) {
+      return {
+        success: false as const,
+        message: "Pass confirm=true to remove these companies from the list.",
+      };
+    }
+    try {
+      const client = getSupabaseServiceClient();
+      const { deleteResearchRows } = await import("@/lib/research/tables");
+      const result = await deleteResearchRows(client, row_ids);
+      return {
+        success: true as const,
+        ...result,
+        message: `Removed ${result.deleted} compan${result.deleted === 1 ? "y" : "ies"} and cancelled ${result.cancelledEnrollments} active enrollment(s).`,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Delete failed",
+      };
+    }
+  },
+});
+
 export const researchListHistory = tool({
   description:
     "List recovery snapshots for a research list. Every move and list deletion creates one automatically. Use researchRestoreListSnapshot to return a list to an exact earlier version.",
@@ -5443,6 +5475,7 @@ export function createAgentTools(userEmail?: string) {
     researchCompany,
     researchListRows,
     researchMoveRows,
+    researchDeleteRows,
     researchListHistory,
     researchRestoreListSnapshot,
     // researchSplitByRules kept in codebase for rare advanced use but NOT

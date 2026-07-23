@@ -195,6 +195,66 @@ export async function deleteTable(
   if (error) throw new Error(`Failed to delete research table: ${error.message}`);
 }
 
+/**
+ * Permanently remove selected companies from their lists. The affected lists
+ * are snapshotted first, then every active campaign enrollment for those rows
+ * is cancelled (sent history remains intact).
+ */
+export async function deleteResearchRows(
+  client: SupabaseClient,
+  rowIds: string[],
+): Promise<{ deleted: number; cancelledEnrollments: number }> {
+  const ids = [...new Set(rowIds.filter(Boolean))];
+  if (ids.length === 0) throw new Error("rowIds required");
+  const { data: rows, error: rowsError } = await client
+    .from("research_rows")
+    .select("id, table_id")
+    .in("id", ids);
+  if (rowsError) throw new Error(`Failed to read research rows: ${rowsError.message}`);
+  if (!rows?.length) return { deleted: 0, cancelledEnrollments: 0 };
+
+  const tableIds = [...new Set(rows.map((row) => row.table_id as string))];
+  await Promise.all(
+    tableIds.map((tableId) =>
+      snapshotResearchTable(client, tableId, { reason: `delete_rows:${rows.length}` }),
+    ),
+  );
+
+  const { data: activeEnrollments, error: enrollmentError } = await client
+    .from("outreach_enrollments")
+    .select("id, sequence_id")
+    .in("research_row_id", rows.map((row) => row.id as string))
+    .in("status", ["active", "paused"]);
+  if (enrollmentError) throw new Error(enrollmentError.message);
+
+  const idsBySequence = new Map<string, string[]>();
+  for (const enrollment of activeEnrollments ?? []) {
+    const sequenceId = enrollment.sequence_id as string;
+    const enrollmentIds = idsBySequence.get(sequenceId) ?? [];
+    enrollmentIds.push(enrollment.id as string);
+    idsBySequence.set(sequenceId, enrollmentIds);
+  }
+  if (idsBySequence.size > 0) {
+    const { unenrollFromSequence } = await import("@/lib/outreach/sequences");
+    await Promise.all(
+      [...idsBySequence].map(([sequenceId, enrollmentIds]) =>
+        unenrollFromSequence(client, { sequenceId, enrollmentIds }),
+      ),
+    );
+  }
+
+  const { data: deletedRows, error: deleteError } = await client
+    .from("research_rows")
+    .delete()
+    .in("id", rows.map((row) => row.id as string))
+    .select("id");
+  if (deleteError) throw new Error(`Failed to remove companies from list: ${deleteError.message}`);
+  return {
+    deleted: deletedRows?.length ?? 0,
+    cancelledEnrollments: activeEnrollments?.length ?? 0,
+  };
+}
+
 type ResearchTableSnapshotRow = Record<string, unknown> & {
   people: Array<Record<string, unknown>>;
   evidence: Array<Record<string, unknown>>;
