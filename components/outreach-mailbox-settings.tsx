@@ -58,6 +58,7 @@ type Mailbox = {
   hasPassword: boolean;
   dailyCap: number;
   emailAutoSend?: boolean;
+  isDefault: boolean;
   enabled: boolean;
   sentToday: number;
   lastTestedAt: string | null;
@@ -112,6 +113,7 @@ export function OutreachMailboxSettings() {
   );
 
   const [mailbox, setMailbox] = useState<Mailbox | null>(null);
+  const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
   const [googleOAuthConfigured, setGoogleOAuthConfigured] = useState(true);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
@@ -142,7 +144,9 @@ export function OutreachMailboxSettings() {
         return;
       }
       setGoogleOAuthConfigured(data.googleOAuthConfigured !== false);
-      const m = (data.mailboxes as Mailbox[])?.[0] ?? null;
+      const all = (data.mailboxes as Mailbox[]) ?? [];
+      setMailboxes(all);
+      const m = all[0] ?? null;
       setMailbox(m);
       if (m) {
         setFromName(m.fromName ?? "");
@@ -256,7 +260,7 @@ export function OutreachMailboxSettings() {
           smtpUser: smtpUser || smtpFromEmail,
           smtpPass: smtpPass || undefined,
           dailyCap: Number(dailyCap) || 40,
-          isDefault: true,
+          isDefault: mailbox?.isDefault ?? mailboxes.length === 0,
           enabled: true,
         }),
       });
@@ -372,6 +376,51 @@ export function OutreachMailboxSettings() {
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
+        {!loading && mailboxes.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/20 p-2">
+            {mailboxes.map((box) => (
+              <Button
+                key={box.id}
+                size="sm"
+                variant={mailbox?.id === box.id ? "secondary" : "ghost"}
+                onClick={() => {
+                  setMailbox(box);
+                  setFromName(box.fromName ?? "");
+                  setDailyCap(String(box.dailyCap));
+                  setEmailAutoSend(box.emailAutoSend !== false);
+                  setSmtpFromEmail(box.fromEmail);
+                  setSmtpUser(box.smtpUser ?? box.fromEmail);
+                  setSmtpHost(box.smtpHost);
+                  setSmtpPort(String(box.smtpPort));
+                  setShowSmtp(box.authMethod === "smtp");
+                }}
+              >
+                {box.label} · {box.fromEmail}
+              </Button>
+            ))}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setMailbox(null);
+                setFromName("");
+                setDailyCap("40");
+                setEmailAutoSend(true);
+                setSmtpFromEmail("");
+                setSmtpUser("");
+                setSmtpPass("");
+                setSmtpHost("smtp.gmail.com");
+                setSmtpPort("587");
+                setShowSmtp(false);
+                setNotice(null);
+                setError(null);
+              }}
+            >
+              <Mail className="size-3.5" />
+              Add account
+            </Button>
+          </div>
+        )}
         {loading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" />

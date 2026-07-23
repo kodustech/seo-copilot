@@ -98,6 +98,13 @@ type ActivityStats = {
 };
 
 type ResearchTable = { id: string; name: string; slug?: string | null };
+type Mailbox = {
+  id: string;
+  label: string;
+  fromEmail: string;
+  connected: boolean;
+  enabled: boolean;
+};
 
 type EnrollmentRow = {
   id: string;
@@ -379,11 +386,13 @@ export function SequencesPage() {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [mailboxConfigured, setMailboxConfigured] = useState(true);
+  const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editStatus, setEditStatus] = useState("draft");
+  const [editMailboxId, setEditMailboxId] = useState("default");
   const [editSteps, setEditSteps] = useState<StepDraft[]>([]);
   const [editLoading, setEditLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -419,12 +428,13 @@ export function SequencesPage() {
     if (!token) return;
     setLoading(true);
     try {
-      const [seqRes, queueRes, tablesRes] = await Promise.all([
+      const [seqRes, queueRes, tablesRes, mailboxRes] = await Promise.all([
         fetch("/api/outreach/sequences", { headers: headers() }),
         fetch("/api/outreach/sequences/queue", {
           headers: headers(),
         }),
         fetch("/api/research/tables", { headers: headers() }),
+        fetch("/api/outreach/mailbox", { headers: headers() }),
       ]);
       if (seqRes.ok) {
         const d = await seqRes.json();
@@ -439,6 +449,10 @@ export function SequencesPage() {
       if (tablesRes.ok) {
         const d = await tablesRes.json();
         setTables(d.tables ?? []);
+      }
+      if (mailboxRes.ok) {
+        const d = await mailboxRes.json();
+        setMailboxes((d.mailboxes ?? []) as Mailbox[]);
       }
     } finally {
       setLoading(false);
@@ -470,6 +484,7 @@ export function SequencesPage() {
       setEditName(data.sequence?.name ?? "");
       setEditDescription(data.sequence?.description ?? "");
       setEditStatus(data.sequence?.status ?? "draft");
+      setEditMailboxId(data.sequence?.mailboxId ?? data.sequence?.mailbox_id ?? "default");
       setSequenceHealth((data.health as SequenceHealth) ?? null);
       const enrRaw = (data.enrollments ?? []) as Record<string, unknown>[];
       const enrMapped: EnrollmentRow[] = enrRaw.map((e) => ({
@@ -628,6 +643,7 @@ export function SequencesPage() {
           name: editName.trim(),
           description: editDescription.trim() || null,
           status: editStatus,
+          mailboxId: editMailboxId === "default" ? null : editMailboxId,
           steps: editSteps.map((s) => ({
             channel: s.channel,
             mode: s.channel === "linkedin" ? "semi" : s.mode,
@@ -1733,6 +1749,24 @@ export function SequencesPage() {
                   placeholder="Description (optional)"
                   className="h-9 border-border/60 bg-transparent text-sm"
                 />
+                <div className="flex items-center gap-2">
+                  <Mail className="size-3.5 text-muted-foreground" />
+                  <Select value={editMailboxId} onValueChange={setEditMailboxId}>
+                    <SelectTrigger className="h-8 w-full max-w-sm text-xs">
+                      <SelectValue placeholder="Choose sender" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="default">Workspace default mailbox</SelectItem>
+                      {mailboxes
+                        .filter((mailbox) => mailbox.enabled && mailbox.connected)
+                        .map((mailbox) => (
+                          <SelectItem key={mailbox.id} value={mailbox.id}>
+                            {mailbox.label} · {mailbox.fromEmail}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-xs text-muted-foreground">
                     {editSteps.length} step{editSteps.length === 1 ? "" : "s"}

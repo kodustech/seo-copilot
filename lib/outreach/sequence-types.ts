@@ -28,6 +28,7 @@ export type OutreachSequence = {
   description: string | null;
   status: SequenceStatus;
   defaultFromEmail: string | null;
+  mailboxId: string | null;
   createdByEmail: string | null;
   createdAt: string;
   updatedAt: string;

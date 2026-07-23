@@ -29,6 +29,7 @@ function mapSequence(r: Record<string, unknown>): OutreachSequence {
     description: (r.description as string | null) ?? null,
     status: r.status as SequenceStatus,
     defaultFromEmail: (r.default_from_email as string | null) ?? null,
+    mailboxId: (r.mailbox_id as string | null) ?? null,
     createdByEmail: (r.created_by_email as string | null) ?? null,
     createdAt: r.created_at as string,
     updatedAt: r.updated_at as string,
@@ -298,6 +299,7 @@ export async function createSequence(
     description?: string | null;
     createdByEmail?: string | null;
     defaultFromEmail?: string | null;
+    mailboxId?: string | null;
     steps?: Array<{
       channel: StepChannel;
       mode: StepMode;
@@ -318,6 +320,7 @@ export async function createSequence(
       description: input.description ?? null,
       status: "draft",
       default_from_email: input.defaultFromEmail ?? null,
+      mailbox_id: input.mailboxId ?? null,
       created_by_email: input.createdByEmail ?? null,
     })
     .select("*")
@@ -455,6 +458,7 @@ export async function updateSequence(
     description?: string | null;
     status?: SequenceStatus;
     defaultFromEmail?: string | null;
+    mailboxId?: string | null;
   },
 ): Promise<OutreachSequence> {
   await snapshotSequence(client, id, { reason: "update" });
@@ -465,6 +469,7 @@ export async function updateSequence(
   if (patch.defaultFromEmail !== undefined) {
     body.default_from_email = patch.defaultFromEmail;
   }
+  if (patch.mailboxId !== undefined) body.mailbox_id = patch.mailboxId;
   const { data, error } = await client
     .from("outreach_sequences")
     .update(body)
@@ -1226,10 +1231,12 @@ export async function processDueSequenceTasks(
       .maybeSingle();
     if (!enrRaw) continue;
     if ((enrRaw.status as string) !== "active") continue;
-    const seqStatus = await getSequenceStatus(
-      client,
-      enrRaw.sequence_id as string,
-    );
+    const { data: sequenceRow } = await client
+      .from("outreach_sequences")
+      .select("status, mailbox_id")
+      .eq("id", enrRaw.sequence_id as string)
+      .maybeSingle();
+    const seqStatus = (sequenceRow?.status as SequenceStatus | undefined) ?? null;
     if (seqStatus !== "active") {
       // leave scheduled — will resume when sequence is activated
       continue;
@@ -1247,7 +1254,10 @@ export async function processDueSequenceTasks(
 
     if (task.channel === "email" && task.mode === "auto") {
       const { isEmailAutoSendEnabled } = await import("@/lib/outreach/mailbox");
-      const auto = await isEmailAutoSendEnabled(client);
+      const auto = await isEmailAutoSendEnabled(
+        client,
+        (sequenceRow?.mailbox_id as string | null) ?? null,
+      );
       if (!auto) {
         // Workspace config: email auto-send off → human activity queue
         await client
@@ -1267,7 +1277,11 @@ export async function processDueSequenceTasks(
         promoted += 1;
         continue;
       }
-      const result = await sendDueEmailTask(client, task);
+      const result = await sendDueEmailTask(
+        client,
+        task,
+        (sequenceRow?.mailbox_id as string | null) ?? null,
+      );
       if (result === "sent") emailsSent += 1;
       else if (result === "failed") emailsFailed += 1;
       else emailsSkipped += 1;
@@ -1288,6 +1302,7 @@ export async function processDueSequenceTasks(
 async function sendDueEmailTask(
   client: SupabaseClient,
   task: OutreachSendTask,
+  mailboxId: string | null,
 ): Promise<"sent" | "failed" | "skipped"> {
   const now = new Date().toISOString();
 
@@ -1378,6 +1393,7 @@ async function sendDueEmailTask(
     to,
     subject,
     text: body,
+    mailboxId,
     thread: priorThread
       ? {
           inReplyTo: priorThread.lastRfcMessageId,

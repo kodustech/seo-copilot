@@ -4701,6 +4701,32 @@ export const researchRestorePeople = tool({
 // Outreach sequences — full campaign lifecycle for CLI / MCP agents
 // ---------------------------------------------------------------------------
 
+export const outreachListMailboxes = tool({
+  description:
+    "List connected outreach sender mailboxes. Use the returned id as mailbox_id on sequenceCreate or sequenceUpdate to choose one sender per campaign.",
+  inputSchema: z.object({}),
+  execute: async () => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { listMailboxes } = await import("@/lib/outreach/mailbox");
+      const mailboxes = await listMailboxes(client);
+      return {
+        success: true as const,
+        mailboxes: mailboxes.map((mailbox) => ({
+          id: mailbox.id,
+          label: mailbox.label,
+          from_email: mailbox.fromEmail,
+          connected: mailbox.connected,
+          enabled: mailbox.enabled,
+          is_default: mailbox.isDefault,
+        })),
+      };
+    } catch (error) {
+      return { success: false as const, message: error instanceof Error ? error.message : "Failed" };
+    }
+  },
+});
+
 const sequenceStepSchema = z.object({
   channel: z
     .enum(["linkedin", "email"])
@@ -4863,6 +4889,7 @@ export const sequenceCreate = tool({
       .enum(["draft", "active"])
       .optional()
       .describe("Default draft; set active when ready to enroll"),
+    mailbox_id: z.string().optional().describe("Connected sender mailbox id for this campaign; omit to use workspace default"),
     steps: z
       .array(sequenceStepSchema)
       .optional()
@@ -4871,7 +4898,7 @@ export const sequenceCreate = tool({
       ),
     user_email: z.string().optional(),
   }),
-  execute: async ({ name, description, status, steps, user_email }) => {
+  execute: async ({ name, description, status, mailbox_id, steps, user_email }) => {
     try {
       const client = getSupabaseServiceClient();
       const { createSequence, updateSequence } = await import(
@@ -4881,6 +4908,7 @@ export const sequenceCreate = tool({
         name,
         description,
         createdByEmail: user_email,
+        mailboxId: mailbox_id,
         steps: steps?.map(mapStepInput),
       });
       let sequence = result.sequence;
@@ -4921,9 +4949,10 @@ export const sequenceUpdate = tool({
     name: z.string().optional(),
     description: z.string().optional(),
     status: z.enum(["draft", "active", "paused", "archived"]).optional(),
+    mailbox_id: z.string().nullable().optional(),
     steps: z.array(sequenceStepSchema).optional(),
   }),
-  execute: async ({ sequence_id, name, description, status, steps }) => {
+  execute: async ({ sequence_id, name, description, status, mailbox_id, steps }) => {
     try {
       const client = getSupabaseServiceClient();
       const { updateSequence, replaceSteps, getSequence } = await import(
@@ -4944,6 +4973,7 @@ export const sequenceUpdate = tool({
           name,
           description,
           status,
+          mailboxId: mailbox_id,
         });
       }
       let outSteps = (await getSequence(client, sequence_id))?.steps ?? [];
@@ -5491,6 +5521,7 @@ export function createAgentTools(userEmail?: string) {
     researchUpsertPeople,
     researchPeopleHistory,
     researchRestorePeople,
+    outreachListMailboxes,
     sequenceList,
     sequenceGet,
     sequenceCreate,

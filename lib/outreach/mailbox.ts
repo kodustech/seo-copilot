@@ -335,8 +335,16 @@ export async function upsertMailboxFromGoogleOAuth(
   const email = input.email.trim().toLowerCase();
   if (!email.includes("@")) throw new Error("Invalid Google email");
 
-  // Prefer keep existing default row and overwrite with OAuth
-  const existing = await getDefaultMailbox(client);
+  // Reconnecting the same inbox updates it; a different Google account adds
+  // another mailbox instead of overwriting the workspace default.
+  const { data: byEmail, error: byEmailError } = await client
+    .from("outreach_mailboxes")
+    .select("*")
+    .eq("from_email", email)
+    .maybeSingle();
+  if (byEmailError) throw new Error(byEmailError.message);
+  const existing = (byEmail as Record<string, unknown> | null) ?? null;
+  const defaultMailbox = await getDefaultMailbox(client);
   const dailyCap = Math.min(500, Math.max(1, input.dailyCap ?? 40));
   const label = (input.label?.trim() || "Outreach").slice(0, 80);
 
@@ -360,7 +368,7 @@ export async function upsertMailboxFromGoogleOAuth(
     oauth_access_token_encrypted: encryptToken(input.accessToken),
     oauth_token_expires_at: input.expiresAt.toISOString(),
     daily_cap: dailyCap,
-    is_default: true,
+    is_default: existing ? Boolean(existing.is_default) : !defaultMailbox,
     enabled: true,
     last_test_ok: true,
     last_tested_at: new Date().toISOString(),
@@ -372,12 +380,6 @@ export async function upsertMailboxFromGoogleOAuth(
   }
 
   if (existing) {
-    await client
-      .from("outreach_mailboxes")
-      .update({ is_default: false })
-      .neq("id", existing.id)
-      .eq("is_default", true);
-
     const { data, error } = await client
       .from("outreach_mailboxes")
       .update(tokenPatch)
@@ -394,11 +396,6 @@ export async function upsertMailboxFromGoogleOAuth(
     );
   }
 
-  await client
-    .from("outreach_mailboxes")
-    .update({ is_default: false })
-    .eq("is_default", true);
-
   const { data, error } = await client
     .from("outreach_mailboxes")
     .insert({
@@ -413,10 +410,12 @@ export async function upsertMailboxFromGoogleOAuth(
 
 export async function isEmailAutoSendEnabled(
   client: SupabaseClient,
+  mailboxId?: string | null,
 ): Promise<boolean> {
-  const box = await getDefaultMailbox(client);
+  const row = await loadMailboxRow(client, mailboxId);
+  const box = row ? mapPublic(row) : null;
   if (!box) return true;
-  return box.emailAutoSend !== false;
+  return box.enabled && box.emailAutoSend !== false;
 }
 
 export async function updateMailboxMeta(
