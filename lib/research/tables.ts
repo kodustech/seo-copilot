@@ -920,7 +920,12 @@ export async function savePeople(
     if (error) throw new Error(`Failed to save people: ${error.message}`);
   }
 
-  return listPeople(client, rowId);
+  const saved = await listPeople(client, rowId);
+  const { syncResearchPeopleToEnrollments } = await import(
+    "@/lib/outreach/sequences"
+  );
+  await syncResearchPeopleToEnrollments(client, rowId, saved);
+  return saved;
 }
 
 /**

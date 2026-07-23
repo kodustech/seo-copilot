@@ -1550,6 +1550,228 @@ export async function unenrollFromSequence(
   };
 }
 
+type ResearchPersonSnapshot = {
+  id: string;
+  name: string;
+  role: string | null;
+  email: string | null;
+  linkedin: string | null;
+};
+
+function normalizedPersonValue(value: string | null | undefined): string {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function enrollmentMatchesResearchPerson(
+  enrollment: OutreachEnrollment,
+  person: ResearchPersonSnapshot,
+): boolean {
+  if (enrollment.researchPersonId === person.id) return true;
+
+  const enrollmentEmail = normalizedPersonValue(enrollment.contactEmail);
+  const personEmail = normalizedPersonValue(person.email);
+  if (enrollmentEmail && personEmail && enrollmentEmail === personEmail) {
+    return true;
+  }
+
+  const enrollmentLinkedin = normalizedPersonValue(enrollment.contactLinkedin);
+  const personLinkedin = normalizedPersonValue(person.linkedin);
+  if (
+    enrollmentLinkedin &&
+    personLinkedin &&
+    enrollmentLinkedin === personLinkedin
+  ) {
+    return true;
+  }
+
+  return (
+    normalizedPersonValue(enrollment.contactName) ===
+    normalizedPersonValue(person.name)
+  );
+}
+
+/**
+ * Keep active campaign snapshots aligned when research_people is rewritten.
+ *
+ * savePeople intentionally replaces research_people rows, so person IDs can
+ * rotate even when the human is the same. We match on stable identity fields,
+ * then refresh the enrollment and its unsent task renderings. If the campaign
+ * skipped its first email only because it was missing, an email discovered
+ * before any send restarts that lead at the skipped email step.
+ */
+export async function syncResearchPeopleToEnrollments(
+  client: SupabaseClient,
+  rowId: string,
+  people: ResearchPersonSnapshot[],
+): Promise<{
+  synchronized: number;
+  pendingTasksRerendered: number;
+  restartedAfterEmailFound: number;
+}> {
+  const { data: rawEnrollments, error: enrollmentsError } = await client
+    .from("outreach_enrollments")
+    .select("*")
+    .eq("research_row_id", rowId)
+    .in("status", ["active", "paused"]);
+  if (enrollmentsError) throw new Error(enrollmentsError.message);
+
+  const enrollments = (rawEnrollments ?? []).map((row) =>
+    mapEnrollment(row as Record<string, unknown>),
+  );
+  if (enrollments.length === 0) {
+    return {
+      synchronized: 0,
+      pendingTasksRerendered: 0,
+      restartedAfterEmailFound: 0,
+    };
+  }
+
+  const enrollmentIds = enrollments.map((enrollment) => enrollment.id);
+  const { data: rawTasks, error: tasksError } = await client
+    .from("outreach_send_tasks")
+    .select("*")
+    .in("enrollment_id", enrollmentIds);
+  if (tasksError) throw new Error(tasksError.message);
+
+  const tasksByEnrollment = new Map<string, OutreachSendTask[]>();
+  for (const rawTask of rawTasks ?? []) {
+    const task = mapTask(rawTask as Record<string, unknown>);
+    const tasks = tasksByEnrollment.get(task.enrollmentId) ?? [];
+    tasks.push(task);
+    tasksByEnrollment.set(task.enrollmentId, tasks);
+  }
+
+  const stepLists = await Promise.all(
+    [...new Set(enrollments.map((enrollment) => enrollment.sequenceId))].map(
+      async (sequenceId) => [sequenceId, await listSteps(client, sequenceId)] as const,
+    ),
+  );
+  const stepsBySequence = new Map(stepLists);
+  const now = new Date().toISOString();
+  let synchronized = 0;
+  let pendingTasksRerendered = 0;
+  let restartedAfterEmailFound = 0;
+
+  for (const enrollment of enrollments) {
+    const person = people.find((candidate) =>
+      enrollmentMatchesResearchPerson(enrollment, candidate),
+    );
+    if (!person) continue;
+
+    const refreshed: OutreachEnrollment = {
+      ...enrollment,
+      researchPersonId: person.id,
+      contactName: person.name,
+      contactRole: person.role,
+      contactEmail: person.email,
+      contactLinkedin: person.linkedin,
+    };
+    const { error: updateEnrollmentError } = await client
+      .from("outreach_enrollments")
+      .update({
+        research_person_id: person.id,
+        contact_name: person.name,
+        contact_role: person.role,
+        contact_email: person.email,
+        contact_linkedin: person.linkedin,
+        updated_at: now,
+      })
+      .eq("id", enrollment.id);
+    if (updateEnrollmentError) throw new Error(updateEnrollmentError.message);
+    synchronized++;
+
+    const steps = stepsBySequence.get(enrollment.sequenceId) ?? [];
+    const stepById = new Map(steps.map((step) => [step.id, step]));
+    const tasks = tasksByEnrollment.get(enrollment.id) ?? [];
+    const hasSentTask = tasks.some((task) => task.status === "sent");
+    const skippedEmail = person.email
+      ? tasks
+          .filter(
+            (task) =>
+              task.status === "skipped" &&
+              task.error === "No contact email — email step skipped",
+          )
+          .sort((a, b) => a.scheduledFor.localeCompare(b.scheduledFor))[0]
+      : undefined;
+
+    if (skippedEmail && !hasSentTask) {
+      const skippedStep = stepById.get(skippedEmail.stepId);
+      if (skippedStep) {
+        const resetTaskIds = tasks
+          .filter(
+            (task) => task.status === "scheduled" || task.status === "ready")
+          .map((task) => task.id);
+        if (resetTaskIds.length > 0) {
+          const { error } = await client
+            .from("outreach_send_tasks")
+            .update({
+              status: "cancelled",
+              error: "Reset after contact email was found",
+              updated_at: now,
+            })
+            .in("id", resetTaskIds);
+          if (error) throw new Error(error.message);
+        }
+
+        const { error: restartTaskError } = await client
+          .from("outreach_send_tasks")
+          .update({
+            status: "scheduled",
+            error: null,
+            rendered_subject: skippedStep.subjectTemplate
+              ? renderTemplate(skippedStep.subjectTemplate, refreshed)
+              : null,
+            rendered_body: renderTemplate(skippedStep.bodyTemplate, refreshed),
+            meta: {
+              linkedin_action: skippedStep.linkedinAction,
+              profile_url: refreshed.contactLinkedin,
+            },
+            updated_at: now,
+          })
+          .eq("id", skippedEmail.id);
+        if (restartTaskError) throw new Error(restartTaskError.message);
+
+        const { error: restartEnrollmentError } = await client
+          .from("outreach_enrollments")
+          .update({
+            current_step_position: skippedStep.position,
+            next_run_at: skippedEmail.scheduledFor,
+            updated_at: now,
+          })
+          .eq("id", enrollment.id);
+        if (restartEnrollmentError) throw new Error(restartEnrollmentError.message);
+        restartedAfterEmailFound++;
+        continue;
+      }
+    }
+
+    for (const task of tasks) {
+      if (task.status !== "scheduled" && task.status !== "ready") continue;
+      const step = stepById.get(task.stepId);
+      if (!step) continue;
+      const { error } = await client
+        .from("outreach_send_tasks")
+        .update({
+          rendered_subject: step.subjectTemplate
+            ? renderTemplate(step.subjectTemplate, refreshed)
+            : null,
+          rendered_body: renderTemplate(step.bodyTemplate, refreshed),
+          meta: {
+            ...task.meta,
+            linkedin_action: step.linkedinAction,
+            profile_url: refreshed.contactLinkedin,
+          },
+          updated_at: now,
+        })
+        .eq("id", task.id);
+      if (error) throw new Error(error.message);
+      pendingTasksRerendered++;
+    }
+  }
+
+  return { synchronized, pendingTasksRerendered, restartedAfterEmailFound };
+}
+
 export type SequenceStepProgress = {
   position: number;
   channel: StepChannel;
@@ -1863,5 +2085,4 @@ export async function getSequenceHealth(
     })),
   };
 }
-
 
