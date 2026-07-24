@@ -386,13 +386,6 @@ export function UserCenterPage() {
                         ? `${overview.crm.idle} idle`
                         : null,
                   },
-                  {
-                    href: "/sequences",
-                    icon: Workflow,
-                    title: "Outbound",
-                    stat: "queue",
-                    alert: null,
-                  },
                 ]}
               />
 

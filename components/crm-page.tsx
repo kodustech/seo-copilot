@@ -1141,6 +1141,7 @@ function ContactsTab({
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("");
+  const [linkedin, setLinkedin] = useState("");
   const [saving, setSaving] = useState(false);
 
   async function submit() {
@@ -1148,11 +1149,17 @@ function ContactsTab({
     setSaving(true);
     await authFetch(`/api/crm/companies/${companyId}/contacts`, {
       method: "POST",
-      body: JSON.stringify({ name, email: email || null, role: role || null }),
+      body: JSON.stringify({
+        name,
+        email: email || null,
+        role: role || null,
+        linkedin: linkedin || null,
+      }),
     });
     setName("");
     setEmail("");
     setRole("");
+    setLinkedin("");
     setSaving(false);
     onChange();
   }
@@ -1169,6 +1176,13 @@ function ContactsTab({
         <Input value={role} onChange={(e) => setRole(e.target.value)} placeholder="Role" className="border-white/10 bg-neutral-900" />
         <Input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" className="border-white/10 bg-neutral-900" />
       </div>
+      <Input
+        type="url"
+        value={linkedin}
+        onChange={(e) => setLinkedin(e.target.value)}
+        placeholder="LinkedIn URL (optional)"
+        className="border-white/10 bg-neutral-900"
+      />
       <div className="flex justify-end">
         <Button size="sm" onClick={submit} disabled={saving || !name.trim()} className="h-7 gap-1.5 bg-white text-neutral-900 hover:bg-neutral-200">
           <Plus className="size-3.5" /> Add contact
@@ -1186,6 +1200,16 @@ function ContactsTab({
                   {c.name} {c.role && <span className="text-neutral-500">· {c.role}</span>}
                 </p>
                 {c.email && <p className="truncate text-xs text-neutral-500">{c.email}</p>}
+                {c.linkedin && (
+                  <a
+                    href={c.linkedin}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300"
+                  >
+                    LinkedIn <ExternalLink className="size-3" />
+                  </a>
+                )}
               </div>
               <button onClick={() => remove(c.id)} className="text-neutral-600 opacity-0 transition group-hover:opacity-100 hover:text-red-400">
                 <Trash2 className="size-3.5" />
