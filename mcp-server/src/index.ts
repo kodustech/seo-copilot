@@ -20,6 +20,17 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { buildMcpTools, SERVER_INFO } from "@/lib/mcp/server";
 
+// Next.js loads .env on its own; a bare tsx process does not. Without this,
+// every tool that needs a credential (BIGQUERY_CREDENTIALS, Supabase, …)
+// fails at call time with "env var is not set".
+for (const envFile of [".env.local", ".env"]) {
+  try {
+    process.loadEnvFile(envFile);
+  } catch {
+    // Missing file is fine — the var may come from the real environment.
+  }
+}
+
 const userEmail = process.env.MCP_USER_EMAIL ?? "growth@kodus.io";
 const { tools, skipped } = buildMcpTools({ userEmail });
 
@@ -32,7 +43,9 @@ for (const tool of tools) {
     tool.name,
     {
       description: tool.description,
-      inputSchema: tool.inputSchema as never,
+      // The Zod schema, not the JSON Schema: registerTool validates with Zod
+      // and throws "unrecognized object" on a plain JSON Schema.
+      inputSchema: tool.zodSchema as never,
     },
     async (args: unknown) => {
       try {
@@ -55,12 +68,21 @@ console.error(
   `[mcp/stdio] seo-copilot ready. Registered ${tools.length} tools (skipped ${skipped}). User: ${userEmail}`
 );
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
-
 const shutdown = () => {
   console.error("[mcp/stdio] shutting down");
   process.exit(0);
 };
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+
+// Not top-level await: the root package.json has no `"type": "module"`, so
+// tsx/esbuild emits CJS and top-level await is a hard transform error.
+async function main() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
+main().catch((err) => {
+  console.error("[mcp/stdio] failed to start:", err);
+  process.exit(1);
+});

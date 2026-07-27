@@ -24,7 +24,13 @@ type AnyTool = {
 export interface McpToolDefinition {
   name: string;
   description: string;
+  /** JSON Schema — what the HTTP transport serializes in `tools/list`. */
   inputSchema: Record<string, unknown>;
+  /**
+   * The original Zod schema. The stdio transport's `registerTool` validates
+   * with Zod and rejects a JSON Schema outright, so it needs this instead.
+   */
+  zodSchema: unknown;
   execute: (input: unknown) => Promise<unknown>;
 }
 
@@ -65,8 +71,12 @@ export function buildMcpTools(options: BuildToolsOptions = {}): BuildToolsResult
 
     let inputSchema: Record<string, unknown>;
     try {
+      // io: "input" matters. The default ("output") treats a field with
+      // `.default()` as always-present and emits it as required — so
+      // `.optional().default(100)` params were being published as mandatory.
       inputSchema = z.toJSONSchema(
-        schemaSource as Parameters<typeof z.toJSONSchema>[0]
+        schemaSource as Parameters<typeof z.toJSONSchema>[0],
+        { io: "input" }
       ) as Record<string, unknown>;
     } catch {
       skipped++;
@@ -77,6 +87,7 @@ export function buildMcpTools(options: BuildToolsOptions = {}): BuildToolsResult
       name,
       description,
       inputSchema,
+      zodSchema: schemaSource,
       execute: execute as (input: unknown) => Promise<unknown>,
     });
   }
