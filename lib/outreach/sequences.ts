@@ -14,6 +14,12 @@ import type {
   StepMode,
   TaskStatus,
 } from "@/lib/outreach/sequence-types";
+import {
+  getSendingWindow,
+  isSendingDay,
+  nextSendingSlot,
+  nextSendingSlotAfter,
+} from "@/lib/outreach/sending-window";
 import { listPeople, listRows } from "@/lib/research/tables";
 import { resolveTable } from "@/lib/research/columns";
 import { getProspect, updateProspect } from "@/lib/outreach";
@@ -529,6 +535,11 @@ async function applySequenceStatusSideEffects(
 
   // Activate: release due LinkedIn (and manual email) to the queue.
   // Auto email stays "scheduled" so processDueSequenceTasks can send it.
+  // Activating on an off-day must not dump work into the queue — leave it
+  // scheduled and let the cron release it on the next sending day.
+  const sendingWindow = await getSendingWindow(client);
+  if (!isSendingDay(new Date(now), sendingWindow)) return;
+
   await client
     .from("outreach_send_tasks")
     .update({ status: "ready", updated_at: now })
@@ -637,6 +648,11 @@ async function insertEnrollment(
     warning = `${who}: no email — email steps for this lead will be skipped`;
   }
 
+  // Enrolling on a Saturday must not generate a Saturday activity — roll the
+  // first step forward to the next configured sending day.
+  const sendingWindow = await getSendingWindow(client);
+  const firstDue = nextSendingSlot(new Date(), sendingWindow);
+
   const { data: enr, error } = await client
     .from("outreach_enrollments")
     .insert({
@@ -653,7 +669,7 @@ async function insertEnrollment(
       contact_role: snap.contactRole,
       status: "active",
       current_step_position: firstStep.position,
-      next_run_at: new Date().toISOString(),
+      next_run_at: firstDue.toISOString(),
       enrolled_by_email: enrolledByEmail,
     })
     .select("*")
@@ -670,7 +686,7 @@ async function insertEnrollment(
     client,
     enrollment,
     firstStep,
-    new Date(),
+    firstDue,
   );
 
   // First step email with no address: already skipped — advance past consecutive email steps
@@ -1153,7 +1169,13 @@ async function advanceEnrollment(
     return data ? mapEnrollment(data as Record<string, unknown>) : enrollment;
   }
 
-  const when = new Date(Date.now() + next.delayHours * 3600 * 1000);
+  // Raw delay first, then roll forward off any non-sending day. A 24h wait that
+  // lands on Saturday becomes Monday rather than shifting every later step too.
+  const sendingWindow = await getSendingWindow(client);
+  const when = nextSendingSlot(
+    new Date(Date.now() + next.delayHours * 3600 * 1000),
+    sendingWindow,
+  );
   // Use enrollment snapshot with next position for template/skip logic
   const enrollmentAtNext: OutreachEnrollment = {
     ...enrollment,
@@ -1205,6 +1227,7 @@ export async function processDueSequenceTasks(
   emailsSent: number;
   emailsFailed: number;
   emailsSkipped: number;
+  deferred: number;
 }> {
   const now = new Date().toISOString();
   const { data, error } = await client
@@ -1215,10 +1238,16 @@ export async function processDueSequenceTasks(
     .limit(100);
   if (error) throw new Error(error.message);
 
+  // The cron ticks 24/7; the sending window decides whether it may act today.
+  // This also catches tasks scheduled before the window was configured.
+  const sendingWindow = await getSendingWindow(client);
+  const withinWindow = isSendingDay(new Date(now), sendingWindow);
+
   let promoted = 0;
   let emailsSent = 0;
   let emailsFailed = 0;
   let emailsSkipped = 0;
+  let deferred = 0;
 
   for (const raw of data ?? []) {
     const task = mapTask(raw as Record<string, unknown>);
@@ -1239,6 +1268,32 @@ export async function processDueSequenceTasks(
     const seqStatus = (sequenceRow?.status as SequenceStatus | undefined) ?? null;
     if (seqStatus !== "active") {
       // leave scheduled — will resume when sequence is activated
+      continue;
+    }
+
+    // Off-day: push the task (and the enrollment) to the next sending day
+    // instead of firing it. Rescheduling rather than skipping keeps the queue
+    // honest about when the lead will actually be contacted.
+    //
+    // Anchored on the task's own scheduled_for, not on `now`: anchoring on now
+    // would collapse every deferred task onto one timestamp, destroying the
+    // stagger and firing the whole weekend's backlog in one burst on Monday.
+    if (!withinWindow) {
+      const due = nextSendingSlotAfter(
+        new Date(task.scheduledFor),
+        new Date(now),
+        sendingWindow,
+      );
+      await client
+        .from("outreach_send_tasks")
+        .update({ scheduled_for: due.toISOString(), updated_at: now })
+        .eq("id", task.id)
+        .eq("status", "scheduled");
+      await client
+        .from("outreach_enrollments")
+        .update({ next_run_at: due.toISOString(), updated_at: now })
+        .eq("id", task.enrollmentId);
+      deferred += 1;
       continue;
     }
 
@@ -1296,7 +1351,7 @@ export async function processDueSequenceTasks(
     }
   }
 
-  return { promoted, emailsSent, emailsFailed, emailsSkipped };
+  return { promoted, emailsSent, emailsFailed, emailsSkipped, deferred };
 }
 
 async function sendDueEmailTask(
