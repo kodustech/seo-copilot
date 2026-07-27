@@ -199,6 +199,32 @@ export function nextSendingSlot(
   return date;
 }
 
+/**
+ * Like `nextSendingSlot`, but guarantees the result is strictly after
+ * `notBefore` while keeping the anchor's time of day.
+ *
+ * Used when deferring an already-due task: anchoring on the task's own
+ * `scheduled_for` preserves the stagger between tasks (anchoring on `now`
+ * would collapse a whole weekend's backlog onto one timestamp), but that
+ * anchor is in the past — and if it happens to fall on a sending day it
+ * would be returned unchanged, leaving the task perpetually due.
+ */
+export function nextSendingSlotAfter(
+  anchor: Date,
+  notBefore: Date,
+  window: OutreachSendingWindow,
+): Date {
+  let candidate = nextSendingSlot(anchor, window);
+  // Bounded: each hop advances a day, and a week always contains a sending day.
+  for (let i = 0; i < 14 && candidate.getTime() <= notBefore.getTime(); i++) {
+    candidate = nextSendingSlot(
+      new Date(candidate.getTime() + DAY_MS),
+      window,
+    );
+  }
+  return candidate;
+}
+
 export function describeSendingDays(days: number[]): string {
   if (days.length === 7) return "Every day";
   if (days.length === 0) return "No days";

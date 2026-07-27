@@ -18,6 +18,7 @@ import {
   getSendingWindow,
   isSendingDay,
   nextSendingSlot,
+  nextSendingSlotAfter,
 } from "@/lib/outreach/sending-window";
 import { listPeople, listRows } from "@/lib/research/tables";
 import { resolveTable } from "@/lib/research/columns";
@@ -1273,8 +1274,16 @@ export async function processDueSequenceTasks(
     // Off-day: push the task (and the enrollment) to the next sending day
     // instead of firing it. Rescheduling rather than skipping keeps the queue
     // honest about when the lead will actually be contacted.
+    //
+    // Anchored on the task's own scheduled_for, not on `now`: anchoring on now
+    // would collapse every deferred task onto one timestamp, destroying the
+    // stagger and firing the whole weekend's backlog in one burst on Monday.
     if (!withinWindow) {
-      const due = nextSendingSlot(new Date(now), sendingWindow);
+      const due = nextSendingSlotAfter(
+        new Date(task.scheduledFor),
+        new Date(now),
+        sendingWindow,
+      );
       await client
         .from("outreach_send_tasks")
         .update({ scheduled_for: due.toISOString(), updated_at: now })
