@@ -1215,23 +1215,37 @@ export async function promoteDueHumanQueue(
   const { isEmailAutoSendEnabled } = await import("@/lib/outreach/mailbox");
   const autoOn = await isEmailAutoSendEnabled(client, null);
   if (!autoOn) {
+    // Merge meta.auto_send_disabled so the UI shows the same label as
+    // processDueSequenceTasks (cannot bulk-merge jsonb without reading rows).
     for (let i = 0; i < enrollmentIds.length; i += chunkSize) {
       const slice = enrollmentIds.slice(i, i + chunkSize);
-      const { data, error } = await client
+      const { data: due, error } = await client
         .from("outreach_send_tasks")
-        .update({
-          status: "ready",
-          mode: "semi",
-          provider: "manual",
-          updated_at: now,
-        })
+        .select("id, meta")
         .eq("status", "scheduled")
         .eq("channel", "email")
         .lte("scheduled_for", now)
-        .in("enrollment_id", slice)
-        .select("id");
+        .in("enrollment_id", slice);
       if (error) throw new Error(error.message);
-      promoted += data?.length ?? 0;
+      for (const row of due ?? []) {
+        const meta =
+          row.meta && typeof row.meta === "object" && !Array.isArray(row.meta)
+            ? (row.meta as Record<string, unknown>)
+            : {};
+        const { error: uErr } = await client
+          .from("outreach_send_tasks")
+          .update({
+            status: "ready",
+            mode: "semi",
+            provider: "manual",
+            updated_at: now,
+            meta: { ...meta, auto_send_disabled: true },
+          })
+          .eq("id", row.id as string)
+          .eq("status", "scheduled");
+        if (uErr) throw new Error(uErr.message);
+        promoted += 1;
+      }
     }
   } else {
     // Only promote email tasks that are already semi
