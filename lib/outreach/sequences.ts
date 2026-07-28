@@ -1215,44 +1215,59 @@ export async function promoteDueHumanQueue(
   const { isEmailAutoSendEnabled } = await import("@/lib/outreach/mailbox");
   const autoOn = await isEmailAutoSendEnabled(client, null);
   if (!autoOn) {
-    // Merge auto_send_disabled into existing meta (same as processDueSequenceTasks).
-    // Read ids+meta then update in parallel within each chunk so page load
-    // stays fast without wiping profile_url / linkedin_action / etc.
+    // One RPC per chunk: bulk UPDATE + jsonb merge (preserves profile_url etc.).
+    // Migration: 20260728_promote_email_human_queue.sql
     for (let i = 0; i < enrollmentIds.length; i += chunkSize) {
       const slice = enrollmentIds.slice(i, i + chunkSize);
-      const { data: due, error } = await client
-        .from("outreach_send_tasks")
-        .select("id, meta")
-        .eq("status", "scheduled")
-        .eq("channel", "email")
-        .lte("scheduled_for", now)
-        .in("enrollment_id", slice);
-      if (error) throw new Error(error.message);
-      if (!due?.length) continue;
-
-      const updated = await Promise.all(
-        due.map(async (row) => {
-          const meta =
-            row.meta && typeof row.meta === "object" && !Array.isArray(row.meta)
-              ? (row.meta as Record<string, unknown>)
-              : {};
-          const { data: rows, error: uErr } = await client
-            .from("outreach_send_tasks")
-            .update({
-              status: "ready",
-              mode: "semi",
-              provider: "manual",
-              updated_at: now,
-              meta: { ...meta, auto_send_disabled: true },
-            })
-            .eq("id", row.id as string)
-            .eq("status", "scheduled")
-            .select("id");
-          if (uErr) throw new Error(uErr.message);
-          return rows?.length ?? 0;
-        }),
+      const { data: n, error } = await client.rpc(
+        "promote_due_email_to_human_queue",
+        {
+          p_enrollment_ids: slice,
+          p_now: now,
+        },
       );
-      promoted += updated.reduce((a, b) => a + b, 0);
+      if (error) {
+        // Fallback if migration not applied yet: bulk promote without wiping
+        // unrelated channels; meta merge via flag-only is worse than sequential
+        // merge — prefer sequential only for small slices.
+        if (
+          /function|does not exist|PGRST202|42883/i.test(error.message ?? "")
+        ) {
+          const { data: due, error: selErr } = await client
+            .from("outreach_send_tasks")
+            .select("id, meta")
+            .eq("status", "scheduled")
+            .eq("channel", "email")
+            .lte("scheduled_for", now)
+            .in("enrollment_id", slice);
+          if (selErr) throw new Error(selErr.message);
+          for (const row of due ?? []) {
+            const meta =
+              row.meta &&
+              typeof row.meta === "object" &&
+              !Array.isArray(row.meta)
+                ? (row.meta as Record<string, unknown>)
+                : {};
+            const { data: rows, error: uErr } = await client
+              .from("outreach_send_tasks")
+              .update({
+                status: "ready",
+                mode: "semi",
+                provider: "manual",
+                updated_at: now,
+                meta: { ...meta, auto_send_disabled: true },
+              })
+              .eq("id", row.id as string)
+              .eq("status", "scheduled")
+              .select("id");
+            if (uErr) throw new Error(uErr.message);
+            promoted += rows?.length ?? 0;
+          }
+          continue;
+        }
+        throw new Error(error.message);
+      }
+      promoted += typeof n === "number" ? n : Number(n) || 0;
     }
   } else {
     // Only promote email tasks that are already semi
