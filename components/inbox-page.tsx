@@ -155,8 +155,8 @@ export function InboxPage() {
 
   const selected = threads.find((t) => t.id === selectedId) ?? null;
 
-  const loadList = useCallback(async () => {
-    if (!token) return;
+  const loadList = useCallback(async (): Promise<string | null> => {
+    if (!token) return null;
     setLoading(true);
     setError(null);
     try {
@@ -169,12 +169,18 @@ export function InboxPage() {
       const list = (data.threads ?? []) as ReplyThread[];
       setThreads(list);
       setNewCount(Number(data.newCount ?? 0));
+      let nextSelected: string | null = null;
       setSelectedId((prev) => {
-        if (prev && list.some((t) => t.id === prev)) return prev;
-        return list[0]?.id ?? null;
+        nextSelected =
+          prev && list.some((t) => t.id === prev)
+            ? prev
+            : (list[0]?.id ?? null);
+        return nextSelected;
       });
+      return nextSelected;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load");
+      return null;
     } finally {
       setLoading(false);
     }
@@ -265,8 +271,8 @@ export function InboxPage() {
           );
         }
       }
-      await loadList();
-      if (selectedId) await loadDetail(selectedId);
+      const nextSelectedId = await loadList();
+      if (nextSelectedId) await loadDetail(nextSelectedId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sync failed");
     } finally {

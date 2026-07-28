@@ -384,6 +384,8 @@ async function buildSentThreadIndex(
     ourRfcIds: new Set(),
     byContactEmail: new Map(),
   };
+  /** contactEmail → enrollmentIds already pushed (O(1) dedupe). */
+  const contactEnrollmentSeen = new Map<string, Set<string>>();
 
   const fromNorm = fromEmail.toLowerCase();
 
@@ -433,8 +435,14 @@ async function buildSentThreadIndex(
       });
     }
     if (enr.contactEmail) {
-      const list = index.byContactEmail.get(enr.contactEmail) ?? [];
-      if (!list.some((x) => x.enrollmentId === enrollmentId)) {
+      let seen = contactEnrollmentSeen.get(enr.contactEmail);
+      if (!seen) {
+        seen = new Set();
+        contactEnrollmentSeen.set(enr.contactEmail, seen);
+      }
+      if (!seen.has(enrollmentId)) {
+        seen.add(enrollmentId);
+        const list = index.byContactEmail.get(enr.contactEmail) ?? [];
         list.push({
           enrollmentId,
           sequenceId: enr.sequenceId,
@@ -442,8 +450,8 @@ async function buildSentThreadIndex(
           contactName: enr.contactName,
           companyName: enr.companyName,
         });
+        index.byContactEmail.set(enr.contactEmail, list);
       }
-      index.byContactEmail.set(enr.contactEmail, list);
     }
   }
 
@@ -571,6 +579,9 @@ async function upsertThreadAndMessages(
   messagesUpserted: number;
   hasNewInbound: boolean;
   strongMatch: boolean;
+  /** Enrollment actually stored on the thread after match merge. */
+  enrollmentId: string | null;
+  matchedHow: ReplyMatchedHow;
 }> {
   const { mailboxId, gmailThreadId, match, messages, index, mailboxFrom } =
     opts;
@@ -661,6 +672,8 @@ async function upsertThreadAndMessages(
       messagesUpserted: 0,
       hasNewInbound: false,
       strongMatch: false,
+      enrollmentId: null,
+      matchedHow: "unmatched",
     };
   }
 
@@ -671,6 +684,8 @@ async function upsertThreadAndMessages(
       messagesUpserted: 0,
       hasNewInbound: false,
       strongMatch: false,
+      enrollmentId: null,
+      matchedHow: "unmatched",
     };
   }
 
@@ -779,11 +794,16 @@ async function upsertThreadAndMessages(
     messagesUpserted++;
   }
 
+  // useMatch is the enrollment/how we persist (existing stronger match wins).
   return {
     threadId,
     messagesUpserted,
     hasNewInbound,
-    strongMatch: useMatch.matchedHow === "gmail_thread" || useMatch.matchedHow === "in_reply_to",
+    strongMatch:
+      useMatch.matchedHow === "gmail_thread" ||
+      useMatch.matchedHow === "in_reply_to",
+    enrollmentId: useMatch.enrollmentId,
+    matchedHow: useMatch.matchedHow,
   };
 }
 
@@ -844,12 +864,14 @@ async function processGmailThread(
   counters.threadsTouched++;
   counters.messagesUpserted += result.messagesUpserted;
 
+  // Use the enrollment actually stored on the thread (may differ from `best`
+  // when an existing stronger match was kept).
   if (
     result.hasNewInbound &&
     result.strongMatch &&
-    best.enrollmentId
+    result.enrollmentId
   ) {
-    const marked = await markEnrollmentReplied(client, best.enrollmentId, {
+    const marked = await markEnrollmentReplied(client, result.enrollmentId, {
       source: "gmail_sync",
     });
     if (marked.updated) counters.enrollmentsMarkedReplied++;
@@ -1266,7 +1288,8 @@ export async function updateReplyThread(
   }
   if (patch.snoozedUntil !== undefined) {
     update.snoozed_until = patch.snoozedUntil;
-    if (patch.snoozedUntil) update.status = "snoozed";
+    // Only coerce status when the caller did not set one explicitly.
+    if (patch.snoozedUntil && !patch.status) update.status = "snoozed";
   }
 
   const { data, error } = await client
