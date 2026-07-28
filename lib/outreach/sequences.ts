@@ -2157,7 +2157,7 @@ export async function setEnrollmentPaused(
   const now = new Date().toISOString();
 
   if (paused) {
-    await client
+    const { error: cancelErr } = await client
       .from("outreach_send_tasks")
       .update({
         status: "cancelled",
@@ -2166,6 +2166,7 @@ export async function setEnrollmentPaused(
       })
       .eq("enrollment_id", enrollmentId)
       .in("status", ["scheduled", "ready"]);
+    if (cancelErr) throw new Error(cancelErr.message);
 
     const { data, error: uErr } = await client
       .from("outreach_enrollments")
@@ -2196,18 +2197,18 @@ export async function setEnrollmentPaused(
   if (uErr) throw new Error(uErr.message);
 
   let active = mapEnrollment(data as Record<string, unknown>);
-  const { count: openCount } = await client
+  const { count: openCount, error: openErr } = await client
     .from("outreach_send_tasks")
     .select("id", { count: "exact", head: true })
     .eq("enrollment_id", enrollmentId)
     .in("status", ["scheduled", "ready", "sending"]);
+  if (openErr) throw new Error(openErr.message);
 
   if ((openCount ?? 0) === 0) {
     const steps = await listSteps(client, active.sequenceId);
+    const stepByPos = new Map(steps.map((s) => [s.position, s]));
     const step =
-      steps.find((s) => s.position === active.currentStepPosition) ??
-      steps[0] ??
-      null;
+      stepByPos.get(active.currentStepPosition) ?? steps[0] ?? null;
     if (step) {
       const sendingWindow = await getSendingWindow(client);
       const when = nextSendingSlot(new Date(), sendingWindow);
