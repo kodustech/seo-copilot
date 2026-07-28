@@ -1,0 +1,8 @@
+# Minimal config so `supabase link` / `db push` work in CI.
+# Project is selected at link time via SUPABASE_PROJECT_REF.
+# Migrations are loaded from the default path: supabase/migrations/
+
+project_id = "seo-copilot"
+
+[db]
+major_version = 15
