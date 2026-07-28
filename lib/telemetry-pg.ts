@@ -37,6 +37,21 @@ function getPool(): Pool {
   return pool;
 }
 
+/** Strip /* ... */ and -- comments so guards cannot be bypassed with comment gaps. */
+function stripSqlComments(sql: string): string {
+  return sql
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/--[^\n\r]*/g, " ");
+}
+
+/** Quote a SQL identifier; only allow simple names (no dots/spaces). */
+function quoteIdent(ident: string): string {
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(ident)) {
+    throw new Error(`Invalid SQL identifier: ${ident}`);
+  }
+  return `"${ident.replace(/"/g, '""')}"`;
+}
+
 /** Only allow read-only SQL. */
 export function assertReadOnlySql(sql: string): string {
   const trimmed = sql.trim().replace(/;+\s*$/, "");
@@ -44,24 +59,21 @@ export function assertReadOnlySql(sql: string): string {
   if (trimmed.includes(";")) {
     throw new Error("Multiple statements are not allowed");
   }
-  const head = trimmed.replace(/^\s*\(/, "").trimStart();
+
+  // Validate on comment-stripped text so `DELETE/*x*/FROM` cannot sneak past.
+  const bare = stripSqlComments(trimmed).replace(/\s+/g, " ").trim();
+  const head = bare.replace(/^\(/, "").trimStart();
   if (!/^(select|with|show|explain)\b/i.test(head)) {
     throw new Error("Only SELECT / WITH / SHOW / EXPLAIN queries are allowed");
   }
-  // Block obvious write/DDL keywords even inside CTEs
-  if (
-    /\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|call|do|refresh|vacuum|reindex)\b/i.test(
-      trimmed,
-    )
-  ) {
-    // Allow "created" column names etc. — only reject as statement keywords at word start after semicolon-less body
-    // Simple heuristic: if those appear as the first token of any clause-ish start
-    const dangerous =
-      /\b(insert\s+into|update\s+\w|delete\s+from|drop\s+|alter\s+|create\s+|truncate\s+|grant\s+|revoke\s+|copy\s+|call\s+)/i;
-    if (dangerous.test(trimmed)) {
-      throw new Error("Write/DDL statements are not allowed on telemetry DB");
-    }
+
+  // Block write/DDL even inside CTEs (e.g. WITH x AS (DELETE FROM ...)).
+  const dangerous =
+    /\b(insert\s+into|update\s+\w|delete\s+from|drop\s+|alter\s+|create\s+|truncate\s+|grant\s+|revoke\s+|copy\s+|call\s+|do\s+\$\$|refresh\s+materialized|vacuum\s+|reindex\s+)/i;
+  if (dangerous.test(bare)) {
+    throw new Error("Write/DDL statements are not allowed on telemetry DB");
   }
+
   return trimmed;
 }
 
@@ -137,8 +149,10 @@ export async function describeTelemetrySchema(opts?: {
 
     let approxRows: number | null = null;
     try {
+      // Identifiers come from information_schema; still quote-escape safely.
+      const from = `${quoteIdent(t.table_schema)}.${quoteIdent(t.table_name)}`;
       const cnt = await query<{ n: string }>(
-        `SELECT COUNT(*)::text AS n FROM "${t.table_schema}"."${t.table_name}"`,
+        `SELECT COUNT(*)::text AS n FROM ${from}`,
       );
       approxRows = Number(cnt.rows[0]?.n ?? 0);
     } catch {
