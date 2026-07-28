@@ -1,0 +1,11 @@
+# Minimal config so `supabase link` / `db push` work in CI.
+# Project is selected at link time via SUPABASE_PROJECT_REF.
+
+project_id = "seo-copilot"
+
+[db]
+major_version = 15
+
+[db.migrations]
+enabled = true
+schema_paths = []
