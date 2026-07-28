@@ -5,6 +5,7 @@ import {
   decryptToken,
   encryptToken,
   refreshAccessToken,
+  scopesIncludeGmailReadonly,
 } from "@/lib/outreach/google-oauth";
 
 export type MailboxProvider = "smtp" | "gmail" | "google_oauth";
@@ -39,6 +40,15 @@ export type OutreachMailboxPublic = {
   createdByEmail: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Gmail history cursor for reply sync (opaque). */
+  gmailHistoryId: string | null;
+  /** Space-separated OAuth scopes from last grant. */
+  oauthGrantedScopes: string | null;
+  /**
+   * True when this mailbox can power the reply inbox
+   * (Google OAuth + gmail.readonly).
+   */
+  inboxSyncReady: boolean;
 };
 
 export type OutreachMailboxSecrets = OutreachMailboxPublic & {
@@ -54,6 +64,14 @@ function mapPublic(r: Record<string, unknown>): OutreachMailboxPublic {
     (r.provider === "google_oauth" ? "oauth" : "smtp");
   const hasPassword = Boolean(r.smtp_pass_encrypted);
   const hasOauth = Boolean(r.oauth_refresh_token_encrypted);
+  const oauthGrantedScopes =
+    (r.oauth_granted_scopes as string | null | undefined) ?? null;
+  const gmailReadonlyOk =
+    r.gmail_readonly_ok === null || r.gmail_readonly_ok === undefined
+      ? scopesIncludeGmailReadonly(oauthGrantedScopes)
+      : Boolean(r.gmail_readonly_ok);
+  const isOauth =
+    authMethod === "oauth" || (r.provider as string) === "google_oauth";
   return {
     id: r.id as string,
     label: (r.label as string) || "Outreach",
@@ -83,6 +101,9 @@ function mapPublic(r: Record<string, unknown>): OutreachMailboxPublic {
     createdByEmail: (r.created_by_email as string | null) ?? null,
     createdAt: r.created_at as string,
     updatedAt: r.updated_at as string,
+    gmailHistoryId: (r.gmail_history_id as string | null) ?? null,
+    oauthGrantedScopes,
+    inboxSyncReady: Boolean(isOauth && hasOauth && gmailReadonlyOk),
   };
 }
 
@@ -330,6 +351,8 @@ export async function upsertMailboxFromGoogleOAuth(
     label?: string;
     dailyCap?: number;
     createdByEmail?: string | null;
+    /** Space-separated scopes from token response. */
+    scope?: string | null;
   },
 ): Promise<OutreachMailboxPublic> {
   const email = input.email.trim().toLowerCase();
@@ -354,6 +377,8 @@ export async function upsertMailboxFromGoogleOAuth(
     );
   }
 
+  const grantedScopes = input.scope?.trim() || null;
+  const readonlyOk = scopesIncludeGmailReadonly(grantedScopes);
   const tokenPatch: Record<string, unknown> = {
     label,
     from_name: input.fromName?.trim() || null,
@@ -374,7 +399,11 @@ export async function upsertMailboxFromGoogleOAuth(
     last_tested_at: new Date().toISOString(),
     last_test_error: null,
     updated_at: new Date().toISOString(),
+    gmail_readonly_ok: readonlyOk,
   };
+  if (grantedScopes) {
+    tokenPatch.oauth_granted_scopes = grantedScopes;
+  }
   if (input.refreshToken) {
     tokenPatch.oauth_refresh_token_encrypted = encryptToken(input.refreshToken);
   }

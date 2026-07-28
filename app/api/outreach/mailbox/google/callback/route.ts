@@ -44,6 +44,7 @@ export async function GET(req: Request) {
       label: parsed.label,
       dailyCap: parsed.dailyCap,
       createdByEmail: parsed.userEmail,
+      scope: tokens.scope,
     });
     return NextResponse.redirect(
       `${base}/settings?mailbox=connected&email=${encodeURIComponent(tokens.email)}`,

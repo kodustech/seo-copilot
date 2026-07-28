@@ -14,6 +14,7 @@ import {
   Lightbulb,
   Loader2,
   LogOut,
+  Mail,
   MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
@@ -105,6 +106,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         items: [
           { href: "/research", label: "ICP lists", icon: Search },
           { href: "/sequences", label: "Outbound", icon: Workflow },
+          { href: "/inbox", label: "Replies", icon: Mail },
           { href: "/crm", label: "Accounts", icon: Building2 },
         ],
       },

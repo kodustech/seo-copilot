@@ -1767,6 +1767,92 @@ export async function unenrollFromSequence(
   };
 }
 
+/**
+ * Mark an enrollment as replied and cancel remaining scheduled/ready tasks.
+ * Used by Gmail reply sync (strong match) and manual mark-replied.
+ */
+export async function markEnrollmentReplied(
+  client: SupabaseClient,
+  enrollmentId: string,
+  opts?: { source?: string },
+): Promise<{
+  updated: boolean;
+  alreadyTerminal: boolean;
+  pendingTasksCancelled: number;
+  enrollment: OutreachEnrollment | null;
+}> {
+  const { data: raw, error } = await client
+    .from("outreach_enrollments")
+    .select("*")
+    .eq("id", enrollmentId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!raw) {
+    return {
+      updated: false,
+      alreadyTerminal: false,
+      pendingTasksCancelled: 0,
+      enrollment: null,
+    };
+  }
+
+  const enrollment = mapEnrollment(raw as Record<string, unknown>);
+  const terminal = new Set([
+    "replied",
+    "completed",
+    "cancelled",
+    "bounced",
+    "failed",
+  ]);
+  const now = new Date().toISOString();
+  const source = opts?.source?.trim() || "manual";
+
+  const { data: cancelledTasks, error: tasksError } = await client
+    .from("outreach_send_tasks")
+    .update({
+      status: "cancelled",
+      error: `Stopped on reply (${source})`,
+      updated_at: now,
+    })
+    .eq("enrollment_id", enrollmentId)
+    .in("status", ["scheduled", "ready"])
+    .select("id");
+  if (tasksError) throw new Error(tasksError.message);
+
+  if (terminal.has(enrollment.status)) {
+    // Still cancel pending tasks if any slipped through while already terminal.
+    if (enrollment.status === "replied") {
+      return {
+        updated: false,
+        alreadyTerminal: true,
+        pendingTasksCancelled: cancelledTasks?.length ?? 0,
+        enrollment,
+      };
+    }
+    // If completed/cancelled/etc., still upgrade to replied so health counts show engagement.
+  }
+
+  const { data: updated, error: enrollError } = await client
+    .from("outreach_enrollments")
+    .update({
+      status: "replied",
+      next_run_at: null,
+      last_error: null,
+      updated_at: now,
+    })
+    .eq("id", enrollmentId)
+    .select("*")
+    .single();
+  if (enrollError) throw new Error(enrollError.message);
+
+  return {
+    updated: true,
+    alreadyTerminal: terminal.has(enrollment.status),
+    pendingTasksCancelled: cancelledTasks?.length ?? 0,
+    enrollment: mapEnrollment(updated as Record<string, unknown>),
+  };
+}
+
 type ResearchPersonSnapshot = {
   id: string;
   name: string;

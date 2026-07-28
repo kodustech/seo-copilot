@@ -2,11 +2,30 @@ import { createHmac, timingSafeEqual } from "crypto";
 
 import { decryptSecret, encryptSecret } from "@/lib/crypto/secrets";
 
+/** Send + read for sequence outbound and reply inbox sync. */
+export const GMAIL_SEND_SCOPE =
+  "https://www.googleapis.com/auth/gmail.send";
+export const GMAIL_READONLY_SCOPE =
+  "https://www.googleapis.com/auth/gmail.readonly";
+
 const GMAIL_SCOPES = [
-  "https://www.googleapis.com/auth/gmail.send",
+  GMAIL_SEND_SCOPE,
+  GMAIL_READONLY_SCOPE,
   "https://www.googleapis.com/auth/userinfo.email",
   "openid",
 ].join(" ");
+
+export function scopesIncludeGmailReadonly(
+  scopes: string | null | undefined,
+): boolean {
+  if (!scopes?.trim()) return false;
+  const set = new Set(scopes.split(/\s+/).filter(Boolean));
+  return (
+    set.has(GMAIL_READONLY_SCOPE) ||
+    set.has("https://www.googleapis.com/auth/gmail.modify") ||
+    set.has("https://mail.google.com/")
+  );
+}
 
 function requireOAuthConfig() {
   const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID?.trim();
@@ -135,6 +154,8 @@ export type GoogleTokenSet = {
   refreshToken: string | null;
   expiresAt: Date;
   email: string;
+  /** Space-separated scopes granted with this token (when returned by Google). */
+  scope: string | null;
 };
 
 export async function exchangeCodeForTokens(
@@ -157,6 +178,7 @@ export async function exchangeCodeForTokens(
     access_token?: string;
     refresh_token?: string;
     expires_in?: number;
+    scope?: string;
     error?: string;
     error_description?: string;
   };
@@ -172,6 +194,7 @@ export async function exchangeCodeForTokens(
     refreshToken: data.refresh_token ?? null,
     expiresAt: new Date(Date.now() + (data.expires_in ?? 3600) * 1000),
     email,
+    scope: data.scope?.trim() || null,
   };
 }
 
