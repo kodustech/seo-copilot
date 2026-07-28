@@ -1967,6 +1967,178 @@ export const runBigQuery = tool({
 });
 
 // ---------------------------------------------------------------------------
+// Self-hosted product telemetry (Neon Postgres — kodus_telemetry)
+// ---------------------------------------------------------------------------
+
+export const exploreTelemetry = tool({
+  description:
+    "Explore Kodus self-hosted product telemetry schema (Neon Postgres). Lists tables/columns for instance heartbeats from customer self-hosted installs. Prefer listTelemetryInstances / getTelemetryInstance for common questions; use this before runTelemetryQuery for free-form SQL.",
+  inputSchema: z.object({
+    table: z
+      .string()
+      .optional()
+      .describe(
+        "Optional table name filter (e.g. telemetry_instances, telemetry_heartbeats).",
+      ),
+  }),
+  execute: async ({ table }: { table?: string }) => {
+    try {
+      const {
+        describeTelemetrySchema,
+        isTelemetryConfigured,
+      } = await import("@/lib/telemetry-pg");
+      if (!isTelemetryConfigured()) {
+        return {
+          success: false as const,
+          message:
+            "TELEMETRY_DATABASE_URL is not set on this environment. Add the read-only Neon connection string.",
+        };
+      }
+      const schema = await describeTelemetrySchema({ table });
+      return { success: true as const, ...schema };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "Error describing telemetry.",
+      };
+    }
+  },
+});
+
+export const listTelemetryInstances = tool({
+  description:
+    "List self-hosted Kodus instances that have sent product telemetry heartbeats (version, deployment, last seen, heartbeat count). Use for fleet overview / adoption questions.",
+  inputSchema: z.object({
+    limit: z
+      .number()
+      .optional()
+      .default(50)
+      .describe("Max instances to return (default 50, max 200)."),
+    activeDays: z
+      .number()
+      .optional()
+      .describe(
+        "If set, only instances with last_seen_at within this many days.",
+      ),
+  }),
+  execute: async ({
+    limit,
+    activeDays,
+  }: {
+    limit?: number;
+    activeDays?: number;
+  }) => {
+    try {
+      const {
+        listTelemetryInstances: listInstances,
+        isTelemetryConfigured,
+      } = await import("@/lib/telemetry-pg");
+      if (!isTelemetryConfigured()) {
+        return {
+          success: false as const,
+          message: "TELEMETRY_DATABASE_URL is not set on this environment.",
+        };
+      }
+      const result = await listInstances({ limit, activeDays });
+      return { success: true as const, ...result };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "Error listing instances.",
+      };
+    }
+  },
+});
+
+export const getTelemetryInstance = tool({
+  description:
+    "Get one self-hosted instance plus recent heartbeat payloads (usage_7d, config, runtime, kodus version). Pass the instance UUID from listTelemetryInstances.",
+  inputSchema: z.object({
+    instanceId: z.string().describe("Instance UUID."),
+    heartbeats: z
+      .number()
+      .optional()
+      .default(7)
+      .describe("How many recent heartbeats to include (default 7, max 30)."),
+  }),
+  execute: async ({
+    instanceId,
+    heartbeats,
+  }: {
+    instanceId: string;
+    heartbeats?: number;
+  }) => {
+    try {
+      const {
+        getTelemetryInstance: getInstance,
+        isTelemetryConfigured,
+      } = await import("@/lib/telemetry-pg");
+      if (!isTelemetryConfigured()) {
+        return {
+          success: false as const,
+          message: "TELEMETRY_DATABASE_URL is not set on this environment.",
+        };
+      }
+      const result = await getInstance({ instanceId, heartbeats });
+      if (!result.instance) {
+        return {
+          success: false as const,
+          message: `Instance not found: ${instanceId}`,
+        };
+      }
+      return { success: true as const, ...result };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "Error loading instance.",
+      };
+    }
+  },
+});
+
+export const runTelemetryQuery = tool({
+  description:
+    "Run a read-only SQL SELECT against the self-hosted telemetry Postgres (kodus_telemetry). Tables: telemetry_instances, telemetry_heartbeats (payload jsonb). Use exploreTelemetry first. LIMIT auto-applied (default 100, max 500).",
+  inputSchema: z.object({
+    sql: z
+      .string()
+      .describe(
+        "SELECT/WITH query only. Example: SELECT last_version, count(*) FROM telemetry_instances GROUP BY 1 ORDER BY 2 DESC",
+      ),
+    maxRows: z
+      .number()
+      .optional()
+      .default(100)
+      .describe("Max rows (default 100, max 500)."),
+  }),
+  execute: async ({ sql, maxRows }: { sql: string; maxRows?: number }) => {
+    try {
+      const {
+        runTelemetryQuery: runQuery,
+        isTelemetryConfigured,
+      } = await import("@/lib/telemetry-pg");
+      if (!isTelemetryConfigured()) {
+        return {
+          success: false as const,
+          message: "TELEMETRY_DATABASE_URL is not set on this environment.",
+        };
+      }
+      const result = await runQuery({ sql, maxRows });
+      return { success: true as const, ...result };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "Error executing telemetry SQL.",
+      };
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Kanban tools (agent-driven card management)
 // ---------------------------------------------------------------------------
 
@@ -5474,6 +5646,10 @@ export function createAgentTools(userEmail?: string) {
     analyzeSERP,
     exploreDataWarehouse,
     runBigQuery,
+    exploreTelemetry,
+    listTelemetryInstances,
+    getTelemetryInstance,
+    runTelemetryQuery,
     createKanbanCard: createKanbanCardTool(userEmail),
     moveKanbanCard: createMoveKanbanCardTool(userEmail),
     updateKanbanCard: createUpdateKanbanCardTool(userEmail),

@@ -39,6 +39,17 @@ The process stays attached. Connect with any MCP stdio client.
 | **Hot reload** | Yes (tsx) | Yes (Next.js dev mode) |
 | **Multi-user** | No (1 process per user) | Yes (1 endpoint, many clients) |
 
+## Telemetry (self-hosted fleet)
+
+When `TELEMETRY_DATABASE_URL` is set (read-only Neon Postgres for `kodus_telemetry`), the MCP exposes:
+
+- `exploreTelemetry` — schema
+- `listTelemetryInstances` — fleet overview
+- `getTelemetryInstance` — one instance + recent heartbeats
+- `runTelemetryQuery` — read-only SQL
+
+Never commit the connection string; set it in Railway / local `.env` only.
+
 ## Spec
 
 See `kodus-growth/specs/setup/18-seo-copilot-mcp-export.md` for full architecture.
