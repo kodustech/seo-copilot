@@ -238,9 +238,11 @@ async function runNotificationsCron(): Promise<void> {
 async function runOutreachSequencesCron(): Promise<void> {
   const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
   const { processDueSequenceTasks } = await import("@/lib/outreach/sequences");
-  const res = await processDueSequenceTasks(getSupabaseServiceClient());
+  const res = await processDueSequenceTasks(getSupabaseServiceClient(), {
+    reseedOrphans: true,
+  });
   console.log(
-    `[cron] outreach-sequences: promoted ${res.promoted}, emails sent ${res.emailsSent}, failed ${res.emailsFailed}, skipped ${res.emailsSkipped}, deferred off-day ${res.deferred}`,
+    `[cron] outreach-sequences: promoted ${res.promoted}, emails sent ${res.emailsSent}, failed ${res.emailsFailed}, skipped ${res.emailsSkipped}, deferred off-day ${res.deferred}, reseeded ${res.reseeded ?? 0}`,
   );
 }
 

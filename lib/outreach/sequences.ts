@@ -445,6 +445,8 @@ export async function replaceSteps(
     };
   });
 
+  // FK on outreach_send_tasks.step_id is ON DELETE CASCADE — deleting steps
+  // wipes every task while enrollments stay behind. Reseed after rewrite.
   await client.from("outreach_sequence_steps").delete().eq("sequence_id", sequenceId);
   if (normalized.length === 0) return [];
 
@@ -453,7 +455,90 @@ export async function replaceSteps(
     .insert(normalized)
     .select("*");
   if (error) throw new Error(error.message);
-  return (data ?? []).map((r) => mapStep(r as Record<string, unknown>));
+  const savedSteps = (data ?? []).map((r) =>
+    mapStep(r as Record<string, unknown>),
+  );
+  await reseedMissingTasksForSequence(client, sequenceId);
+  return savedSteps;
+}
+
+/**
+ * Active enrollments with no open send task get a fresh task for their current
+ * step. Covers the case where steps were rewritten (CASCADE wiped tasks) or
+ * enroll created without a task.
+ */
+export async function reseedMissingTasksForSequence(
+  client: SupabaseClient,
+  sequenceId: string,
+): Promise<{ reseeded: number }> {
+  const steps = await listSteps(client, sequenceId);
+  if (steps.length === 0) return { reseeded: 0 };
+  const stepByPos = new Map(steps.map((s) => [s.position, s]));
+
+  const { data: enrs, error } = await client
+    .from("outreach_enrollments")
+    .select("*")
+    .eq("sequence_id", sequenceId)
+    .eq("status", "active");
+  if (error) throw new Error(error.message);
+  if (!enrs?.length) return { reseeded: 0 };
+
+  const sendingWindow = await getSendingWindow(client);
+  let reseeded = 0;
+
+  for (const raw of enrs) {
+    const enrollment = mapEnrollment(raw as Record<string, unknown>);
+    const { count, error: cErr } = await client
+      .from("outreach_send_tasks")
+      .select("id", { count: "exact", head: true })
+      .eq("enrollment_id", enrollment.id)
+      .in("status", ["scheduled", "ready", "sending"]);
+    if (cErr) throw new Error(cErr.message);
+    if ((count ?? 0) > 0) continue;
+
+    const step =
+      stepByPos.get(enrollment.currentStepPosition) ?? steps[0] ?? null;
+    if (!step) continue;
+
+    const anchor = enrollment.nextRunAt
+      ? new Date(enrollment.nextRunAt)
+      : new Date();
+    // Past due → send on next valid slot from now; future → keep planned time.
+    const base =
+      anchor.getTime() <= Date.now() ? new Date() : anchor;
+    const when = nextSendingSlot(base, sendingWindow);
+
+    await createTaskForStep(client, enrollment, step, when);
+    await client
+      .from("outreach_enrollments")
+      .update({
+        current_step_position: step.position,
+        next_run_at: when.toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", enrollment.id);
+    reseeded += 1;
+  }
+
+  return { reseeded };
+}
+
+/** Repair orphan enrollments across all active sequences (queue/cron path). */
+export async function reseedMissingTasksForActiveSequences(
+  client: SupabaseClient,
+): Promise<{ sequences: number; reseeded: number }> {
+  const { data: seqs, error } = await client
+    .from("outreach_sequences")
+    .select("id")
+    .eq("status", "active");
+  if (error) throw new Error(error.message);
+
+  let reseeded = 0;
+  for (const s of seqs ?? []) {
+    const res = await reseedMissingTasksForSequence(client, s.id as string);
+    reseeded += res.reseeded;
+  }
+  return { sequences: seqs?.length ?? 0, reseeded };
 }
 
 export async function updateSequence(
@@ -1222,21 +1307,99 @@ async function advanceEnrollment(
  */
 export async function processDueSequenceTasks(
   client: SupabaseClient,
+  opts?: { reseedOrphans?: boolean },
 ): Promise<{
   promoted: number;
   emailsSent: number;
   emailsFailed: number;
   emailsSkipped: number;
   deferred: number;
+  reseeded: number;
 }> {
+  // Optional repair: enrollments can outlive tasks when steps are rewritten
+  // (CASCADE). Default off on the HTTP queue path — too slow for a page load.
+  // Cron / explicit repair passes reseedOrphans: true.
+  let reseeded = 0;
+  if (opts?.reseedOrphans) {
+    try {
+      const repair = await reseedMissingTasksForActiveSequences(client);
+      reseeded = repair.reseeded;
+    } catch (err) {
+      console.warn("[sequences] reseed missing tasks failed:", err);
+    }
+  }
+
   const now = new Date().toISOString();
-  const { data, error } = await client
-    .from("outreach_send_tasks")
-    .select("*")
-    .eq("status", "scheduled")
-    .lte("scheduled_for", now)
-    .limit(100);
-  if (error) throw new Error(error.message);
+
+  // Only pull work for *active* sequences. Draft/paused tasks used to fill the
+  // limit(100) batch and starve live cadences (hundreds of stuck draft LinkedIn
+  // rows → zero promotions per tick).
+  const { data: activeSeqs, error: activeSeqErr } = await client
+    .from("outreach_sequences")
+    .select("id, mailbox_id")
+    .eq("status", "active");
+  if (activeSeqErr) throw new Error(activeSeqErr.message);
+  const activeSeqRows = activeSeqs ?? [];
+  if (activeSeqRows.length === 0) {
+    return {
+      promoted: 0,
+      emailsSent: 0,
+      emailsFailed: 0,
+      emailsSkipped: 0,
+      deferred: 0,
+      reseeded,
+    };
+  }
+  const mailboxBySeq = new Map(
+    activeSeqRows.map((s) => [
+      s.id as string,
+      (s.mailbox_id as string | null) ?? null,
+    ]),
+  );
+
+  const { data: activeEnrs, error: activeEnrErr } = await client
+    .from("outreach_enrollments")
+    .select("id, sequence_id")
+    .eq("status", "active")
+    .in(
+      "sequence_id",
+      activeSeqRows.map((s) => s.id as string),
+    );
+  if (activeEnrErr) throw new Error(activeEnrErr.message);
+  const enrollmentIds = (activeEnrs ?? []).map((e) => e.id as string);
+  const seqByEnrollment = new Map(
+    (activeEnrs ?? []).map((e) => [
+      e.id as string,
+      e.sequence_id as string,
+    ]),
+  );
+  if (enrollmentIds.length === 0) {
+    return {
+      promoted: 0,
+      emailsSent: 0,
+      emailsFailed: 0,
+      emailsSkipped: 0,
+      deferred: 0,
+      reseeded,
+    };
+  }
+
+  // Chunk .in() to stay under URL/body limits
+  const dueTasks: Record<string, unknown>[] = [];
+  const chunkSize = 100;
+  for (let i = 0; i < enrollmentIds.length && dueTasks.length < 100; i += chunkSize) {
+    const slice = enrollmentIds.slice(i, i + chunkSize);
+    const { data, error } = await client
+      .from("outreach_send_tasks")
+      .select("*")
+      .eq("status", "scheduled")
+      .lte("scheduled_for", now)
+      .in("enrollment_id", slice)
+      .order("scheduled_for", { ascending: true })
+      .limit(100 - dueTasks.length);
+    if (error) throw new Error(error.message);
+    dueTasks.push(...((data ?? []) as Record<string, unknown>[]));
+  }
 
   // The cron ticks 24/7; the sending window decides whether it may act today.
   // This also catches tasks scheduled before the window was configured.
@@ -1249,27 +1412,11 @@ export async function processDueSequenceTasks(
   let emailsSkipped = 0;
   let deferred = 0;
 
-  for (const raw of data ?? []) {
-    const task = mapTask(raw as Record<string, unknown>);
-
-    // Respect sequence status: only active sequences run / hit the queue
-    const { data: enrRaw } = await client
-      .from("outreach_enrollments")
-      .select("sequence_id, status")
-      .eq("id", task.enrollmentId)
-      .maybeSingle();
-    if (!enrRaw) continue;
-    if ((enrRaw.status as string) !== "active") continue;
-    const { data: sequenceRow } = await client
-      .from("outreach_sequences")
-      .select("status, mailbox_id")
-      .eq("id", enrRaw.sequence_id as string)
-      .maybeSingle();
-    const seqStatus = (sequenceRow?.status as SequenceStatus | undefined) ?? null;
-    if (seqStatus !== "active") {
-      // leave scheduled — will resume when sequence is activated
-      continue;
-    }
+  for (const raw of dueTasks) {
+    const task = mapTask(raw);
+    const sequenceId = seqByEnrollment.get(task.enrollmentId);
+    if (!sequenceId) continue;
+    const mailboxId = mailboxBySeq.get(sequenceId) ?? null;
 
     // Off-day: push the task (and the enrollment) to the next sending day
     // instead of firing it. Rescheduling rather than skipping keeps the queue
@@ -1309,10 +1456,7 @@ export async function processDueSequenceTasks(
 
     if (task.channel === "email" && task.mode === "auto") {
       const { isEmailAutoSendEnabled } = await import("@/lib/outreach/mailbox");
-      const auto = await isEmailAutoSendEnabled(
-        client,
-        (sequenceRow?.mailbox_id as string | null) ?? null,
-      );
+      const auto = await isEmailAutoSendEnabled(client, mailboxId);
       if (!auto) {
         // Workspace config: email auto-send off → human activity queue
         await client
@@ -1332,11 +1476,7 @@ export async function processDueSequenceTasks(
         promoted += 1;
         continue;
       }
-      const result = await sendDueEmailTask(
-        client,
-        task,
-        (sequenceRow?.mailbox_id as string | null) ?? null,
-      );
+      const result = await sendDueEmailTask(client, task, mailboxId);
       if (result === "sent") emailsSent += 1;
       else if (result === "failed") emailsFailed += 1;
       else emailsSkipped += 1;
@@ -1351,7 +1491,14 @@ export async function processDueSequenceTasks(
     }
   }
 
-  return { promoted, emailsSent, emailsFailed, emailsSkipped, deferred };
+  return {
+    promoted,
+    emailsSent,
+    emailsFailed,
+    emailsSkipped,
+    deferred,
+    reseeded,
+  };
 }
 
 async function sendDueEmailTask(
