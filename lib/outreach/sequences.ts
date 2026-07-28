@@ -1215,37 +1215,28 @@ export async function promoteDueHumanQueue(
   const { isEmailAutoSendEnabled } = await import("@/lib/outreach/mailbox");
   const autoOn = await isEmailAutoSendEnabled(client, null);
   if (!autoOn) {
-    // Merge meta.auto_send_disabled so the UI shows the same label as
-    // processDueSequenceTasks (cannot bulk-merge jsonb without reading rows).
+    // One bulk UPDATE per chunk (page-load path must stay fast).
+    // Flag auto_send_disabled for UI parity with processDueSequenceTasks.
+    // Pre-send email meta is sparse; we set a minimal meta object rather than
+    // N round-trips to merge jsonb row-by-row.
     for (let i = 0; i < enrollmentIds.length; i += chunkSize) {
       const slice = enrollmentIds.slice(i, i + chunkSize);
-      const { data: due, error } = await client
+      const { data, error } = await client
         .from("outreach_send_tasks")
-        .select("id, meta")
+        .update({
+          status: "ready",
+          mode: "semi",
+          provider: "manual",
+          updated_at: now,
+          meta: { auto_send_disabled: true },
+        })
         .eq("status", "scheduled")
         .eq("channel", "email")
         .lte("scheduled_for", now)
-        .in("enrollment_id", slice);
+        .in("enrollment_id", slice)
+        .select("id");
       if (error) throw new Error(error.message);
-      for (const row of due ?? []) {
-        const meta =
-          row.meta && typeof row.meta === "object" && !Array.isArray(row.meta)
-            ? (row.meta as Record<string, unknown>)
-            : {};
-        const { error: uErr } = await client
-          .from("outreach_send_tasks")
-          .update({
-            status: "ready",
-            mode: "semi",
-            provider: "manual",
-            updated_at: now,
-            meta: { ...meta, auto_send_disabled: true },
-          })
-          .eq("id", row.id as string)
-          .eq("status", "scheduled");
-        if (uErr) throw new Error(uErr.message);
-        promoted += 1;
-      }
+      promoted += data?.length ?? 0;
     }
   } else {
     // Only promote email tasks that are already semi
