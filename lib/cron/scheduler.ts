@@ -244,6 +244,21 @@ async function runOutreachSequencesCron(): Promise<void> {
   );
 }
 
+async function runOutreachInboxCron(): Promise<void> {
+  const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
+  const { syncAllMailboxesInbox } = await import("@/lib/outreach/inbox");
+  const results = await syncAllMailboxesInbox(getSupabaseServiceClient());
+  const ok = results.filter((r) => r.ok).length;
+  const replied = results.reduce(
+    (n, r) => n + r.enrollmentsMarkedReplied,
+    0,
+  );
+  const touched = results.reduce((n, r) => n + r.threadsTouched, 0);
+  console.log(
+    `[cron] outreach-inbox: ${ok}/${results.length} mailboxes, ${touched} threads, ${replied} marked replied`,
+  );
+}
+
 const JOBS: JobDefinition[] = [
   {
     name: "scheduled-jobs + YOLO",
@@ -296,6 +311,12 @@ const JOBS: JobDefinition[] = [
     name: "outreach-sequences",
     schedule: "*/15 * * * *",
     run: runOutreachSequencesCron,
+  },
+  {
+    // Every 10 min: sync Gmail for outbound sequence replies.
+    name: "outreach-inbox",
+    schedule: "*/10 * * * *",
+    run: runOutreachInboxCron,
   },
   {
     // Every 3h: refresh per-user notifications from the attention feed.

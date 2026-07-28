@@ -65,6 +65,8 @@ type Mailbox = {
   lastTestOk: boolean | null;
   lastTestError: string | null;
   lastSentAt: string | null;
+  /** Gmail reply inbox sync ready (gmail.readonly). */
+  inboxSyncReady?: boolean;
 };
 
 function useAuthToken() {
@@ -353,8 +355,8 @@ export function OutreachMailboxSettings() {
               Outreach email
             </CardTitle>
             <CardDescription className="mt-1">
-              Connect the Gmail / Workspace inbox used by sequences. One click
-              with Google — no app password.
+              Connect the Gmail / Workspace inbox used by sequences and reply
+              sync. One click with Google — no app password.
             </CardDescription>
           </div>
           {mailbox?.connected && (
@@ -368,6 +370,14 @@ export function OutreachMailboxSettings() {
               {mailbox.lastTestOk === false && (
                 <Badge variant="destructive">Needs reconnect</Badge>
               )}
+              {isOauthConnected && mailbox.inboxSyncReady === false && (
+                <Badge variant="destructive">Inbox sync: reconnect</Badge>
+              )}
+              {isOauthConnected && mailbox.inboxSyncReady === true && (
+                <Badge variant="outline" className="gap-1">
+                  Reply inbox ready
+                </Badge>
+              )}
               <Badge variant="outline">
                 {mailbox.sentToday}/{mailbox.dailyCap} today
               </Badge>
@@ -376,6 +386,21 @@ export function OutreachMailboxSettings() {
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
+        {isOauthConnected && mailbox?.inboxSyncReady === false && (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100/90">
+            Reply inbox needs the{" "}
+            <span className="font-medium">gmail.readonly</span> scope. Click{" "}
+            <span className="font-medium">Connect with Google</span> again to
+            grant read access (send still works until you reconnect).
+          </div>
+        )}
+        {mailbox?.connected &&
+          mailbox.authMethod === "smtp" && (
+          <div className="rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+            SMTP mailboxes can send sequences but cannot sync inbound replies.
+            Use Connect with Google for the Replies inbox.
+          </div>
+        )}
         {!loading && mailboxes.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/20 p-2">
             {mailboxes.map((box) => (
