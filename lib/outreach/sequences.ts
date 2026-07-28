@@ -1091,52 +1091,167 @@ export async function listReadyQueue(
   if (error) throw new Error(error.message);
 
   const tasks = (data ?? []).map((r) => mapTask(r as Record<string, unknown>));
+  if (tasks.length === 0) return [];
 
-  const seqNameCache = new Map<string, string>();
-  const seqStatusCache = new Map<string, SequenceStatus | null>();
-  const live: OutreachSendTask[] = [];
+  // Batch-load enrollments + steps (avoid N+1 on page load).
+  const enrollmentIds = [...new Set(tasks.map((t) => t.enrollmentId))];
+  const stepIds = [...new Set(tasks.map((t) => t.stepId))];
 
-  for (const t of tasks) {
-    const { data: enr } = await client
+  const enrById = new Map<string, OutreachEnrollment>();
+  const chunk = 100;
+  for (let i = 0; i < enrollmentIds.length; i += chunk) {
+    const slice = enrollmentIds.slice(i, i + chunk);
+    const { data: enrs, error: eErr } = await client
       .from("outreach_enrollments")
       .select("*")
-      .eq("id", t.enrollmentId)
-      .maybeSingle();
-    const { data: step } = await client
+      .in("id", slice);
+    if (eErr) throw new Error(eErr.message);
+    for (const raw of enrs ?? []) {
+      const enr = mapEnrollment(raw as Record<string, unknown>);
+      enrById.set(enr.id, enr);
+    }
+  }
+
+  const stepById = new Map<string, OutreachSequenceStep>();
+  for (let i = 0; i < stepIds.length; i += chunk) {
+    const slice = stepIds.slice(i, i + chunk);
+    const { data: steps, error: sErr } = await client
       .from("outreach_sequence_steps")
       .select("*")
-      .eq("id", t.stepId)
-      .maybeSingle();
-    if (enr) {
-      t.enrollment = mapEnrollment(enr as Record<string, unknown>);
-      const seqId = t.enrollment.sequenceId;
-      if (seqId) {
-        if (!seqNameCache.has(seqId)) {
-          const { data: seq } = await client
-            .from("outreach_sequences")
-            .select("name, status")
-            .eq("id", seqId)
-            .maybeSingle();
-          seqNameCache.set(seqId, (seq?.name as string) ?? "Sequence");
-          seqStatusCache.set(
-            seqId,
-            (seq?.status as SequenceStatus | undefined) ?? null,
-          );
-        }
-        if (!seqStatusCache.has(seqId)) {
-          seqStatusCache.set(seqId, await getSequenceStatus(client, seqId));
-        }
-        // Hide tasks from draft/paused/archived sequences
-        if (seqStatusCache.get(seqId) !== "active") {
-          continue;
-        }
-        t.sequenceName = seqNameCache.get(seqId) ?? null;
-      }
+      .in("id", slice);
+    if (sErr) throw new Error(sErr.message);
+    for (const raw of steps ?? []) {
+      const step = mapStep(raw as Record<string, unknown>);
+      stepById.set(step.id, step);
     }
-    if (step) t.step = mapStep(step as Record<string, unknown>);
+  }
+
+  const seqIds = [
+    ...new Set(
+      [...enrById.values()]
+        .map((e) => e.sequenceId)
+        .filter(Boolean),
+    ),
+  ];
+  const seqMeta = new Map<string, { name: string; status: SequenceStatus }>();
+  if (seqIds.length > 0) {
+    const { data: seqs, error: seqErr } = await client
+      .from("outreach_sequences")
+      .select("id, name, status")
+      .in("id", seqIds);
+    if (seqErr) throw new Error(seqErr.message);
+    for (const s of seqs ?? []) {
+      seqMeta.set(s.id as string, {
+        name: (s.name as string) ?? "Sequence",
+        status: (s.status as SequenceStatus) ?? "draft",
+      });
+    }
+  }
+
+  const live: OutreachSendTask[] = [];
+  for (const t of tasks) {
+    const enr = enrById.get(t.enrollmentId);
+    if (!enr) continue;
+    const meta = seqMeta.get(enr.sequenceId);
+    if (!meta || meta.status !== "active") continue;
+    t.enrollment = enr;
+    t.sequenceName = meta.name;
+    const step = stepById.get(t.stepId);
+    if (step) t.step = step;
     live.push(t);
   }
   return live;
+}
+
+/**
+ * Fast path for the Today UI: promote due *human* work to ready only.
+ * Does NOT send auto email (that stays on the cron / processDueSequenceTasks).
+ */
+export async function promoteDueHumanQueue(
+  client: SupabaseClient,
+): Promise<{ promoted: number }> {
+  const now = new Date().toISOString();
+  const sendingWindow = await getSendingWindow(client);
+  if (!isSendingDay(new Date(now), sendingWindow)) {
+    return { promoted: 0 };
+  }
+
+  const { data: activeSeqs, error: sErr } = await client
+    .from("outreach_sequences")
+    .select("id")
+    .eq("status", "active");
+  if (sErr) throw new Error(sErr.message);
+  const seqIds = (activeSeqs ?? []).map((s) => s.id as string);
+  if (seqIds.length === 0) return { promoted: 0 };
+
+  const { data: activeEnrs, error: eErr } = await client
+    .from("outreach_enrollments")
+    .select("id")
+    .eq("status", "active")
+    .in("sequence_id", seqIds);
+  if (eErr) throw new Error(eErr.message);
+  const enrollmentIds = (activeEnrs ?? []).map((e) => e.id as string);
+  if (enrollmentIds.length === 0) return { promoted: 0 };
+
+  let promoted = 0;
+  const chunkSize = 100;
+
+  // LinkedIn semi (always human)
+  for (let i = 0; i < enrollmentIds.length; i += chunkSize) {
+    const slice = enrollmentIds.slice(i, i + chunkSize);
+    const { data, error } = await client
+      .from("outreach_send_tasks")
+      .update({ status: "ready", updated_at: now })
+      .eq("status", "scheduled")
+      .eq("channel", "linkedin")
+      .lte("scheduled_for", now)
+      .in("enrollment_id", slice)
+      .select("id");
+    if (error) throw new Error(error.message);
+    promoted += data?.length ?? 0;
+  }
+
+  // Email that is already semi, or auto-send disabled → human queue
+  const { isEmailAutoSendEnabled } = await import("@/lib/outreach/mailbox");
+  const autoOn = await isEmailAutoSendEnabled(client, null);
+  if (!autoOn) {
+    for (let i = 0; i < enrollmentIds.length; i += chunkSize) {
+      const slice = enrollmentIds.slice(i, i + chunkSize);
+      const { data, error } = await client
+        .from("outreach_send_tasks")
+        .update({
+          status: "ready",
+          mode: "semi",
+          provider: "manual",
+          updated_at: now,
+        })
+        .eq("status", "scheduled")
+        .eq("channel", "email")
+        .lte("scheduled_for", now)
+        .in("enrollment_id", slice)
+        .select("id");
+      if (error) throw new Error(error.message);
+      promoted += data?.length ?? 0;
+    }
+  } else {
+    // Only promote email tasks that are already semi
+    for (let i = 0; i < enrollmentIds.length; i += chunkSize) {
+      const slice = enrollmentIds.slice(i, i + chunkSize);
+      const { data, error } = await client
+        .from("outreach_send_tasks")
+        .update({ status: "ready", updated_at: now })
+        .eq("status", "scheduled")
+        .eq("channel", "email")
+        .eq("mode", "semi")
+        .lte("scheduled_for", now)
+        .in("enrollment_id", slice)
+        .select("id");
+      if (error) throw new Error(error.message);
+      promoted += data?.length ?? 0;
+    }
+  }
+
+  return { promoted };
 }
 
 /** Counts for the daily activity board. */

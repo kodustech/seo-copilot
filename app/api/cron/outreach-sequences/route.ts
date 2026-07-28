@@ -15,7 +15,9 @@ export async function POST(req: Request) {
 
   try {
     const client = getSupabaseServiceClient();
-    const result = await processDueSequenceTasks(client);
+    const result = await processDueSequenceTasks(client, {
+      reseedOrphans: true,
+    });
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {
     return NextResponse.json(
