@@ -483,18 +483,29 @@ export async function reseedMissingTasksForSequence(
   if (error) throw new Error(error.message);
   if (!enrs?.length) return { reseeded: 0 };
 
+  // One batched open-task lookup (avoid N+1 COUNT per enrollment).
+  const enrollmentIds = enrs.map((e) => e.id as string);
+  const openEnrollmentIds = new Set<string>();
+  const chunkSize = 100;
+  for (let i = 0; i < enrollmentIds.length; i += chunkSize) {
+    const slice = enrollmentIds.slice(i, i + chunkSize);
+    const { data: openTasks, error: oErr } = await client
+      .from("outreach_send_tasks")
+      .select("enrollment_id")
+      .in("enrollment_id", slice)
+      .in("status", ["scheduled", "ready", "sending"]);
+    if (oErr) throw new Error(oErr.message);
+    for (const t of openTasks ?? []) {
+      openEnrollmentIds.add(t.enrollment_id as string);
+    }
+  }
+
   const sendingWindow = await getSendingWindow(client);
   let reseeded = 0;
 
   for (const raw of enrs) {
     const enrollment = mapEnrollment(raw as Record<string, unknown>);
-    const { count, error: cErr } = await client
-      .from("outreach_send_tasks")
-      .select("id", { count: "exact", head: true })
-      .eq("enrollment_id", enrollment.id)
-      .in("status", ["scheduled", "ready", "sending"]);
-    if (cErr) throw new Error(cErr.message);
-    if ((count ?? 0) > 0) continue;
+    if (openEnrollmentIds.has(enrollment.id)) continue;
 
     const step =
       stepByPos.get(enrollment.currentStepPosition) ?? steps[0] ?? null;
@@ -508,7 +519,20 @@ export async function reseedMissingTasksForSequence(
       anchor.getTime() <= Date.now() ? new Date() : anchor;
     const when = nextSendingSlot(base, sendingWindow);
 
-    await createTaskForStep(client, enrollment, step, when);
+    const task = await createTaskForStep(client, enrollment, step, when);
+
+    // Email step with no address creates a "skipped" task. Advance so the next
+    // cron tick does not reseed another skipped row forever.
+    if (
+      task.status === "skipped" &&
+      step.channel === "email" &&
+      !enrollment.contactEmail?.trim()
+    ) {
+      await advanceEnrollment(client, enrollment.id);
+      reseeded += 1;
+      continue;
+    }
+
     await client
       .from("outreach_enrollments")
       .update({
