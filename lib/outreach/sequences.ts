@@ -2473,6 +2473,10 @@ export type SequenceStepProgress = {
   error: string | null;
   scheduledFor: string | null;
   sentAt: string | null;
+  /** Rendered email subject (email steps) */
+  subject: string | null;
+  /** Short preview of rendered body */
+  bodySnippet: string | null;
 };
 
 export type SequenceLeadProgress = {
@@ -2644,6 +2648,12 @@ export async function getSequenceHealth(
       if (!prev || rank(t.status) >= rank(prev.status)) byPos.set(pos, t);
     }
 
+    const snippet = (body: string | null | undefined) => {
+      if (!body?.trim()) return null;
+      const one = body.replace(/\s+/g, " ").trim();
+      return one.length > 160 ? `${one.slice(0, 160)}…` : one;
+    };
+
     const stepProgress: SequenceStepProgress[] = steps.map((s) => {
       const t = byPos.get(s.position);
       if (!t) {
@@ -2666,17 +2676,21 @@ export async function getSequenceHealth(
           error: null,
           scheduledFor: null,
           sentAt: null,
+          subject: null,
+          bodySnippet: null,
         };
       }
       return {
         position: s.position,
         channel: s.channel,
         mode: s.mode,
-        linkedinAction: s.linkedinAction,
+        linkedinAction: t.step?.linkedinAction ?? s.linkedinAction,
         status: t.status,
         error: t.error,
         scheduledFor: t.scheduledFor,
         sentAt: t.sentAt,
+        subject: t.renderedSubject,
+        bodySnippet: snippet(t.renderedBody),
       };
     });
 

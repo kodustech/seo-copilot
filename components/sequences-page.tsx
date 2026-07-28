@@ -132,6 +132,9 @@ type SequenceStepProgress = {
   error: string | null;
   scheduledFor: string | null;
   sentAt: string | null;
+  subject?: string | null;
+  bodySnippet?: string | null;
+  linkedinAction?: string | null;
 };
 
 type SequenceLeadProgress = {
@@ -190,6 +193,55 @@ function stepStatusDot(status: string): string {
     default:
       return "bg-border";
   }
+}
+
+function stepStatusLabel(status: string): string {
+  switch (status) {
+    case "sent":
+      return "Sent";
+    case "failed":
+      return "Failed";
+    case "skipped":
+      return "Skipped";
+    case "ready":
+      return "Ready for you";
+    case "sending":
+      return "Sending…";
+    case "scheduled":
+      return "Scheduled";
+    case "cancelled":
+      return "Cancelled";
+    case "pending":
+      return "Waiting";
+    case "none":
+      return "Not started";
+    default:
+      return status;
+  }
+}
+
+function formatTaskWhen(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function stepChannelLabel(s: {
+  channel: string;
+  linkedinAction?: string | null;
+}): string {
+  if (s.channel === "email") return "Email";
+  if (s.linkedinAction === "connect_note") return "LinkedIn connect";
+  if (s.linkedinAction === "message") return "LinkedIn message";
+  return "LinkedIn";
 }
 
 function enrollmentStatusBadge(status: string): string {
@@ -409,6 +461,8 @@ export function SequencesPage() {
   const [peopleFilter, setPeopleFilter] = useState<
     "all" | "active" | "completed" | "bounced" | "other"
   >("all");
+  /** Expanded person timeline on People tab */
+  const [timelinePersonId, setTimelinePersonId] = useState<string | null>(null);
   const [selectedStepKey, setSelectedStepKey] = useState<string | null>(null);
   const [previewPersonId, setPreviewPersonId] = useState<string | "sample">(
     "sample",
@@ -908,7 +962,11 @@ export function SequencesPage() {
         setError(data.error ?? "Failed");
         return;
       }
-      setNotice(outcome === "sent" ? "Marked sent" : "Skipped");
+      setNotice(
+        outcome === "sent"
+          ? "Marked done — this person moves to the next step"
+          : "Skipped — next step scheduled",
+      );
       await load();
     } finally {
       setBusyId(null);
@@ -1513,7 +1571,8 @@ export function SequencesPage() {
               <div>
                 <h2 className="text-sm font-semibold">People in this sequence</h2>
                 <p className="mt-0.5 text-xs text-pretty text-muted-foreground">
-                  {activePeople} active · {enrollmentCount} total.
+                  Click a person for the send timeline. {activePeople} active ·{" "}
+                  {enrollmentCount} total.
                   {enrollments.filter((e) => !e.contactLinkedin).length > 0 && (
                     <span className="text-amber-600 dark:text-amber-400">
                       {" "}
@@ -1616,195 +1675,287 @@ export function SequencesPage() {
                   <span />
                 </div>
                 <ul className="divide-y divide-border">
-                  {filteredPeople.map((e) => (
-                    <li
-                      key={e.id}
-                      className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_88px_minmax(0,0.9fr)_minmax(0,1fr)_80px_100px] items-center gap-2 px-4 py-3 text-sm"
-                    >
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <p className="truncate font-medium">
-                            {e.contactName || "—"}
-                          </p>
-                          {!e.contactLinkedin && (
-                            <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
-                              No LinkedIn
-                            </span>
-                          )}
-                          {!e.contactEmail && (
-                            <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
-                              No email
-                            </span>
-                          )}
-                        </div>
-                        <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                          {e.contactRole && (
-                            <span className="truncate">{e.contactRole}</span>
-                          )}
-                          {e.contactEmail ? (
-                            <span className="truncate font-mono">
-                              {e.contactEmail}
-                            </span>
-                          ) : (
-                            <span className="text-amber-600/90 dark:text-amber-400/90">
-                              email missing
-                            </span>
-                          )}
-                          {e.contactLinkedin ? (
-                            <a
-                              href={e.contactLinkedin}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center gap-0.5 text-[#0A66C2] hover:underline"
-                              onClick={(ev) => ev.stopPropagation()}
-                            >
-                              <Linkedin className="size-3" />
-                              LI
-                            </a>
-                          ) : (
-                            <span className="text-amber-600/90 dark:text-amber-400/90">
-                              LI missing
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      <div className="min-w-0">
-                        <p className="truncate">{e.companyName}</p>
-                        {e.domain && (
-                          <p className="truncate font-mono text-[11px] text-muted-foreground">
-                            {e.domain}
-                          </p>
-                        )}
-                      </div>
-                      <div>
-                        <span
+                  {filteredPeople.map((e) => {
+                    const lead = leadById.get(e.id);
+                    const expanded = timelinePersonId === e.id;
+                    return (
+                      <li key={e.id} className="text-sm">
+                        <div
                           className={cn(
-                            "inline-flex rounded-full px-2 py-0.5 text-[11px] capitalize",
-                            enrollmentStatusBadge(e.status),
+                            "grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_88px_minmax(0,0.9fr)_minmax(0,1fr)_80px_100px] items-center gap-2 px-4 py-3",
+                            expanded && "bg-muted/20",
                           )}
                         >
-                          {e.status}
-                        </span>
-                      </div>
-                      <div className="min-w-0">
-                        {(() => {
-                          const lead = leadById.get(e.id);
-                          if (!lead) {
-                            return (
+                          <button
+                            type="button"
+                            className="min-w-0 text-left"
+                            onClick={() =>
+                              setTimelinePersonId(expanded ? null : e.id)
+                            }
+                          >
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <p className="truncate font-medium hover:underline">
+                                {e.contactName || "—"}
+                              </p>
+                              {!e.contactLinkedin && (
+                                <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+                                  No LinkedIn
+                                </span>
+                              )}
+                              {!e.contactEmail && (
+                                <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+                                  No email
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                              {e.contactRole && (
+                                <span className="truncate">{e.contactRole}</span>
+                              )}
+                              {e.contactEmail ? (
+                                <span className="truncate font-mono">
+                                  {e.contactEmail}
+                                </span>
+                              ) : (
+                                <span className="text-amber-600/90 dark:text-amber-400/90">
+                                  email missing
+                                </span>
+                              )}
+                              {e.contactLinkedin ? (
+                                <a
+                                  href={e.contactLinkedin}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-0.5 text-[#0A66C2] hover:underline"
+                                  onClick={(ev) => ev.stopPropagation()}
+                                >
+                                  <Linkedin className="size-3" />
+                                  LI
+                                </a>
+                              ) : (
+                                <span className="text-amber-600/90 dark:text-amber-400/90">
+                                  LI missing
+                                </span>
+                              )}
+                              <span className="text-[10px] text-muted-foreground/80">
+                                {expanded ? "Hide timeline" : "Timeline"}
+                              </span>
+                            </div>
+                          </button>
+                          <div className="min-w-0">
+                            <p className="truncate">{e.companyName}</p>
+                            {e.domain && (
+                              <p className="truncate font-mono text-[11px] text-muted-foreground">
+                                {e.domain}
+                              </p>
+                            )}
+                          </div>
+                          <div>
+                            <span
+                              className={cn(
+                                "inline-flex rounded-full px-2 py-0.5 text-[11px] capitalize",
+                                enrollmentStatusBadge(e.status),
+                              )}
+                            >
+                              {e.status}
+                            </span>
+                          </div>
+                          <div className="min-w-0">
+                            {!lead ? (
                               <span className="text-[11px] text-muted-foreground">
                                 —
                               </span>
-                            );
-                          }
-                          return (
-                            <div className="flex flex-col gap-1">
-                              <div className="flex items-center gap-1">
-                                {lead.steps.map((s) => (
-                                  <span
-                                    key={s.position}
-                                    title={`Step ${s.position + 1} ${s.channel}: ${s.status}`}
-                                    className={cn(
-                                      "size-2 rounded-full",
-                                      stepStatusDot(s.status),
-                                    )}
-                                  />
-                                ))}
+                            ) : (
+                              <div className="flex flex-col gap-1">
+                                <div className="flex items-center gap-1">
+                                  {lead.steps.map((s) => (
+                                    <span
+                                      key={s.position}
+                                      title={`Step ${s.position + 1} ${s.channel}: ${s.status}`}
+                                      className={cn(
+                                        "size-2 rounded-full",
+                                        stepStatusDot(s.status),
+                                      )}
+                                    />
+                                  ))}
+                                </div>
+                                <span className="text-[10px] tabular-nums text-muted-foreground">
+                                  {lead.completedSteps}/{lead.totalSteps} ·{" "}
+                                  {lead.progressPct}%
+                                </span>
                               </div>
-                              <span className="text-[10px] tabular-nums text-muted-foreground">
-                                {lead.completedSteps}/{lead.totalSteps} ·{" "}
-                                {lead.progressPct}%
-                              </span>
+                            )}
+                          </div>
+                          <div className="min-w-0 text-xs text-muted-foreground">
+                            <p className="truncate text-foreground">
+                              {e.status === "completed"
+                                ? "Finished"
+                                : stepLabel(e.currentStepPosition)}
+                            </p>
+                            {e.lastError && (
+                              <p className="truncate text-destructive">
+                                {e.lastError}
+                              </p>
+                            )}
+                          </div>
+                          <div className="text-xs tabular-nums text-muted-foreground">
+                            {e.status === "active" && e.nextRunAt
+                              ? new Date(e.nextRunAt).toLocaleDateString(
+                                  undefined,
+                                  {
+                                    month: "short",
+                                    day: "numeric",
+                                  },
+                                )
+                              : "—"}
+                          </div>
+                          <div>
+                            <div className="flex items-center justify-end gap-0.5">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-[11px]"
+                                onClick={() => {
+                                  setPreviewPersonId(e.id);
+                                  setEditorTab("steps");
+                                }}
+                              >
+                                Preview
+                              </Button>
+                              {e.status === "active" && (
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="size-7 text-muted-foreground"
+                                  disabled={busyId === e.id}
+                                  onClick={() => void pauseEnrollment(e, true)}
+                                  aria-label={`Pause ${e.contactName || "person"}`}
+                                  title="Pause this person"
+                                >
+                                  {busyId === e.id ? (
+                                    <Loader2 className="size-3.5 animate-spin" />
+                                  ) : (
+                                    <Pause className="size-3.5" />
+                                  )}
+                                </Button>
+                              )}
+                              {e.status === "paused" && (
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="size-7 text-muted-foreground"
+                                  disabled={busyId === e.id}
+                                  onClick={() => void pauseEnrollment(e, false)}
+                                  aria-label={`Resume ${e.contactName || "person"}`}
+                                  title="Resume this person"
+                                >
+                                  {busyId === e.id ? (
+                                    <Loader2 className="size-3.5 animate-spin" />
+                                  ) : (
+                                    <Play className="size-3.5" />
+                                  )}
+                                </Button>
+                              )}
+                              {(e.status === "active" ||
+                                e.status === "paused") && (
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="size-7 text-muted-foreground hover:text-destructive"
+                                  disabled={busyId === e.id}
+                                  onClick={() => void removeEnrollment(e)}
+                                  aria-label={`Remove ${e.contactName || "person"} from campaign`}
+                                >
+                                  {busyId === e.id ? (
+                                    <Loader2 className="size-3.5 animate-spin" />
+                                  ) : (
+                                    <Trash2 className="size-3.5" />
+                                  )}
+                                </Button>
+                              )}
                             </div>
-                          );
-                        })()}
-                      </div>
-                      <div className="min-w-0 text-xs text-muted-foreground">
-                        <p className="truncate text-foreground">
-                          {e.status === "completed"
-                            ? "Finished"
-                            : stepLabel(e.currentStepPosition)}
-                        </p>
-                        {e.lastError && (
-                          <p className="truncate text-destructive">
-                            {e.lastError}
-                          </p>
-                        )}
-                      </div>
-                      <div className="text-xs tabular-nums text-muted-foreground">
-                        {e.status === "active" && e.nextRunAt
-                          ? new Date(e.nextRunAt).toLocaleDateString(undefined, {
-                              month: "short",
-                              day: "numeric",
-                            })
-                          : "—"}
-                      </div>
-                      <div>
-                        <div className="flex items-center justify-end gap-0.5">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 px-2 text-[11px]"
-                            onClick={() => {
-                              setPreviewPersonId(e.id);
-                              setEditorTab("steps");
-                            }}
-                          >
-                            Preview
-                          </Button>
-                          {e.status === "active" && (
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="size-7 text-muted-foreground"
-                              disabled={busyId === e.id}
-                              onClick={() => void pauseEnrollment(e, true)}
-                              aria-label={`Pause ${e.contactName || "person"}`}
-                              title="Pause this person"
-                            >
-                              {busyId === e.id ? (
-                                <Loader2 className="size-3.5 animate-spin" />
-                              ) : (
-                                <Pause className="size-3.5" />
-                              )}
-                            </Button>
-                          )}
-                          {e.status === "paused" && (
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="size-7 text-muted-foreground"
-                              disabled={busyId === e.id}
-                              onClick={() => void pauseEnrollment(e, false)}
-                              aria-label={`Resume ${e.contactName || "person"}`}
-                              title="Resume this person"
-                            >
-                              {busyId === e.id ? (
-                                <Loader2 className="size-3.5 animate-spin" />
-                              ) : (
-                                <Play className="size-3.5" />
-                              )}
-                            </Button>
-                          )}
-                          {(e.status === "active" || e.status === "paused") && (
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="size-7 text-muted-foreground hover:text-destructive"
-                              disabled={busyId === e.id}
-                              onClick={() => void removeEnrollment(e)}
-                              aria-label={`Remove ${e.contactName || "person"} from campaign`}
-                            >
-                              {busyId === e.id ? (
-                                <Loader2 className="size-3.5 animate-spin" />
-                              ) : (
-                                <Trash2 className="size-3.5" />
-                              )}
-                            </Button>
-                          )}
+                          </div>
                         </div>
-                      </div>
-                    </li>
-                  ))}
+
+                        {expanded && (
+                          <div className="border-t border-border bg-muted/15 px-4 py-4">
+                            <p className="mb-3 text-xs font-medium text-muted-foreground">
+                              Activity timeline — what went out (or will) for this
+                              person
+                            </p>
+                            {!lead || lead.steps.length === 0 ? (
+                              <p className="text-xs text-muted-foreground">
+                                No step history yet.
+                              </p>
+                            ) : (
+                              <ol className="relative space-y-0 border-l border-border pl-4">
+                                {lead.steps.map((s) => {
+                                  const when =
+                                    s.sentAt ||
+                                    (s.status === "ready" ||
+                                    s.status === "scheduled"
+                                      ? s.scheduledFor
+                                      : null);
+                                  return (
+                                    <li
+                                      key={s.position}
+                                      className="relative pb-4 last:pb-0"
+                                    >
+                                      <span
+                                        className={cn(
+                                          "absolute -left-[1.3rem] top-1 size-2.5 rounded-full ring-2 ring-background",
+                                          stepStatusDot(s.status),
+                                        )}
+                                      />
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className="text-xs font-semibold">
+                                          Step {s.position + 1} ·{" "}
+                                          {stepChannelLabel(s)}
+                                        </span>
+                                        <span
+                                          className={cn(
+                                            "rounded-md px-1.5 py-0.5 text-[10px] font-medium",
+                                            s.status === "sent"
+                                              ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+                                              : s.status === "failed" ||
+                                                  s.status === "bounced"
+                                                ? "bg-rose-500/15 text-rose-700 dark:text-rose-400"
+                                                : s.status === "ready"
+                                                  ? "bg-sky-500/15 text-sky-700 dark:text-sky-400"
+                                                  : "bg-muted text-muted-foreground",
+                                          )}
+                                        >
+                                          {stepStatusLabel(s.status)}
+                                        </span>
+                                        <span className="text-[11px] tabular-nums text-muted-foreground">
+                                          {formatTaskWhen(when)}
+                                        </span>
+                                      </div>
+                                      {s.subject && (
+                                        <p className="mt-1 text-xs font-medium text-foreground/90">
+                                          {s.subject}
+                                        </p>
+                                      )}
+                                      {s.bodySnippet && (
+                                        <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">
+                                          {s.bodySnippet}
+                                        </p>
+                                      )}
+                                      {s.error && (
+                                        <p className="mt-1 font-mono text-[11px] text-rose-600 dark:text-rose-400">
+                                          {s.error}
+                                        </p>
+                                      )}
+                                    </li>
+                                  );
+                                })}
+                              </ol>
+                            )}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             )}
@@ -2766,7 +2917,12 @@ export function SequencesPage() {
           ) : (
             <div className="space-y-3">
               <p className="text-xs text-muted-foreground">
-                Work top → bottom. Open · copy · send · mark done.
+                Work top → bottom. For LinkedIn: open profile → paste note →
+                send on LinkedIn →{" "}
+                <span className="font-medium text-foreground">
+                  Mark as done here
+                </span>{" "}
+                so the sequence advances.
               </p>
               {filteredTasks.map((t, idx) => {
                 const e = t.enrollment;
@@ -2775,10 +2931,19 @@ export function SequencesPage() {
                   e?.contactLinkedin ||
                   null;
                 const isLi = t.channel === "linkedin";
+                const liAction =
+                  t.step?.linkedinAction === "connect_note"
+                    ? "connection request"
+                    : "message";
                 return (
                   <div
                     key={t.id}
-                    className="overflow-hidden rounded-xl border border-border bg-card shadow-sm"
+                    className={cn(
+                      "overflow-hidden rounded-xl border bg-card shadow-sm",
+                      isLi
+                        ? "border-[#0A66C2]/25"
+                        : "border-border",
+                    )}
                   >
                     <div className="flex flex-wrap items-center gap-3 border-b border-border bg-muted/20 px-4 py-2.5">
                       <span className="flex size-6 items-center justify-center rounded-full bg-foreground text-[11px] font-semibold tabular-nums text-background">
@@ -2809,72 +2974,11 @@ export function SequencesPage() {
                           {t.sequenceName ? ` · ${t.sequenceName}` : ""}
                         </p>
                       </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {isLi && profile && (
-                          <Button size="sm" variant="outline" asChild>
-                            <a
-                              href={profile}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              <ExternalLink className="size-3.5" />
-                              Open LI
-                            </a>
-                          </Button>
-                        )}
-                        {!isLi && e?.contactEmail && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => openEmailCompose(t)}
-                          >
-                            <Mail className="size-3.5" />
-                            Open Gmail
-                          </Button>
-                        )}
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            void copyText(
-                              isLi
-                                ? (t.renderedBody ?? "")
-                                : [
-                                    t.renderedSubject
-                                      ? `Subject: ${t.renderedSubject}`
-                                      : "",
-                                    t.renderedBody ?? "",
-                                  ]
-                                    .filter(Boolean)
-                                    .join("\n\n"),
-                            );
-                          }}
-                        >
-                          <Copy className="size-3.5" />
-                          Copy
-                        </Button>
-                        <Button
-                          size="sm"
-                          disabled={busyId === t.id}
-                          onClick={() => void complete(t.id, "sent")}
-                        >
-                          {busyId === t.id ? (
-                            <Loader2 className="size-3.5 animate-spin" />
-                          ) : (
-                            <Check className="size-3.5" />
-                          )}
-                          Done
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={busyId === t.id}
-                          onClick={() => void complete(t.id, "skipped")}
-                        >
-                          <SkipForward className="size-3.5" />
-                          Skip
-                        </Button>
-                      </div>
+                      {isLi && (
+                        <span className="rounded-full bg-[#0A66C2]/10 px-2 py-0.5 text-[10px] font-medium text-[#0A66C2]">
+                          Manual on LinkedIn
+                        </span>
+                      )}
                     </div>
                     <div className="px-4 py-3">
                       {!isLi && t.renderedSubject && (
@@ -2885,11 +2989,135 @@ export function SequencesPage() {
                       <pre className="whitespace-pre-wrap text-sm leading-relaxed text-pretty text-foreground/90">
                         {t.renderedBody}
                       </pre>
-                      <p className="mt-3 text-[11px] text-muted-foreground">
-                        {isLi
-                          ? "1) Open LI  2) Paste  3) Send invite/DM  4) Done"
-                          : "1) Open Gmail  2) Check & send  3) Done"}
-                      </p>
+
+                      {isLi ? (
+                        <div className="mt-4 space-y-3 rounded-lg border border-[#0A66C2]/20 bg-[#0A66C2]/5 px-3 py-3">
+                          <p className="text-xs font-medium text-foreground">
+                            How to finish this step
+                          </p>
+                          <ol className="list-decimal space-y-1 pl-4 text-xs text-muted-foreground">
+                            <li>
+                              Open their LinkedIn and send the{" "}
+                              <span className="text-foreground">{liAction}</span>
+                            </li>
+                            <li>Copy the note below if you need it</li>
+                            <li>
+                              Come back here and click{" "}
+                              <span className="font-medium text-foreground">
+                                Mark as done
+                              </span>{" "}
+                              — that advances the sequence
+                            </li>
+                          </ol>
+                          <div className="flex flex-wrap gap-2 pt-1">
+                            {profile && (
+                              <Button size="sm" variant="outline" asChild>
+                                <a
+                                  href={profile}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  <ExternalLink className="size-3.5" />
+                                  Open LinkedIn profile
+                                </a>
+                              </Button>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                void copyText(t.renderedBody ?? "");
+                              }}
+                            >
+                              <Copy className="size-3.5" />
+                              Copy note
+                            </Button>
+                            <Button
+                              size="sm"
+                              className="bg-[#0A66C2] text-white hover:bg-[#0A66C2]/90"
+                              disabled={busyId === t.id}
+                              onClick={() => void complete(t.id, "sent")}
+                            >
+                              {busyId === t.id ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                              ) : (
+                                <Check className="size-3.5" />
+                              )}
+                              Mark as done
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={busyId === t.id}
+                              onClick={() => void complete(t.id, "skipped")}
+                            >
+                              <SkipForward className="size-3.5" />
+                              Skip step
+                            </Button>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground">
+                            LinkedIn is manual — the app only knows you finished
+                            when you press{" "}
+                            <span className="font-medium text-foreground">
+                              Mark as done
+                            </span>
+                            .
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          {e?.contactEmail && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => openEmailCompose(t)}
+                            >
+                              <Mail className="size-3.5" />
+                              Open Gmail
+                            </Button>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              void copyText(
+                                [
+                                  t.renderedSubject
+                                    ? `Subject: ${t.renderedSubject}`
+                                    : "",
+                                  t.renderedBody ?? "",
+                                ]
+                                  .filter(Boolean)
+                                  .join("\n\n"),
+                              );
+                            }}
+                          >
+                            <Copy className="size-3.5" />
+                            Copy
+                          </Button>
+                          <Button
+                            size="sm"
+                            disabled={busyId === t.id}
+                            onClick={() => void complete(t.id, "sent")}
+                          >
+                            {busyId === t.id ? (
+                              <Loader2 className="size-3.5 animate-spin" />
+                            ) : (
+                              <Check className="size-3.5" />
+                            )}
+                            Mark as done
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={busyId === t.id}
+                            onClick={() => void complete(t.id, "skipped")}
+                          >
+                            <SkipForward className="size-3.5" />
+                            Skip
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
