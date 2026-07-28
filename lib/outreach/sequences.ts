@@ -1215,28 +1215,44 @@ export async function promoteDueHumanQueue(
   const { isEmailAutoSendEnabled } = await import("@/lib/outreach/mailbox");
   const autoOn = await isEmailAutoSendEnabled(client, null);
   if (!autoOn) {
-    // One bulk UPDATE per chunk (page-load path must stay fast).
-    // Flag auto_send_disabled for UI parity with processDueSequenceTasks.
-    // Pre-send email meta is sparse; we set a minimal meta object rather than
-    // N round-trips to merge jsonb row-by-row.
+    // Merge auto_send_disabled into existing meta (same as processDueSequenceTasks).
+    // Read ids+meta then update in parallel within each chunk so page load
+    // stays fast without wiping profile_url / linkedin_action / etc.
     for (let i = 0; i < enrollmentIds.length; i += chunkSize) {
       const slice = enrollmentIds.slice(i, i + chunkSize);
-      const { data, error } = await client
+      const { data: due, error } = await client
         .from("outreach_send_tasks")
-        .update({
-          status: "ready",
-          mode: "semi",
-          provider: "manual",
-          updated_at: now,
-          meta: { auto_send_disabled: true },
-        })
+        .select("id, meta")
         .eq("status", "scheduled")
         .eq("channel", "email")
         .lte("scheduled_for", now)
-        .in("enrollment_id", slice)
-        .select("id");
+        .in("enrollment_id", slice);
       if (error) throw new Error(error.message);
-      promoted += data?.length ?? 0;
+      if (!due?.length) continue;
+
+      const updated = await Promise.all(
+        due.map(async (row) => {
+          const meta =
+            row.meta && typeof row.meta === "object" && !Array.isArray(row.meta)
+              ? (row.meta as Record<string, unknown>)
+              : {};
+          const { data: rows, error: uErr } = await client
+            .from("outreach_send_tasks")
+            .update({
+              status: "ready",
+              mode: "semi",
+              provider: "manual",
+              updated_at: now,
+              meta: { ...meta, auto_send_disabled: true },
+            })
+            .eq("id", row.id as string)
+            .eq("status", "scheduled")
+            .select("id");
+          if (uErr) throw new Error(uErr.message);
+          return rows?.length ?? 0;
+        }),
+      );
+      promoted += updated.reduce((a, b) => a + b, 0);
     }
   } else {
     // Only promote email tasks that are already semi
