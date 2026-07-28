@@ -37,7 +37,7 @@ function getPool(): Pool {
   return pool;
 }
 
-/** Strip /* ... */ and -- comments so guards cannot be bypassed with comment gaps. */
+/** Strip block and line SQL comments so guards cannot be bypassed with comment gaps. */
 function stripSqlComments(sql: string): string {
   return sql
     .replace(/\/\*[\s\S]*?\*\//g, " ")
