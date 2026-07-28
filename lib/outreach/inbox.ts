@@ -16,8 +16,32 @@ import {
   type OutreachMailboxPublic,
   type OutreachMailboxSecrets,
 } from "@/lib/outreach/mailbox";
-import { markEnrollmentReplied } from "@/lib/outreach/sequences";
+import {
+  markEnrollmentBounced,
+  markEnrollmentReplied,
+} from "@/lib/outreach/sequences";
 import { scopesIncludeGmailReadonly } from "@/lib/outreach/google-oauth";
+
+/** Bounce / DSN / mailer-daemon — not a human reply. */
+const BOUNCE_INBOUND_RE =
+  /address not found|endere[cç]o n[aã]o encontrado|delivery status notification|could not be delivered|wasn't delivered|wasn&#39;t delivered|mailbox unavailable|user unknown|550\s*5\.1\.1|does not exist|undeliverable|mail delivery failed|recipient rejected|no such user|unknown user/i;
+
+const MAILER_DAEMON_RE =
+  /mailer-daemon|postmaster|mail-delivery|mail delivery subsystem/i;
+
+export function isBounceInbound(opts: {
+  subject?: string | null;
+  snippet?: string | null;
+  fromEmail?: string | null;
+  bodyText?: string | null;
+}): boolean {
+  const from = (opts.fromEmail || "").toLowerCase();
+  if (MAILER_DAEMON_RE.test(from)) return true;
+  const blob = [opts.subject, opts.snippet, opts.bodyText]
+    .filter(Boolean)
+    .join("\n");
+  return BOUNCE_INBOUND_RE.test(blob);
+}
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -871,10 +895,45 @@ async function processGmailThread(
     result.strongMatch &&
     result.enrollmentId
   ) {
-    const marked = await markEnrollmentReplied(client, result.enrollmentId, {
-      source: "gmail_sync",
-    });
-    if (marked.updated) counters.enrollmentsMarkedReplied++;
+    // Classify bounce/DSN vs human reply before stopping the cadence.
+    let bounce = false;
+    let bounceReason: string | null = null;
+    for (const msg of messages) {
+      const headers = msg.payload?.headers;
+      const from = extractEmail(headerValue(headers, "From"));
+      const subject = headerValue(headers, "Subject");
+      const direction = classifyDirection(
+        index,
+        msg,
+        from,
+        mailbox.fromEmail,
+      );
+      if (direction !== "inbound") continue;
+      if (
+        isBounceInbound({
+          fromEmail: from,
+          subject,
+          snippet: msg.snippet ?? null,
+        })
+      ) {
+        bounce = true;
+        bounceReason = (subject || msg.snippet || "Hard bounce").slice(0, 200);
+        break;
+      }
+    }
+
+    if (bounce) {
+      const marked = await markEnrollmentBounced(client, result.enrollmentId, {
+        source: "gmail_sync",
+        reason: bounceReason,
+      });
+      if (marked.updated) counters.enrollmentsMarkedReplied++;
+    } else {
+      const marked = await markEnrollmentReplied(client, result.enrollmentId, {
+        source: "gmail_sync",
+      });
+      if (marked.updated) counters.enrollmentsMarkedReplied++;
+    }
   }
 }
 

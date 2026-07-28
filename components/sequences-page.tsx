@@ -13,6 +13,8 @@ import {
   Linkedin,
   Loader2,
   Mail,
+  Pause,
+  Play,
   Plus,
   RefreshCw,
   SkipForward,
@@ -585,6 +587,42 @@ export function SequencesPage() {
         return;
       }
       setNotice(`Removed ${enrollment.contactName || "person"} from the campaign.`);
+      await Promise.all([reloadEnrollments(editingId), load()]);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const pauseEnrollment = async (
+    enrollment: EnrollmentRow,
+    paused: boolean,
+  ) => {
+    if (!token || !editingId) return;
+    setBusyId(enrollment.id);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/outreach/sequences/${editingId}/enrollments/${enrollment.id}`,
+        {
+          method: "PATCH",
+          headers: headers(),
+          body: JSON.stringify({
+            status: paused ? "paused" : "active",
+            reason: paused ? "Paused by user" : undefined,
+          }),
+        },
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Could not update person");
+        return;
+      }
+      const name = enrollment.contactName || "Person";
+      setNotice(
+        paused
+          ? `Paused ${name} — pending steps cancelled until resume`
+          : `Resumed ${name} — back on the cadence`,
+      );
       await Promise.all([reloadEnrollments(editingId), load()]);
     } finally {
       setBusyId(null);
@@ -1568,7 +1606,7 @@ export function SequencesPage() {
               </div>
             ) : (
               <div className="overflow-hidden rounded-xl border border-border">
-                <div className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_88px_minmax(0,0.9fr)_minmax(0,1fr)_80px_64px] gap-2 border-b border-border bg-muted/40 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                <div className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_88px_minmax(0,0.9fr)_minmax(0,1fr)_80px_100px] gap-2 border-b border-border bg-muted/40 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                   <span>Person</span>
                   <span>Company</span>
                   <span>Status</span>
@@ -1581,7 +1619,7 @@ export function SequencesPage() {
                   {filteredPeople.map((e) => (
                     <li
                       key={e.id}
-                      className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_88px_minmax(0,0.9fr)_minmax(0,1fr)_80px_64px] items-center gap-2 px-4 py-3 text-sm"
+                      className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_88px_minmax(0,0.9fr)_minmax(0,1fr)_80px_100px] items-center gap-2 px-4 py-3 text-sm"
                     >
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-1.5">
@@ -1701,7 +1739,7 @@ export function SequencesPage() {
                           : "—"}
                       </div>
                       <div>
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center justify-end gap-0.5">
                           <Button
                             size="sm"
                             variant="ghost"
@@ -1713,6 +1751,40 @@ export function SequencesPage() {
                           >
                             Preview
                           </Button>
+                          {e.status === "active" && (
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="size-7 text-muted-foreground"
+                              disabled={busyId === e.id}
+                              onClick={() => void pauseEnrollment(e, true)}
+                              aria-label={`Pause ${e.contactName || "person"}`}
+                              title="Pause this person"
+                            >
+                              {busyId === e.id ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                              ) : (
+                                <Pause className="size-3.5" />
+                              )}
+                            </Button>
+                          )}
+                          {e.status === "paused" && (
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="size-7 text-muted-foreground"
+                              disabled={busyId === e.id}
+                              onClick={() => void pauseEnrollment(e, false)}
+                              aria-label={`Resume ${e.contactName || "person"}`}
+                              title="Resume this person"
+                            >
+                              {busyId === e.id ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                              ) : (
+                                <Play className="size-3.5" />
+                              )}
+                            </Button>
+                          )}
                           {(e.status === "active" || e.status === "paused") && (
                             <Button
                               size="icon"
