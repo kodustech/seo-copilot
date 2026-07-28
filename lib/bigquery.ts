@@ -16,15 +16,36 @@ function getClient(): BigQuery {
     );
   }
 
-  const credentials = JSON.parse(raw) as {
-    client_email: string;
-    private_key: string;
+  let credentials: {
+    client_email?: string;
+    private_key?: string;
     project_id?: string;
   };
 
+  try {
+    credentials = JSON.parse(raw);
+  } catch {
+    // Without this catch the raw JSON.parse error surfaces to the caller as
+    // "Unterminated string in JSON at position 1", which reads like a problem
+    // with the query rather than with the deployment. It cost an afternoon once.
+    throw new Error(
+      `BIGQUERY_CREDENTIALS is set but is not valid JSON (${raw.length} chars, starts with ${JSON.stringify(raw.slice(0, 12))}). ` +
+        "Paste the full service-account JSON on a single line, for example: cat service-account.json | jq -c .",
+    );
+  }
+
+  const missing = (["client_email", "private_key"] as const).filter(
+    (k) => !credentials[k],
+  );
+  if (missing.length > 0) {
+    throw new Error(
+      `BIGQUERY_CREDENTIALS parsed as JSON but is missing: ${missing.join(", ")}. It does not look like a service-account key.`,
+    );
+  }
+
   _client = new BigQuery({
     projectId: credentials.project_id ?? "kody-408918",
-    credentials,
+    credentials: credentials as { client_email: string; private_key: string },
   });
 
   return _client;
@@ -77,9 +98,46 @@ const BIGQUERY_SCHEMA = schemaJson as {
 };
 
 /**
- * Returns schema for a specific dataset, or a high-level summary of all datasets.
+ * Reads the real column list for a dataset from BigQuery.
+ *
+ * Returns null when BigQuery cannot be reached, so schema exploration keeps
+ * working (from the checked-in descriptions alone) while credentials are broken.
  */
-export function describeDataset(dataset?: string): {
+async function fetchLiveColumns(
+  dataset: string,
+): Promise<Map<string, { name: string; type: string }[]> | null> {
+  try {
+    const rows = await runQuery<{
+      table_name: string;
+      column_name: string;
+      data_type: string;
+    }>(
+      `SELECT table_name, column_name, data_type
+       FROM \`kody-408918.${dataset}.INFORMATION_SCHEMA.COLUMNS\`
+       ORDER BY table_name, ordinal_position`,
+    );
+
+    const byTable = new Map<string, { name: string; type: string }[]>();
+    for (const r of rows) {
+      if (!byTable.has(r.table_name)) byTable.set(r.table_name, []);
+      byTable.get(r.table_name)!.push({ name: r.column_name, type: r.data_type });
+    }
+    return byTable;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns schema for a specific dataset, or a high-level summary of all datasets.
+ *
+ * Columns come from BigQuery itself; the descriptions, enums, relations and
+ * notes come from the checked-in file. A hand-maintained schema drifts, and a
+ * stale one is worse than none, because it answers confidently: `profiles`
+ * gained `referralSource` and `primaryGoal` and the file did not, so a whole
+ * afternoon was spent concluding the company had no signup attribution.
+ */
+export async function describeDataset(dataset?: string): Promise<{
   datasets?: { name: string; tables: string[]; description: string }[];
   tables?: {
     fullName: string;
@@ -89,7 +147,8 @@ export function describeDataset(dataset?: string): {
     relations?: string[];
     notes?: string[];
   }[];
-} {
+  schemaSource?: string;
+}> {
   const tables = Object.values(BIGQUERY_SCHEMA.tables);
 
   if (!dataset) {
@@ -119,15 +178,32 @@ export function describeDataset(dataset?: string): {
     );
   }
 
+  const live = await fetchLiveColumns(dataset);
+
   return {
-    tables: filtered.map((t) => ({
-      fullName: t.name,
-      description: t.description,
-      columns: t.columns,
-      enums: t.enums,
-      relations: t.relations,
-      notes: t.notes,
-    })),
+    schemaSource: live
+      ? "columns from BigQuery INFORMATION_SCHEMA, descriptions from lib/bigquery-schema.json"
+      : "BigQuery unreachable, columns fall back to lib/bigquery-schema.json and may be out of date",
+    tables: filtered.map((t) => {
+      const tableName = t.name.split(".")[2];
+      const described = new Map(t.columns.map((c) => [c.name, c.description]));
+      const liveCols = live?.get(tableName);
+
+      return {
+        fullName: t.name,
+        description: t.description,
+        columns: liveCols
+          ? liveCols.map((c) => ({
+              name: c.name,
+              type: c.type,
+              description: described.get(c.name) ?? "",
+            }))
+          : t.columns,
+        enums: t.enums,
+        relations: t.relations,
+        notes: t.notes,
+      };
+    }),
   };
 }
 

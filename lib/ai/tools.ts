@@ -1931,7 +1931,7 @@ export const exploreDataWarehouse = tool({
   }),
   execute: async ({ dataset }: { dataset?: string }) => {
     try {
-      return { success: true as const, ...describeDataset(dataset) };
+      return { success: true as const, ...(await describeDataset(dataset)) };
     } catch (error) {
       return {
         success: false as const,
