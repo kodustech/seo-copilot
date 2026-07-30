@@ -90,6 +90,26 @@ type QueueTask = {
   step?: { linkedinAction: string | null; position: number };
 };
 
+type DayMailboxStatus = {
+  id: string;
+  label: string;
+  fromEmail: string;
+  dailyCap: number;
+  sentToday: number;
+  lastSentAt: string | null;
+  enabled: boolean;
+  emailAutoSend: boolean;
+};
+
+type DaySequenceStatus = {
+  id: string;
+  name: string;
+  emailSentToday: number;
+  emailWaitingCap: number;
+  readyLinkedin: number;
+  readyEmail: number;
+};
+
 type ActivityStats = {
   readyLinkedin: number;
   readyEmail: number;
@@ -97,6 +117,8 @@ type ActivityStats = {
   sentToday: number;
   skippedToday: number;
   emailAutoSend: boolean;
+  mailboxes?: DayMailboxStatus[];
+  sequences?: DaySequenceStatus[];
 };
 
 type ResearchTable = { id: string; name: string; slug?: string | null };
@@ -107,6 +129,27 @@ type Mailbox = {
   connected: boolean;
   enabled: boolean;
 };
+
+function formatLastSent(iso: string | null | undefined): string {
+  if (!iso) return "no sends yet";
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "—";
+  }
+}
+
+/** Short label for compact hints (last segment after " - "). */
+function shortSeqName(name: string): string {
+  const parts = name.split(/\s+[—–-]\s+/);
+  const last = parts[parts.length - 1]?.trim();
+  return last && last.length > 0 ? last : name;
+}
 
 type EnrollmentRow = {
   id: string;
@@ -2794,49 +2837,206 @@ export function SequencesPage() {
 
       {view === "queue" && (
         <div className="min-h-0 flex-1 space-y-4 overflow-auto pb-8">
-          {/* Day summary */}
-          <div className="grid gap-2 sm:grid-cols-4">
-            {(
-              [
-                {
-                  label: "To do now",
-                  value: stats?.readyTotal ?? tasks.length,
-                  hint: "Ready for you",
-                },
-                {
-                  label: "LinkedIn",
-                  value: stats?.readyLinkedin ?? 0,
-                  hint: "Connections & DMs",
-                },
-                {
-                  label: "Email",
-                  value: stats?.readyEmail ?? 0,
-                  hint: stats?.emailAutoSend
-                    ? "Manual queue only"
-                    : "Auto-send is off",
-                },
-                {
-                  label: "Done today",
-                  value: stats?.sentToday ?? 0,
-                  hint: `${stats?.skippedToday ?? 0} skipped`,
-                },
-              ] as const
-            ).map((c) => (
-              <div
-                key={c.label}
-                className="rounded-xl border border-border bg-card px-4 py-3"
-              >
+          {/* Ops strip: inbox cap · auto email by sequence · human work */}
+          <div className="space-y-3">
+            <div className="rounded-xl border border-border bg-card">
+              <div className="border-b border-border px-4 py-2.5">
                 <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  {c.label}
-                </p>
-                <p className="mt-1 text-2xl font-semibold tabular-nums">
-                  {c.value}
+                  Inboxes
                 </p>
                 <p className="mt-0.5 text-[11px] text-muted-foreground">
-                  {c.hint}
+                  Daily send cap is per mailbox — active sequences share the same
+                  inbox.
                 </p>
               </div>
-            ))}
+              {(stats?.mailboxes?.length ?? 0) === 0 ? (
+                <p className="px-4 py-3 text-sm text-muted-foreground">
+                  No enabled mailboxes.
+                </p>
+              ) : (
+                <ul className="divide-y divide-border">
+                  {(stats?.mailboxes ?? []).map((mb) => {
+                    const full = mb.sentToday >= mb.dailyCap && mb.dailyCap > 0;
+                    const pct =
+                      mb.dailyCap > 0
+                        ? Math.min(100, (mb.sentToday / mb.dailyCap) * 100)
+                        : 0;
+                    return (
+                      <li
+                        key={mb.id}
+                        className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium">
+                            {mb.fromEmail}
+                          </p>
+                          <p className="text-[11px] text-muted-foreground">
+                            {mb.label}
+                            {mb.emailAutoSend ? "" : " · auto-send off"}
+                            {" · last "}
+                            {formatLastSent(mb.lastSentAt)}
+                          </p>
+                        </div>
+                        <div className="w-full max-w-[11rem] sm:w-44">
+                          <div className="flex items-baseline justify-between gap-2">
+                            <span
+                              className={cn(
+                                "text-sm font-semibold tabular-nums",
+                                full && "text-amber-600 dark:text-amber-400",
+                              )}
+                            >
+                              {mb.sentToday}/{mb.dailyCap}
+                            </span>
+                            <span className="text-[11px] text-muted-foreground">
+                              {full ? "cap full" : "today"}
+                            </span>
+                          </div>
+                          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
+                            <div
+                              className={cn(
+                                "h-full rounded-full transition-[width]",
+                                full
+                                  ? "bg-amber-500"
+                                  : "bg-foreground/70",
+                              )}
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-border bg-card">
+              <div className="border-b border-border px-4 py-2.5">
+                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Email auto (today)
+                </p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  Sent by the engine in the background — not the human list
+                  below. Waiting cap retries tomorrow or when you raise the
+                  limit.
+                </p>
+              </div>
+              {(stats?.sequences?.length ?? 0) === 0 ? (
+                <p className="px-4 py-3 text-sm text-muted-foreground">
+                  No active sequences.
+                </p>
+              ) : (
+                <ul className="divide-y divide-border">
+                  {(stats?.sequences ?? []).map((s) => (
+                    <li
+                      key={s.id}
+                      className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-4 py-2.5"
+                    >
+                      <p className="min-w-0 flex-1 truncate text-sm font-medium">
+                        {s.name}
+                      </p>
+                      <p className="text-xs tabular-nums text-muted-foreground">
+                        <span className="font-medium text-foreground">
+                          {s.emailSentToday} sent
+                        </span>
+                        {" · "}
+                        <span
+                          className={cn(
+                            s.emailWaitingCap > 0 &&
+                              "font-medium text-amber-600 dark:text-amber-400",
+                          )}
+                        >
+                          {s.emailWaitingCap} waiting cap
+                        </span>
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-border bg-card">
+              <div className="border-b border-border px-4 py-2.5">
+                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Today (human)
+                </p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  LinkedIn and manual email ready for you — same list below.
+                </p>
+              </div>
+              <div className="grid gap-2 p-3 sm:grid-cols-4">
+                {(
+                  [
+                    {
+                      label: "To do now",
+                      value: stats?.readyTotal ?? tasks.length,
+                      hint: "Ready for you",
+                    },
+                    {
+                      label: "LinkedIn",
+                      value: stats?.readyLinkedin ?? 0,
+                      hint:
+                        (stats?.sequences ?? [])
+                          .filter((s) => s.readyLinkedin > 0)
+                          .map((s) => `${shortSeqName(s.name)} ${s.readyLinkedin}`)
+                          .join(" · ") || "Connections & DMs",
+                    },
+                    {
+                      label: "Email",
+                      value: stats?.readyEmail ?? 0,
+                      hint: stats?.emailAutoSend
+                        ? "Manual queue only"
+                        : "Auto-send is off",
+                    },
+                    {
+                      label: "Done today",
+                      value: stats?.sentToday ?? 0,
+                      hint: `${stats?.skippedToday ?? 0} skipped · human + auto`,
+                    },
+                  ] as const
+                ).map((c) => (
+                  <div
+                    key={c.label}
+                    className="rounded-lg border border-border/80 bg-muted/20 px-3 py-2.5"
+                  >
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      {c.label}
+                    </p>
+                    <p className="mt-1 text-2xl font-semibold tabular-nums">
+                      {c.value}
+                    </p>
+                    <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">
+                      {c.hint}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              {(stats?.sequences ?? []).some(
+                (s) => s.readyLinkedin + s.readyEmail > 0,
+              ) && (
+                <ul className="border-t border-border divide-y divide-border">
+                  {(stats?.sequences ?? [])
+                    .filter((s) => s.readyLinkedin + s.readyEmail > 0)
+                    .map((s) => (
+                      <li
+                        key={`ready-${s.id}`}
+                        className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-4 py-2 text-xs text-muted-foreground"
+                      >
+                        <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+                          {s.name}
+                        </span>
+                        <span className="tabular-nums">
+                          {s.readyLinkedin > 0
+                            ? `${s.readyLinkedin} LinkedIn`
+                            : null}
+                          {s.readyLinkedin > 0 && s.readyEmail > 0 ? " · " : null}
+                          {s.readyEmail > 0 ? `${s.readyEmail} email` : null}
+                        </span>
+                      </li>
+                    ))}
+                </ul>
+              )}
+            </div>
           </div>
 
           {stats && !stats.emailAutoSend && (

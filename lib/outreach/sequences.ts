@@ -1291,54 +1291,202 @@ export async function promoteDueHumanQueue(
 }
 
 /** Counts for the daily activity board. */
-export async function getActivityStats(
-  client: SupabaseClient,
-): Promise<{
+/** Per-inbox capacity for the ops strip on Sequences → Today. */
+export type DayMailboxStatus = {
+  id: string;
+  label: string;
+  fromEmail: string;
+  dailyCap: number;
+  /** Effective sends today (resets when `sentTodayDate` ≠ UTC date). */
+  sentToday: number;
+  lastSentAt: string | null;
+  enabled: boolean;
+  emailAutoSend: boolean;
+};
+
+/** Per active sequence: auto email + human ready work for the day. */
+export type DaySequenceStatus = {
+  id: string;
+  name: string;
+  emailSentToday: number;
+  /** Scheduled auto emails blocked on daily cap (retry tomorrow / raise cap). */
+  emailWaitingCap: number;
+  readyLinkedin: number;
+  readyEmail: number;
+};
+
+export type ActivityStats = {
   readyLinkedin: number;
   readyEmail: number;
   readyTotal: number;
   sentToday: number;
   skippedToday: number;
   emailAutoSend: boolean;
-}> {
-  const { isEmailAutoSendEnabled } = await import("@/lib/outreach/mailbox");
+  mailboxes: DayMailboxStatus[];
+  sequences: DaySequenceStatus[];
+};
+
+/**
+ * Today queue counters + ops strip (inbox cap, auto email by sequence).
+ * Ready totals only count tasks on *active* sequence enrollments so they
+ * match `listReadyQueue` (draft/paused rows do not inflate the day).
+ */
+export async function getActivityStats(
+  client: SupabaseClient,
+): Promise<ActivityStats> {
+  const { isEmailAutoSendEnabled, listMailboxes } = await import(
+    "@/lib/outreach/mailbox"
+  );
   const emailAutoSend = await isEmailAutoSendEnabled(client);
 
-  const { count: readyLinkedin } = await client
-    .from("outreach_send_tasks")
-    .select("id", { count: "exact", head: true })
-    .eq("status", "ready")
-    .eq("channel", "linkedin");
-  const { count: readyEmail } = await client
-    .from("outreach_send_tasks")
-    .select("id", { count: "exact", head: true })
-    .eq("status", "ready")
-    .eq("channel", "email");
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  const startIso = `${todayUtc}T00:00:00.000Z`;
 
-  const start = new Date();
-  start.setUTCHours(0, 0, 0, 0);
-  const startIso = start.toISOString();
+  const mailboxesRaw = await listMailboxes(client);
+  const mailboxes: DayMailboxStatus[] = mailboxesRaw
+    .filter((m) => m.enabled)
+    .map((m) => ({
+      id: m.id,
+      label: m.label,
+      fromEmail: m.fromEmail,
+      dailyCap: m.dailyCap,
+      sentToday: m.sentTodayDate === todayUtc ? m.sentToday : 0,
+      lastSentAt: m.lastSentAt,
+      enabled: m.enabled,
+      emailAutoSend: m.emailAutoSend,
+    }));
 
-  const { count: sentToday } = await client
-    .from("outreach_send_tasks")
-    .select("id", { count: "exact", head: true })
-    .eq("status", "sent")
-    .gte("sent_at", startIso);
-  const { count: skippedToday } = await client
-    .from("outreach_send_tasks")
-    .select("id", { count: "exact", head: true })
-    .eq("status", "skipped")
-    .gte("sent_at", startIso);
+  const { data: activeSeqs, error: seqErr } = await client
+    .from("outreach_sequences")
+    .select("id, name")
+    .eq("status", "active")
+    .order("name", { ascending: true });
+  if (seqErr) throw new Error(seqErr.message);
 
-  const li = readyLinkedin ?? 0;
-  const em = readyEmail ?? 0;
+  const sequencesMeta = activeSeqs ?? [];
+  const seqByEnrollment = new Map<string, string>();
+  const enrollmentIds: string[] = [];
+
+  for (const s of sequencesMeta) {
+    const { data: enrs, error: eErr } = await client
+      .from("outreach_enrollments")
+      .select("id")
+      .eq("sequence_id", s.id as string)
+      .eq("status", "active");
+    if (eErr) throw new Error(eErr.message);
+    for (const e of enrs ?? []) {
+      const id = e.id as string;
+      enrollmentIds.push(id);
+      seqByEnrollment.set(id, s.id as string);
+    }
+  }
+
+  const bySeq = new Map<
+    string,
+    {
+      emailSentToday: number;
+      emailWaitingCap: number;
+      readyLinkedin: number;
+      readyEmail: number;
+    }
+  >();
+  for (const s of sequencesMeta) {
+    bySeq.set(s.id as string, {
+      emailSentToday: 0,
+      emailWaitingCap: 0,
+      readyLinkedin: 0,
+      readyEmail: 0,
+    });
+  }
+
+  let readyLinkedin = 0;
+  let readyEmail = 0;
+  let sentToday = 0;
+  let skippedToday = 0;
+
+  const chunkSize = 100;
+  for (let i = 0; i < enrollmentIds.length; i += chunkSize) {
+    const slice = enrollmentIds.slice(i, i + chunkSize);
+    if (slice.length === 0) break;
+
+    const { data: readyRows, error: rErr } = await client
+      .from("outreach_send_tasks")
+      .select("enrollment_id, channel")
+      .eq("status", "ready")
+      .in("enrollment_id", slice);
+    if (rErr) throw new Error(rErr.message);
+    for (const t of readyRows ?? []) {
+      const seqId = seqByEnrollment.get(t.enrollment_id as string);
+      if (!seqId) continue;
+      const bucket = bySeq.get(seqId);
+      if (!bucket) continue;
+      if (t.channel === "linkedin") {
+        readyLinkedin += 1;
+        bucket.readyLinkedin += 1;
+      } else if (t.channel === "email") {
+        readyEmail += 1;
+        bucket.readyEmail += 1;
+      }
+    }
+
+    const { data: capRows, error: cErr } = await client
+      .from("outreach_send_tasks")
+      .select("enrollment_id")
+      .eq("channel", "email")
+      .eq("status", "scheduled")
+      .ilike("error", "%cap%")
+      .in("enrollment_id", slice);
+    if (cErr) throw new Error(cErr.message);
+    for (const t of capRows ?? []) {
+      const seqId = seqByEnrollment.get(t.enrollment_id as string);
+      if (!seqId) continue;
+      const bucket = bySeq.get(seqId);
+      if (bucket) bucket.emailWaitingCap += 1;
+    }
+
+    const { data: sentRows, error: sErr } = await client
+      .from("outreach_send_tasks")
+      .select("enrollment_id, status, channel")
+      .in("status", ["sent", "skipped"])
+      .gte("sent_at", startIso)
+      .in("enrollment_id", slice);
+    if (sErr) throw new Error(sErr.message);
+    for (const t of sentRows ?? []) {
+      if (t.status === "skipped") {
+        skippedToday += 1;
+        continue;
+      }
+      sentToday += 1;
+      if (t.channel === "email") {
+        const seqId = seqByEnrollment.get(t.enrollment_id as string);
+        if (!seqId) continue;
+        const bucket = bySeq.get(seqId);
+        if (bucket) bucket.emailSentToday += 1;
+      }
+    }
+  }
+
+  const sequences: DaySequenceStatus[] = sequencesMeta.map((s) => {
+    const b = bySeq.get(s.id as string)!;
+    return {
+      id: s.id as string,
+      name: (s.name as string) || "Sequence",
+      emailSentToday: b.emailSentToday,
+      emailWaitingCap: b.emailWaitingCap,
+      readyLinkedin: b.readyLinkedin,
+      readyEmail: b.readyEmail,
+    };
+  });
+
   return {
-    readyLinkedin: li,
-    readyEmail: em,
-    readyTotal: li + em,
-    sentToday: sentToday ?? 0,
-    skippedToday: skippedToday ?? 0,
+    readyLinkedin,
+    readyEmail,
+    readyTotal: readyLinkedin + readyEmail,
+    sentToday,
+    skippedToday,
     emailAutoSend,
+    mailboxes,
+    sequences,
   };
 }
 
