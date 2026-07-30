@@ -1364,20 +1364,25 @@ export async function getActivityStats(
   if (seqErr) throw new Error(seqErr.message);
 
   const sequencesMeta = activeSeqs ?? [];
+  const activeSeqIds = sequencesMeta.map((s) => s.id as string);
   const seqByEnrollment = new Map<string, string>();
   const enrollmentIds: string[] = [];
 
-  for (const s of sequencesMeta) {
+  // One (chunked) query for all active enrollments — avoid N+1 per sequence.
+  const enrChunk = 100;
+  for (let i = 0; i < activeSeqIds.length; i += enrChunk) {
+    const seqSlice = activeSeqIds.slice(i, i + enrChunk);
+    if (seqSlice.length === 0) break;
     const { data: enrs, error: eErr } = await client
       .from("outreach_enrollments")
-      .select("id")
-      .eq("sequence_id", s.id as string)
-      .eq("status", "active");
+      .select("id, sequence_id")
+      .eq("status", "active")
+      .in("sequence_id", seqSlice);
     if (eErr) throw new Error(eErr.message);
     for (const e of enrs ?? []) {
       const id = e.id as string;
       enrollmentIds.push(id);
-      seqByEnrollment.set(id, s.id as string);
+      seqByEnrollment.set(id, e.sequence_id as string);
     }
   }
 
@@ -1404,6 +1409,9 @@ export async function getActivityStats(
   let sentToday = 0;
   let skippedToday = 0;
 
+  const isCapError = (error: string | null | undefined) =>
+    typeof error === "string" && /cap/i.test(error);
+
   const chunkSize = 100;
   for (let i = 0; i < enrollmentIds.length; i += chunkSize) {
     const slice = enrollmentIds.slice(i, i + chunkSize);
@@ -1429,15 +1437,17 @@ export async function getActivityStats(
       }
     }
 
-    const { data: capRows, error: cErr } = await client
+    // Filter cap text in app code — avoid leading-wildcard ILIKE on error.
+    const { data: scheduledEmailRows, error: cErr } = await client
       .from("outreach_send_tasks")
-      .select("enrollment_id")
+      .select("enrollment_id, error")
       .eq("channel", "email")
       .eq("status", "scheduled")
-      .ilike("error", "%cap%")
+      .not("error", "is", null)
       .in("enrollment_id", slice);
     if (cErr) throw new Error(cErr.message);
-    for (const t of capRows ?? []) {
+    for (const t of scheduledEmailRows ?? []) {
+      if (!isCapError(t.error as string | null)) continue;
       const seqId = seqByEnrollment.get(t.enrollment_id as string);
       if (!seqId) continue;
       const bucket = bySeq.get(seqId);
