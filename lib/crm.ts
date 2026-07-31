@@ -1,5 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import {
+  mergeProperties,
+  normalizeProperties,
+  type CrmProperties,
+} from "@/lib/crm-fields";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -41,7 +47,8 @@ export type ActivityKind =
   | "owner_change"
   | "comment"
   | "webhook"
-  | "note";
+  | "note"
+  | "property_change";
 
 export type CrmCompany = {
   id: string;
@@ -60,6 +67,8 @@ export type CrmCompany = {
   arr: number | null;
   tags: string[];
   enrichment: Record<string, unknown>;
+  /** Custom field values (key → primitive). Defs in crm_field_defs. */
+  properties: CrmProperties;
   source: CompanySource;
   notes: string | null;
   lastActivityAt: string | null;
@@ -121,6 +130,8 @@ export type CreateCompanyInput = {
   arr?: number | null;
   tags?: string[];
   enrichment?: Record<string, unknown>;
+  /** Shallow merge into properties; null values remove keys. */
+  properties?: Record<string, unknown>;
   source?: CompanySource;
   notes?: string | null;
   createdByEmail?: string | null;
@@ -168,6 +179,7 @@ type CompanyRow = {
   arr: number | string | null;
   tags: string[] | null;
   enrichment: Record<string, unknown> | null;
+  properties?: Record<string, unknown> | null;
   source: CompanySource | null;
   notes: string | null;
   last_activity_at: string | null;
@@ -194,6 +206,7 @@ function rowToCompany(row: CompanyRow): CrmCompany {
     arr: row.arr == null ? null : Number(row.arr),
     tags: row.tags ?? [],
     enrichment: row.enrichment ?? {},
+    properties: normalizeProperties(row.properties),
     source: row.source ?? "manual",
     notes: row.notes,
     lastActivityAt: row.last_activity_at,
@@ -438,6 +451,9 @@ function companyInsertRow(input: CreateCompanyInput): Record<string, unknown> {
     arr: typeof input.arr === "number" ? input.arr : null,
     tags: input.tags ?? [],
     enrichment: input.enrichment ?? {},
+    properties: input.properties
+      ? mergeProperties({}, input.properties)
+      : {},
     source: input.source ?? "manual",
     notes: trimOrNull(input.notes),
     created_by_email: trimOrNull(input.createdByEmail),
@@ -502,6 +518,37 @@ export async function updateCompany(
     patch.enrichment = updates.enrichment;
   if ("notes" in updates) patch.notes = trimOrNull(updates.notes);
 
+  let propertyDiff: {
+    key: string;
+    from: unknown;
+    to: unknown;
+  }[] = [];
+  if ("properties" in updates && updates.properties !== undefined) {
+    let defsByKey: Map<string, import("@/lib/crm-fields").CrmFieldDef> | undefined;
+    try {
+      const { listFieldDefs } = await import("@/lib/crm-fields");
+      const defs = await listFieldDefs(client);
+      defsByKey = new Map(defs.map((d) => [d.key, d]));
+    } catch {
+      defsByKey = undefined;
+    }
+    const merged = mergeProperties(
+      prev.properties,
+      updates.properties,
+      defsByKey,
+    );
+    patch.properties = merged;
+    const keys = new Set([
+      ...Object.keys(prev.properties),
+      ...Object.keys(updates.properties),
+    ]);
+    for (const key of keys) {
+      const from = prev.properties[key] ?? null;
+      const to = merged[key] ?? null;
+      if (from !== to) propertyDiff.push({ key, from, to });
+    }
+  }
+
   const { data, error } = await client
     .from("crm_companies")
     .update(patch)
@@ -523,6 +570,17 @@ export async function updateCompany(
     await logActivity(client, id, "owner_change", {
       summary: `Owner: ${prev.ownerEmail ?? "—"} → ${next.ownerEmail ?? "—"}`,
       meta: { from: prev.ownerEmail, to: next.ownerEmail },
+      actorEmail,
+    });
+  }
+  if (propertyDiff.length > 0) {
+    const summary =
+      propertyDiff.length === 1
+        ? `Property ${propertyDiff[0].key}: ${String(propertyDiff[0].from ?? "—")} → ${String(propertyDiff[0].to ?? "—")}`
+        : `Updated ${propertyDiff.length} properties`;
+    await logActivity(client, id, "property_change", {
+      summary,
+      meta: { changes: propertyDiff },
       actorEmail,
     });
   }

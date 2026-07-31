@@ -3378,21 +3378,23 @@ export const listCrmCompanies = tool({
 
 export const getCrmCompany = tool({
   description:
-    "Get a single CRM company with its contacts, recent comments, activity timeline, and — when linked to a product org_id — real product usage signals from BigQuery.",
+    "Get a single CRM company with its contacts, recent comments, activity timeline, custom properties, field definitions, and — when linked to a product org_id — real product usage signals from BigQuery.",
   inputSchema: z.object({
     id: z.string().describe("Company id"),
   }),
   execute: async ({ id }) => {
     try {
       const client = getSupabaseServiceClient();
+      const { listFieldDefs } = await import("@/lib/crm-fields");
       const company = await getCompany(client, id);
       if (!company) {
         return { success: false as const, message: "Company not found" };
       }
-      const [contacts, comments, activities] = await Promise.all([
+      const [contacts, comments, activities, fieldDefs] = await Promise.all([
         listContacts(client, id),
         listComments(client, id),
         listActivities(client, id, 20),
+        listFieldDefs(client),
       ]);
       let signals = null;
       if (company.orgId) {
@@ -3414,8 +3416,15 @@ export const getCrmCompany = tool({
           country: company.country,
           arr: company.arr,
           notes: company.notes,
+          properties: company.properties,
           last_activity_at: company.lastActivityAt,
         },
+        field_defs: fieldDefs.map((f) => ({
+          key: f.key,
+          label: f.label,
+          type: f.type,
+          options: f.options,
+        })),
         contacts: contacts.map((c) => ({
           name: c.name,
           email: c.email,
@@ -3496,7 +3505,7 @@ export const createCrmCompany = tool({
 
 export const updateCrmCompany = tool({
   description:
-    "Update a CRM company — change status, priority, owner, dev_count, org link, industry or notes.",
+    "Update a CRM company — status, priority, owner, dev_count, org link, industry, notes, or custom properties (key → value; null clears a key). List field defs with listCrmFields.",
   inputSchema: z.object({
     id: z.string().describe("Company id"),
     status: z.enum(COMPANY_STATUSES as unknown as [string, ...string[]]).optional(),
@@ -3506,9 +3515,29 @@ export const updateCrmCompany = tool({
     industry: z.string().nullable().optional(),
     dev_count: z.number().nullable().optional(),
     notes: z.string().nullable().optional(),
+    properties: z
+      .record(
+        z.string(),
+        z.union([z.string(), z.number(), z.boolean(), z.null()]),
+      )
+      .optional()
+      .describe(
+        "Custom field values by key (e.g. { self_hosted: true }). null removes a key. Select fields store option id.",
+      ),
     user_email: z.string().optional().describe("Acting user's email (recorded as actor)"),
   }),
-  execute: async ({ id, status, priority, owner_email, org_id, industry, dev_count, notes, user_email }) => {
+  execute: async ({
+    id,
+    status,
+    priority,
+    owner_email,
+    org_id,
+    industry,
+    dev_count,
+    notes,
+    properties,
+    user_email,
+  }) => {
     try {
       const client = getSupabaseServiceClient();
       const company = await updateCompany(
@@ -3522,14 +3551,153 @@ export const updateCrmCompany = tool({
           industry,
           devCount: dev_count,
           notes,
+          properties,
         },
         user_email,
       );
-      return { success: true as const, company };
+      return {
+        success: true as const,
+        company: {
+          id: company.id,
+          name: company.name,
+          status: company.status,
+          properties: company.properties,
+        },
+      };
     } catch (error) {
       return {
         success: false as const,
         message: error instanceof Error ? error.message : "Failed to update company",
+      };
+    }
+  },
+});
+
+export const listCrmFields = tool({
+  description:
+    "List workspace CRM custom field definitions (Notion-style properties on accounts): key, label, type, select options.",
+  inputSchema: z.object({}),
+  execute: async () => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { listFieldDefs } = await import("@/lib/crm-fields");
+      const fields = await listFieldDefs(client);
+      return {
+        success: true as const,
+        fields: fields.map((f) => ({
+          id: f.id,
+          key: f.key,
+          label: f.label,
+          type: f.type,
+          options: f.options,
+          position: f.position,
+        })),
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to list fields",
+      };
+    }
+  },
+});
+
+export const createCrmField = tool({
+  description:
+    "Create a CRM custom field definition for all accounts. Types: text, number, boolean, select. For select, pass options as label strings or {id,label}.",
+  inputSchema: z.object({
+    label: z.string().describe("Human label, e.g. Self-hosted"),
+    type: z.enum(["text", "number", "boolean", "select"]),
+    key: z
+      .string()
+      .optional()
+      .describe("Stable key slug (optional; derived from label)"),
+    options: z
+      .array(
+        z.union([
+          z.string(),
+          z.object({ id: z.string().optional(), label: z.string() }),
+        ]),
+      )
+      .optional()
+      .describe("Required for select — option labels or {id,label}"),
+  }),
+  execute: async ({ label, type, key, options }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { createFieldDef } = await import("@/lib/crm-fields");
+      const normalized = (options ?? []).map((o) =>
+        typeof o === "string" ? { id: "", label: o } : { id: o.id ?? "", label: o.label },
+      );
+      const field = await createFieldDef(client, {
+        label,
+        type,
+        key,
+        options: type === "select" ? normalized : undefined,
+      });
+      return { success: true as const, field };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to create field",
+      };
+    }
+  },
+});
+
+export const updateCrmField = tool({
+  description: "Update a CRM custom field definition (label, options, position). Key is immutable.",
+  inputSchema: z.object({
+    id: z.string().describe("Field def id"),
+    label: z.string().optional(),
+    options: z
+      .array(
+        z.union([
+          z.string(),
+          z.object({ id: z.string().optional(), label: z.string() }),
+        ]),
+      )
+      .optional(),
+    position: z.number().optional(),
+  }),
+  execute: async ({ id, label, options, position }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { updateFieldDef } = await import("@/lib/crm-fields");
+      const normalized = options?.map((o) =>
+        typeof o === "string" ? { id: "", label: o } : { id: o.id ?? "", label: o.label },
+      );
+      const field = await updateFieldDef(client, id, {
+        label,
+        options: normalized,
+        position,
+      });
+      return { success: true as const, field };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to update field",
+      };
+    }
+  },
+});
+
+export const deleteCrmField = tool({
+  description:
+    "Delete a CRM custom field definition. Account values for that key stop showing (orphans ignored).",
+  inputSchema: z.object({
+    id: z.string().describe("Field def id"),
+  }),
+  execute: async ({ id }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { deleteFieldDef } = await import("@/lib/crm-fields");
+      const result = await deleteFieldDef(client, id);
+      return { success: true as const, ...result };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to delete field",
       };
     }
   },
@@ -5668,6 +5836,10 @@ export function createAgentTools(userEmail?: string) {
     getCrmCompany,
     createCrmCompany,
     updateCrmCompany,
+    listCrmFields,
+    createCrmField,
+    updateCrmField,
+    deleteCrmField,
     addCrmComment,
     icpAddToWatchlist,
     icpListWatchlist,

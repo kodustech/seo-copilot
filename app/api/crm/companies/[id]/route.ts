@@ -114,6 +114,14 @@ export async function PATCH(
     updates.tags = body.tags.filter((t) => typeof t === "string") as string[];
   if ("notes" in body)
     updates.notes = typeof body.notes === "string" ? body.notes : null;
+  if (
+    "properties" in body &&
+    body.properties &&
+    typeof body.properties === "object" &&
+    !Array.isArray(body.properties)
+  ) {
+    updates.properties = body.properties as Record<string, unknown>;
+  }
 
   try {
     const company = await updateCompany(client, id, updates, userEmail);
