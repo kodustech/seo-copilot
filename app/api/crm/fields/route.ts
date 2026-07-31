@@ -7,7 +7,10 @@ import {
   type CrmFieldOption,
   type CrmFieldType,
 } from "@/lib/crm-fields";
-import { getSupabaseUserClient } from "@/lib/supabase-server";
+import {
+  getSupabaseServiceClient,
+  getSupabaseUserClient,
+} from "@/lib/supabase-server";
 
 function unauthorized(message = "Unauthorized") {
   return NextResponse.json({ error: message }, { status: 401 });
@@ -39,10 +42,20 @@ function parseOptions(raw: unknown): CrmFieldOption[] | undefined {
     });
 }
 
+/**
+ * Auth as the user, then use service role for reads/writes.
+ * Avoids silent empty results when table RLS/GRANTs are incomplete
+ * (same pattern as mailbox settings).
+ */
+async function authedService(req: Request) {
+  await getSupabaseUserClient(req.headers.get("authorization"));
+  return getSupabaseServiceClient();
+}
+
 export async function GET(req: Request) {
   let client;
   try {
-    ({ client } = await getSupabaseUserClient(req.headers.get("authorization")));
+    client = await authedService(req);
   } catch (err) {
     return unauthorized(err instanceof Error ? err.message : "Unauthorized");
   }
@@ -61,7 +74,7 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   let client;
   try {
-    ({ client } = await getSupabaseUserClient(req.headers.get("authorization")));
+    client = await authedService(req);
   } catch (err) {
     return unauthorized(err instanceof Error ? err.message : "Unauthorized");
   }
