@@ -14,6 +14,7 @@ import {
   Trash2,
   X,
   Activity,
+  Mail,
   MessageSquare,
   Users,
   Zap,
@@ -834,7 +835,13 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 // Company drawer
 // ---------------------------------------------------------------------------
 
-type DrawerTab = "overview" | "comments" | "contacts" | "timeline" | "signals";
+type DrawerTab =
+  | "overview"
+  | "emails"
+  | "comments"
+  | "contacts"
+  | "timeline"
+  | "signals";
 
 function CompanyDrawer({
   companyId,
@@ -855,6 +862,7 @@ function CompanyDrawer({
   const [contacts, setContacts] = useState<CrmContact[]>([]);
   const [comments, setComments] = useState<CrmComment[]>([]);
   const [activities, setActivities] = useState<CrmActivity[]>([]);
+  const [emailCount, setEmailCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<DrawerTab>("overview");
 
@@ -875,6 +883,25 @@ function CompanyDrawer({
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
+
+  // Lightweight count for tab badge (full list loads inside EmailsTab)
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await authFetch(`/api/crm/companies/${companyId}/emails`);
+        const j = await res.json();
+        if (!cancelled && res.ok) {
+          setEmailCount(typeof j.counts?.total === "number" ? j.counts.total : null);
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId, authFetch]);
 
   async function patch(patchBody: Record<string, unknown>) {
     setCompany((prev) => {
@@ -911,6 +938,12 @@ function CompanyDrawer({
 
   const tabs: { id: DrawerTab; label: string; icon: typeof Activity; count?: number }[] = [
     { id: "overview", label: "Overview", icon: Building2 },
+    {
+      id: "emails",
+      label: "Emails",
+      icon: Mail,
+      count: emailCount ?? undefined,
+    },
     { id: "comments", label: "Comments", icon: MessageSquare, count: comments.length },
     { id: "contacts", label: "Contacts", icon: Users, count: contacts.length },
     { id: "timeline", label: "Timeline", icon: Activity, count: activities.length },
@@ -980,6 +1013,8 @@ function CompanyDrawer({
               fieldDefs={fieldDefs}
               onPatch={patch}
             />
+          ) : tab === "emails" ? (
+            <EmailsTab companyId={companyId} authFetch={authFetch} />
           ) : tab === "comments" ? (
             <CommentsTab
               companyId={companyId}
@@ -1001,6 +1036,196 @@ function CompanyDrawer({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Emails tab (sequence outbound + Gmail reply inbox) ───────────────────
+
+type EmailTimelineItem = {
+  id: string;
+  direction: "outbound" | "inbound";
+  at: string;
+  fromEmail: string | null;
+  toEmail: string | null;
+  subject: string | null;
+  snippet: string | null;
+  bodyText: string | null;
+  source: "sequence" | "gmail_sync";
+  sequenceName: string | null;
+  contactEmail: string | null;
+  contactName: string | null;
+  status: string | null;
+};
+
+function EmailsTab({
+  companyId,
+  authFetch,
+}: {
+  companyId: string;
+  authFetch: (url: string, init?: RequestInit) => Promise<Response>;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [items, setItems] = useState<EmailTimelineItem[]>([]);
+  const [counts, setCounts] = useState({
+    total: 0,
+    outbound: 0,
+    inbound: 0,
+    threads: 0,
+  });
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await authFetch(`/api/crm/companies/${companyId}/emails`);
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error ?? "Failed to load emails");
+      setItems(j.items ?? []);
+      setCounts(
+        j.counts ?? { total: 0, outbound: 0, inbound: 0, threads: 0 },
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load emails");
+    } finally {
+      setLoading(false);
+    }
+  }, [companyId, authFetch]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (loading) {
+    return (
+      <div className="flex justify-center py-12">
+        <Loader2 className="size-5 animate-spin text-neutral-500" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        {error}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-neutral-500">
+          Sequence outbound + Gmail replies matched by domain / contacts.
+          {counts.threads > 0 ? ` · ${counts.threads} thread(s)` : ""}
+        </p>
+        <div className="flex gap-2 text-[11px] text-neutral-500">
+          <span className="rounded bg-white/5 px-1.5 py-0.5">
+            {counts.outbound} out
+          </span>
+          <span className="rounded bg-white/5 px-1.5 py-0.5">
+            {counts.inbound} in
+          </span>
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="text-neutral-400 hover:text-white"
+          >
+            <RefreshCw className="size-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-white/10 px-4 py-10 text-center">
+          <Mail className="mx-auto size-7 text-neutral-600" />
+          <p className="mt-3 text-sm font-medium text-neutral-300">
+            No email history yet
+          </p>
+          <p className="mt-1 text-xs text-pretty text-neutral-500">
+            Enroll contacts in Outbound sequences and sync Gmail replies — they
+            show up here when domain or contact email matches this account.
+          </p>
+        </div>
+      ) : (
+        <ul className="space-y-2">
+          {items.map((m) => {
+            const open = expanded === m.id;
+            const inbound = m.direction === "inbound";
+            return (
+              <li
+                key={m.id}
+                className={cn(
+                  "rounded-xl border px-3 py-2.5",
+                  inbound
+                    ? "border-emerald-500/20 bg-emerald-500/5"
+                    : "border-white/[0.06] bg-neutral-900/50",
+                )}
+              >
+                <button
+                  type="button"
+                  className="w-full text-left"
+                  onClick={() => setExpanded(open ? null : m.id)}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span
+                          className={cn(
+                            "rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
+                            inbound
+                              ? "bg-emerald-500/20 text-emerald-300"
+                              : "bg-sky-500/20 text-sky-300",
+                          )}
+                        >
+                          {inbound ? "In" : "Out"}
+                        </span>
+                        {m.source === "sequence" && (
+                          <span className="text-[10px] text-neutral-500">
+                            sequence
+                          </span>
+                        )}
+                        {m.sequenceName && (
+                          <span className="truncate text-[10px] text-neutral-500">
+                            · {m.sequenceName}
+                          </span>
+                        )}
+                        {m.status && m.status !== "sent" && (
+                          <span className="text-[10px] text-amber-400/90">
+                            · {m.status}
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 truncate text-sm font-medium text-white">
+                        {m.subject || "(no subject)"}
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-neutral-500">
+                        {formatRelative(m.at)}
+                        {m.fromEmail ? ` · ${m.fromEmail}` : ""}
+                        {m.toEmail ? ` → ${m.toEmail}` : ""}
+                      </p>
+                      {!open && m.snippet && (
+                        <p className="mt-1 line-clamp-2 text-xs text-neutral-400">
+                          {m.snippet}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </button>
+                {open && (
+                  <div className="mt-2 border-t border-white/[0.06] pt-2">
+                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-sans text-xs leading-relaxed text-neutral-300">
+                      {m.bodyText?.trim() || m.snippet || "—"}
+                    </pre>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }
