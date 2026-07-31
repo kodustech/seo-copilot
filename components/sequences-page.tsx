@@ -724,6 +724,36 @@ export function SequencesPage() {
     }
   };
 
+  /** Convert handoff: sequence person → CRM Accounts (by domain). */
+  const promoteEnrollmentToCrm = async (enrollment: EnrollmentRow) => {
+    if (!token || !editingId) return;
+    setBusyId(enrollment.id);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/outreach/sequences/${editingId}/enrollments/${enrollment.id}`,
+        {
+          method: "PATCH",
+          headers: headers(),
+          body: JSON.stringify({ action: "promote_crm" }),
+        },
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Could not promote to Accounts");
+        return;
+      }
+      const name = enrollment.companyName || enrollment.contactName || "Company";
+      setNotice(
+        data.created
+          ? `Created ${name} in Accounts`
+          : `Updated ${name} in Accounts`,
+      );
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const createSeq = async () => {
     if (!token || !newName.trim()) return;
     setCreating(true);
@@ -1852,6 +1882,23 @@ export function SequencesPage() {
                           </div>
                           <div>
                             <div className="flex items-center justify-end gap-0.5">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-[11px]"
+                                disabled={busyId === e.id}
+                                title="Create or update this company in CRM Accounts"
+                                onClick={(ev) => {
+                                  ev.stopPropagation();
+                                  void promoteEnrollmentToCrm(e);
+                                }}
+                              >
+                                {busyId === e.id ? (
+                                  <Loader2 className="size-3 animate-spin" />
+                                ) : (
+                                  "To CRM"
+                                )}
+                              </Button>
                               <Button
                                 size="sm"
                                 variant="ghost"

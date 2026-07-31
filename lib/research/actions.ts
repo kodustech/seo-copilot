@@ -1,6 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { upsertAccountByDomain } from "@/lib/crm";
+import {
+  domainFromEmail,
+  logActivity,
+  normalizeDomain,
+  upsertAccountByDomain,
+} from "@/lib/crm";
 import {
   getRow,
   listEvidence,
@@ -10,12 +15,12 @@ import {
 
 /**
  * Push a research row into Accounts (CRM) — Convert system of record.
- * Company by domain + contacts from research_people.
+ * Company by domain (or first person email domain) + contacts from research_people.
  */
 export async function pushRowToCrm(
   client: SupabaseClient,
   rowId: string,
-): Promise<{ companyId: string; contactsCreated: number }> {
+): Promise<{ companyId: string; contactsCreated: number; created: boolean }> {
   const row = await getRow(client, rowId);
   if (!row) throw new Error("Row not found");
 
@@ -25,12 +30,23 @@ export async function pushRowToCrm(
   let contactsCreated = 0;
   let companyId: string | null = null;
 
-  // Create/update company once
   const first = people[0];
+  const domain =
+    normalizeDomain(row.domain) ||
+    domainFromEmail(first?.email) ||
+    people.map((p) => domainFromEmail(p.email)).find(Boolean) ||
+    null;
+
+  if (!domain) {
+    throw new Error(
+      "Cannot promote to CRM without a domain — set company domain or a person email",
+    );
+  }
+
   const base = await upsertAccountByDomain(client, {
     name: row.companyName,
-    domain: row.domain,
-    website: row.domain ? `https://${row.domain}` : null,
+    domain,
+    website: `https://${domain}`,
     status: row.pass ? "qualified" : "lead",
     priority: row.pass ? "high" : "medium",
     tags: [
@@ -48,6 +64,7 @@ export async function pushRowToCrm(
         pass: row.pass,
         why_now: row.whyNow,
         anti_flags: row.antiFlags,
+        row_id: rowId,
         criteria: evidence.map((e) => ({
           id: e.criterionId,
           kind: e.kind,
@@ -59,7 +76,10 @@ export async function pushRowToCrm(
     },
     contact: first
       ? {
-          name: first.name,
+          name:
+            first.name?.trim() ||
+            first.email?.split("@")[0] ||
+            "Contact",
           email: first.email,
           role: first.role,
           linkedin: first.linkedin,
@@ -69,14 +89,13 @@ export async function pushRowToCrm(
   companyId = base.company.id;
   if (base.contactCreated) contactsCreated += 1;
 
-  // Remaining people as contacts
   for (const p of people.slice(1)) {
     const more = await upsertAccountByDomain(client, {
       name: row.companyName,
-      domain: row.domain,
+      domain,
       source: "research",
       contact: {
-        name: p.name,
+        name: p.name?.trim() || p.email?.split("@")[0] || "Contact",
         email: p.email,
         role: p.role,
         linkedin: p.linkedin,
@@ -85,7 +104,25 @@ export async function pushRowToCrm(
     if (more.contactCreated) contactsCreated += 1;
   }
 
-  return { companyId: companyId!, contactsCreated };
+  try {
+    await logActivity(client, companyId!, "note", {
+      summary: `Promoted from research list${row.pass ? " (ICP pass)" : ""}`,
+      meta: {
+        research_row_id: rowId,
+        domain,
+        contacts_created: contactsCreated,
+        company_created: base.created,
+      },
+    });
+  } catch (err) {
+    console.warn("[research] CRM activity log failed:", err);
+  }
+
+  return {
+    companyId: companyId!,
+    contactsCreated,
+    created: base.created,
+  };
 }
 
 /**

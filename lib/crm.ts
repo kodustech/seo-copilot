@@ -27,7 +27,9 @@ export type CompanySource =
   | "agent"
   | "research"
   | "pipeline"
-  | "social";
+  | "social"
+  /** Created/updated from outbound sequence (reply or manual promote). */
+  | "sequence";
 
 export const COMPANY_STATUSES: CompanyStatus[] = [
   "lead",
@@ -304,6 +306,17 @@ export function normalizeDomain(value: string | null | undefined): string | null
   } catch {
     return raw.toLowerCase();
   }
+}
+
+/** Domain part of an email address, or null. */
+export function domainFromEmail(
+  email: string | null | undefined,
+): string | null {
+  const e = trimOrNull(email)?.toLowerCase();
+  if (!e || !e.includes("@")) return null;
+  const host = e.split("@").pop()?.trim() || "";
+  if (!host || host.includes(" ")) return null;
+  return normalizeDomain(host);
 }
 
 function daysSince(iso: string | null): number | null {
@@ -683,6 +696,133 @@ export async function upsertAccountByDomain(
   }
 
   return { company, created, contactCreated };
+}
+
+export type PromoteEnrollmentInput = {
+  id: string;
+  sequenceId: string;
+  companyName: string;
+  domain: string | null;
+  contactName: string | null;
+  contactEmail: string | null;
+  contactLinkedin: string | null;
+  contactRole: string | null;
+};
+
+/**
+ * Convert handoff: sequence person → CRM Account (+ contact).
+ * - reply → status qualified, tag outbound-reply
+ * - manual promote → status lead (won't downgrade later stages)
+ * Domain from enrollment.domain or contact email. Idempotent by domain.
+ */
+export async function promoteEnrollmentToCrm(
+  client: SupabaseClient,
+  enrollment: PromoteEnrollmentInput,
+  opts?: {
+    reason?: "reply" | "manual_promote";
+    actorEmail?: string | null;
+  },
+): Promise<{
+  company: CrmCompany | null;
+  created: boolean;
+  contactCreated: boolean;
+  skipped?: string;
+}> {
+  const reason = opts?.reason ?? "manual_promote";
+  const email = trimOrNull(enrollment.contactEmail)?.toLowerCase() ?? null;
+  const domain =
+    normalizeDomain(enrollment.domain) || domainFromEmail(email);
+  const companyName =
+    trimOrNull(enrollment.companyName) || domain || null;
+
+  if (!companyName) {
+    return {
+      company: null,
+      created: false,
+      contactCreated: false,
+      skipped: "Missing company name and domain/email",
+    };
+  }
+  if (!domain) {
+    return {
+      company: null,
+      created: false,
+      contactCreated: false,
+      skipped:
+        "Missing domain (set domain on enrollment or use a contact email)",
+    };
+  }
+
+  let sequenceName: string | null = null;
+  try {
+    const { data } = await client
+      .from("outreach_sequences")
+      .select("name")
+      .eq("id", enrollment.sequenceId)
+      .maybeSingle();
+    sequenceName = (data?.name as string | null) ?? null;
+  } catch {
+    /* ignore */
+  }
+
+  const contactName =
+    trimOrNull(enrollment.contactName) ||
+    (email ? email.split("@")[0] : null) ||
+    "Contact";
+
+  const result = await upsertAccountByDomain(client, {
+    name: companyName,
+    domain,
+    website: `https://${domain}`,
+    status: reason === "reply" ? "qualified" : "lead",
+    priority: reason === "reply" ? "high" : "medium",
+    tags: reason === "reply" ? ["outbound-reply", "sequence"] : ["sequence-promote"],
+    source: "sequence",
+    enrichment: {
+      sequence: {
+        enrollment_id: enrollment.id,
+        sequence_id: enrollment.sequenceId,
+        sequence_name: sequenceName,
+        promoted_via: reason,
+        contact_email: email,
+      },
+    },
+    contact:
+      email || trimOrNull(enrollment.contactName)
+        ? {
+            name: contactName,
+            email,
+            role: enrollment.contactRole,
+            linkedin: enrollment.contactLinkedin,
+          }
+        : null,
+  });
+
+  try {
+    await logActivity(client, result.company.id, "note", {
+      summary:
+        reason === "reply"
+          ? `Replied to sequence${sequenceName ? ` “${sequenceName}”` : ""}`
+          : `Promoted from sequence${sequenceName ? ` “${sequenceName}”` : ""}`,
+      meta: {
+        enrollment_id: enrollment.id,
+        sequence_id: enrollment.sequenceId,
+        sequence_name: sequenceName,
+        reason,
+        company_created: result.created,
+        contact_created: result.contactCreated,
+      },
+      actorEmail: opts?.actorEmail ?? null,
+    });
+  } catch (err) {
+    console.warn("[crm] logActivity on promote failed:", err);
+  }
+
+  return {
+    company: result.company,
+    created: result.created,
+    contactCreated: result.contactCreated,
+  };
 }
 
 /** Map legacy outreach_prospect status → CRM company status. */
