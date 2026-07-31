@@ -22,7 +22,10 @@ export async function GET(req: Request, ctx: Ctx) {
     }
     return NextResponse.json({
       ...detail,
-      gmailUrl: gmailThreadUrl(detail.thread.gmailThreadId),
+      gmailUrl:
+        detail.thread.channel === "email"
+          ? gmailThreadUrl(detail.thread.gmailThreadId)
+          : null,
     });
   } catch (err) {
     return NextResponse.json(

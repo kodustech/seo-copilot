@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { syncAllMailboxesInbox } from "@/lib/outreach/inbox";
+import { syncUnipileLinkedInInbox } from "@/lib/unipile-replies";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 
 export const runtime = "nodejs";
@@ -16,10 +17,12 @@ export async function POST(req: Request) {
   try {
     const client = getSupabaseServiceClient();
     const results = await syncAllMailboxesInbox(client);
+    const linkedin = await syncUnipileLinkedInInbox(client);
     return NextResponse.json({
       ok: true,
       mailboxes: results.length,
       results,
+      linkedin,
     });
   } catch (err) {
     return NextResponse.json(
