@@ -11,7 +11,7 @@ export function renderTemplate(
     | "contactEmail"
     | "contactLinkedin"
     | "contactRole"
-  >,
+  > & { templateVars?: Record<string, string> | null },
 ): string {
   const firstName =
     enrollment.contactName?.trim().split(/\s+/)[0] ??
@@ -26,6 +26,9 @@ export function renderTemplate(
     role: enrollment.contactRole ?? "",
     email: enrollment.contactEmail ?? "",
     linkedin: enrollment.contactLinkedin ?? "",
+    // Enrollment-time extras (e.g. skip_reason, tier, dev_count from CRM
+    // enrollments) override nothing above but add their own tokens.
+    ...(enrollment.templateVars ?? {}),
   };
 
   return template.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, key: string) => {
