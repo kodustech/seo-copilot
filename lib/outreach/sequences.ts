@@ -89,6 +89,19 @@ function mapEnrollment(r: Record<string, unknown>): OutreachEnrollment {
   };
 }
 
+export async function getEnrollment(
+  client: SupabaseClient,
+  enrollmentId: string,
+): Promise<OutreachEnrollment | null> {
+  const { data, error } = await client
+    .from("outreach_enrollments")
+    .select("*")
+    .eq("id", enrollmentId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ? mapEnrollment(data as Record<string, unknown>) : null;
+}
+
 function mapTask(r: Record<string, unknown>): OutreachSendTask {
   return {
     id: r.id as string,
@@ -2250,6 +2263,9 @@ export async function unenrollFromSequence(
 /**
  * Mark an enrollment as replied and cancel remaining scheduled/ready tasks.
  * Used by Gmail reply sync (strong match) and manual mark-replied.
+ *
+ * Convert handoff: also upserts CRM Account (domain + contact) as qualified —
+ * best-effort so a CRM failure never blocks stopping the sequence.
  */
 export async function markEnrollmentReplied(
   client: SupabaseClient,
@@ -2260,6 +2276,12 @@ export async function markEnrollmentReplied(
   alreadyTerminal: boolean;
   pendingTasksCancelled: number;
   enrollment: OutreachEnrollment | null;
+  crm?: {
+    companyId: string | null;
+    created: boolean;
+    contactCreated: boolean;
+    skipped?: string;
+  };
 }> {
   const { data: raw, error } = await client
     .from("outreach_enrollments")
@@ -2299,37 +2321,84 @@ export async function markEnrollmentReplied(
     .select("id");
   if (tasksError) throw new Error(tasksError.message);
 
+  let finalEnrollment = enrollment;
+  let updatedFlag = false;
+  let alreadyTerminal = false;
+
   if (terminal.has(enrollment.status)) {
-    // Still cancel pending tasks if any slipped through while already terminal.
+    alreadyTerminal = true;
     if (enrollment.status === "replied") {
-      return {
-        updated: false,
-        alreadyTerminal: true,
-        pendingTasksCancelled: cancelledTasks?.length ?? 0,
-        enrollment,
-      };
+      // Already replied — still ensure CRM handoff (idempotent).
+    } else {
+      // completed/cancelled/etc. → upgrade to replied
+      const { data: updated, error: enrollError } = await client
+        .from("outreach_enrollments")
+        .update({
+          status: "replied",
+          next_run_at: null,
+          last_error: null,
+          updated_at: now,
+        })
+        .eq("id", enrollmentId)
+        .select("*")
+        .single();
+      if (enrollError) throw new Error(enrollError.message);
+      finalEnrollment = mapEnrollment(updated as Record<string, unknown>);
+      updatedFlag = true;
     }
-    // If completed/cancelled/etc., still upgrade to replied so health counts show engagement.
+  } else {
+    const { data: updated, error: enrollError } = await client
+      .from("outreach_enrollments")
+      .update({
+        status: "replied",
+        next_run_at: null,
+        last_error: null,
+        updated_at: now,
+      })
+      .eq("id", enrollmentId)
+      .select("*")
+      .single();
+    if (enrollError) throw new Error(enrollError.message);
+    finalEnrollment = mapEnrollment(updated as Record<string, unknown>);
+    updatedFlag = true;
   }
 
-  const { data: updated, error: enrollError } = await client
-    .from("outreach_enrollments")
-    .update({
-      status: "replied",
-      next_run_at: null,
-      last_error: null,
-      updated_at: now,
-    })
-    .eq("id", enrollmentId)
-    .select("*")
-    .single();
-  if (enrollError) throw new Error(enrollError.message);
+  // CRM handoff: reply → Accounts (domain + contact). Never fail the stop.
+  let crm:
+    | {
+        companyId: string | null;
+        created: boolean;
+        contactCreated: boolean;
+        skipped?: string;
+      }
+    | undefined;
+  try {
+    const { promoteEnrollmentToCrm } = await import("@/lib/crm");
+    const promoted = await promoteEnrollmentToCrm(client, finalEnrollment, {
+      reason: "reply",
+    });
+    crm = {
+      companyId: promoted.company?.id ?? null,
+      created: promoted.created,
+      contactCreated: promoted.contactCreated,
+      skipped: promoted.skipped,
+    };
+  } catch (err) {
+    console.warn("[sequences] CRM promote on reply failed:", err);
+    crm = {
+      companyId: null,
+      created: false,
+      contactCreated: false,
+      skipped: err instanceof Error ? err.message : "CRM promote failed",
+    };
+  }
 
   return {
-    updated: true,
-    alreadyTerminal: terminal.has(enrollment.status),
+    updated: updatedFlag,
+    alreadyTerminal,
     pendingTasksCancelled: cancelledTasks?.length ?? 0,
-    enrollment: mapEnrollment(updated as Record<string, unknown>),
+    enrollment: finalEnrollment,
+    crm,
   };
 }
 
