@@ -3318,12 +3318,16 @@ const listSocialMentions = tool({
 
 export const listCrmCompanies = tool({
   description:
-    "List/filter companies in the Company CRM. Filter by status, owner, search text, or only accounts that are idle past their status SLA (stale_only).",
+    "List/filter companies in the Company CRM. Filter by status, owner, outbound tier (t0=open decision window, t1=connected git recently, t2=signed up never connected, t3=older base, customer=paying), search text, or only accounts that are idle past their status SLA (stale_only).",
   inputSchema: z.object({
     status: z
       .enum(COMPANY_STATUSES as unknown as [string, ...string[]])
       .optional()
       .describe("Filter by pipeline status"),
+    tier: z
+      .enum(["t0", "t1", "t2", "t3", "customer"])
+      .optional()
+      .describe("Filter by outbound tier from product signals"),
     owner_email: z.string().optional().describe("Filter by responsible owner email"),
     stale_only: z
       .boolean()
@@ -3332,11 +3336,12 @@ export const listCrmCompanies = tool({
     search: z.string().optional().describe("Search name, domain, org id, industry, notes"),
     limit: z.number().optional().describe("Max rows (default 50)"),
   }),
-  execute: async ({ status, owner_email, stale_only, search, limit }) => {
+  execute: async ({ status, tier, owner_email, stale_only, search, limit }) => {
     try {
       const client = getSupabaseServiceClient();
       const companies = await listCompanies(client, {
         status: status as CompanyStatus | undefined,
+        tier,
         ownerEmail: owner_email,
         staleOnly: stale_only,
         search,
@@ -3352,6 +3357,7 @@ export const listCrmCompanies = tool({
           org_id: c.orgId,
           status: c.status,
           priority: c.priority,
+          tier: c.tier,
           owner_email: c.ownerEmail,
           dev_count: c.devCount,
           idle_days: c.idleDays,
@@ -5458,6 +5464,56 @@ export const sequenceEnrollResearch = tool({
   },
 });
 
+export const sequenceEnrollCrm = tool({
+  description:
+    "Enroll CRM accounts (companies + their contacts with email) into an outreach sequence. This is the entry path for product-signal tiers: filter accounts with listCrmCompanies (e.g. tier=t0) then enroll their ids here. Suppression built in: customer/churned/lost accounts are skipped, and accounts already active in another sequence are skipped unless allow_parallel=true. Does NOT auto-activate the sequence.",
+  inputSchema: z.object({
+    sequence_id: z.string(),
+    company_ids: z.array(z.string()).min(1).describe("CRM company ids from listCrmCompanies"),
+    all_contacts: z
+      .boolean()
+      .optional()
+      .describe("Enroll every contact with email per company (default: primary contact only)"),
+    allow_parallel: z
+      .boolean()
+      .optional()
+      .describe("Enroll even if the account is already active in another sequence"),
+    user_email: z.string().optional(),
+  }),
+  execute: async ({
+    sequence_id,
+    company_ids,
+    all_contacts,
+    allow_parallel,
+    user_email,
+  }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { enrollFromCrm } = await import("@/lib/outreach/sequences");
+      const result = await enrollFromCrm(client, {
+        sequenceId: sequence_id,
+        companyIds: company_ids,
+        allContacts: all_contacts ?? false,
+        allowParallel: allow_parallel ?? false,
+        enrolledByEmail: user_email ?? null,
+      });
+      return {
+        success: true as const,
+        ...result,
+        next:
+          result.sequenceStatus === "active"
+            ? "Sequence is active. Use sequenceListQueue for the human queue; email auto-send depends on the mailbox setting."
+            : `Sequence is "${result.sequenceStatus}" — accounts enrolled but work is held. Call sequenceUpdate with status="active" when ready.`,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed",
+      };
+    }
+  },
+});
+
 export const sequenceUnenroll = tool({
   description:
     "Remove specific people or companies from an outreach sequence. It cancels active/paused enrollments and their pending tasks, while preserving completed and sent-task history. Use enrollment_ids, research_person_ids, or research_row_ids; do not delete the whole sequence. Confirm before bulk removal.",
@@ -5695,6 +5751,7 @@ export function createAgentTools(userEmail?: string) {
     sequenceDelete,
     sequencePreview,
     sequenceEnrollResearch,
+    sequenceEnrollCrm,
     sequenceUnenroll,
     sequenceListQueue,
     sequenceCompleteTask,

@@ -213,6 +213,18 @@ async function runOutreachInboxCron(): Promise<void> {
   );
 }
 
+async function runProductSignalsCron(): Promise<void> {
+  const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
+  const { runProductSignalsSweep } = await import("@/lib/product-signals/sweep");
+  const res = await runProductSignalsSweep(getSupabaseServiceClient());
+  console.log(
+    `[cron] product-signals: ${res.orgs} orgs, ${res.transitions} transitions, ` +
+      `${res.companiesCreated} companies created, ${res.companiesLinked} linked, ` +
+      `${res.tiersUpdated} tiers updated, ${res.contactsCreated} contacts` +
+      (res.errors.length ? `, ${res.errors.length} errors: ${res.errors[0]}` : ""),
+  );
+}
+
 const JOBS: JobDefinition[] = [
   {
     name: "scheduled-jobs + YOLO",
@@ -258,6 +270,12 @@ const JOBS: JobDefinition[] = [
     name: "outreach-inbox",
     schedule: "*/10 * * * *",
     run: runOutreachInboxCron,
+  },
+  {
+    // Every 4h: BigQuery → classify orgs into outbound tiers → sync CRM.
+    name: "product-signals",
+    schedule: "30 */4 * * *",
+    run: runProductSignalsCron,
   },
   {
     // Every 3h: refresh per-user notifications from the attention feed.
