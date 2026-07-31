@@ -69,6 +69,11 @@ ALTER TABLE outreach_enrollments
 CREATE INDEX IF NOT EXISTS outreach_enrollments_crm_company_idx
   ON outreach_enrollments (crm_company_id) WHERE crm_company_id IS NOT NULL;
 
+-- Extra {{token}} values frozen at enrollment time (e.g. skip_reason, tier,
+-- dev_count for CRM-sourced enrollments). Merged into template rendering.
+ALTER TABLE outreach_enrollments
+  ADD COLUMN IF NOT EXISTS template_vars JSONB DEFAULT '{}'::jsonb;
+
 ALTER TABLE outreach_enrollments DROP CONSTRAINT IF EXISTS outreach_enrollments_source_check;
 ALTER TABLE outreach_enrollments
   ADD CONSTRAINT outreach_enrollments_source_check

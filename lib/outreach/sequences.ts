@@ -74,6 +74,7 @@ function mapEnrollment(r: Record<string, unknown>): OutreachEnrollment {
     researchRowId: (r.research_row_id as string | null) ?? null,
     researchPersonId: (r.research_person_id as string | null) ?? null,
     crmCompanyId: (r.crm_company_id as string | null) ?? null,
+    templateVars: (r.template_vars as Record<string, string> | null) ?? null,
     companyName: r.company_name as string,
     domain: (r.domain as string | null) ?? null,
     contactName: (r.contact_name as string | null) ?? null,
@@ -735,6 +736,7 @@ type ContactSnapshot = {
   researchPersonId?: string | null;
   outreachProspectId?: string | null;
   crmCompanyId?: string | null;
+  templateVars?: Record<string, string> | null;
   source: EnrollmentSource;
 };
 
@@ -786,6 +788,7 @@ async function insertEnrollment(
       research_row_id: snap.researchRowId ?? null,
       research_person_id: snap.researchPersonId ?? null,
       crm_company_id: snap.crmCompanyId ?? null,
+      template_vars: snap.templateVars ?? {},
       company_name: snap.companyName,
       domain: snap.domain,
       contact_name: snap.contactName,
@@ -1090,6 +1093,27 @@ export async function enrollFromCrm(
         }
       }
 
+      // Freeze product-signal tokens for templates ({{skip_reason}}, {{tier}},
+      // {{trigger}}, {{dev_count}}, {{reviews_30d}}).
+      const templateVars: Record<string, string> = {};
+      if (company.orgId) {
+        const { data: sig } = await client
+          .from("product_signals_latest")
+          .select("tier,trigger,top_skip_reason,user_count,reviews_30d")
+          .eq("org_id", company.orgId)
+          .maybeSingle();
+        if (sig) {
+          if (sig.tier) templateVars.tier = String(sig.tier);
+          if (sig.trigger) templateVars.trigger = String(sig.trigger);
+          if (sig.top_skip_reason)
+            templateVars.skip_reason = String(sig.top_skip_reason);
+          if (sig.user_count != null)
+            templateVars.dev_count = String(sig.user_count);
+          if (sig.reviews_30d != null)
+            templateVars.reviews_30d = String(sig.reviews_30d);
+        }
+      }
+
       const contacts = await listContacts(client, companyId);
       const withEmail = contacts.filter((c) => c.email);
       const primaryFirst = [...withEmail].sort(
@@ -1112,6 +1136,7 @@ export async function enrollFromCrm(
           {
             source: "crm",
             crmCompanyId: companyId,
+            templateVars,
             companyName: company.name,
             domain: company.domain,
             contactName: contact.name,

@@ -60,6 +60,8 @@ export type OutreachEnrollment = {
   researchRowId: string | null;
   researchPersonId: string | null;
   crmCompanyId: string | null;
+  /** Extra {{token}} values frozen at enrollment (skip_reason, tier, …). */
+  templateVars: Record<string, string> | null;
   companyName: string;
   domain: string | null;
   contactName: string | null;
