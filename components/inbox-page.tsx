@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   Check,
   ExternalLink,
+  Linkedin,
   Loader2,
   Mail,
   RefreshCw,
@@ -21,12 +22,15 @@ type ThreadStatus = "new" | "open" | "done" | "snoozed";
 
 type ReplyThread = {
   id: string;
-  mailboxId: string;
+  channel?: "email" | "linkedin";
+  mailboxId: string | null;
+  unipileAccountId?: string | null;
   enrollmentId: string | null;
   sequenceId: string | null;
   gmailThreadId: string;
   contactEmail: string | null;
   contactName: string | null;
+  contactLinkedin?: string | null;
   companyName: string | null;
   subject: string | null;
   snippet: string | null;
@@ -99,9 +103,28 @@ function matchLabel(how: string) {
       return "Header match";
     case "from_email":
       return "From match";
+    case "linkedin_profile":
+      return "LinkedIn match";
     default:
       return "Unmatched";
   }
+}
+
+function channelBadge(channel: "email" | "linkedin" | undefined) {
+  if (channel === "linkedin") {
+    return (
+      <Badge className="gap-0.5 bg-[#0A66C2]/15 text-[#5B9BD5] hover:bg-[#0A66C2]/15">
+        <Linkedin className="size-2.5" />
+        LI
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="outline" className="gap-0.5 text-[10px]">
+      <Mail className="size-2.5" />
+      Email
+    </Badge>
+  );
 }
 
 function formatWhen(iso: string | null) {
@@ -365,7 +388,7 @@ export function InboxPage() {
             )}
           </div>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Inbound replies on outbound sequence threads (Gmail).
+            Sequence replies — Gmail sync + LinkedIn DMs (Unipile).
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -432,21 +455,33 @@ export function InboxPage() {
               <div className="space-y-3 p-6 text-sm text-muted-foreground">
                 <p className="font-medium text-foreground">No replies yet</p>
                 <p>
-                  When a prospect replies to a sequence email, the thread shows
-                  up here after Gmail sync.
+                  Email replies land after Gmail sync. LinkedIn DMs land via
+                  Unipile when someone messages a connected account.
                 </p>
                 <ul className="list-inside list-disc space-y-1 text-xs">
                   <li>
-                    Connect Google in{" "}
+                    Gmail:{" "}
                     <Link
                       href="/settings"
                       className="text-foreground underline-offset-2 hover:underline"
                     >
                       Settings → Outreach email
+                    </Link>{" "}
+                    + Sync Gmail
+                  </li>
+                  <li>
+                    LinkedIn:{" "}
+                    <Link
+                      href="/settings"
+                      className="text-foreground underline-offset-2 hover:underline"
+                    >
+                      Settings → LinkedIn (Unipile)
                     </Link>
                   </li>
-                  <li>Reconnect if you connected before reply sync existed</li>
-                  <li>Hit <span className="text-foreground">Sync Gmail</span></li>
+                  <li>
+                    Enrollments need matching email /{" "}
+                    <span className="text-foreground">contact LinkedIn URL</span>
+                  </li>
                 </ul>
               </div>
             ) : (
@@ -478,6 +513,7 @@ export function InboxPage() {
                           </span>
                         </div>
                         <div className="flex items-center gap-1.5">
+                          {channelBadge(t.channel)}
                           {statusBadge(t.status)}
                           {t.sequenceName && (
                             <span className="truncate text-[11px] text-muted-foreground">
@@ -516,6 +552,7 @@ export function InboxPage() {
                     <h2 className="truncate text-sm font-semibold">
                       {selected.subject || "(no subject)"}
                     </h2>
+                    {channelBadge(selected.channel)}
                     {statusBadge(selected.status)}
                   </div>
                   <p className="text-xs text-muted-foreground">
@@ -541,6 +578,23 @@ export function InboxPage() {
                       <span>
                         via {mailbox.label} ({mailbox.fromEmail})
                       </span>
+                    )}
+                    {selected.channel === "linkedin" && (
+                      <span>via LinkedIn (Unipile)</span>
+                    )}
+                    {selected.contactLinkedin && (
+                      <a
+                        href={
+                          selected.contactLinkedin.startsWith("http")
+                            ? selected.contactLinkedin
+                            : `https://www.linkedin.com/in/${selected.contactLinkedin}`
+                        }
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-0.5 text-[#5B9BD5] underline-offset-2 hover:underline"
+                      >
+                        Profile <ExternalLink className="size-2.5" />
+                      </a>
                     )}
                   </div>
                 </div>

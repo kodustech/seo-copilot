@@ -50,17 +50,23 @@ export type ReplyMatchedHow =
   | "gmail_thread"
   | "in_reply_to"
   | "from_email"
+  | "linkedin_profile"
   | "unmatched";
 export type ReplyMessageDirection = "inbound" | "outbound_ours";
+export type ReplyChannel = "email" | "linkedin";
 
 export type ReplyThread = {
   id: string;
-  mailboxId: string;
+  channel: ReplyChannel;
+  mailboxId: string | null;
+  unipileAccountId: string | null;
   enrollmentId: string | null;
   sequenceId: string | null;
+  /** Gmail thread id or Unipile chat_id */
   gmailThreadId: string;
   contactEmail: string | null;
   contactName: string | null;
+  contactLinkedin: string | null;
   companyName: string | null;
   subject: string | null;
   snippet: string | null;
@@ -113,12 +119,15 @@ const LOOKBACK_DAYS = 90;
 function mapThread(r: Record<string, unknown>): ReplyThread {
   return {
     id: r.id as string,
-    mailboxId: r.mailbox_id as string,
+    channel: (r.channel as ReplyChannel) || "email",
+    mailboxId: (r.mailbox_id as string | null) ?? null,
+    unipileAccountId: (r.unipile_account_id as string | null) ?? null,
     enrollmentId: (r.enrollment_id as string | null) ?? null,
     sequenceId: (r.sequence_id as string | null) ?? null,
     gmailThreadId: r.gmail_thread_id as string,
     contactEmail: (r.contact_email as string | null) ?? null,
     contactName: (r.contact_name as string | null) ?? null,
+    contactLinkedin: (r.contact_linkedin as string | null) ?? null,
     companyName: (r.company_name as string | null) ?? null,
     subject: (r.subject as string | null) ?? null,
     snippet: (r.snippet as string | null) ?? null,
@@ -643,6 +652,7 @@ async function upsertThreadAndMessages(
   const rank: Record<ReplyMatchedHow, number> = {
     gmail_thread: 4,
     in_reply_to: 3,
+    linkedin_profile: 3,
     from_email: 2,
     unmatched: 1,
   };
@@ -856,6 +866,7 @@ async function processGmailThread(
   const rank: Record<ReplyMatchedHow, number> = {
     gmail_thread: 4,
     in_reply_to: 3,
+    linkedin_profile: 3,
     from_email: 2,
     unmatched: 1,
   };
