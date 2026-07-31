@@ -862,7 +862,6 @@ function CompanyDrawer({
   const [contacts, setContacts] = useState<CrmContact[]>([]);
   const [comments, setComments] = useState<CrmComment[]>([]);
   const [activities, setActivities] = useState<CrmActivity[]>([]);
-  const [emailCount, setEmailCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<DrawerTab>("overview");
 
@@ -883,25 +882,6 @@ function CompanyDrawer({
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
-
-  // Lightweight count for tab badge (full list loads inside EmailsTab)
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await authFetch(`/api/crm/companies/${companyId}/emails`);
-        const j = await res.json();
-        if (!cancelled && res.ok) {
-          setEmailCount(typeof j.counts?.total === "number" ? j.counts.total : null);
-        }
-      } catch {
-        /* ignore */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [companyId, authFetch]);
 
   async function patch(patchBody: Record<string, unknown>) {
     setCompany((prev) => {
@@ -938,12 +918,8 @@ function CompanyDrawer({
 
   const tabs: { id: DrawerTab; label: string; icon: typeof Activity; count?: number }[] = [
     { id: "overview", label: "Overview", icon: Building2 },
-    {
-      id: "emails",
-      label: "Emails",
-      icon: Mail,
-      count: emailCount ?? undefined,
-    },
+    // Emails loads live Gmail on open — no pre-fetch badge (too slow).
+    { id: "emails", label: "Emails", icon: Mail },
     { id: "comments", label: "Comments", icon: MessageSquare, count: comments.length },
     { id: "contacts", label: "Contacts", icon: Users, count: contacts.length },
     { id: "timeline", label: "Timeline", icon: Activity, count: activities.length },
@@ -1040,7 +1016,7 @@ function CompanyDrawer({
   );
 }
 
-// ── Emails tab (sequence outbound + Gmail reply inbox) ───────────────────
+// ── Emails tab (live Gmail search across connected mailboxes) ────────────
 
 type EmailTimelineItem = {
   id: string;
@@ -1051,11 +1027,23 @@ type EmailTimelineItem = {
   subject: string | null;
   snippet: string | null;
   bodyText: string | null;
-  source: "sequence" | "gmail_sync";
+  source: "gmail";
+  mailboxEmail?: string;
+  mailboxId?: string;
   sequenceName: string | null;
   contactEmail: string | null;
   contactName: string | null;
   status: string | null;
+};
+
+type MailboxSearchInfo = {
+  id: string;
+  fromEmail: string;
+  ok: boolean;
+  messageCount: number;
+  error?: string;
+  skipped?: boolean;
+  skipReason?: string;
 };
 
 function EmailsTab({
@@ -1068,6 +1056,8 @@ function EmailsTab({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [items, setItems] = useState<EmailTimelineItem[]>([]);
+  const [mailboxes, setMailboxes] = useState<MailboxSearchInfo[]>([]);
+  const [query, setQuery] = useState<string | null>(null);
   const [counts, setCounts] = useState({
     total: 0,
     outbound: 0,
@@ -1084,6 +1074,8 @@ function EmailsTab({
       const j = await res.json();
       if (!res.ok) throw new Error(j.error ?? "Failed to load emails");
       setItems(j.items ?? []);
+      setMailboxes(j.mailboxes ?? []);
+      setQuery(typeof j.query === "string" ? j.query : null);
       setCounts(
         j.counts ?? { total: 0, outbound: 0, inbound: 0, threads: 0 },
       );
@@ -1100,8 +1092,11 @@ function EmailsTab({
 
   if (loading) {
     return (
-      <div className="flex justify-center py-12">
+      <div className="flex flex-col items-center justify-center gap-2 py-12">
         <Loader2 className="size-5 animate-spin text-neutral-500" />
+        <p className="text-xs text-neutral-500">
+          Searching connected Gmail inboxes…
+        </p>
       </div>
     );
   }
@@ -1114,11 +1109,15 @@ function EmailsTab({
     );
   }
 
+  const ready = mailboxes.filter((m) => m.ok);
+  const skipped = mailboxes.filter((m) => m.skipped || !m.ok);
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-neutral-500">
-          Sequence outbound + Gmail replies matched by domain / contacts.
+          Live Gmail search by domain + contacts across every connected
+          mailbox.
           {counts.threads > 0 ? ` · ${counts.threads} thread(s)` : ""}
         </p>
         <div className="flex gap-2 text-[11px] text-neutral-500">
@@ -1132,21 +1131,80 @@ function EmailsTab({
             type="button"
             onClick={() => void load()}
             className="text-neutral-400 hover:text-white"
+            title="Search again"
           >
             <RefreshCw className="size-3.5" />
           </button>
         </div>
       </div>
 
-      {items.length === 0 ? (
+      {/* Which mailboxes were searched */}
+      <div className="rounded-lg border border-white/[0.06] bg-neutral-900/40 px-3 py-2">
+        <p className="text-[10px] font-medium uppercase tracking-wide text-neutral-500">
+          Mailboxes
+        </p>
+        <ul className="mt-1.5 space-y-1">
+          {mailboxes.length === 0 ? (
+            <li className="text-xs text-neutral-500">
+              No mailboxes. Connect Gmail in{" "}
+              <a href="/settings" className="text-neutral-300 underline">
+                Settings
+              </a>
+              .
+            </li>
+          ) : (
+            mailboxes.map((m) => (
+              <li
+                key={m.id}
+                className="flex flex-wrap items-baseline justify-between gap-2 text-xs"
+              >
+                <span className="font-medium text-neutral-200">
+                  {m.fromEmail}
+                </span>
+                <span className="text-neutral-500">
+                  {m.ok
+                    ? `${m.messageCount} found`
+                    : m.skipReason || m.error || "skipped"}
+                </span>
+              </li>
+            ))
+          )}
+        </ul>
+        {skipped.some((m) => m.skipReason?.includes("readonly")) && (
+          <p className="mt-2 text-[11px] text-amber-400/90">
+            To include work mail (e.g. @kodus.io), connect that Google account
+            in Settings with Gmail read access — same OAuth as trykodus.
+          </p>
+        )}
+        {query && (
+          <p className="mt-2 truncate font-mono text-[10px] text-neutral-600">
+            q: {query}
+          </p>
+        )}
+      </div>
+
+      {!query ? (
         <div className="rounded-xl border border-dashed border-white/10 px-4 py-10 text-center">
           <Mail className="mx-auto size-7 text-neutral-600" />
           <p className="mt-3 text-sm font-medium text-neutral-300">
-            No email history yet
+            Nothing to search yet
           </p>
           <p className="mt-1 text-xs text-pretty text-neutral-500">
-            Enroll contacts in Outbound sequences and sync Gmail replies — they
-            show up here when domain or contact email matches this account.
+            Set a <span className="text-neutral-300">domain</span> on this
+            account and/or add contacts with email — then we search every
+            connected Gmail for from/to that domain or address.
+          </p>
+        </div>
+      ) : items.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-white/10 px-4 py-10 text-center">
+          <Mail className="mx-auto size-7 text-neutral-600" />
+          <p className="mt-3 text-sm font-medium text-neutral-300">
+            No messages in connected inboxes
+          </p>
+          <p className="mt-1 text-xs text-pretty text-neutral-500">
+            {ready.length === 0
+              ? "Connect at least one Gmail with read access in Settings."
+              : "Tried connected mailboxes — nothing matched this domain/contacts. If you chat from another address, connect that mailbox too."}
           </p>
         </div>
       ) : (
@@ -1182,19 +1240,9 @@ function EmailsTab({
                         >
                           {inbound ? "In" : "Out"}
                         </span>
-                        {m.source === "sequence" && (
-                          <span className="text-[10px] text-neutral-500">
-                            sequence
-                          </span>
-                        )}
-                        {m.sequenceName && (
+                        {m.mailboxEmail && (
                           <span className="truncate text-[10px] text-neutral-500">
-                            · {m.sequenceName}
-                          </span>
-                        )}
-                        {m.status && m.status !== "sent" && (
-                          <span className="text-[10px] text-amber-400/90">
-                            · {m.status}
+                            via {m.mailboxEmail}
                           </span>
                         )}
                       </div>

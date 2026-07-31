@@ -6,9 +6,11 @@ import {
   getSupabaseUserClient,
 } from "@/lib/supabase-server";
 
+export const maxDuration = 60;
+
 /**
- * GET — email history for a CRM company (sequence outbound + Gmail reply inbox).
- * Read-only. Match by domain, CRM contact emails, enrollment company name.
+ * GET — live Gmail search across all mailboxes with gmail.readonly.
+ * Query built from company domain + CRM contact emails.
  */
 export async function GET(
   req: Request,
@@ -25,7 +27,7 @@ export async function GET(
   }
 
   try {
-    // Service role so we can join outreach tables without RLS edge cases.
+    // Service role for mailbox secrets + token refresh.
     const client = getSupabaseServiceClient();
     const timeline = await getCompanyEmailTimeline(client, id);
     if (!timeline) {
