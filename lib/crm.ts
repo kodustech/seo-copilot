@@ -726,7 +726,10 @@ export type PromoteEnrollmentInput = {
 
 /**
  * Convert handoff: sequence person → CRM Account (+ contact).
- * - reply → status qualified, tag outbound-reply
+ * - reply → status lead + priority high + tag outbound-reply. A bare reply is
+ *   a triage signal, not qualification: "qualified" requires a substantive
+ *   conversation plus a concrete next step (see growth gtm.md), so only a
+ *   human sets it after reading the reply.
  * - manual promote → status lead (won't downgrade later stages)
  * Domain from enrollment.domain or contact email. Idempotent by domain.
  */
@@ -789,7 +792,7 @@ export async function promoteEnrollmentToCrm(
     name: companyName,
     domain,
     website: `https://${domain}`,
-    status: reason === "reply" ? "qualified" : "lead",
+    status: "lead",
     priority: reason === "reply" ? "high" : "medium",
     tags: reason === "reply" ? ["outbound-reply", "sequence"] : ["sequence-promote"],
     source: "sequence",
@@ -851,7 +854,6 @@ export function mapProspectStatusToCompany(
       return "lost";
     case "replied":
     case "contacted":
-      return "qualified";
     case "drafted":
     case "researching":
     case "prospect":
