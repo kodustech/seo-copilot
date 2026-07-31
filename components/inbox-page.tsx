@@ -482,7 +482,7 @@ export function InboxPage() {
             )}
           </div>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Sequence replies — Gmail sync + LinkedIn DMs (Unipile).
+            Sequence replies only — Gmail + LinkedIn when the contact is enrolled.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -589,8 +589,9 @@ export function InboxPage() {
               <div className="space-y-3 p-6 text-sm text-muted-foreground">
                 <p className="font-medium text-foreground">No replies yet</p>
                 <p>
-                  Email replies land after Gmail sync. LinkedIn DMs land via
-                  Unipile webhook + Sync (pulls chats with inbound messages).
+                  Only sequence replies show here — not personal LinkedIn
+                  chat. Email via Gmail sync; LinkedIn when the prospect is
+                  enrolled and messages a connected Unipile account.
                 </p>
                 <ul className="list-inside list-disc space-y-1 text-xs">
                   <li>
@@ -611,11 +612,12 @@ export function InboxPage() {
                     >
                       Settings → LinkedIn (Unipile)
                     </Link>{" "}
-                    + Sync (backfills history)
+                    + Sync (backfills enrolled contacts only)
                   </li>
                   <li>
-                    Enrollments need matching email /{" "}
-                    <span className="text-foreground">contact LinkedIn URL</span>
+                    Needs matching email /{" "}
+                    <span className="text-foreground">contact LinkedIn URL</span>{" "}
+                    on the enrollment
                   </li>
                 </ul>
               </div>
