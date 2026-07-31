@@ -4,7 +4,7 @@ export type StepMode = "auto" | "semi";
 export type LinkedinAction = "connect_note" | "message";
 /** Email steps only: open a new thread or reply to the last email in this enrollment. */
 export type EmailThreadMode = "new" | "reply";
-export type EnrollmentSource = "research" | "outreach" | "manual";
+export type EnrollmentSource = "research" | "outreach" | "manual" | "crm";
 export type EnrollmentStatus =
   | "active"
   | "paused"
@@ -59,6 +59,7 @@ export type OutreachEnrollment = {
   outreachProspectId: string | null;
   researchRowId: string | null;
   researchPersonId: string | null;
+  crmCompanyId: string | null;
   companyName: string;
   domain: string | null;
   contactName: string | null;

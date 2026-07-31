@@ -73,6 +73,7 @@ function mapEnrollment(r: Record<string, unknown>): OutreachEnrollment {
     outreachProspectId: (r.outreach_prospect_id as string | null) ?? null,
     researchRowId: (r.research_row_id as string | null) ?? null,
     researchPersonId: (r.research_person_id as string | null) ?? null,
+    crmCompanyId: (r.crm_company_id as string | null) ?? null,
     companyName: r.company_name as string,
     domain: (r.domain as string | null) ?? null,
     contactName: (r.contact_name as string | null) ?? null,
@@ -733,6 +734,7 @@ type ContactSnapshot = {
   researchRowId?: string | null;
   researchPersonId?: string | null;
   outreachProspectId?: string | null;
+  crmCompanyId?: string | null;
   source: EnrollmentSource;
 };
 
@@ -783,6 +785,7 @@ async function insertEnrollment(
       outreach_prospect_id: snap.outreachProspectId ?? null,
       research_row_id: snap.researchRowId ?? null,
       research_person_id: snap.researchPersonId ?? null,
+      crm_company_id: snap.crmCompanyId ?? null,
       company_name: snap.companyName,
       domain: snap.domain,
       contact_name: snap.contactName,
@@ -1010,6 +1013,145 @@ export async function enrollFromResearch(
     warnings: warnings.slice(0, 30),
     missingLinkedin,
     missingEmail,
+    sequenceStatus: seq.sequence.status,
+  };
+}
+
+/**
+ * Enroll CRM accounts (companies + their contacts) into a sequence.
+ * The entry path for product-signal tiers: filter accounts by tier in the
+ * CRM, then enroll them here. Suppression: paying/closed accounts are
+ * skipped, and accounts already active in ANY sequence are skipped unless
+ * `allowParallel` is set.
+ */
+export async function enrollFromCrm(
+  client: SupabaseClient,
+  input: {
+    sequenceId: string;
+    companyIds: string[];
+    enrolledByEmail?: string | null;
+    /** If true, one enrollment per contact; else primary/first contact only. */
+    allContacts?: boolean;
+    /** Enroll even when the account has an active enrollment elsewhere. */
+    allowParallel?: boolean;
+  },
+): Promise<{
+  enrolled: number;
+  skipped: number;
+  errors: string[];
+  warnings: string[];
+  sequenceStatus: SequenceStatus;
+}> {
+  const seq = await getSequence(client, input.sequenceId);
+  if (!seq) throw new Error("Sequence not found");
+  if (seq.steps.length === 0) throw new Error("Sequence has no steps");
+  const first = seq.steps[0];
+  const needsEmailLater = seq.steps.some((s) => s.channel === "email");
+
+  const { listContacts, getCompany } = await import("@/lib/crm");
+
+  let enrolled = 0;
+  let skipped = 0;
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  for (const companyId of input.companyIds) {
+    let companyName = companyId;
+    try {
+      const company = await getCompany(client, companyId);
+      if (!company) {
+        skipped += 1;
+        errors.push(`${companyId}: company not found`);
+        continue;
+      }
+      companyName = company.name;
+
+      // Suppression: never sequence paying or closed accounts.
+      if (["customer", "churned", "lost"].includes(company.status)) {
+        skipped += 1;
+        errors.push(`${company.name}: status is ${company.status} — suppressed`);
+        continue;
+      }
+
+      // Suppression: one active sequence per account at a time.
+      if (!input.allowParallel) {
+        const { data: active } = await client
+          .from("outreach_enrollments")
+          .select("id, sequence_id")
+          .eq("crm_company_id", companyId)
+          .eq("status", "active")
+          .limit(1);
+        if (active && active.length > 0) {
+          skipped += 1;
+          errors.push(
+            `${company.name}: already active in another sequence — suppressed`,
+          );
+          continue;
+        }
+      }
+
+      const contacts = await listContacts(client, companyId);
+      const withEmail = contacts.filter((c) => c.email);
+      const primaryFirst = [...withEmail].sort(
+        (a, b) => Number(b.isPrimary) - Number(a.isPrimary),
+      );
+      const targets = input.allContacts
+        ? primaryFirst
+        : primaryFirst.slice(0, 1);
+
+      if (targets.length === 0) {
+        skipped += 1;
+        errors.push(`${company.name}: no contact with email`);
+        continue;
+      }
+
+      for (const contact of targets) {
+        const result = await insertEnrollment(
+          client,
+          input.sequenceId,
+          {
+            source: "crm",
+            crmCompanyId: companyId,
+            companyName: company.name,
+            domain: company.domain,
+            contactName: contact.name,
+            contactEmail: contact.email,
+            contactLinkedin: contact.linkedin,
+            contactRole: contact.role,
+          },
+          input.enrolledByEmail ?? null,
+          first,
+          { sequenceHasEmailSteps: needsEmailLater },
+        );
+        if (result && "enrollment" in result) {
+          enrolled += 1;
+          if (result.warning) warnings.push(result.warning);
+        } else if (result && "skipped" in result && result.skipped) {
+          skipped += 1;
+          errors.push(result.reason);
+        } else {
+          skipped += 1; // unique violation: already enrolled in this sequence
+        }
+      }
+    } catch (err) {
+      skipped += 1;
+      errors.push(
+        `${companyName}: ${err instanceof Error ? err.message : "fail"}`,
+      );
+    }
+  }
+
+  if (seq.sequence.status !== "active" && enrolled > 0) {
+    warnings.push(
+      `Sequence is "${seq.sequence.status}" — accounts enrolled but tasks stay held until you set status to active.`,
+    );
+  }
+
+  return {
+    enrolled,
+    skipped,
+    errors: errors.slice(0, 30),
+    warnings: warnings.slice(0, 30),
     sequenceStatus: seq.sequence.status,
   };
 }

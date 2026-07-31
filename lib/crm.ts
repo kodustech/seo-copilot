@@ -29,7 +29,9 @@ export type CompanySource =
   | "pipeline"
   | "social"
   /** Created/updated from outbound sequence (reply or manual promote). */
-  | "sequence";
+  | "sequence"
+  /** Created by the product-signals sweep from a kodus-ai signup. */
+  | "product";
 
 export const COMPANY_STATUSES: CompanyStatus[] = [
   "lead",
@@ -50,7 +52,9 @@ export type ActivityKind =
   | "comment"
   | "webhook"
   | "note"
-  | "property_change";
+  | "property_change"
+  /** Product-signals sweep recorded a tier/trigger transition. */
+  | "signal";
 
 export type CrmCompany = {
   id: string;
@@ -71,6 +75,9 @@ export type CrmCompany = {
   enrichment: Record<string, unknown>;
   /** Custom field values (key → primitive). Defs in crm_field_defs. */
   properties: CrmProperties;
+  /** Outbound tier (t0..t3 | customer). Machine-owned: written by the
+   *  product-signals sweep, never edited by hand. */
+  tier: string | null;
   source: CompanySource;
   notes: string | null;
   lastActivityAt: string | null;
@@ -147,6 +154,8 @@ export type CompanyFilters = {
   status?: CompanyStatus | CompanyStatus[];
   priority?: CompanyPriority;
   ownerEmail?: string;
+  /** Outbound tier from product signals: t0 | t1 | t2 | t3 | customer. */
+  tier?: string | string[];
   search?: string;
   staleOnly?: boolean;
   limit?: number;
@@ -182,6 +191,7 @@ type CompanyRow = {
   tags: string[] | null;
   enrichment: Record<string, unknown> | null;
   properties?: Record<string, unknown> | null;
+  tier?: string | null;
   source: CompanySource | null;
   notes: string | null;
   last_activity_at: string | null;
@@ -209,6 +219,7 @@ function rowToCompany(row: CompanyRow): CrmCompany {
     tags: row.tags ?? [],
     enrichment: row.enrichment ?? {},
     properties: normalizeProperties(row.properties),
+    tier: row.tier ?? null,
     source: row.source ?? "manual",
     notes: row.notes,
     lastActivityAt: row.last_activity_at,
@@ -404,6 +415,10 @@ export async function listCompanies(
   }
   if (filters.priority) query = query.eq("priority", filters.priority);
   if (filters.ownerEmail) query = query.eq("owner_email", filters.ownerEmail);
+  if (filters.tier) {
+    if (Array.isArray(filters.tier)) query = query.in("tier", filters.tier);
+    else query = query.eq("tier", filters.tier);
+  }
   if (filters.search && filters.search.trim()) {
     const term = `%${filters.search.trim()}%`;
     query = query.or(
