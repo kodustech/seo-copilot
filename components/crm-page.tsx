@@ -995,19 +995,23 @@ function OrgPicker({
   const [results, setResults] = useState<OrgSuggestion[]>([]);
   const [open, setOpen] = useState(false);
 
-  useEffect(() => setText(value), [value]);
+  // Sync from a parent-provided value during render (React "adjusting state
+  // when props change" pattern — avoids a cascading-render effect).
+  const [prevValue, setPrevValue] = useState(value);
+  if (prevValue !== value) {
+    setPrevValue(value);
+    setText(value);
+  }
+
+  const query = text.trim();
+  const searchable = query.length >= 2 && query !== value;
 
   useEffect(() => {
-    const q = text.trim();
-    if (q.length < 2 || q === value) {
-      setResults([]);
-      setOpen(false);
-      return;
-    }
+    if (!searchable) return;
     const t = setTimeout(async () => {
       try {
         const res = await authFetch(
-          `/api/crm/org-search?q=${encodeURIComponent(q)}`,
+          `/api/crm/org-search?q=${encodeURIComponent(query)}`,
         );
         const data = (await res.json()) as { orgs?: OrgSuggestion[] };
         setResults(data.orgs ?? []);
@@ -1017,7 +1021,7 @@ function OrgPicker({
       }
     }, 250);
     return () => clearTimeout(t);
-  }, [text, value, authFetch]);
+  }, [query, searchable, authFetch]);
 
   return (
     <div className="relative">
@@ -1032,7 +1036,7 @@ function OrgPicker({
         placeholder="Search org by name, or paste a uuid"
         className="border-white/10 bg-neutral-900 text-xs"
       />
-      {open && results.length > 0 && (
+      {open && searchable && results.length > 0 && (
         <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-lg border border-white/10 bg-neutral-900 shadow-xl">
           {results.map((r) => (
             <button
