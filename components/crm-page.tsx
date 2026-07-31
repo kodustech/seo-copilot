@@ -89,6 +89,36 @@ const STATUS_LABELS: Record<CompanyStatus, { label: string; className: string }>
   lost: { label: "Lost", className: "bg-neutral-700/40 text-neutral-500" },
 };
 
+// Outbound tier from product signals (machine-owned, read-only in the UI).
+const TIER_LABELS: Record<string, { label: string; className: string; hint: string }> = {
+  t0: {
+    label: "t0",
+    className: "bg-red-500/20 text-red-300",
+    hint: "Open decision window: trial or free limit",
+  },
+  t1: {
+    label: "t1",
+    className: "bg-sky-500/20 text-sky-300",
+    hint: "Connected git recently",
+  },
+  t2: {
+    label: "t2",
+    className: "bg-amber-500/15 text-amber-300",
+    hint: "Signed up, never connected",
+  },
+  t3: {
+    label: "t3",
+    className: "bg-neutral-500/15 text-neutral-400",
+    hint: "Older base",
+  },
+  customer: {
+    label: "cust",
+    className: "bg-emerald-500/15 text-emerald-300",
+    hint: "Paying — excluded from outbound",
+  },
+};
+const TIER_OPTIONS = ["t0", "t1", "t2", "t3", "customer"] as const;
+
 const PRIORITY_BADGE: Record<CompanyPriority, string> = {
   high: "bg-red-500/15 text-red-300",
   medium: "bg-sky-500/15 text-sky-300",
@@ -144,6 +174,7 @@ export function CrmPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [statusFilter, setStatusFilter] = useState<CompanyStatus | "all">("all");
+  const [tierFilter, setTierFilter] = useState<string>("all");
   const [ownerFilter, setOwnerFilter] = useState<string>("all");
   const [staleOnly, setStaleOnly] = useState(false);
   const [search, setSearch] = useState("");
@@ -209,6 +240,7 @@ export function CrmPage() {
     try {
       const params = new URLSearchParams();
       if (statusFilter !== "all") params.set("status", statusFilter);
+      if (tierFilter !== "all") params.set("tier", tierFilter);
       if (ownerFilter !== "all") params.set("ownerEmail", ownerFilter);
       if (staleOnly) params.set("staleOnly", "true");
       if (search.trim()) params.set("search", search.trim());
@@ -222,7 +254,7 @@ export function CrmPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, statusFilter, ownerFilter, staleOnly, search, authFetch]);
+  }, [token, statusFilter, tierFilter, ownerFilter, staleOnly, search, authFetch]);
 
   useEffect(() => {
     void load();
@@ -409,6 +441,19 @@ export function CrmPage() {
             ))}
           </SelectContent>
         </Select>
+        <Select value={tierFilter} onValueChange={setTierFilter}>
+          <SelectTrigger className="h-8 w-32 border-white/10 bg-neutral-900 text-sm">
+            <SelectValue placeholder="Tier" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All tiers</SelectItem>
+            {TIER_OPTIONS.map((t) => (
+              <SelectItem key={t} value={t}>
+                {TIER_LABELS[t].label} — {TIER_LABELS[t].hint}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Select value={ownerFilter} onValueChange={setOwnerFilter}>
           <SelectTrigger className="h-8 w-40 border-white/10 bg-neutral-900 text-sm">
             <SelectValue placeholder="Owner" />
@@ -447,6 +492,7 @@ export function CrmPage() {
             <TableRow className="border-white/[0.06] hover:bg-transparent">
               <TableHead className="text-neutral-500">Company</TableHead>
               <TableHead className="text-neutral-500">Status</TableHead>
+              <TableHead className="text-neutral-500">Tier</TableHead>
               <TableHead className="text-neutral-500">Priority</TableHead>
               <TableHead className="text-neutral-500">Owner</TableHead>
               <TableHead className="text-neutral-500">Last activity</TableHead>
@@ -456,13 +502,13 @@ export function CrmPage() {
           <TableBody>
             {loading && companies.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="py-10 text-center text-neutral-500">
+                <TableCell colSpan={7} className="py-10 text-center text-neutral-500">
                   <Loader2 className="mx-auto size-5 animate-spin" />
                 </TableCell>
               </TableRow>
             ) : companies.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="py-10 text-center text-neutral-500">
+                <TableCell colSpan={7} className="py-10 text-center text-neutral-500">
                   No accounts yet. Push from ICP lists, import the old pipeline,
                   or create one.
                 </TableCell>
@@ -522,6 +568,21 @@ export function CrmPage() {
                         ))}
                       </SelectContent>
                     </Select>
+                  </TableCell>
+                  <TableCell>
+                    {c.tier && TIER_LABELS[c.tier] ? (
+                      <Badge
+                        title={TIER_LABELS[c.tier].hint}
+                        className={cn(
+                          "border-0 font-normal",
+                          TIER_LABELS[c.tier].className,
+                        )}
+                      >
+                        {TIER_LABELS[c.tier].label}
+                      </Badge>
+                    ) : (
+                      <span className="text-sm text-neutral-600">—</span>
+                    )}
                   </TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()}>
                     <Select
