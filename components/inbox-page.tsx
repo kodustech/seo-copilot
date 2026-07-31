@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import Link from "next/link";
 import {
   Check,
@@ -151,6 +157,146 @@ function formatWhen(iso: string | null) {
   } catch {
     return "";
   }
+}
+
+/** Full stamp for message bubbles (list stays short). */
+function formatMessageWhen(iso: string | null) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    const now = new Date();
+    const sameYear = d.getFullYear() === now.getFullYear();
+    return d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      ...(sameYear ? {} : { year: "numeric" }),
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+}
+
+function messageDayKey(iso: string | null) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  } catch {
+    return "";
+  }
+}
+
+function formatDayDivider(iso: string | null) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    const now = new Date();
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startMsg = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const diffDays = Math.round(
+      (startToday.getTime() - startMsg.getTime()) / 86_400_000,
+    );
+    if (diffDays === 0) return "Today";
+    if (diffDays === 1) return "Yesterday";
+    return d.toLocaleDateString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      ...(d.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}),
+    });
+  } catch {
+    return "";
+  }
+}
+
+function MessageThread({
+  messages,
+  channel,
+  prospectLabel,
+}: {
+  messages: ReplyMessage[];
+  channel?: "email" | "linkedin";
+  prospectLabel: string;
+}) {
+  const nodes: ReactNode[] = [];
+  let lastDay = "";
+
+  for (const m of messages) {
+    const ours = m.direction === "outbound_ours";
+    const day = messageDayKey(m.internalDate);
+    if (day && day !== lastDay) {
+      lastDay = day;
+      nodes.push(
+        <div key={`day-${day}`} className="my-3 flex items-center gap-3">
+          <div className="h-px flex-1 bg-border" />
+          <span className="shrink-0 text-[11px] font-medium text-muted-foreground">
+            {formatDayDivider(m.internalDate)}
+          </span>
+          <div className="h-px flex-1 bg-border" />
+        </div>,
+      );
+    }
+
+    const body =
+      m.bodyText?.trim() || m.snippet?.trim() || "(empty body)";
+    const who = ours ? "You" : prospectLabel;
+
+    nodes.push(
+      <div
+        key={m.id}
+        className={cn("flex w-full", ours ? "justify-end" : "justify-start")}
+      >
+        <article
+          className={cn(
+            "flex max-w-[min(100%,32rem)] flex-col gap-1",
+            ours ? "items-end" : "items-start",
+          )}
+        >
+          <div
+            className={cn(
+              "flex items-center gap-1.5 px-1 text-[11px]",
+              ours ? "flex-row-reverse" : "",
+            )}
+          >
+            <span
+              className={cn(
+                "font-semibold",
+                ours ? "text-foreground" : "text-sky-300",
+              )}
+            >
+              {who}
+            </span>
+            <span className="text-muted-foreground/80">·</span>
+            <time
+              dateTime={m.internalDate ?? undefined}
+              className="tabular-nums text-muted-foreground"
+            >
+              {formatMessageWhen(m.internalDate)}
+            </time>
+          </div>
+          <div
+            className={cn(
+              "rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
+              ours
+                ? "rounded-br-md bg-primary text-primary-foreground"
+                : "rounded-bl-md border border-sky-500/25 bg-sky-500/10 text-foreground",
+            )}
+          >
+            {!ours && m.subject && channel === "email" && (
+              <p className="mb-1.5 text-[11px] font-medium opacity-70">
+                {m.subject}
+              </p>
+            )}
+            <p className="whitespace-pre-wrap text-pretty">{body}</p>
+          </div>
+        </article>
+      </div>,
+    );
+  }
+
+  return <>{nodes}</>;
 }
 
 export function InboxPage() {
@@ -816,7 +962,7 @@ export function InboxPage() {
               </div>
 
               <ScrollArea className="min-h-0 flex-1">
-                <div className="space-y-3 p-4">
+                <div className="flex flex-col gap-1 p-4">
                   {detailLoading ? (
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
                       <Loader2 className="size-4 animate-spin" />
@@ -824,55 +970,18 @@ export function InboxPage() {
                     </div>
                   ) : messages.length === 0 ? (
                     <p className="text-sm text-muted-foreground">
-                      No messages stored yet — try Sync Gmail.
+                      No messages stored yet — try Sync.
                     </p>
                   ) : (
-                    messages.map((m) => {
-                      const ours = m.direction === "outbound_ours";
-                      return (
-                        <article
-                          key={m.id}
-                          className={cn(
-                            "rounded-lg border px-3 py-2.5",
-                            ours
-                              ? "border-border/60 bg-muted/20"
-                              : "border-sky-500/20 bg-sky-500/5",
-                          )}
-                        >
-                          <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex items-center gap-1.5 text-xs">
-                              {selected.channel === "linkedin" ? (
-                                <Linkedin className="size-3 text-[#5B9BD5]" />
-                              ) : (
-                                <Mail className="size-3 text-muted-foreground" />
-                              )}
-                              <span className="font-medium">
-                                {ours ? "You" : m.fromEmail || "Prospect"}
-                              </span>
-                              <Badge
-                                variant="outline"
-                                className="h-5 px-1.5 text-[10px]"
-                              >
-                                {ours ? "outbound" : "inbound"}
-                              </Badge>
-                            </div>
-                            <span className="text-[11px] text-muted-foreground">
-                              {formatWhen(m.internalDate)}
-                            </span>
-                          </div>
-                          {m.subject && (
-                            <p className="mb-1 text-[11px] text-muted-foreground">
-                              {m.subject}
-                            </p>
-                          )}
-                          <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-foreground/90">
-                            {m.bodyText?.trim() ||
-                              m.snippet?.trim() ||
-                              "(empty body)"}
-                          </pre>
-                        </article>
-                      );
-                    })
+                    <MessageThread
+                      messages={messages}
+                      channel={selected.channel}
+                      prospectLabel={
+                        selected.contactName ||
+                        selected.contactEmail ||
+                        "Prospect"
+                      }
+                    />
                   )}
                 </div>
               </ScrollArea>
