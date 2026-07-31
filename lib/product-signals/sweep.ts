@@ -221,6 +221,8 @@ export async function runProductSignalsSweep(
         companyByDomain.set(org.derivedDomain, company);
         companiesCreated += 1;
 
+        // isPrimary is per company (not sweep-wide) so each new account gets a lead contact.
+        let primarySetForCompany = false;
         for (const contact of org.contacts.slice(0, 3)) {
           const corporate =
             !org.derivedDomain || domainOfEmail(contact.email) === org.derivedDomain;
@@ -228,8 +230,9 @@ export async function runProductSignalsSweep(
           await createContact(client, company.id, {
             name: contact.name ?? contact.email.split("@")[0],
             email: contact.email,
-            isPrimary: contactsCreated === 0,
+            isPrimary: !primarySetForCompany,
           });
+          primarySetForCompany = true;
           contactsCreated += 1;
         }
       }
