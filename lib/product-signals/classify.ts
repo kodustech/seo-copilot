@@ -42,6 +42,7 @@ export type Tier = "t0" | "t1" | "t2" | "t3" | "customer" | null;
 export type TierTrigger =
   // t0
   | "cloud_trial"
+  | "trial_broken"
   | "trial_just_expired"
   | "free_limit"
   // t1
@@ -118,14 +119,23 @@ export function classifyOrg(facts: OrgFacts, now: Date = new Date()): Classifica
   }
 
   // --- t0: open decision window -------------------------------------------
+  // Tier answers "when do we touch" (priority); trigger answers "what do we
+  // say". An account in trial with nothing delivered stays t0 — the trial
+  // clock is burning while the product looks broken, which makes it the most
+  // urgent touch of all — but the message is rescue, not sales.
   if (facts.subscriptionStatus === "trial") {
     const ended = daysBetween(facts.trialEnd, now);
     // trialEnd in the future (negative days) or unknown → in trial.
     // Recently ended → still inside the grace window.
     if (ended == null || ended <= TRIAL_GRACE_DAYS) {
+      const broken = facts.lastReviewAt == null;
       return {
         tier: "t0",
-        trigger: ended != null && ended > 0 ? "trial_just_expired" : "cloud_trial",
+        trigger: broken
+          ? "trial_broken"
+          : ended != null && ended > 0
+            ? "trial_just_expired"
+            : "cloud_trial",
         health,
       };
     }
