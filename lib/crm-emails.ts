@@ -137,8 +137,9 @@ function extractTextBody(msg: GmailMessage): string | null {
   const html = acc.html.join("\n").trim();
   if (!html) return null;
   return html
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    // Allow optional attrs/space before `>` on end tags (e.g. </script >).
+    .replace(/<style\b[\s\S]*?<\/style(?:\s[^>]*)?>/gi, " ")
+    .replace(/<script\b[\s\S]*?<\/script(?:\s[^>]*)?>/gi, " ")
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim()
