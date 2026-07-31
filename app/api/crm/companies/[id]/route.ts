@@ -89,6 +89,11 @@ export async function PATCH(
     updates.domain = typeof body.domain === "string" ? body.domain : null;
   if ("orgId" in body)
     updates.orgId = typeof body.orgId === "string" ? body.orgId : null;
+  if ("deployment" in body)
+    updates.deployment =
+      body.deployment === "cloud" || body.deployment === "self_hosted"
+        ? body.deployment
+        : null;
   if (typeof body.status === "string" && STATUS_SET.has(body.status))
     updates.status = body.status as CompanyStatus;
   if (typeof body.priority === "string" && PRIORITY_SET.has(body.priority))
