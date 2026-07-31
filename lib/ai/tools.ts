@@ -3328,6 +3328,14 @@ export const listCrmCompanies = tool({
       .enum(["t0", "t1", "t2", "t3", "customer"])
       .optional()
       .describe("Filter by outbound tier from product signals"),
+    deployment: z
+      .enum(["cloud", "self_hosted"])
+      .optional()
+      .describe("Filter by how the account runs Kodus"),
+    channel: z
+      .enum(["manual", "webhook", "agent", "research", "pipeline", "social", "sequence", "product"])
+      .optional()
+      .describe("Filter by acquisition channel (company source)"),
     owner_email: z.string().optional().describe("Filter by responsible owner email"),
     stale_only: z
       .boolean()
@@ -3336,12 +3344,14 @@ export const listCrmCompanies = tool({
     search: z.string().optional().describe("Search name, domain, org id, industry, notes"),
     limit: z.number().optional().describe("Max rows (default 50)"),
   }),
-  execute: async ({ status, tier, owner_email, stale_only, search, limit }) => {
+  execute: async ({ status, tier, deployment, channel, owner_email, stale_only, search, limit }) => {
     try {
       const client = getSupabaseServiceClient();
       const companies = await listCompanies(client, {
         status: status as CompanyStatus | undefined,
         tier,
+        deployment,
+        source: channel,
         ownerEmail: owner_email,
         staleOnly: stale_only,
         search,
@@ -3358,6 +3368,8 @@ export const listCrmCompanies = tool({
           status: c.status,
           priority: c.priority,
           tier: c.tier,
+          deployment: c.deployment,
+          channel: c.source,
           owner_email: c.ownerEmail,
           dev_count: c.devCount,
           idle_days: c.idleDays,
@@ -3510,6 +3522,11 @@ export const updateCrmCompany = tool({
     priority: z.enum(COMPANY_PRIORITIES as unknown as [string, ...string[]]).optional(),
     owner_email: z.string().nullable().optional(),
     org_id: z.string().nullable().optional(),
+    deployment: z
+      .enum(["cloud", "self_hosted"])
+      .nullable()
+      .optional()
+      .describe("How the account runs Kodus; null clears it"),
     industry: z.string().nullable().optional(),
     dev_count: z.number().nullable().optional(),
     notes: z.string().nullable().optional(),
@@ -3530,6 +3547,7 @@ export const updateCrmCompany = tool({
     priority,
     owner_email,
     org_id,
+    deployment,
     industry,
     dev_count,
     notes,
@@ -3546,6 +3564,7 @@ export const updateCrmCompany = tool({
           priority: priority as CompanyPriority | undefined,
           ownerEmail: owner_email,
           orgId: org_id,
+          ...(deployment !== undefined ? { deployment } : {}),
           industry,
           devCount: dev_count,
           notes,

@@ -119,6 +119,33 @@ const TIER_LABELS: Record<string, { label: string; className: string; hint: stri
 };
 const TIER_OPTIONS = ["t0", "t1", "t2", "t3", "customer"] as const;
 
+// Where the account came from (crm_companies.source), shown as "Channel".
+const CHANNEL_LABELS: Record<string, string> = {
+  product: "Product signup",
+  sequence: "Outbound",
+  research: "Research",
+  social: "Social",
+  pipeline: "Pipeline import",
+  webhook: "Webhook",
+  agent: "Agent",
+  manual: "Manual",
+};
+const CHANNEL_OPTIONS = [
+  "product",
+  "sequence",
+  "research",
+  "social",
+  "pipeline",
+  "webhook",
+  "agent",
+  "manual",
+] as const;
+
+const DEPLOYMENT_LABELS: Record<string, { label: string; className: string }> = {
+  cloud: { label: "cloud", className: "bg-sky-500/15 text-sky-300" },
+  self_hosted: { label: "self-hosted", className: "bg-violet-500/15 text-violet-300" },
+};
+
 const PRIORITY_BADGE: Record<CompanyPriority, string> = {
   high: "bg-red-500/15 text-red-300",
   medium: "bg-sky-500/15 text-sky-300",
@@ -175,6 +202,8 @@ export function CrmPage() {
 
   const [statusFilter, setStatusFilter] = useState<CompanyStatus | "all">("all");
   const [tierFilter, setTierFilter] = useState<string>("all");
+  const [channelFilter, setChannelFilter] = useState<string>("all");
+  const [deploymentFilter, setDeploymentFilter] = useState<string>("all");
   const [ownerFilter, setOwnerFilter] = useState<string>("all");
   const [staleOnly, setStaleOnly] = useState(false);
   const [search, setSearch] = useState("");
@@ -241,6 +270,8 @@ export function CrmPage() {
       const params = new URLSearchParams();
       if (statusFilter !== "all") params.set("status", statusFilter);
       if (tierFilter !== "all") params.set("tier", tierFilter);
+      if (channelFilter !== "all") params.set("source", channelFilter);
+      if (deploymentFilter !== "all") params.set("deployment", deploymentFilter);
       if (ownerFilter !== "all") params.set("ownerEmail", ownerFilter);
       if (staleOnly) params.set("staleOnly", "true");
       if (search.trim()) params.set("search", search.trim());
@@ -254,7 +285,7 @@ export function CrmPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, statusFilter, tierFilter, ownerFilter, staleOnly, search, authFetch]);
+  }, [token, statusFilter, tierFilter, channelFilter, deploymentFilter, ownerFilter, staleOnly, search, authFetch]);
 
   useEffect(() => {
     void load();
@@ -454,6 +485,29 @@ export function CrmPage() {
             ))}
           </SelectContent>
         </Select>
+        <Select value={channelFilter} onValueChange={setChannelFilter}>
+          <SelectTrigger className="h-8 w-36 border-white/10 bg-neutral-900 text-sm">
+            <SelectValue placeholder="Channel" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All channels</SelectItem>
+            {CHANNEL_OPTIONS.map((s) => (
+              <SelectItem key={s} value={s}>
+                {CHANNEL_LABELS[s]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={deploymentFilter} onValueChange={setDeploymentFilter}>
+          <SelectTrigger className="h-8 w-32 border-white/10 bg-neutral-900 text-sm">
+            <SelectValue placeholder="Deployment" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Cloud + self-hosted</SelectItem>
+            <SelectItem value="cloud">Cloud</SelectItem>
+            <SelectItem value="self_hosted">Self-hosted</SelectItem>
+          </SelectContent>
+        </Select>
         <Select value={ownerFilter} onValueChange={setOwnerFilter}>
           <SelectTrigger className="h-8 w-40 border-white/10 bg-neutral-900 text-sm">
             <SelectValue placeholder="Owner" />
@@ -539,6 +593,21 @@ export function CrmPage() {
                           {c.orgId && (
                             <span className="ml-1.5 rounded bg-violet-500/15 px-1 py-0.5 text-[10px] text-violet-300">
                               linked
+                            </span>
+                          )}
+                          {c.deployment && DEPLOYMENT_LABELS[c.deployment] && (
+                            <span
+                              className={cn(
+                                "ml-1.5 rounded px-1 py-0.5 text-[10px]",
+                                DEPLOYMENT_LABELS[c.deployment].className,
+                              )}
+                            >
+                              {DEPLOYMENT_LABELS[c.deployment].label}
+                            </span>
+                          )}
+                          {c.source && CHANNEL_LABELS[c.source] && (
+                            <span className="ml-1.5 rounded bg-white/[0.06] px-1 py-0.5 text-[10px] text-neutral-400">
+                              {CHANNEL_LABELS[c.source]}
                             </span>
                           )}
                         </span>
@@ -832,8 +901,8 @@ function CreateCompanyDialog({
             <Field label="Domain">
               <Input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="acme.com" className="border-white/10 bg-neutral-900" />
             </Field>
-            <Field label="Product org id">
-              <Input value={orgId} onChange={(e) => setOrgId(e.target.value)} placeholder="uuid (optional)" className="border-white/10 bg-neutral-900" />
+            <Field label="Product org">
+              <OrgPicker value={orgId} onCommit={(v) => setOrgId(v ?? "")} authFetch={authFetch} />
             </Field>
           </div>
           <Field label="Qtd. de devs">
@@ -898,6 +967,102 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="text-xs text-neutral-400">{label}</span>
       {children}
     </label>
+  );
+}
+
+// ── Product org autocomplete ──────────────────────────────────────────────
+// Search product orgs by name (backed by product_signals_latest) so nobody
+// has to hunt uuids. Typing a raw uuid still works: blur commits free text.
+
+type OrgSuggestion = {
+  orgId: string;
+  name: string | null;
+  userCount: number | null;
+  planType: string | null;
+  tier: string | null;
+};
+
+function OrgPicker({
+  value,
+  onCommit,
+  authFetch,
+}: {
+  value: string;
+  onCommit: (orgId: string | null) => void;
+  authFetch: (url: string, init?: RequestInit) => Promise<Response>;
+}) {
+  const [text, setText] = useState(value);
+  const [results, setResults] = useState<OrgSuggestion[]>([]);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => setText(value), [value]);
+
+  useEffect(() => {
+    const q = text.trim();
+    if (q.length < 2 || q === value) {
+      setResults([]);
+      setOpen(false);
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const res = await authFetch(
+          `/api/crm/org-search?q=${encodeURIComponent(q)}`,
+        );
+        const data = (await res.json()) as { orgs?: OrgSuggestion[] };
+        setResults(data.orgs ?? []);
+        setOpen((data.orgs ?? []).length > 0);
+      } catch {
+        setResults([]);
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [text, value, authFetch]);
+
+  return (
+    <div className="relative">
+      <Input
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => {
+          setTimeout(() => setOpen(false), 150);
+          const t = text.trim();
+          if (t !== (value ?? "")) onCommit(t || null);
+        }}
+        placeholder="Search org by name, or paste a uuid"
+        className="border-white/10 bg-neutral-900 text-xs"
+      />
+      {open && results.length > 0 && (
+        <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-lg border border-white/10 bg-neutral-900 shadow-xl">
+          {results.map((r) => (
+            <button
+              key={r.orgId}
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                setText(r.orgId);
+                setOpen(false);
+                onCommit(r.orgId);
+              }}
+              className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-white/[0.06]"
+            >
+              <span className="truncate text-neutral-200">
+                {r.name ?? r.orgId}
+              </span>
+              <span className="shrink-0 text-[10px] text-neutral-500">
+                {[
+                  r.userCount != null ? `${r.userCount} users` : null,
+                  r.planType,
+                  r.tier,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1063,6 +1228,7 @@ function CompanyDrawer({
               members={members}
               fieldDefs={fieldDefs}
               onPatch={patch}
+              authFetch={authFetch}
             />
           ) : tab === "emails" ? (
             <EmailsTab companyId={companyId} authFetch={authFetch} />
@@ -1360,11 +1526,13 @@ function OverviewTab({
   members,
   fieldDefs,
   onPatch,
+  authFetch,
 }: {
   company: CompanyWithIdle;
   members: TeamMember[];
   fieldDefs: CrmFieldDef[];
   onPatch: (p: Record<string, unknown>) => void;
+  authFetch: (url: string, init?: RequestInit) => Promise<Response>;
 }) {
   const [orgId, setOrgId] = useState(company.orgId ?? "");
   const [industry, setIndustry] = useState(company.industry ?? "");
@@ -1449,16 +1617,33 @@ function OverviewTab({
         )}
       </div>
 
-      <Field label="Product org id">
-        <div className="flex gap-2">
-          <Input
-            value={orgId}
-            onChange={(e) => setOrgId(e.target.value)}
-            onBlur={() => orgId !== (company.orgId ?? "") && onPatch({ orgId: orgId || null })}
-            placeholder="Link to product org uuid"
-            className="border-white/10 bg-neutral-900 font-mono text-xs"
-          />
-        </div>
+      <Field label="Product org">
+        <OrgPicker
+          value={orgId}
+          onCommit={(v) => {
+            setOrgId(v ?? "");
+            onPatch({ orgId: v });
+          }}
+          authFetch={authFetch}
+        />
+      </Field>
+
+      <Field label="Deployment">
+        <Select
+          value={company.deployment ?? "unknown"}
+          onValueChange={(v) =>
+            onPatch({ deployment: v === "unknown" ? null : v })
+          }
+        >
+          <SelectTrigger className="h-8 border-white/10 bg-neutral-900 text-sm">
+            <SelectValue placeholder="Deployment" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="unknown">Unknown</SelectItem>
+            <SelectItem value="cloud">Cloud</SelectItem>
+            <SelectItem value="self_hosted">Self-hosted</SelectItem>
+          </SelectContent>
+        </Select>
       </Field>
 
       <div className="grid grid-cols-2 gap-3">

@@ -208,6 +208,7 @@ export async function runProductSignalsSweep(
           orgId: org.orgId,
           status: "lead",
           devCount: org.userCount,
+          deployment: "cloud",
           source: "product",
           tags: ["product-signup"],
         });
@@ -244,6 +245,13 @@ export async function runProductSignalsSweep(
           .from("crm_companies")
           .update({ tier: cls.tier })
           .eq("id", company.id);
+        // A linked product org means the account uses Cloud; fill deployment
+        // only when unset so a human-set self_hosted marker survives.
+        await client
+          .from("crm_companies")
+          .update({ deployment: "cloud" })
+          .eq("id", company.id)
+          .is("deployment", null);
         if (error) throw new Error(error.message);
         const from = company.tier ?? "none";
         await logActivity(client, company.id, "signal", {

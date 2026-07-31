@@ -45,6 +45,11 @@ export const COMPANY_STATUSES: CompanyStatus[] = [
 
 export const COMPANY_PRIORITIES: CompanyPriority[] = ["high", "medium", "low"];
 
+/** How the account runs Kodus. Cloud is set by the product-signals sweep;
+ *  self_hosted is set by a human (telemetry has no identity to automate it). */
+export type CompanyDeployment = "cloud" | "self_hosted";
+export const COMPANY_DEPLOYMENTS: CompanyDeployment[] = ["cloud", "self_hosted"];
+
 export type ActivityKind =
   | "created"
   | "status_change"
@@ -78,6 +83,7 @@ export type CrmCompany = {
   /** Outbound tier (t0..t3 | customer). Machine-owned: written by the
    *  product-signals sweep, never edited by hand. */
   tier: string | null;
+  deployment: CompanyDeployment | null;
   source: CompanySource;
   notes: string | null;
   lastActivityAt: string | null;
@@ -141,6 +147,7 @@ export type CreateCompanyInput = {
   enrichment?: Record<string, unknown>;
   /** Shallow merge into properties; null values remove keys. */
   properties?: Record<string, unknown>;
+  deployment?: CompanyDeployment | null;
   source?: CompanySource;
   notes?: string | null;
   createdByEmail?: string | null;
@@ -156,6 +163,8 @@ export type CompanyFilters = {
   ownerEmail?: string;
   /** Outbound tier from product signals: t0 | t1 | t2 | t3 | customer. */
   tier?: string | string[];
+  deployment?: CompanyDeployment;
+  source?: CompanySource;
   search?: string;
   staleOnly?: boolean;
   limit?: number;
@@ -192,6 +201,7 @@ type CompanyRow = {
   enrichment: Record<string, unknown> | null;
   properties?: Record<string, unknown> | null;
   tier?: string | null;
+  deployment?: CompanyDeployment | null;
   source: CompanySource | null;
   notes: string | null;
   last_activity_at: string | null;
@@ -220,6 +230,7 @@ function rowToCompany(row: CompanyRow): CrmCompany {
     enrichment: row.enrichment ?? {},
     properties: normalizeProperties(row.properties),
     tier: row.tier ?? null,
+    deployment: row.deployment ?? null,
     source: row.source ?? "manual",
     notes: row.notes,
     lastActivityAt: row.last_activity_at,
@@ -419,6 +430,8 @@ export async function listCompanies(
     if (Array.isArray(filters.tier)) query = query.in("tier", filters.tier);
     else query = query.eq("tier", filters.tier);
   }
+  if (filters.deployment) query = query.eq("deployment", filters.deployment);
+  if (filters.source) query = query.eq("source", filters.source);
   if (filters.search && filters.search.trim()) {
     const term = `%${filters.search.trim()}%`;
     query = query.or(
@@ -482,6 +495,7 @@ function companyInsertRow(input: CreateCompanyInput): Record<string, unknown> {
     properties: input.properties
       ? mergeProperties({}, input.properties)
       : {},
+    deployment: input.deployment ?? null,
     source: input.source ?? "manual",
     notes: trimOrNull(input.notes),
     created_by_email: trimOrNull(input.createdByEmail),
@@ -525,6 +539,7 @@ export async function updateCompany(
   }
   if ("domain" in updates) patch.domain = normalizeDomain(updates.domain);
   if ("orgId" in updates) patch.org_id = trimOrNull(updates.orgId);
+  if ("deployment" in updates) patch.deployment = updates.deployment ?? null;
   if ("status" in updates && updates.status !== undefined)
     patch.status = updates.status;
   if ("priority" in updates && updates.priority !== undefined)

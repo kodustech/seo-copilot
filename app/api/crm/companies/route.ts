@@ -45,6 +45,8 @@ export async function GET(req: Request) {
     const priority = url.searchParams.get("priority");
     const ownerEmail = url.searchParams.get("ownerEmail");
     const tier = url.searchParams.get("tier");
+    const deployment = url.searchParams.get("deployment");
+    const source = url.searchParams.get("source");
     const search = url.searchParams.get("search");
     const staleOnly = url.searchParams.get("staleOnly") === "true";
     const limit = Number(url.searchParams.get("limit")) || 300;
@@ -55,6 +57,9 @@ export async function GET(req: Request) {
       filters.priority = priority as CompanyPriority;
     if (ownerEmail) filters.ownerEmail = ownerEmail;
     if (tier) filters.tier = tier;
+    if (deployment === "cloud" || deployment === "self_hosted")
+      filters.deployment = deployment;
+    if (source) filters.source = source as CompanyFilters["source"];
     if (search) filters.search = search;
 
     const [companies, stats] = await Promise.all([
