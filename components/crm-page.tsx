@@ -3,11 +3,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   Building2,
   Loader2,
   Plus,
   RefreshCw,
   Search,
+  Settings2,
   Trash2,
   X,
   Activity,
@@ -29,6 +32,13 @@ import {
   type CrmComment,
   type CrmContact,
 } from "@/lib/crm";
+import {
+  CRM_FIELD_TYPES,
+  type CrmFieldDef,
+  type CrmFieldOption,
+  type CrmFieldType,
+  type CrmPropertyValue,
+} from "@/lib/crm-fields";
 import type { ProductSignals } from "@/lib/crm-signals";
 
 import { Badge } from "@/components/ui/badge";
@@ -138,6 +148,8 @@ export function CrmPage() {
   const [search, setSearch] = useState("");
 
   const [createOpen, setCreateOpen] = useState(false);
+  const [fieldsOpen, setFieldsOpen] = useState(false);
+  const [fieldDefs, setFieldDefs] = useState<CrmFieldDef[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [importingPipeline, setImportingPipeline] = useState(false);
   const [importNotice, setImportNotice] = useState<string | null>(null);
@@ -169,6 +181,17 @@ export function CrmPage() {
     [token],
   );
 
+  const loadFields = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await authFetch("/api/crm/fields");
+      const json = await res.json();
+      if (res.ok) setFieldDefs(json.fields ?? []);
+    } catch {
+      /* ignore */
+    }
+  }, [token, authFetch]);
+
   const load = useCallback(async () => {
     if (!token) return;
     setLoading(true);
@@ -194,6 +217,10 @@ export function CrmPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    void loadFields();
+  }, [loadFields]);
 
   // team members for owner pickers
   useEffect(() => {
@@ -273,6 +300,15 @@ export function CrmPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setFieldsOpen(true)}
+            className="h-8 gap-1.5 border-white/10 text-neutral-300"
+          >
+            <Settings2 className="size-3.5" />
+            Manage fields
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -547,10 +583,21 @@ export function CrmPage() {
         />
       )}
 
+      {fieldsOpen && (
+        <ManageFieldsDialog
+          open={fieldsOpen}
+          fields={fieldDefs}
+          authFetch={authFetch}
+          onClose={() => setFieldsOpen(false)}
+          onChanged={() => void loadFields()}
+        />
+      )}
+
       {selectedId && (
         <CompanyDrawer
           companyId={selectedId}
           members={members}
+          fieldDefs={fieldDefs}
           authFetch={authFetch}
           onClose={() => setSelectedId(null)}
           onChanged={() => void load()}
@@ -792,12 +839,14 @@ type DrawerTab = "overview" | "comments" | "contacts" | "timeline" | "signals";
 function CompanyDrawer({
   companyId,
   members,
+  fieldDefs,
   authFetch,
   onClose,
   onChanged,
 }: {
   companyId: string;
   members: TeamMember[];
+  fieldDefs: CrmFieldDef[];
   authFetch: (url: string, init?: RequestInit) => Promise<Response>;
   onClose: () => void;
   onChanged: () => void;
@@ -828,7 +877,30 @@ function CompanyDrawer({
   }, [load]);
 
   async function patch(patchBody: Record<string, unknown>) {
-    setCompany((prev) => (prev ? { ...prev, ...patchBody } : prev));
+    setCompany((prev) => {
+      if (!prev) return prev;
+      if (
+        patchBody.properties &&
+        typeof patchBody.properties === "object" &&
+        !Array.isArray(patchBody.properties)
+      ) {
+        const nextProps = { ...(prev.properties ?? {}) };
+        for (const [k, v] of Object.entries(
+          patchBody.properties as Record<string, unknown>,
+        )) {
+          if (v === null || v === undefined) delete nextProps[k];
+          else if (
+            typeof v === "string" ||
+            typeof v === "number" ||
+            typeof v === "boolean"
+          ) {
+            nextProps[k] = v;
+          }
+        }
+        return { ...prev, properties: nextProps };
+      }
+      return { ...prev, ...patchBody };
+    });
     await authFetch(`/api/crm/companies/${companyId}`, {
       method: "PATCH",
       body: JSON.stringify(patchBody),
@@ -902,7 +974,12 @@ function CompanyDrawer({
           {loading || !company ? (
             <Loader2 className="mx-auto mt-8 size-5 animate-spin text-neutral-500" />
           ) : tab === "overview" ? (
-            <OverviewTab company={company} members={members} onPatch={patch} />
+            <OverviewTab
+              company={company}
+              members={members}
+              fieldDefs={fieldDefs}
+              onPatch={patch}
+            />
           ) : tab === "comments" ? (
             <CommentsTab
               companyId={companyId}
@@ -933,10 +1010,12 @@ function CompanyDrawer({
 function OverviewTab({
   company,
   members,
+  fieldDefs,
   onPatch,
 }: {
   company: CompanyWithIdle;
   members: TeamMember[];
+  fieldDefs: CrmFieldDef[];
   onPatch: (p: Record<string, unknown>) => void;
 }) {
   const [orgId, setOrgId] = useState(company.orgId ?? "");
@@ -991,6 +1070,35 @@ function OverviewTab({
             )}
           </div>
         </Field>
+      </div>
+
+      {/* Custom properties */}
+      <div className="space-y-2 rounded-lg border border-white/[0.06] bg-neutral-900/40 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-neutral-500">
+            Custom fields
+          </p>
+        </div>
+        {fieldDefs.length === 0 ? (
+          <p className="text-xs text-neutral-500">
+            No custom fields yet. Use{" "}
+            <span className="text-neutral-300">Manage fields</span> on the Accounts
+            page to add properties (e.g. Self-hosted, Deployment).
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {fieldDefs.map((def) => (
+              <PropertyEditor
+                key={def.id}
+                def={def}
+                value={company.properties?.[def.key]}
+                onChange={(v) =>
+                  onPatch({ properties: { [def.key]: v } })
+                }
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       <Field label="Product org id">
@@ -1049,6 +1157,438 @@ function OverviewTab({
         </Field>
       )}
     </div>
+  );
+}
+
+function PropertyEditor({
+  def,
+  value,
+  onChange,
+}: {
+  def: CrmFieldDef;
+  value: CrmPropertyValue | undefined;
+  onChange: (v: CrmPropertyValue | null) => void;
+}) {
+  const [text, setText] = useState(
+    value === undefined || value === null ? "" : String(value),
+  );
+
+  useEffect(() => {
+    setText(value === undefined || value === null ? "" : String(value));
+  }, [value, def.key]);
+
+  if (def.type === "boolean") {
+    const v =
+      value === true ? "true" : value === false ? "false" : "unset";
+    return (
+      <Field label={def.label}>
+        <Select
+          value={v}
+          onValueChange={(next) => {
+            if (next === "unset") onChange(null);
+            else onChange(next === "true");
+          }}
+        >
+          <SelectTrigger className="border-white/10 bg-neutral-900">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="unset">—</SelectItem>
+            <SelectItem value="true">Yes</SelectItem>
+            <SelectItem value="false">No</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+    );
+  }
+
+  if (def.type === "select") {
+    const current =
+      typeof value === "string" && def.options.some((o) => o.id === value)
+        ? value
+        : "unset";
+    return (
+      <Field label={def.label}>
+        <Select
+          value={current}
+          onValueChange={(next) =>
+            onChange(next === "unset" ? null : next)
+          }
+        >
+          <SelectTrigger className="border-white/10 bg-neutral-900">
+            <SelectValue placeholder="—" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="unset">—</SelectItem>
+            {def.options.map((o) => (
+              <SelectItem key={o.id} value={o.id}>
+                {o.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
+    );
+  }
+
+  if (def.type === "number") {
+    return (
+      <Field label={def.label}>
+        <Input
+          type="number"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onBlur={() => {
+            if (text.trim() === "") {
+              if (value !== undefined && value !== null) onChange(null);
+              return;
+            }
+            const n = Number(text);
+            if (!Number.isFinite(n)) return;
+            if (n !== value) onChange(n);
+          }}
+          className="border-white/10 bg-neutral-900"
+        />
+      </Field>
+    );
+  }
+
+  return (
+    <Field label={def.label}>
+      <Input
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => {
+          const next = text;
+          const prev = value === undefined || value === null ? "" : String(value);
+          if (next === prev) return;
+          onChange(next.trim() === "" ? null : next);
+        }}
+        className="border-white/10 bg-neutral-900"
+      />
+    </Field>
+  );
+}
+
+// ── Manage custom fields ─────────────────────────────────────────────────
+
+function ManageFieldsDialog({
+  open,
+  fields,
+  authFetch,
+  onClose,
+  onChanged,
+}: {
+  open: boolean;
+  fields: CrmFieldDef[];
+  authFetch: (url: string, init?: RequestInit) => Promise<Response>;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [label, setLabel] = useState("");
+  const [type, setType] = useState<CrmFieldType>("text");
+  const [optionsText, setOptionsText] = useState("Yes\nNo");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editLabel, setEditLabel] = useState("");
+  const [editOptionsText, setEditOptionsText] = useState("");
+
+  function parseOptionsText(text: string): CrmFieldOption[] {
+    return text
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        // "id|Label" or just "Label"
+        const pipe = line.indexOf("|");
+        if (pipe > 0) {
+          return {
+            id: line.slice(0, pipe).trim(),
+            label: line.slice(pipe + 1).trim() || line.slice(0, pipe).trim(),
+          };
+        }
+        return { id: "", label: line };
+      });
+  }
+
+  async function createField() {
+    setBusy(true);
+    setError(null);
+    try {
+      const body: Record<string, unknown> = { label, type };
+      if (type === "select") {
+        body.options = parseOptionsText(optionsText);
+      }
+      const res = await authFetch("/api/crm/fields", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error ?? "Failed to create");
+      setLabel("");
+      setType("text");
+      setOptionsText("Yes\nNo");
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveEdit(id: string, fieldType: CrmFieldType) {
+    setBusy(true);
+    setError(null);
+    try {
+      const body: Record<string, unknown> = { label: editLabel };
+      if (fieldType === "select") {
+        body.options = parseOptionsText(editOptionsText);
+      }
+      const res = await authFetch(`/api/crm/fields/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error ?? "Failed to update");
+      setEditingId(null);
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeField(id: string, fieldLabel: string) {
+    if (
+      !confirm(
+        `Delete field “${fieldLabel}”? Values will no longer show on accounts (data may remain unused).`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await authFetch(`/api/crm/fields/${id}`, {
+        method: "DELETE",
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error ?? "Failed to delete");
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function move(id: string, dir: -1 | 1) {
+    const idx = fields.findIndex((f) => f.id === id);
+    if (idx < 0) return;
+    const j = idx + dir;
+    if (j < 0 || j >= fields.length) return;
+    const ordered = fields.map((f) => f.id);
+    const tmp = ordered[idx];
+    ordered[idx] = ordered[j];
+    ordered[j] = tmp;
+    setBusy(true);
+    try {
+      // sequential position updates
+      await Promise.all(
+        ordered.map((fid, position) =>
+          authFetch(`/api/crm/fields/${fid}`, {
+            method: "PATCH",
+            body: JSON.stringify({ position }),
+          }),
+        ),
+      );
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto border-white/10 bg-neutral-950 text-white">
+        <DialogHeader>
+          <DialogTitle>Manage custom fields</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-neutral-500">
+          Workspace properties on every account — like Notion database properties.
+          Examples: Self-hosted (Yes/No), Deployment (select), internal notes (text).
+        </p>
+
+        {error && (
+          <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+            {error}
+          </div>
+        )}
+
+        <div className="space-y-2">
+          {fields.length === 0 ? (
+            <p className="text-sm text-neutral-500">No fields yet.</p>
+          ) : (
+            fields.map((f, i) => (
+              <div
+                key={f.id}
+                className="rounded-lg border border-white/[0.08] bg-neutral-900/50 p-3"
+              >
+                {editingId === f.id ? (
+                  <div className="space-y-2">
+                    <Input
+                      value={editLabel}
+                      onChange={(e) => setEditLabel(e.target.value)}
+                      className="border-white/10 bg-neutral-900"
+                    />
+                    {f.type === "select" && (
+                      <Textarea
+                        value={editOptionsText}
+                        onChange={(e) => setEditOptionsText(e.target.value)}
+                        rows={3}
+                        placeholder={"one option per line\noptional: id|Label"}
+                        className="border-white/10 bg-neutral-900 font-mono text-xs"
+                      />
+                    )}
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        disabled={busy || !editLabel.trim()}
+                        onClick={() => void saveEdit(f.id, f.type)}
+                        className="h-7 bg-white text-neutral-900"
+                      >
+                        Save
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setEditingId(null)}
+                        className="h-7"
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-white">{f.label}</p>
+                      <p className="text-[11px] text-neutral-500">
+                        <span className="font-mono">{f.key}</span>
+                        {" · "}
+                        {f.type}
+                        {f.type === "select" && f.options.length > 0
+                          ? ` · ${f.options.map((o) => o.label).join(", ")}`
+                          : ""}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-0.5">
+                      <button
+                        type="button"
+                        disabled={busy || i === 0}
+                        onClick={() => void move(f.id, -1)}
+                        className="rounded p-1 text-neutral-500 hover:text-white disabled:opacity-30"
+                      >
+                        <ArrowUp className="size-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy || i === fields.length - 1}
+                        onClick={() => void move(f.id, 1)}
+                        className="rounded p-1 text-neutral-500 hover:text-white disabled:opacity-30"
+                      >
+                        <ArrowDown className="size-3.5" />
+                      </button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => {
+                          setEditingId(f.id);
+                          setEditLabel(f.label);
+                          setEditOptionsText(
+                            f.options
+                              .map((o) =>
+                                o.id === o.label ? o.label : `${o.id}|${o.label}`,
+                              )
+                              .join("\n"),
+                          );
+                        }}
+                      >
+                        Edit
+                      </Button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void removeField(f.id, f.label)}
+                        className="rounded p-1 text-neutral-600 hover:text-red-400"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="space-y-2 border-t border-white/10 pt-3">
+          <p className="text-xs font-medium text-neutral-400">Add field</p>
+          <Input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="Label (e.g. Self-hosted)"
+            className="border-white/10 bg-neutral-900"
+          />
+          <Select
+            value={type}
+            onValueChange={(v) => setType(v as CrmFieldType)}
+          >
+            <SelectTrigger className="border-white/10 bg-neutral-900">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {CRM_FIELD_TYPES.map((t) => (
+                <SelectItem key={t} value={t}>
+                  {t}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {type === "select" && (
+            <Textarea
+              value={optionsText}
+              onChange={(e) => setOptionsText(e.target.value)}
+              rows={3}
+              placeholder={"one option per line\nCloud\nSelf-hosted\nHybrid"}
+              className="border-white/10 bg-neutral-900 font-mono text-xs"
+            />
+          )}
+          <Button
+            size="sm"
+            disabled={busy || !label.trim()}
+            onClick={() => void createField()}
+            className="h-8 gap-1.5 bg-white text-neutral-900 hover:bg-neutral-200"
+          >
+            {busy ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Plus className="size-3.5" />
+            )}
+            Add field
+          </Button>
+        </div>
+
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>
+            Done
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
