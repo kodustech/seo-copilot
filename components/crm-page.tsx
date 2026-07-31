@@ -186,9 +186,18 @@ export function CrmPage() {
     try {
       const res = await authFetch("/api/crm/fields");
       const json = await res.json();
-      if (res.ok) setFieldDefs(json.fields ?? []);
-    } catch {
-      /* ignore */
+      if (!res.ok) {
+        console.error("[crm] load fields failed:", json.error);
+        setError(
+          typeof json.error === "string"
+            ? `Custom fields: ${json.error}`
+            : "Failed to load custom fields",
+        );
+        return;
+      }
+      setFieldDefs(json.fields ?? []);
+    } catch (err) {
+      console.error("[crm] load fields failed:", err);
     }
   }, [token, authFetch]);
 
@@ -589,7 +598,7 @@ export function CrmPage() {
           fields={fieldDefs}
           authFetch={authFetch}
           onClose={() => setFieldsOpen(false)}
-          onChanged={() => void loadFields()}
+          onChanged={() => loadFields()}
         />
       )}
 
@@ -1283,7 +1292,7 @@ function ManageFieldsDialog({
   fields: CrmFieldDef[];
   authFetch: (url: string, init?: RequestInit) => Promise<Response>;
   onClose: () => void;
-  onChanged: () => void;
+  onChanged: () => void | Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1324,12 +1333,18 @@ function ManageFieldsDialog({
         method: "POST",
         body: JSON.stringify(body),
       });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j.error ?? "Failed to create");
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(
+          (j as { error?: string }).error ??
+            `Failed to create (HTTP ${res.status})`,
+        );
+      }
       setLabel("");
       setType("text");
       setOptionsText("Yes\nNo");
-      onChanged();
+      // Parent reloads field list; keep dialog open so the new row is visible.
+      await Promise.resolve(onChanged());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
     } finally {
