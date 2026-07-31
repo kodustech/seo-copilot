@@ -149,54 +149,6 @@ async function runCrmIdleCron(): Promise<void> {
   }
 }
 
-async function runIcpDiscoveryCron(): Promise<void> {
-  const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
-  const { discoverAndWatch } = await import("@/lib/icp/discovery");
-
-  const { discovered, added } = await discoverAndWatch(getSupabaseServiceClient());
-  console.log(
-    `[cron] icp-discovery: ${discovered.length} companies found, ${added.length} on watchlist`,
-  );
-}
-
-async function runIcpScanCron(): Promise<void> {
-  const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
-  const { scanWatchlist } = await import("@/lib/icp/scanner");
-
-  const results = await scanWatchlist(getSupabaseServiceClient());
-  const newSignals = results.flatMap((r) => r.newSignals);
-  console.log(
-    `[cron] icp-scan: ${results.length} companies scanned, ${newSignals.length} new signals`,
-  );
-
-  // Optional fan-out (e.g. n8n → Slack). No-op if the env var is unset.
-  const webhook = process.env.ICP_SCAN_WEBHOOK_URL;
-  if (webhook && newSignals.length > 0) {
-    try {
-      await fetch(webhook, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          new_signals: newSignals.length,
-          companies: results
-            .filter((r) => r.newSignals.length > 0)
-            .map((r) => ({
-              name: r.companyName,
-              signals: r.newSignals.map((s) => ({
-                type: s.signalType,
-                strength: s.strength,
-                title: s.title,
-                url: s.url,
-              })),
-            })),
-        }),
-      });
-    } catch (err) {
-      console.error("[cron] icp-scan webhook post failed:", err);
-    }
-  }
-}
-
 /** Re-research rows that previously passed ICP (signals change over time). */
 async function runResearchRefreshCron(): Promise<void> {
   const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
@@ -287,19 +239,6 @@ const JOBS: JobDefinition[] = [
     name: "crm-idle",
     schedule: "0 12 * * *",
     run: runCrmIdleCron,
-  },
-  {
-    // Weekly Monday 05:00 UTC: discover new ICP companies from QA/E2E job
-    // postings on public ATS boards (runs before the daily scan picks them up).
-    name: "icp-discovery",
-    schedule: "0 5 * * 1",
-    run: runIcpDiscoveryCron,
-  },
-  {
-    // Daily 06:00 UTC: scan the ICP watchlist job boards for new signals.
-    name: "icp-scan",
-    schedule: "0 6 * * *",
-    run: runIcpScanCron,
   },
   {
     // Weekly Wednesday 07:00 UTC: re-score companies that already passed ICP.

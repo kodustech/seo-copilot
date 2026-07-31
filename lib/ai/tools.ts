@@ -21,14 +21,6 @@ import {
 } from "@/lib/exa";
 import { findUnlinkedBrandMentions } from "@/lib/brand-mentions";
 import {
-  addToWatchlist,
-  listWatchlist,
-  listSignals,
-  scanWatchlist,
-} from "@/lib/icp/scanner";
-import { ATS_PROVIDERS, type AtsProvider } from "@/lib/icp/job-boards";
-import { discoverAndWatch, DEFAULT_DISCOVERY_QUERIES } from "@/lib/icp/discovery";
-import {
   addRows,
   createTable,
   getDefaultRubricId,
@@ -3724,177 +3716,6 @@ export const addCrmComment = tool({
   },
 });
 
-export const icpAddToWatchlist = tool({
-  description:
-    "Add a company to the ICP signal-scan watchlist. Auto-detects which public ATS job board it uses (Greenhouse, Lever or Ashby) from the name/domain when ats + board_slug are not provided.",
-  inputSchema: z.object({
-    company_name: z.string().describe("Company name (required)"),
-    domain: z.string().optional().describe("Primary domain, e.g. acme.com — improves board detection and CRM dedupe"),
-    ats: z.enum(ATS_PROVIDERS as unknown as [string, ...string[]]).optional().describe("ATS provider, when already known"),
-    board_slug: z.string().optional().describe("Board slug on the ATS public API, when already known"),
-    user_email: z.string().optional().describe("Acting user's email"),
-  }),
-  execute: async ({ company_name, domain, ats, board_slug, user_email }) => {
-    try {
-      const client = getSupabaseServiceClient();
-      const { entry, detected } = await addToWatchlist(client, {
-        companyName: company_name,
-        domain,
-        ats: ats as AtsProvider | undefined,
-        boardSlug: board_slug,
-        addedByEmail: user_email,
-      });
-      return { success: true as const, entry, board_auto_detected: detected };
-    } catch (error) {
-      return {
-        success: false as const,
-        message: error instanceof Error ? error.message : "Failed to add to watchlist",
-      };
-    }
-  },
-});
-
-export const icpListWatchlist = tool({
-  description: "List companies on the ICP signal-scan watchlist.",
-  inputSchema: z.object({
-    active_only: z.boolean().optional().describe("Only active entries (default false)"),
-  }),
-  execute: async ({ active_only }) => {
-    try {
-      const client = getSupabaseServiceClient();
-      const entries = await listWatchlist(client, { activeOnly: active_only });
-      return { success: true as const, count: entries.length, entries };
-    } catch (error) {
-      return {
-        success: false as const,
-        message: error instanceof Error ? error.message : "Failed to list watchlist",
-      };
-    }
-  },
-});
-
-export const icpScanSignals = tool({
-  description:
-    "Scan the ICP watchlist now: fetch each company's public job board, classify postings into buying-intent signals (QA/SDET hiring, test-suite rescue, AI features, E2E tooling, dev-hiring-without-QA) and store new signals. Companies with a strong signal are upserted into the CRM. Also runs daily via cron.",
-  inputSchema: z.object({
-    watchlist_id: z.string().optional().describe("Scan a single watchlist entry instead of all active ones"),
-  }),
-  execute: async ({ watchlist_id }) => {
-    try {
-      const client = getSupabaseServiceClient();
-      const results = await scanWatchlist(client, { watchlistId: watchlist_id });
-      const newSignals = results.reduce((n, r) => n + r.newSignals.length, 0);
-      return {
-        success: true as const,
-        companies_scanned: results.length,
-        new_signals: newSignals,
-        results: results.map((r) => ({
-          company: r.companyName,
-          board_found: r.boardFound,
-          jobs: r.jobCount,
-          new_signals: r.newSignals,
-          crm_company_id: r.crmCompanyId,
-        })),
-      };
-    } catch (error) {
-      return {
-        success: false as const,
-        message: error instanceof Error ? error.message : "Failed to scan watchlist",
-      };
-    }
-  },
-});
-
-export const icpListSignals = tool({
-  description:
-    "List ICP buying-intent signals detected by the scanner, newest first. Filter by strength or recency.",
-  inputSchema: z.object({
-    strength: z.enum(["strong", "medium"]).optional(),
-    days: z.number().optional().describe("Only signals detected in the last N days"),
-    watchlist_id: z.string().optional(),
-  }),
-  execute: async ({ strength, days, watchlist_id }) => {
-    try {
-      const client = getSupabaseServiceClient();
-      const signals = await listSignals(client, {
-        strength,
-        days,
-        watchlistId: watchlist_id,
-      });
-      return { success: true as const, count: signals.length, signals };
-    } catch (error) {
-      return {
-        success: false as const,
-        message: error instanceof Error ? error.message : "Failed to list signals",
-      };
-    }
-  },
-});
-
-export const icpDiscoverCompanies = tool({
-  description:
-    "Discover NEW companies for the ICP prospect list by searching public ATS job boards for QA/SDET/E2E postings and working backwards to the company. market='global' searches Greenhouse/Lever/Ashby boards (via HN + web search); market='brazil' searches the Gupy portal (dominant Brazilian ATS) — use it when asked for Brazilian companies. Every hit is added to the watchlist already carrying a hiring signal. Optionally runs the signal scan right after so new companies land in the CRM in one shot.",
-  inputSchema: z.object({
-    market: z
-      .enum(["global", "brazil"])
-      .optional()
-      .describe("Where to hunt: 'global' (default) or 'brazil' (Gupy portal)"),
-    queries: z
-      .array(z.string())
-      .optional()
-      .describe(
-        `Custom search queries. Global defaults: ${DEFAULT_DISCOVERY_QUERIES.join(" | ")}. Brazil defaults: QA | SDET | Playwright | Cypress | Automação de testes`,
-      ),
-    max_companies: z
-      .number()
-      .optional()
-      .describe("Cap on new companies per run (default 20)"),
-    scan_after: z
-      .boolean()
-      .optional()
-      .describe("Run icpScanSignals on the watchlist right after discovery (default true)"),
-    user_email: z.string().optional().describe("Acting user's email"),
-  }),
-  execute: async ({ market, queries, max_companies, scan_after, user_email }) => {
-    try {
-      const client = getSupabaseServiceClient();
-      const { discovered, added } = await discoverAndWatch(client, {
-        market,
-        queries,
-        maxCompanies: max_companies,
-        addedByEmail: user_email,
-      });
-
-      let scan: { companies_scanned: number; new_signals: number } | null = null;
-      if (scan_after !== false && added.length > 0) {
-        const results = await scanWatchlist(client);
-        scan = {
-          companies_scanned: results.length,
-          new_signals: results.reduce((n, r) => n + r.newSignals.length, 0),
-        };
-      }
-
-      return {
-        success: true as const,
-        discovered: discovered.map((d) => ({
-          company: d.companyName,
-          ats: d.ats,
-          board_slug: d.slug,
-          open_jobs: d.jobCount,
-          found_via: d.sourceUrl,
-        })),
-        added_to_watchlist: added.length,
-        scan,
-      };
-    } catch (error) {
-      return {
-        success: false as const,
-        message: error instanceof Error ? error.message : "Failed to discover companies",
-      };
-    }
-  },
-});
-
 export const researchListTables = tool({
   description:
     "List Clay-style research lists/tables. Returns id, slug, name, row_count, and column keys — use slug or id in later tools (table_ref).",
@@ -5841,11 +5662,6 @@ export function createAgentTools(userEmail?: string) {
     updateCrmField,
     deleteCrmField,
     addCrmComment,
-    icpAddToWatchlist,
-    icpListWatchlist,
-    icpScanSignals,
-    icpListSignals,
-    icpDiscoverCompanies,
     researchListTables,
     researchCreateTable,
     researchCreateFromIcp,
