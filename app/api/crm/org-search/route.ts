@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 
+import { searchProductOrgs } from "@/lib/crm-org-search";
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 
-// Autocomplete for linking a CRM account to a product org. Searches
-// product_signals_latest (kept fresh by the product-signals sweep) by org
-// name or id prefix — no BigQuery round-trip, so it is fast enough to hit
-// on every keystroke.
+/**
+ * Autocomplete for linking a CRM account to a product org.
+ * Tries product_signals_latest first; falls back to BigQuery organizations.
+ */
 export async function GET(req: Request) {
   let client;
   try {
@@ -20,31 +21,23 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const q = (url.searchParams.get("q") ?? "").trim();
   if (q.length < 2) {
-    return NextResponse.json({ orgs: [] });
+    return NextResponse.json({ orgs: [], source: "none" });
   }
 
   try {
-    const escaped = q.replace(/[%_,()]/g, " ").trim();
-    const { data, error } = await client
-      .from("product_signals_latest")
-      .select(
-        "org_id,org_name,org_type,user_count,plan_type,tier,connected_git",
-      )
-      .or(`org_name.ilike.%${escaped}%,org_id.ilike.${escaped}%`)
-      .order("user_count", { ascending: false, nullsFirst: false })
-      .limit(10);
-    if (error) throw new Error(error.message);
-
+    const result = await searchProductOrgs(client, q);
     return NextResponse.json({
-      orgs: (data ?? []).map((r) => ({
-        orgId: r.org_id,
-        name: r.org_name,
-        orgType: r.org_type,
-        userCount: r.user_count,
-        planType: r.plan_type,
+      orgs: result.orgs.map((r) => ({
+        orgId: r.orgId,
+        name: r.name,
+        orgType: r.orgType,
+        userCount: r.userCount,
+        planType: r.planType,
         tier: r.tier,
-        connectedGit: r.connected_git,
+        connectedGit: r.connectedGit,
       })),
+      source: result.source,
+      note: result.note,
     });
   } catch (err) {
     return NextResponse.json(

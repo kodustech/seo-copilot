@@ -994,6 +994,8 @@ function OrgPicker({
   const [text, setText] = useState(value);
   const [results, setResults] = useState<OrgSuggestion[]>([]);
   const [open, setOpen] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
 
   // Sync from a parent-provided value during render (React "adjusting state
   // when props change" pattern — avoids a cascading-render effect).
@@ -1007,20 +1009,49 @@ function OrgPicker({
   const searchable = query.length >= 2 && query !== value;
 
   useEffect(() => {
-    if (!searchable) return;
+    if (!searchable) {
+      setResults([]);
+      setNote(null);
+      setOpen(false);
+      setSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setSearching(true);
     const t = setTimeout(async () => {
       try {
         const res = await authFetch(
           `/api/crm/org-search?q=${encodeURIComponent(query)}`,
         );
-        const data = (await res.json()) as { orgs?: OrgSuggestion[] };
-        setResults(data.orgs ?? []);
-        setOpen((data.orgs ?? []).length > 0);
+        const data = (await res.json()) as {
+          orgs?: OrgSuggestion[];
+          note?: string;
+          error?: string;
+        };
+        if (cancelled) return;
+        if (!res.ok) {
+          setResults([]);
+          setNote(data.error || "Search failed");
+          setOpen(true);
+          return;
+        }
+        const orgs = data.orgs ?? [];
+        setResults(orgs);
+        setNote(orgs.length === 0 ? data.note || "No matching product org" : null);
+        setOpen(true);
       } catch {
+        if (cancelled) return;
         setResults([]);
+        setNote("Search failed");
+        setOpen(true);
+      } finally {
+        if (!cancelled) setSearching(false);
       }
     }, 250);
-    return () => clearTimeout(t);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [query, searchable, authFetch]);
 
   return (
@@ -1028,6 +1059,9 @@ function OrgPicker({
       <Input
         value={text}
         onChange={(e) => setText(e.target.value)}
+        onFocus={() => {
+          if (searchable && (results.length > 0 || note)) setOpen(true);
+        }}
         onBlur={() => {
           setTimeout(() => setOpen(false), 150);
           const t = text.trim();
@@ -1035,36 +1069,56 @@ function OrgPicker({
         }}
         placeholder="Search org by name, or paste a uuid"
         className="border-white/10 bg-neutral-900 text-xs"
+        autoComplete="off"
       />
-      {open && searchable && results.length > 0 && (
+      {searching && (
+        <p className="mt-1 text-[11px] text-neutral-500">Searching…</p>
+      )}
+      {open && searchable && !searching && (
         <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-lg border border-white/10 bg-neutral-900 shadow-xl">
-          {results.map((r) => (
-            <button
-              key={r.orgId}
-              type="button"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                setText(r.orgId);
-                setOpen(false);
-                onCommit(r.orgId);
-              }}
-              className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-white/[0.06]"
-            >
-              <span className="truncate text-neutral-200">
-                {r.name ?? r.orgId}
-              </span>
-              <span className="shrink-0 text-[10px] text-neutral-500">
-                {[
-                  r.userCount != null ? `${r.userCount} users` : null,
-                  r.planType,
-                  r.tier,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </span>
-            </button>
-          ))}
+          {results.length === 0 ? (
+            <p className="px-2.5 py-2 text-[11px] text-neutral-500">
+              {note || "No matching product org"}
+            </p>
+          ) : (
+            results.map((r) => (
+              <button
+                key={r.orgId}
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  setText(r.orgId);
+                  setOpen(false);
+                  onCommit(r.orgId);
+                }}
+                className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-white/[0.06]"
+              >
+                <span className="min-w-0 truncate text-neutral-200">
+                  <span className="font-medium">{r.name ?? r.orgId}</span>
+                  {r.name && (
+                    <span className="ml-1.5 font-mono text-[10px] text-neutral-500">
+                      {r.orgId.slice(0, 8)}…
+                    </span>
+                  )}
+                </span>
+                <span className="shrink-0 text-[10px] text-neutral-500">
+                  {[
+                    r.userCount != null ? `${r.userCount} users` : null,
+                    r.planType,
+                    r.tier,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </span>
+              </button>
+            ))
+          )}
         </div>
+      )}
+      {!searchable && !value && (
+        <p className="mt-1 text-[11px] text-neutral-500">
+          Type at least 2 characters to search product orgs.
+        </p>
       )}
     </div>
   );
