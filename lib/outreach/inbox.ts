@@ -1215,6 +1215,7 @@ export async function listReplyThreads(
   client: SupabaseClient,
   opts?: {
     status?: ReplyThreadStatus | "active" | "all";
+    channel?: ReplyChannel | "all";
     mailboxId?: string;
     limit?: number;
   },
@@ -1227,6 +1228,11 @@ export async function listReplyThreads(
     .limit(limit);
 
   if (opts?.mailboxId) q = q.eq("mailbox_id", opts.mailboxId);
+
+  const channel = opts?.channel ?? "all";
+  if (channel === "email" || channel === "linkedin") {
+    q = q.eq("channel", channel);
+  }
 
   const status = opts?.status ?? "active";
   if (status === "active") {
@@ -1260,10 +1266,14 @@ export async function listReplyThreads(
     t.sequenceName = t.sequenceId ? nameById.get(t.sequenceId) ?? null : null;
   }
 
-  const { count, error: cErr } = await client
+  let newCountQ = client
     .from("outreach_reply_threads")
     .select("id", { count: "exact", head: true })
     .eq("status", "new");
+  if (channel === "email" || channel === "linkedin") {
+    newCountQ = newCountQ.eq("channel", channel);
+  }
+  const { count, error: cErr } = await newCountQ;
   if (cErr) throw new Error(cErr.message);
 
   return { threads, newCount: count ?? 0 };
@@ -1370,6 +1380,44 @@ export async function updateReplyThread(
     .single();
   if (error) throw new Error(error.message);
   return mapThread(data as Record<string, unknown>);
+}
+
+/** Bulk triage — mark many threads done / open / etc. */
+export async function bulkUpdateReplyThreads(
+  client: SupabaseClient,
+  threadIds: string[],
+  patch: {
+    status?: ReplyThreadStatus;
+    snoozedUntil?: string | null;
+  },
+): Promise<{ updated: number; threads: ReplyThread[] }> {
+  const ids = [...new Set(threadIds.map((id) => id.trim()).filter(Boolean))];
+  if (ids.length === 0) return { updated: 0, threads: [] };
+  if (ids.length > 200) {
+    throw new Error("Bulk update limited to 200 threads");
+  }
+
+  const now = new Date().toISOString();
+  const update: Record<string, unknown> = { updated_at: now };
+  if (patch.status) {
+    update.status = patch.status;
+    if (patch.status !== "snoozed") update.snoozed_until = null;
+  }
+  if (patch.snoozedUntil !== undefined) {
+    update.snoozed_until = patch.snoozedUntil;
+    if (patch.snoozedUntil && !patch.status) update.status = "snoozed";
+  }
+
+  const { data, error } = await client
+    .from("outreach_reply_threads")
+    .update(update)
+    .in("id", ids)
+    .select("*");
+  if (error) throw new Error(error.message);
+  const threads = (data ?? []).map((r) =>
+    mapThread(r as Record<string, unknown>),
+  );
+  return { updated: threads.length, threads };
 }
 
 export async function markThreadEnrollmentReplied(

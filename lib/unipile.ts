@@ -13,6 +13,8 @@ export type UnipileAccount = {
   sources: Array<{ id?: string; status?: string }>;
   /** LinkedIn public identifier / vanity when available */
   publicIdentifier: string | null;
+  /** LinkedIn member provider id (ACoAA…) when available */
+  providerUserId: string | null;
   username: string | null;
   connectionStatus: string | null;
   raw: Record<string, unknown>;
@@ -98,6 +100,7 @@ function mapAccount(raw: Record<string, unknown>): UnipileAccount {
     sources,
     publicIdentifier:
       typeof im.publicIdentifier === "string" ? im.publicIdentifier : null,
+    providerUserId: typeof im.id === "string" ? im.id : null,
     username: typeof im.username === "string" ? im.username : null,
     connectionStatus:
       typeof raw.connection_status === "string"
@@ -161,6 +164,178 @@ export async function deleteUnipileAccount(accountId: string): Promise<void> {
   await unipileFetch(`/api/v1/accounts/${encodeURIComponent(accountId)}`, {
     method: "DELETE",
   });
+}
+
+export type UnipileChat = {
+  id: string;
+  accountId: string;
+  accountType: string | null;
+  timestamp: string | null;
+  attendeeProviderId: string | null;
+  unreadCount: number;
+};
+
+export type UnipileChatMessage = {
+  id: string;
+  chatId: string | null;
+  text: string | null;
+  timestamp: string | null;
+  isSender: boolean;
+  senderProviderId: string | null;
+};
+
+export type UnipileChatAttendee = {
+  id: string;
+  name: string | null;
+  providerId: string | null;
+  profileUrl: string | null;
+  isSelf: boolean;
+};
+
+export type UnipileUserProfile = {
+  providerId: string | null;
+  publicIdentifier: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  profileUrl: string | null;
+};
+
+/** True for LinkedIn member provider ids (ACoAA…). */
+export function isLinkedInProviderId(id: string | null | undefined): boolean {
+  return Boolean(id && /^ACoAA/i.test(id.trim()));
+}
+
+export async function listUnipileChats(opts: {
+  accountId: string;
+  limit?: number;
+  cursor?: string | null;
+}): Promise<{ items: UnipileChat[]; cursor: string | null }> {
+  const params = new URLSearchParams({
+    account_id: opts.accountId,
+    limit: String(Math.min(100, Math.max(1, opts.limit ?? 40))),
+  });
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  const data = await unipileFetch<{
+    items?: Record<string, unknown>[];
+    cursor?: string | null;
+  }>(`/api/v1/chats?${params.toString()}`);
+  const items = (data.items ?? []).map((r) => ({
+    id: String(r.id ?? ""),
+    accountId: String(r.account_id ?? opts.accountId),
+    accountType: typeof r.account_type === "string" ? r.account_type : null,
+    timestamp: typeof r.timestamp === "string" ? r.timestamp : null,
+    attendeeProviderId:
+      typeof r.attendee_provider_id === "string"
+        ? r.attendee_provider_id
+        : null,
+    unreadCount: Number(r.unread_count ?? r.unread ?? 0) || 0,
+  }));
+  return {
+    items: items.filter((c) => c.id),
+    cursor: typeof data.cursor === "string" ? data.cursor : null,
+  };
+}
+
+export async function listUnipileChatMessages(opts: {
+  chatId: string;
+  limit?: number;
+}): Promise<UnipileChatMessage[]> {
+  const params = new URLSearchParams({
+    limit: String(Math.min(50, Math.max(1, opts.limit ?? 25))),
+  });
+  const data = await unipileFetch<{ items?: Record<string, unknown>[] }>(
+    `/api/v1/chats/${encodeURIComponent(opts.chatId)}/messages?${params}`,
+  );
+  return (data.items ?? []).map((r) => {
+    const sender =
+      r.sender && typeof r.sender === "object"
+        ? (r.sender as Record<string, unknown>)
+        : null;
+    const isSenderRaw = r.is_sender;
+    const isSender =
+      isSenderRaw === true ||
+      isSenderRaw === 1 ||
+      isSenderRaw === "1" ||
+      isSenderRaw === "true";
+    return {
+      id: String(r.id ?? r.message_id ?? ""),
+      chatId:
+        typeof r.chat_id === "string"
+          ? r.chat_id
+          : opts.chatId,
+      text:
+        typeof r.text === "string"
+          ? r.text
+          : typeof r.body === "string"
+            ? r.body
+            : typeof r.message === "string"
+              ? r.message
+              : null,
+      timestamp: typeof r.timestamp === "string" ? r.timestamp : null,
+      isSender,
+      senderProviderId:
+        typeof r.sender_id === "string"
+          ? r.sender_id
+          : typeof sender?.attendee_provider_id === "string"
+            ? sender.attendee_provider_id
+            : null,
+    };
+  }).filter((m) => m.id);
+}
+
+export async function listUnipileChatAttendees(opts: {
+  accountId: string;
+  chatId: string;
+}): Promise<UnipileChatAttendee[]> {
+  const params = new URLSearchParams({
+    account_id: opts.accountId,
+    chat_id: opts.chatId,
+  });
+  const data = await unipileFetch<{ items?: Record<string, unknown>[] }>(
+    `/api/v1/chat_attendees?${params.toString()}`,
+  );
+  return (data.items ?? []).map((r) => ({
+    id: String(r.id ?? ""),
+    name: typeof r.name === "string" ? r.name : null,
+    providerId: typeof r.provider_id === "string" ? r.provider_id : null,
+    profileUrl: typeof r.profile_url === "string" ? r.profile_url : null,
+    isSelf: r.is_self === true || r.is_self === 1 || r.is_self === "1",
+  }));
+}
+
+/** Resolve LinkedIn public identifier (vanity slug) from provider id. */
+export async function getUnipileUserProfile(opts: {
+  accountId: string;
+  identifier: string;
+}): Promise<UnipileUserProfile | null> {
+  try {
+    const params = new URLSearchParams({ account_id: opts.accountId });
+    const data = await unipileFetch<Record<string, unknown>>(
+      `/api/v1/users/${encodeURIComponent(opts.identifier)}?${params}`,
+    );
+    const publicId =
+      typeof data.public_identifier === "string"
+        ? data.public_identifier
+        : null;
+    const providerId =
+      typeof data.provider_id === "string" ? data.provider_id : opts.identifier;
+    const first =
+      typeof data.first_name === "string" ? data.first_name : null;
+    const last = typeof data.last_name === "string" ? data.last_name : null;
+    return {
+      providerId,
+      publicIdentifier: publicId,
+      firstName: first,
+      lastName: last,
+      profileUrl: publicId
+        ? `https://www.linkedin.com/in/${publicId}`
+        : typeof data.profile_url === "string"
+          ? data.profile_url
+          : null,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export type UnipileWebhookPayload = {

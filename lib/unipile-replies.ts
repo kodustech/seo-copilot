@@ -6,8 +6,15 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { markEnrollmentReplied } from "@/lib/outreach/sequences";
 import {
+  getUnipileUserProfile,
   identitiesFromWebhook,
+  isLinkedInProviderId,
   isOutboundUnipileMessage,
+  isUnipileConfigured,
+  listLinkedInAccounts,
+  listUnipileChatAttendees,
+  listUnipileChatMessages,
+  listUnipileChats,
   normalizeLinkedInIdentity,
   type UnipileWebhookPayload,
 } from "@/lib/unipile";
@@ -134,6 +141,10 @@ export async function upsertLinkedInReplyThread(
             a.attendee_provider_id !== payload.account_info?.user_id,
         )?.attendee_profile_url ?? null);
 
+  // Message id: Unipile message_id or synthetic
+  const providerMessageId =
+    messageId || `${chatId}:${now}:${direction}`;
+
   // Find existing thread by Unipile account + chat id
   const { data: existing, error: findErr } = await client
     .from("outreach_reply_threads")
@@ -144,15 +155,45 @@ export async function upsertLinkedInReplyThread(
     .maybeSingle();
   if (findErr) throw new Error(findErr.message);
 
-  let threadId: string;
-  if (existing?.id) {
-    threadId = existing.id as string;
+  let threadId: string | null = existing?.id
+    ? (existing.id as string)
+    : null;
+
+  // Idempotent re-sync: if message already stored, only refresh match metadata.
+  if (threadId) {
+    const { data: existingMsg } = await client
+      .from("outreach_reply_messages")
+      .select("id")
+      .eq("thread_id", threadId)
+      .eq("gmail_message_id", providerMessageId)
+      .maybeSingle();
+    if (existingMsg?.id) {
+      const meta: Record<string, unknown> = { updated_at: now };
+      if (match.enrollmentId) meta.enrollment_id = match.enrollmentId;
+      if (match.sequenceId) meta.sequence_id = match.sequenceId;
+      if (match.companyName) meta.company_name = match.companyName;
+      if (contactName) meta.contact_name = contactName;
+      if (match.contactEmail) meta.contact_email = match.contactEmail;
+      if (contactLinkedin) meta.contact_linkedin = contactLinkedin;
+      if (match.matchedHow === "linkedin_profile") {
+        meta.matched_how = "linkedin_profile";
+      }
+      await client
+        .from("outreach_reply_threads")
+        .update(meta)
+        .eq("id", threadId);
+      return { threadId, messageUpserted: false };
+    }
+  }
+
+  if (threadId && existing) {
     const patch: Record<string, unknown> = {
       updated_at: now,
-      snippet,
       subject,
       message_count: Number(existing.message_count ?? 0) + 1,
     };
+    // List preview should reflect prospect reply, not our last outbound.
+    if (!outbound && snippet) patch.snippet = snippet;
     if (!outbound) {
       patch.last_inbound_at = now;
       if (!existing.first_inbound_at) patch.first_inbound_at = now;
@@ -206,10 +247,6 @@ export async function upsertLinkedInReplyThread(
     threadId = inserted.id as string;
   }
 
-  // Message id: Unipile message_id or synthetic
-  const providerMessageId =
-    messageId || `${chatId}:${now}:${direction}`;
-
   const { error: msgErr } = await client.from("outreach_reply_messages").upsert(
     {
       thread_id: threadId,
@@ -234,6 +271,35 @@ export async function upsertLinkedInReplyThread(
   if (msgErr) throw new Error(msgErr.message);
 
   return { threadId, messageUpserted: true };
+}
+
+/**
+ * Expand webhook identities with LinkedIn vanity slugs when Unipile only
+ * sends ACoAA provider ids (common on profile_url).
+ */
+export async function expandLinkedInIdentities(
+  accountId: string | undefined,
+  identities: string[],
+): Promise<string[]> {
+  const out = new Set(identities.map((i) => i.toLowerCase()));
+  if (!accountId || !isUnipileConfigured()) return [...out];
+
+  for (const id of identities) {
+    if (!isLinkedInProviderId(id)) continue;
+    const profile = await getUnipileUserProfile({
+      accountId,
+      identifier: id,
+    });
+    if (profile?.publicIdentifier) {
+      const slug = normalizeLinkedInIdentity(profile.publicIdentifier);
+      if (slug) out.add(slug);
+    }
+    if (profile?.profileUrl) {
+      const fromUrl = normalizeLinkedInIdentity(profile.profileUrl);
+      if (fromUrl) out.add(fromUrl);
+    }
+  }
+  return [...out];
 }
 
 /**
@@ -269,7 +335,11 @@ export async function handleUnipileMessageReceived(
   }
 
   const outbound = isOutboundUnipileMessage(payload);
-  const identities = identitiesFromWebhook(payload);
+  const rawIdentities = identitiesFromWebhook(payload);
+  const identities = await expandLinkedInIdentities(
+    payload.account_id,
+    rawIdentities,
+  );
 
   const enrollments = await findEnrollmentsByLinkedInIdentities(
     client,
@@ -353,4 +423,271 @@ export async function handleUnipileMessageReceived(
     matchedEnrollmentIds,
     crmCompanyIds: [...new Set(crmCompanyIds)],
   };
+}
+
+export type LinkedInInboxSyncResult = {
+  ok: boolean;
+  mode: "unipile_pull";
+  accounts: number;
+  chatsScanned: number;
+  threadsTouched: number;
+  messagesUpserted: number;
+  enrollmentsMarkedReplied: number;
+  error?: string;
+};
+
+/**
+ * Pull recent LinkedIn chats from Unipile into Replies.
+ * Webhooks only fire for live messages after account connect — this backfills
+ * history (e.g. prospect replied before Unipile was linked).
+ * Only chats with at least one inbound message are stored (not pure outbound).
+ */
+export async function syncUnipileLinkedInInbox(
+  client: SupabaseClient,
+  opts?: { chatLimit?: number; messagesPerChat?: number },
+): Promise<LinkedInInboxSyncResult> {
+  if (!isUnipileConfigured()) {
+    return {
+      ok: true,
+      mode: "unipile_pull",
+      accounts: 0,
+      chatsScanned: 0,
+      threadsTouched: 0,
+      messagesUpserted: 0,
+      enrollmentsMarkedReplied: 0,
+      error: "Unipile not configured",
+    };
+  }
+
+  const chatLimit = Math.min(80, Math.max(5, opts?.chatLimit ?? 40));
+  const messagesPerChat = Math.min(40, Math.max(5, opts?.messagesPerChat ?? 20));
+
+  let accounts = 0;
+  let chatsScanned = 0;
+  let threadsTouched = 0;
+  let messagesUpserted = 0;
+  let enrollmentsMarkedReplied = 0;
+  const threadIds = new Set<string>();
+  const enrollmentsStopped = new Set<string>();
+
+  try {
+    const liAccounts = await listLinkedInAccounts();
+    accounts = liAccounts.length;
+
+    for (const account of liAccounts) {
+      const { items: chats } = await listUnipileChats({
+        accountId: account.id,
+        limit: chatLimit,
+      });
+
+      for (const chat of chats) {
+        chatsScanned += 1;
+        let messages: Awaited<ReturnType<typeof listUnipileChatMessages>>;
+        try {
+          messages = await listUnipileChatMessages({
+            chatId: chat.id,
+            limit: messagesPerChat,
+          });
+        } catch (err) {
+          console.warn("[unipile] list messages failed", chat.id, err);
+          continue;
+        }
+
+        const inbound = messages.filter((m) => !m.isSender);
+        if (inbound.length === 0) continue;
+
+        const latestInboundAt = inbound.reduce((max, m) => {
+          const t = m.timestamp ? Date.parse(m.timestamp) : 0;
+          return t > max ? t : max;
+        }, 0);
+
+        // Oldest first so first_inbound / snippets settle sensibly
+        const ordered = [...messages].sort((a, b) => {
+          const ta = a.timestamp ? Date.parse(a.timestamp) : 0;
+          const tb = b.timestamp ? Date.parse(b.timestamp) : 0;
+          return ta - tb;
+        });
+
+        let attendees: Awaited<ReturnType<typeof listUnipileChatAttendees>> =
+          [];
+        try {
+          attendees = await listUnipileChatAttendees({
+            accountId: account.id,
+            chatId: chat.id,
+          });
+        } catch {
+          /* optional */
+        }
+
+        const other =
+          attendees.find((a) => !a.isSelf) ??
+          (chat.attendeeProviderId
+            ? {
+                id: "",
+                name: null,
+                providerId: chat.attendeeProviderId,
+                profileUrl: null,
+                isSelf: false,
+              }
+            : null);
+
+        const identities: string[] = [];
+        if (other?.providerId) identities.push(other.providerId);
+        if (other?.profileUrl) {
+          const n = normalizeLinkedInIdentity(other.profileUrl);
+          if (n) identities.push(n);
+        }
+        const expanded = await expandLinkedInIdentities(
+          account.id,
+          identities,
+        );
+
+        // Prefer vanity profile URL for display / match metadata
+        let contactLinkedin: string | null = other?.profileUrl ?? null;
+        const vanity = expanded.find((i) => !isLinkedInProviderId(i));
+        if (vanity) {
+          contactLinkedin = `https://www.linkedin.com/in/${vanity}`;
+        } else if (other?.providerId && !contactLinkedin) {
+          contactLinkedin = `https://www.linkedin.com/in/${other.providerId}`;
+        }
+
+        let contactName = other?.name ?? null;
+        if (!contactName && other?.providerId) {
+          const prof = await getUnipileUserProfile({
+            accountId: account.id,
+            identifier: other.providerId,
+          });
+          if (prof) {
+            contactName =
+              [prof.firstName, prof.lastName]
+                .filter((p) => p && p !== "undefined")
+                .join(" ") || null;
+            if (prof.profileUrl) contactLinkedin = prof.profileUrl;
+          }
+        }
+
+        const enrollments = await findEnrollmentsByLinkedInIdentities(
+          client,
+          expanded,
+        );
+        const candidates = enrollments.filter(
+          (e) =>
+            e.status === "active" ||
+            e.status === "paused" ||
+            e.status === "completed" ||
+            e.status === "replied",
+        );
+        const primary =
+          candidates.find((e) => e.status === "active") ??
+          candidates[0] ??
+          null;
+
+        // Skip old unmatched noise (spam / cold inbound). Matched enrollments
+        // always come in; unmatched only if inbound within lookback.
+        const LOOKBACK_MS = 60 * 24 * 60 * 60 * 1000;
+        if (
+          !primary &&
+          (!latestInboundAt || Date.now() - latestInboundAt > LOOKBACK_MS)
+        ) {
+          continue;
+        }
+
+        const ourProviderId = account.providerUserId;
+
+        for (const msg of ordered) {
+          const payload: UnipileWebhookPayload = {
+            event: "message_received",
+            account_id: account.id,
+            account_type: "LINKEDIN",
+            account_info: {
+              type: "LINKEDIN",
+              user_id: ourProviderId || undefined,
+            },
+            chat_id: chat.id,
+            message_id: msg.id,
+            message: msg.text ?? undefined,
+            timestamp: msg.timestamp ?? undefined,
+            sender: msg.isSender
+              ? {
+                  attendee_provider_id:
+                    ourProviderId || msg.senderProviderId || undefined,
+                  attendee_name: "me",
+                }
+              : {
+                  attendee_provider_id:
+                    msg.senderProviderId || other?.providerId || undefined,
+                  attendee_name: contactName || undefined,
+                  attendee_profile_url: contactLinkedin || undefined,
+                },
+            attendees: other
+              ? [
+                  {
+                    attendee_provider_id: other.providerId || undefined,
+                    attendee_name: contactName || other.name || undefined,
+                    attendee_profile_url: contactLinkedin || undefined,
+                  },
+                ]
+              : undefined,
+          };
+
+          try {
+            const upserted = await upsertLinkedInReplyThread(client, payload, {
+              enrollmentId: primary?.id ?? null,
+              sequenceId: primary?.sequenceId ?? null,
+              contactName: primary?.contactName ?? contactName,
+              contactEmail: primary?.contactEmail ?? null,
+              contactLinkedin:
+                primary?.contactLinkedin ?? contactLinkedin,
+              companyName: primary?.companyName ?? null,
+              matchedHow: primary ? "linkedin_profile" : "unmatched",
+            });
+            threadIds.add(upserted.threadId);
+            if (upserted.messageUpserted) messagesUpserted += 1;
+          } catch (err) {
+            console.warn("[unipile] sync upsert failed", chat.id, msg.id, err);
+          }
+        }
+
+        // Stop sequences for matched enrollments (inbound present)
+        for (const enr of candidates) {
+          if (enrollmentsStopped.has(enr.id)) continue;
+          if (enr.status === "replied") {
+            enrollmentsStopped.add(enr.id);
+            continue;
+          }
+          try {
+            await markEnrollmentReplied(client, enr.id, {
+              source: "unipile_linkedin_sync",
+            });
+            enrollmentsStopped.add(enr.id);
+            enrollmentsMarkedReplied += 1;
+          } catch (err) {
+            console.warn("[unipile] mark replied failed", enr.id, err);
+          }
+        }
+      }
+    }
+
+    threadsTouched = threadIds.size;
+    return {
+      ok: true,
+      mode: "unipile_pull",
+      accounts,
+      chatsScanned,
+      threadsTouched,
+      messagesUpserted,
+      enrollmentsMarkedReplied,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      mode: "unipile_pull",
+      accounts,
+      chatsScanned,
+      threadsTouched,
+      messagesUpserted,
+      enrollmentsMarkedReplied,
+      error: err instanceof Error ? err.message : "LinkedIn sync failed",
+    };
+  }
 }

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   Check,
+  CheckCheck,
   ExternalLink,
   Linkedin,
   Loader2,
@@ -62,6 +63,7 @@ type MailboxInfo = {
 };
 
 type FilterTab = "active" | "new" | "done" | "all";
+type ChannelFilter = "all" | "email" | "linkedin";
 
 function useAuthToken() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
@@ -162,9 +164,11 @@ export function InboxPage() {
   );
 
   const [filter, setFilter] = useState<FilterTab>("active");
+  const [channelFilter, setChannelFilter] = useState<ChannelFilter>("all");
   const [threads, setThreads] = useState<ReplyThread[]>([]);
   const [newCount, setNewCount] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const [messages, setMessages] = useState<ReplyMessage[]>([]);
   const [gmailUrl, setGmailUrl] = useState<string | null>(null);
   const [mailbox, setMailbox] = useState<MailboxInfo | null>(null);
@@ -177,21 +181,35 @@ export function InboxPage() {
   const [syncHints, setSyncHints] = useState<string | null>(null);
 
   const selected = threads.find((t) => t.id === selectedId) ?? null;
+  const allVisibleChecked =
+    threads.length > 0 && threads.every((t) => checkedIds.has(t.id));
+  const someChecked = checkedIds.size > 0;
 
   const loadList = useCallback(async (): Promise<string | null> => {
     if (!token) return null;
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(
-        `/api/outreach/inbox?status=${encodeURIComponent(filter)}&limit=100`,
-        { headers: headers() },
-      );
+      const params = new URLSearchParams({
+        status: filter,
+        channel: channelFilter,
+        limit: "100",
+      });
+      const res = await fetch(`/api/outreach/inbox?${params}`, {
+        headers: headers(),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to load inbox");
       const list = (data.threads ?? []) as ReplyThread[];
       setThreads(list);
       setNewCount(Number(data.newCount ?? 0));
+      setCheckedIds((prev) => {
+        const next = new Set<string>();
+        for (const id of prev) {
+          if (list.some((t) => t.id === id)) next.add(id);
+        }
+        return next;
+      });
       let nextSelected: string | null = null;
       setSelectedId((prev) => {
         nextSelected =
@@ -207,7 +225,7 @@ export function InboxPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, filter, headers]);
+  }, [token, filter, channelFilter, headers]);
 
   const loadDetail = useCallback(
     async (threadId: string) => {
@@ -274,19 +292,32 @@ export function InboxPage() {
         enrollmentsMarkedReplied: number;
         error?: string;
       }>;
+      const linkedin = data.linkedin as
+        | {
+            ok: boolean;
+            chatsScanned?: number;
+            threadsTouched?: number;
+            messagesUpserted?: number;
+            enrollmentsMarkedReplied?: number;
+            error?: string;
+          }
+        | null
+        | undefined;
+
+      const lines: string[] = [];
       if (!results.length) {
-        setSyncHints(
-          "No Google OAuth mailbox connected. Connect Gmail in Settings → Outreach email.",
-        );
+        lines.push("Gmail: no OAuth mailbox (Settings → Outreach email)");
       } else {
-        const lines = results.map((r) =>
-          r.ok
-            ? `${r.fromEmail}: ${r.mode}, ${r.threadsTouched} threads, ${r.enrollmentsMarkedReplied} stopped`
-            : `${r.fromEmail}: ${r.error || "failed"}`,
-        );
-        setSyncHints(lines.join(" · "));
+        for (const r of results) {
+          lines.push(
+            r.ok
+              ? `Gmail ${r.fromEmail}: ${r.threadsTouched} threads, ${r.enrollmentsMarkedReplied} stopped`
+              : `Gmail ${r.fromEmail}: ${r.error || "failed"}`,
+          );
+        }
         const needsReconnect = results.some(
-          (r) => r.error && /scope|readonly|reconnect|insufficient/i.test(r.error),
+          (r) =>
+            r.error && /scope|readonly|reconnect|insufficient/i.test(r.error),
         );
         if (needsReconnect) {
           setNotice(
@@ -294,12 +325,75 @@ export function InboxPage() {
           );
         }
       }
+      if (linkedin) {
+        if (linkedin.ok) {
+          lines.push(
+            `LinkedIn: ${linkedin.threadsTouched ?? 0} chats, ${linkedin.messagesUpserted ?? 0} msgs, ${linkedin.enrollmentsMarkedReplied ?? 0} stopped`,
+          );
+        } else {
+          lines.push(`LinkedIn: ${linkedin.error || "failed"}`);
+        }
+      }
+      setSyncHints(lines.join(" · "));
       const nextSelectedId = await loadList();
       if (nextSelectedId) await loadDetail(nextSelectedId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sync failed");
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const toggleChecked = (id: string, on: boolean) => {
+    setCheckedIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
+  const toggleAllVisible = (on: boolean) => {
+    setCheckedIds((prev) => {
+      const next = new Set(prev);
+      for (const t of threads) {
+        if (on) next.add(t.id);
+        else next.delete(t.id);
+      }
+      return next;
+    });
+  };
+
+  const bulkMarkDone = async () => {
+    if (!token || checkedIds.size === 0) return;
+    setActing(true);
+    setError(null);
+    try {
+      const ids = [...checkedIds];
+      const res = await fetch("/api/outreach/inbox", {
+        method: "PATCH",
+        headers: headers(),
+        body: JSON.stringify({ threadIds: ids, status: "done" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Bulk update failed");
+      setNotice(`Marked ${data.updated ?? ids.length} as done`);
+      setCheckedIds(new Set());
+      if (filter === "active" || filter === "new") {
+        setThreads((prev) => {
+          const rest = prev.filter((t) => !ids.includes(t.id));
+          setSelectedId((sel) =>
+            sel && ids.includes(sel) ? (rest[0]?.id ?? null) : sel,
+          );
+          return rest;
+        });
+      } else {
+        await loadList();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Bulk update failed");
+    } finally {
+      setActing(false);
     }
   };
 
@@ -416,6 +510,46 @@ export function InboxPage() {
               </button>
             ))}
           </div>
+          <div className="flex rounded-lg border bg-muted/30 p-0.5">
+            {(
+              [
+                ["all", "All"],
+                ["email", "Email"],
+                ["linkedin", "LinkedIn"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setChannelFilter(key)}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                  channelFilter === key
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {key === "email" && <Mail className="size-3" />}
+                {key === "linkedin" && <Linkedin className="size-3" />}
+                {label}
+              </button>
+            ))}
+          </div>
+          {someChecked && (
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={acting}
+              onClick={() => void bulkMarkDone()}
+            >
+              {acting ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <CheckCheck className="size-3.5" />
+              )}
+              Mark done ({checkedIds.size})
+            </Button>
+          )}
           <Button
             size="sm"
             variant="outline"
@@ -427,7 +561,7 @@ export function InboxPage() {
             ) : (
               <RefreshCw className="size-3.5" />
             )}
-            Sync Gmail
+            Sync
           </Button>
         </div>
       </header>
@@ -456,7 +590,7 @@ export function InboxPage() {
                 <p className="font-medium text-foreground">No replies yet</p>
                 <p>
                   Email replies land after Gmail sync. LinkedIn DMs land via
-                  Unipile when someone messages a connected account.
+                  Unipile webhook + Sync (pulls chats with inbound messages).
                 </p>
                 <ul className="list-inside list-disc space-y-1 text-xs">
                   <li>
@@ -467,7 +601,7 @@ export function InboxPage() {
                     >
                       Settings → Outreach email
                     </Link>{" "}
-                    + Sync Gmail
+                    + Sync
                   </li>
                   <li>
                     LinkedIn:{" "}
@@ -476,7 +610,8 @@ export function InboxPage() {
                       className="text-foreground underline-offset-2 hover:underline"
                     >
                       Settings → LinkedIn (Unipile)
-                    </Link>
+                    </Link>{" "}
+                    + Sync (backfills history)
                   </li>
                   <li>
                     Enrollments need matching email /{" "}
@@ -485,55 +620,86 @@ export function InboxPage() {
                 </ul>
               </div>
             ) : (
-              <ul className="divide-y">
-                {threads.map((t) => {
-                  const active = t.id === selectedId;
-                  return (
-                    <li key={t.id}>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedId(t.id)}
-                        className={cn(
-                          "flex w-full flex-col gap-1 px-3 py-3 text-left transition-colors",
-                          active
-                            ? "bg-muted/60"
-                            : "hover:bg-muted/30",
-                          t.status === "new" && !active && "bg-sky-500/5",
-                        )}
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <span className="truncate text-sm font-medium">
-                            {t.companyName ||
-                              t.contactName ||
-                              t.contactEmail ||
-                              "Unknown"}
-                          </span>
-                          <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
-                            {formatWhen(t.lastInboundAt)}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          {channelBadge(t.channel)}
-                          {statusBadge(t.status)}
-                          {t.sequenceName && (
-                            <span className="truncate text-[11px] text-muted-foreground">
-                              {t.sequenceName}
-                            </span>
+              <>
+                <div className="flex items-center gap-2 border-b px-3 py-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    className="size-3.5 rounded border-border"
+                    checked={allVisibleChecked}
+                    onChange={(e) => toggleAllVisible(e.target.checked)}
+                    aria-label="Select all visible threads"
+                  />
+                  <span>
+                    {someChecked
+                      ? `${checkedIds.size} selected`
+                      : `${threads.length} threads`}
+                  </span>
+                </div>
+                <ul className="divide-y">
+                  {threads.map((t) => {
+                    const active = t.id === selectedId;
+                    const checked = checkedIds.has(t.id);
+                    return (
+                      <li key={t.id}>
+                        <div
+                          className={cn(
+                            "flex gap-2 px-3 py-3 transition-colors",
+                            active
+                              ? "bg-muted/60"
+                              : "hover:bg-muted/30",
+                            t.status === "new" && !active && "bg-sky-500/5",
                           )}
+                        >
+                          <input
+                            type="checkbox"
+                            className="mt-1 size-3.5 shrink-0 rounded border-border"
+                            checked={checked}
+                            onChange={(e) =>
+                              toggleChecked(t.id, e.target.checked)
+                            }
+                            onClick={(e) => e.stopPropagation()}
+                            aria-label={`Select ${t.companyName || t.contactName || "thread"}`}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setSelectedId(t.id)}
+                            className="flex min-w-0 flex-1 flex-col gap-1 text-left"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <span className="truncate text-sm font-medium">
+                                {t.companyName ||
+                                  t.contactName ||
+                                  t.contactEmail ||
+                                  "Unknown"}
+                              </span>
+                              <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
+                                {formatWhen(t.lastInboundAt)}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              {channelBadge(t.channel)}
+                              {statusBadge(t.status)}
+                              {t.sequenceName && (
+                                <span className="truncate text-[11px] text-muted-foreground">
+                                  {t.sequenceName}
+                                </span>
+                              )}
+                            </div>
+                            <p className="truncate text-xs text-muted-foreground">
+                              {t.subject || "(no subject)"}
+                            </p>
+                            {t.snippet && (
+                              <p className="line-clamp-2 text-[11px] text-muted-foreground/80">
+                                {t.snippet}
+                              </p>
+                            )}
+                          </button>
                         </div>
-                        <p className="truncate text-xs text-muted-foreground">
-                          {t.subject || "(no subject)"}
-                        </p>
-                        {t.snippet && (
-                          <p className="line-clamp-2 text-[11px] text-muted-foreground/80">
-                            {t.snippet}
-                          </p>
-                        )}
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </>
             )}
           </ScrollArea>
         </div>
@@ -673,7 +839,11 @@ export function InboxPage() {
                         >
                           <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
                             <div className="flex items-center gap-1.5 text-xs">
-                              <Mail className="size-3 text-muted-foreground" />
+                              {selected.channel === "linkedin" ? (
+                                <Linkedin className="size-3 text-[#5B9BD5]" />
+                              ) : (
+                                <Mail className="size-3 text-muted-foreground" />
+                              )}
                               <span className="font-medium">
                                 {ours ? "You" : m.fromEmail || "Prospect"}
                               </span>
