@@ -962,29 +962,34 @@ function CompanyDrawer({
           </button>
         </div>
 
-        {/* Tabs */}
-        <div className="flex gap-1 border-b border-white/[0.06] px-2">
-          {tabs.map((t) => {
-            const Icon = t.icon;
-            return (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                className={cn(
-                  "flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-xs transition",
-                  tab === t.id
-                    ? "border-violet-400 text-white"
-                    : "border-transparent text-neutral-500 hover:text-neutral-300",
-                )}
-              >
-                <Icon className="size-3.5" />
-                {t.label}
-                {t.count != null && t.count > 0 && (
-                  <span className="rounded bg-white/10 px-1 text-[10px]">{t.count}</span>
-                )}
-              </button>
-            );
-          })}
+        {/* Tabs — horizontal scroll when the row overflows (narrow drawer) */}
+        <div className="overflow-x-auto overscroll-x-contain border-b border-white/[0.06] [-ms-overflow-style:none] [scrollbar-width:thin]">
+          <div className="flex min-w-min gap-1 px-2">
+            {tabs.map((t) => {
+              const Icon = t.icon;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setTab(t.id)}
+                  className={cn(
+                    "flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2.5 text-xs transition whitespace-nowrap",
+                    tab === t.id
+                      ? "border-violet-400 text-white"
+                      : "border-transparent text-neutral-500 hover:text-neutral-300",
+                  )}
+                >
+                  <Icon className="size-3.5 shrink-0" />
+                  {t.label}
+                  {t.count != null && t.count > 0 && (
+                    <span className="rounded bg-white/10 px-1 text-[10px]">
+                      {t.count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {/* Body */}
