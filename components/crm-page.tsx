@@ -1539,11 +1539,28 @@ function OverviewTab({
   authFetch: (url: string, init?: RequestInit) => Promise<Response>;
 }) {
   const [orgId, setOrgId] = useState(company.orgId ?? "");
+  const [domain, setDomain] = useState(company.domain ?? "");
   const [industry, setIndustry] = useState(company.industry ?? "");
   const [devCount, setDevCount] = useState(
     company.devCount != null ? String(company.devCount) : "",
   );
   const [notes, setNotes] = useState(company.notes ?? "");
+
+  // Keep local fields in sync when the drawer company changes.
+  useEffect(() => {
+    setOrgId(company.orgId ?? "");
+    setDomain(company.domain ?? "");
+    setIndustry(company.industry ?? "");
+    setDevCount(company.devCount != null ? String(company.devCount) : "");
+    setNotes(company.notes ?? "");
+  }, [
+    company.id,
+    company.orgId,
+    company.domain,
+    company.industry,
+    company.devCount,
+    company.notes,
+  ]);
 
   return (
     <div className="space-y-4">
@@ -1591,6 +1608,23 @@ function OverviewTab({
           </div>
         </Field>
       </div>
+
+      <Field label="Domain">
+        <Input
+          value={domain}
+          onChange={(e) => setDomain(e.target.value)}
+          onBlur={() => {
+            const next = domain.trim();
+            const current = company.domain ?? "";
+            if (next !== current) onPatch({ domain: next || null });
+          }}
+          placeholder="frete.com"
+          className="border-white/10 bg-neutral-900"
+        />
+        <p className="mt-1 text-[11px] text-neutral-500">
+          Used by Emails tab to search Gmail (from/to/cc this domain).
+        </p>
+      </Field>
 
       {/* Custom properties */}
       <div className="space-y-2 rounded-lg border border-white/[0.06] bg-neutral-900/40 p-3">
