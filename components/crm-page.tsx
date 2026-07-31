@@ -14,6 +14,7 @@ import {
   Trash2,
   X,
   Activity,
+  Mail,
   MessageSquare,
   Users,
   Zap,
@@ -843,7 +844,13 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 // Company drawer
 // ---------------------------------------------------------------------------
 
-type DrawerTab = "overview" | "comments" | "contacts" | "timeline" | "signals";
+type DrawerTab =
+  | "overview"
+  | "emails"
+  | "comments"
+  | "contacts"
+  | "timeline"
+  | "signals";
 
 function CompanyDrawer({
   companyId,
@@ -920,6 +927,8 @@ function CompanyDrawer({
 
   const tabs: { id: DrawerTab; label: string; icon: typeof Activity; count?: number }[] = [
     { id: "overview", label: "Overview", icon: Building2 },
+    // Emails loads live Gmail on open — no pre-fetch badge (too slow).
+    { id: "emails", label: "Emails", icon: Mail },
     { id: "comments", label: "Comments", icon: MessageSquare, count: comments.length },
     { id: "contacts", label: "Contacts", icon: Users, count: contacts.length },
     { id: "timeline", label: "Timeline", icon: Activity, count: activities.length },
@@ -989,6 +998,8 @@ function CompanyDrawer({
               fieldDefs={fieldDefs}
               onPatch={patch}
             />
+          ) : tab === "emails" ? (
+            <EmailsTab companyId={companyId} authFetch={authFetch} />
           ) : tab === "comments" ? (
             <CommentsTab
               companyId={companyId}
@@ -1010,6 +1021,268 @@ function CompanyDrawer({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Emails tab (live Gmail search across connected mailboxes) ────────────
+
+type EmailTimelineItem = {
+  id: string;
+  direction: "outbound" | "inbound";
+  at: string;
+  fromEmail: string | null;
+  toEmail: string | null;
+  subject: string | null;
+  snippet: string | null;
+  bodyText: string | null;
+  source: "gmail";
+  mailboxEmail?: string;
+  mailboxId?: string;
+  sequenceName: string | null;
+  contactEmail: string | null;
+  contactName: string | null;
+  status: string | null;
+};
+
+type MailboxSearchInfo = {
+  id: string;
+  fromEmail: string;
+  ok: boolean;
+  messageCount: number;
+  error?: string;
+  skipped?: boolean;
+  skipReason?: string;
+};
+
+function EmailsTab({
+  companyId,
+  authFetch,
+}: {
+  companyId: string;
+  authFetch: (url: string, init?: RequestInit) => Promise<Response>;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [items, setItems] = useState<EmailTimelineItem[]>([]);
+  const [mailboxes, setMailboxes] = useState<MailboxSearchInfo[]>([]);
+  const [query, setQuery] = useState<string | null>(null);
+  const [counts, setCounts] = useState({
+    total: 0,
+    outbound: 0,
+    inbound: 0,
+    threads: 0,
+  });
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await authFetch(`/api/crm/companies/${companyId}/emails`);
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error ?? "Failed to load emails");
+      setItems(j.items ?? []);
+      setMailboxes(j.mailboxes ?? []);
+      setQuery(typeof j.query === "string" ? j.query : null);
+      setCounts(
+        j.counts ?? { total: 0, outbound: 0, inbound: 0, threads: 0 },
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load emails");
+    } finally {
+      setLoading(false);
+    }
+  }, [companyId, authFetch]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-2 py-12">
+        <Loader2 className="size-5 animate-spin text-neutral-500" />
+        <p className="text-xs text-neutral-500">
+          Searching connected Gmail inboxes…
+        </p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        {error}
+      </div>
+    );
+  }
+
+  const ready = mailboxes.filter((m) => m.ok);
+  const skipped = mailboxes.filter((m) => m.skipped || !m.ok);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-neutral-500">
+          Live Gmail search by domain + contacts across every connected
+          mailbox.
+          {counts.threads > 0 ? ` · ${counts.threads} thread(s)` : ""}
+        </p>
+        <div className="flex gap-2 text-[11px] text-neutral-500">
+          <span className="rounded bg-white/5 px-1.5 py-0.5">
+            {counts.outbound} out
+          </span>
+          <span className="rounded bg-white/5 px-1.5 py-0.5">
+            {counts.inbound} in
+          </span>
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="text-neutral-400 hover:text-white"
+            title="Search again"
+          >
+            <RefreshCw className="size-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Which mailboxes were searched */}
+      <div className="rounded-lg border border-white/[0.06] bg-neutral-900/40 px-3 py-2">
+        <p className="text-[10px] font-medium uppercase tracking-wide text-neutral-500">
+          Mailboxes
+        </p>
+        <ul className="mt-1.5 space-y-1">
+          {mailboxes.length === 0 ? (
+            <li className="text-xs text-neutral-500">
+              No mailboxes. Connect Gmail in{" "}
+              <a href="/settings" className="text-neutral-300 underline">
+                Settings
+              </a>
+              .
+            </li>
+          ) : (
+            mailboxes.map((m) => (
+              <li
+                key={m.id}
+                className="flex flex-wrap items-baseline justify-between gap-2 text-xs"
+              >
+                <span className="font-medium text-neutral-200">
+                  {m.fromEmail}
+                </span>
+                <span className="text-neutral-500">
+                  {m.ok
+                    ? `${m.messageCount} found`
+                    : m.skipReason || m.error || "skipped"}
+                </span>
+              </li>
+            ))
+          )}
+        </ul>
+        {skipped.some((m) => m.skipReason?.includes("readonly")) && (
+          <p className="mt-2 text-[11px] text-amber-400/90">
+            To include work mail (e.g. @kodus.io), connect that Google account
+            in Settings with Gmail read access — same OAuth as trykodus.
+          </p>
+        )}
+        {query && (
+          <p className="mt-2 truncate font-mono text-[10px] text-neutral-600">
+            q: {query}
+          </p>
+        )}
+      </div>
+
+      {!query ? (
+        <div className="rounded-xl border border-dashed border-white/10 px-4 py-10 text-center">
+          <Mail className="mx-auto size-7 text-neutral-600" />
+          <p className="mt-3 text-sm font-medium text-neutral-300">
+            Nothing to search yet
+          </p>
+          <p className="mt-1 text-xs text-pretty text-neutral-500">
+            Set a <span className="text-neutral-300">domain</span> on this
+            account and/or add contacts with email — then we search every
+            connected Gmail for from/to that domain or address.
+          </p>
+        </div>
+      ) : items.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-white/10 px-4 py-10 text-center">
+          <Mail className="mx-auto size-7 text-neutral-600" />
+          <p className="mt-3 text-sm font-medium text-neutral-300">
+            No messages in connected inboxes
+          </p>
+          <p className="mt-1 text-xs text-pretty text-neutral-500">
+            {ready.length === 0
+              ? "Connect at least one Gmail with read access in Settings."
+              : "Tried connected mailboxes — nothing matched this domain/contacts. If you chat from another address, connect that mailbox too."}
+          </p>
+        </div>
+      ) : (
+        <ul className="space-y-2">
+          {items.map((m) => {
+            const open = expanded === m.id;
+            const inbound = m.direction === "inbound";
+            return (
+              <li
+                key={m.id}
+                className={cn(
+                  "rounded-xl border px-3 py-2.5",
+                  inbound
+                    ? "border-emerald-500/20 bg-emerald-500/5"
+                    : "border-white/[0.06] bg-neutral-900/50",
+                )}
+              >
+                <button
+                  type="button"
+                  className="w-full text-left"
+                  onClick={() => setExpanded(open ? null : m.id)}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span
+                          className={cn(
+                            "rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
+                            inbound
+                              ? "bg-emerald-500/20 text-emerald-300"
+                              : "bg-sky-500/20 text-sky-300",
+                          )}
+                        >
+                          {inbound ? "In" : "Out"}
+                        </span>
+                        {m.mailboxEmail && (
+                          <span className="truncate text-[10px] text-neutral-500">
+                            via {m.mailboxEmail}
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 truncate text-sm font-medium text-white">
+                        {m.subject || "(no subject)"}
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-neutral-500">
+                        {formatRelative(m.at)}
+                        {m.fromEmail ? ` · ${m.fromEmail}` : ""}
+                        {m.toEmail ? ` → ${m.toEmail}` : ""}
+                      </p>
+                      {!open && m.snippet && (
+                        <p className="mt-1 line-clamp-2 text-xs text-neutral-400">
+                          {m.snippet}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </button>
+                {open && (
+                  <div className="mt-2 border-t border-white/[0.06] pt-2">
+                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-sans text-xs leading-relaxed text-neutral-300">
+                      {m.bodyText?.trim() || m.snippet || "—"}
+                    </pre>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }
