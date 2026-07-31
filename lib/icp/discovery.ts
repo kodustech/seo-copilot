@@ -2,8 +2,6 @@
 // and work backwards to the company. Every hit is already hiring for testing
 // pain. Sources vary by market (Brazil vs global).
 
-import type { SupabaseClient } from "@supabase/supabase-js";
-
 import { searchUrls } from "@/lib/exa";
 import {
   fetchBoardJobs,
@@ -14,7 +12,6 @@ import {
   searchWorkableJobs,
   type AtsProvider,
 } from "@/lib/icp/job-boards";
-import { addToWatchlist, type WatchlistEntry } from "@/lib/icp/scanner";
 
 export type DiscoveryMarket = "global" | "brazil";
 
@@ -741,32 +738,4 @@ export async function discoverCompanies(opts: {
     }));
 }
 
-export async function discoverAndWatch(
-  client: SupabaseClient,
-  opts: {
-    queries?: string[];
-    maxCompanies?: number;
-    market?: DiscoveryMarket;
-    addedByEmail?: string | null;
-  } = {},
-): Promise<{ discovered: DiscoveredCompany[]; added: WatchlistEntry[] }> {
-  const discovered = await discoverCompanies(opts);
-  const added: WatchlistEntry[] = [];
-  for (const company of discovered) {
-    try {
-      const { entry } = await addToWatchlist(client, {
-        companyName: company.companyName,
-        ats: company.ats,
-        boardSlug: company.slug,
-        addedByEmail: opts.addedByEmail ?? null,
-      });
-      added.push(entry);
-    } catch (err) {
-      console.error(
-        `[icp-discovery] watchlist add failed for ${company.slug}:`,
-        err,
-      );
-    }
-  }
-  return { discovered, added };
-}
+
