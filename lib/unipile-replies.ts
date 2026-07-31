@@ -345,17 +345,45 @@ export async function handleUnipileMessageReceived(
     client,
     identities,
   );
-  const candidates = enrollments.filter(
+  // Any sequence enrollment (incl. cancelled) is enough to treat as campaign reply.
+  // Prefer live statuses for stop/CRM side-effects.
+  const stoppable = enrollments.filter(
     (e) =>
       e.status === "active" ||
       e.status === "paused" ||
       e.status === "completed" ||
       e.status === "replied",
   );
-
-  // Prefer active first for matching metadata
   const primary =
-    candidates.find((e) => e.status === "active") ?? candidates[0] ?? null;
+    stoppable.find((e) => e.status === "active") ??
+    stoppable[0] ??
+    enrollments[0] ??
+    null;
+
+  // Replies is sequence inbox — never create threads for personal / spam DMs.
+  // Continue writing only when already linked (same Unipile chat) or enrollment match.
+  let existingThreadId: string | null = null;
+  if (payload.account_id && payload.chat_id) {
+    const { data: existing } = await client
+      .from("outreach_reply_threads")
+      .select("id")
+      .eq("channel", "linkedin")
+      .eq("unipile_account_id", payload.account_id)
+      .eq("gmail_thread_id", payload.chat_id)
+      .maybeSingle();
+    existingThreadId = (existing?.id as string | undefined) ?? null;
+  }
+
+  if (!primary && !existingThreadId) {
+    return {
+      handled: true,
+      outbound,
+      threadId: null,
+      matchedEnrollmentIds: [],
+      crmCompanyIds: [],
+      reason: `ignored non-sequence linkedin dm (${identities.join(",") || "no ids"})`,
+    };
+  }
 
   let threadId: string | null = null;
   try {
@@ -382,7 +410,7 @@ export async function handleUnipileMessageReceived(
     };
   }
 
-  // Only stop sequence / CRM on inbound
+  // Only stop sequence / CRM on inbound + matched live enrollments
   if (outbound) {
     return {
       handled: true,
@@ -394,21 +422,23 @@ export async function handleUnipileMessageReceived(
     };
   }
 
-  if (candidates.length === 0) {
+  if (stoppable.length === 0) {
     return {
       handled: true,
       outbound: false,
       threadId,
       matchedEnrollmentIds: [],
       crmCompanyIds: [],
-      reason: `stored unmatched linkedin reply (${identities.join(",") || "no ids"})`,
+      reason: primary
+        ? "stored linkedin reply (enrollment not stoppable)"
+        : "appended to existing sequence thread",
     };
   }
 
   const matchedEnrollmentIds: string[] = [];
   const crmCompanyIds: string[] = [];
 
-  for (const enr of candidates) {
+  for (const enr of stoppable) {
     const result = await markEnrollmentReplied(client, enr.id, {
       source: "unipile_linkedin",
     });
@@ -440,7 +470,9 @@ export type LinkedInInboxSyncResult = {
  * Pull recent LinkedIn chats from Unipile into Replies.
  * Webhooks only fire for live messages after account connect — this backfills
  * history (e.g. prospect replied before Unipile was linked).
- * Only chats with at least one inbound message are stored (not pure outbound).
+ *
+ * Only sequence enrollments: personal / spam DMs are skipped. Requires at
+ * least one inbound message + matching contact_linkedin on an enrollment.
  */
 export async function syncUnipileLinkedInInbox(
   client: SupabaseClient,
@@ -496,11 +528,6 @@ export async function syncUnipileLinkedInInbox(
         const inbound = messages.filter((m) => !m.isSender);
         if (inbound.length === 0) continue;
 
-        const latestInboundAt = inbound.reduce((max, m) => {
-          const t = m.timestamp ? Date.parse(m.timestamp) : 0;
-          return t > max ? t : max;
-        }, 0);
-
         // Oldest first so first_inbound / snippets settle sensibly
         const ordered = [...messages].sort((a, b) => {
           const ta = a.timestamp ? Date.parse(a.timestamp) : 0;
@@ -542,16 +569,36 @@ export async function syncUnipileLinkedInInbox(
           identities,
         );
 
+        const enrollments = await findEnrollmentsByLinkedInIdentities(
+          client,
+          expanded,
+        );
+        if (enrollments.length === 0) continue;
+
+        const stoppable = enrollments.filter(
+          (e) =>
+            e.status === "active" ||
+            e.status === "paused" ||
+            e.status === "completed" ||
+            e.status === "replied",
+        );
+        const primary =
+          stoppable.find((e) => e.status === "active") ??
+          stoppable[0] ??
+          enrollments[0] ??
+          null;
+        if (!primary) continue;
+
         // Prefer vanity profile URL for display / match metadata
-        let contactLinkedin: string | null = other?.profileUrl ?? null;
+        let contactLinkedin: string | null =
+          primary.contactLinkedin || other?.profileUrl || null;
         const vanity = expanded.find((i) => !isLinkedInProviderId(i));
-        if (vanity) {
+        if (vanity && !primary.contactLinkedin) {
           contactLinkedin = `https://www.linkedin.com/in/${vanity}`;
-        } else if (other?.providerId && !contactLinkedin) {
-          contactLinkedin = `https://www.linkedin.com/in/${other.providerId}`;
         }
 
-        let contactName = other?.name ?? null;
+        let contactName =
+          primary.contactName || other?.name || null;
         if (!contactName && other?.providerId) {
           const prof = await getUnipileUserProfile({
             accountId: account.id,
@@ -562,34 +609,10 @@ export async function syncUnipileLinkedInInbox(
               [prof.firstName, prof.lastName]
                 .filter((p) => p && p !== "undefined")
                 .join(" ") || null;
-            if (prof.profileUrl) contactLinkedin = prof.profileUrl;
+            if (prof.profileUrl && !contactLinkedin) {
+              contactLinkedin = prof.profileUrl;
+            }
           }
-        }
-
-        const enrollments = await findEnrollmentsByLinkedInIdentities(
-          client,
-          expanded,
-        );
-        const candidates = enrollments.filter(
-          (e) =>
-            e.status === "active" ||
-            e.status === "paused" ||
-            e.status === "completed" ||
-            e.status === "replied",
-        );
-        const primary =
-          candidates.find((e) => e.status === "active") ??
-          candidates[0] ??
-          null;
-
-        // Skip old unmatched noise (spam / cold inbound). Matched enrollments
-        // always come in; unmatched only if inbound within lookback.
-        const LOOKBACK_MS = 60 * 24 * 60 * 60 * 1000;
-        if (
-          !primary &&
-          (!latestInboundAt || Date.now() - latestInboundAt > LOOKBACK_MS)
-        ) {
-          continue;
         }
 
         const ourProviderId = account.providerUserId;
@@ -632,14 +655,13 @@ export async function syncUnipileLinkedInInbox(
 
           try {
             const upserted = await upsertLinkedInReplyThread(client, payload, {
-              enrollmentId: primary?.id ?? null,
-              sequenceId: primary?.sequenceId ?? null,
-              contactName: primary?.contactName ?? contactName,
-              contactEmail: primary?.contactEmail ?? null,
-              contactLinkedin:
-                primary?.contactLinkedin ?? contactLinkedin,
-              companyName: primary?.companyName ?? null,
-              matchedHow: primary ? "linkedin_profile" : "unmatched",
+              enrollmentId: primary.id,
+              sequenceId: primary.sequenceId,
+              contactName: primary.contactName ?? contactName,
+              contactEmail: primary.contactEmail,
+              contactLinkedin: primary.contactLinkedin ?? contactLinkedin,
+              companyName: primary.companyName,
+              matchedHow: "linkedin_profile",
             });
             threadIds.add(upserted.threadId);
             if (upserted.messageUpserted) messagesUpserted += 1;
@@ -649,7 +671,7 @@ export async function syncUnipileLinkedInInbox(
         }
 
         // Stop sequences for matched enrollments (inbound present)
-        for (const enr of candidates) {
+        for (const enr of stoppable) {
           if (enrollmentsStopped.has(enr.id)) continue;
           if (enr.status === "replied") {
             enrollmentsStopped.add(enr.id);
