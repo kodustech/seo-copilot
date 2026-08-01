@@ -905,13 +905,13 @@ function CreateCompanyDialog({
               <OrgPicker value={orgId} onCommit={(v) => setOrgId(v ?? "")} authFetch={authFetch} />
             </Field>
           </div>
-          <Field label="Qtd. de devs">
+          <Field label="Team size (devs)">
             <Input
               type="number"
               min={0}
               value={devCount}
               onChange={(e) => setDevCount(e.target.value)}
-              placeholder="ex: 120"
+              placeholder="ex: 40 — engineering headcount, not Kodus seats"
               className="border-white/10 bg-neutral-900"
             />
           </Field>
@@ -1747,7 +1747,7 @@ function OverviewTab({
             className="border-white/10 bg-neutral-900"
           />
         </Field>
-        <Field label="Qtd. de devs">
+        <Field label="Team size (devs)">
           <Input
             type="number"
             min={0}
@@ -1758,9 +1758,13 @@ function OverviewTab({
               if (devCount !== current)
                 onPatch({ devCount: devCount.trim() ? Number(devCount) : null });
             }}
-            placeholder="ex: 120"
+            placeholder="ex: 40"
             className="border-white/10 bg-neutral-900"
           />
+          <p className="mt-1 text-[11px] text-neutral-500">
+            Engineering headcount (ICP). Not Kodus product seats — those are
+            on the Product tab.
+          </p>
         </Field>
       </div>
 
@@ -2479,7 +2483,10 @@ function SignalsTab({
       <div className="grid grid-cols-2 gap-2">
         <SignalCell label="Plan" value={signals.planType ?? signals.subscriptionStatus ?? "—"} />
         <SignalCell label="Seats" value={signals.assignedLicenses != null ? `${signals.assignedLicenses}/${signals.totalLicenses ?? "?"}` : "—"} />
-        <SignalCell label="Users" value={signals.userCount != null ? String(signals.userCount) : "—"} />
+        <SignalCell
+          label="Users in Kodus"
+          value={signals.userCount != null ? String(signals.userCount) : "—"}
+        />
         <SignalCell label="Trial ends" value={signals.trialEnd ? formatRelative(signals.trialEnd) : "—"} />
         <SignalCell label="Reviews 7d" value={signals.reviews7d != null ? String(signals.reviews7d) : "—"} />
         <SignalCell label="Reviews 30d" value={signals.reviews30d != null ? String(signals.reviews30d) : "—"} />
