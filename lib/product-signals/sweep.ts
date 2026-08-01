@@ -201,13 +201,16 @@ export async function runProductSignalsSweep(
 
       // Create accounts only for tiers the playbook actively works, and only
       // when the org resolves to a corporate domain.
+      //
+      // Do NOT set dev_count from product user_count: that is Kodus seats
+      // (often 1 at signup), not engineering headcount. Team size stays
+      // human/ICP; product seats live on Product tab / product_signals.
       if (!company && CRM_CREATE_TIERS.has(cls.tier) && org.derivedDomain) {
         const created = await createCompany(client, {
           name: org.orgName?.trim() || org.derivedDomain,
           domain: org.derivedDomain,
           orgId: org.orgId,
           status: "lead",
-          devCount: org.userCount,
           deployment: "cloud",
           source: "product",
           tags: ["product-signup"],
