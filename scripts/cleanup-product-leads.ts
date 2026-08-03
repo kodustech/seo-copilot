@@ -25,6 +25,13 @@ import { getSupabaseServiceClient } from "../lib/supabase-server";
 const APPLY = process.argv.includes("--apply");
 const ENRICH = process.argv.includes("--enrich");
 
+/** crm_activities.kind values written by machines. Every other kind means a
+ *  human did something on the account and it must never be auto-removed —
+ *  `created` and `signal` both come from the sweep itself, so counting them
+ *  would pin every account and make the check meaningless in the other
+ *  direction. */
+const SYSTEM_ACTIVITY_KINDS = new Set(["signal", "created", "webhook"]);
+
 type Row = {
   id: string;
   name: string;
@@ -49,20 +56,32 @@ async function main() {
   const rows = (data ?? []) as Row[];
 
   // Human investment markers — any of these pins the account.
+  //
+  // Errors are fatal here, never ignored. An earlier version selected a
+  // column that does not exist (`type`; crm_activities calls it `kind`) and
+  // swallowed the error, so `touched` was silently always empty and --apply
+  // ran with this protection disabled. A cleanup that cannot read the
+  // protection must refuse to delete, not delete everything.
   const ids = rows.map((r) => r.id);
-  const { data: acts } = await client
+  const { data: acts, error: actsError } = await client
     .from("crm_activities")
-    .select("company_id,type")
+    .select("company_id,kind")
     .in("company_id", ids);
+  if (actsError) {
+    throw new Error(`cannot read crm_activities: ${actsError.message}`);
+  }
   const touched = new Set(
     (acts ?? [])
-      .filter((a) => a.type !== "signal") // sweep-written signals are not human touches
+      .filter((a) => !SYSTEM_ACTIVITY_KINDS.has(a.kind as string))
       .map((a) => a.company_id as string),
   );
-  const { data: enrollments } = await client
+  const { data: enrollments, error: enrollError } = await client
     .from("outreach_enrollments")
     .select("crm_company_id")
     .in("crm_company_id", ids);
+  if (enrollError) {
+    throw new Error(`cannot read outreach_enrollments: ${enrollError.message}`);
+  }
   const enrolled = new Set(
     (enrollments ?? []).map((e) => e.crm_company_id as string).filter(Boolean),
   );
@@ -116,6 +135,14 @@ async function main() {
       keep.push(`${label}  [${decision.reason}, devs=${decision.devCount ?? "?"}]`);
     } else if (decision.reason === "enrichment_unavailable") {
       undecided.push(`${label}  [sem firmografia em cache — rode com --enrich]`);
+    } else if (decision.reason === "tier_not_worked") {
+      // t3 (aged past the 90-day window) and customer. The gate declines to
+      // CREATE these, which is not the same as wanting them gone: the sweep
+      // still maintains their tier, and a paying customer whose stored
+      // row.tier is a stale 't2' would not be caught by the pin above either.
+      // Removal targets are students / personal mail / tiny teams, not orgs
+      // that simply aged or converted.
+      undecided.push(`${label}  [tier ${cls.tier ?? "?"} — fora do escopo da limpeza]`);
     } else {
       remove.push({ row, reason: decision.reason });
     }

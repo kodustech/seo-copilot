@@ -139,7 +139,14 @@ export async function collectOrgFacts(): Promise<CollectedOrg[]> {
       )
       WHERE author IS NOT NULL
         AND TRIM(author) != ''
-        AND NOT REGEXP_CONTAINS(LOWER(author), r'(bot|dependabot|renovate|github-actions|snyk|_token|\\[bot\\])')
+        -- \\b around the bare "bot" only: unanchored it also swallows real
+        -- people (botelho, robot, mobot), and this count is the sole team-size
+        -- signal for orgs predating code_host_member_count, so an undercount
+        -- pushes them below MIN_DEVS. The named bots keep matching anywhere,
+        -- and "_token" stays unanchored on purpose — it appears mid-word in
+        -- service accounts like BITBUCKET_ACCESS_TOKEN, where \\b would not
+        -- match between "s" and "_".
+        AND NOT REGEXP_CONTAINS(LOWER(author), r'(\\bbot\\b|dependabot|renovate|github-actions|snyk|_token|\\[bot\\])')
       GROUP BY 1
     ),
     top_skips AS (

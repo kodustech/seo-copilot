@@ -75,6 +75,11 @@ const FREE_MAIL_EXACT = new Set([
  *  chain starts with one of these is personal mail: hotmail.co.jp, yahoo.co.uk,
  *  outlook.jp, yandex.ru, zohomail.in, live.com.au, gmx.net, mail.ru. */
 const FREE_MAIL_ROOTS = [
+  // gmail.com/googlemail.com are in FREE_MAIL_EXACT, but the country variants
+  // (gmail.com.br, gmail.co.uk) need the root rule like every other provider —
+  // leaving the largest provider out of it keeps the exact leak this fixes.
+  "gmail",
+  "googlemail",
   "hotmail",
   "outlook",
   "live",
