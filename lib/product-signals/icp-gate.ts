@@ -201,10 +201,11 @@ export async function evaluateOrg(
   const { devCount, source } = resolveDevCount(org);
   const base = { devCount, devCountSource: source, employeeCount: null };
 
-  if (tier == null || !CRM_CREATE_TIERS.has(tier)) {
-    return { ...base, create: false, reason: "tier_not_worked" };
-  }
-
+  // Domain first, tier second. A student or personal-mail signup is not ICP at
+  // any age, and checking tier first hides that: an account that aged past the
+  // 90-day window into t3 would report "tier_not_worked" and never have its
+  // domain looked at — so stu.cmb.ac.lk and qq.com, the very things this gate
+  // exists to reject, would survive a cleanup by getting old.
   const verdict = classifyDomain(org.derivedDomain);
   if (verdict !== "corporate") {
     return {
@@ -221,6 +222,10 @@ export async function evaluateOrg(
     };
   }
   const domain = org.derivedDomain as string;
+
+  if (tier == null || !CRM_CREATE_TIERS.has(tier)) {
+    return { ...base, create: false, reason: "tier_not_worked" };
+  }
 
   // --- connected git: gate on real developer count -------------------------
   if (org.connectedGit) {

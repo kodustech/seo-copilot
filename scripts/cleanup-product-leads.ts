@@ -131,10 +131,24 @@ async function main() {
     const cls = classifyOrg(org, now);
     const decision = await evaluateOrg(org, cls.tier, { enrich });
 
+    if (cls.tier === "customer") {
+      // Never judge a paying org, whatever the stored row.tier says. The pin
+      // above reads crm_companies.tier, which the sweep may not have refreshed
+      // yet; this reads the classification computed seconds ago.
+      pinned.push(`${label}  [customer — reclassificado agora]`);
+      continue;
+    }
+
     if (decision.create) {
       keep.push(`${label}  [${decision.reason}, devs=${decision.devCount ?? "?"}]`);
     } else if (decision.reason === "enrichment_unavailable") {
       undecided.push(`${label}  [sem firmografia em cache — rode com --enrich]`);
+    } else if (decision.reason === "enrichment_failed") {
+      // NinjaPear could not resolve the domain. That is missing data, not a
+      // verdict — and getEnrichment caches the failure, so a re-run returns the
+      // same cached error without retrying. Deleting on it would turn one bad
+      // lookup into a permanent removal of a possibly fine account.
+      undecided.push(`${label}  [firmografia falhou — sem base para julgar]`);
     } else if (decision.reason === "tier_not_worked") {
       // t3 (aged past the 90-day window) and customer. The gate declines to
       // CREATE these, which is not the same as wanting them gone: the sweep
