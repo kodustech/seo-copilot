@@ -1,6 +1,7 @@
 import { queryBigQuery } from "@/lib/bigquery";
 
 import type { OrgFacts } from "./classify";
+import { classifyDomain } from "./domains";
 
 // ---------------------------------------------------------------------------
 // Bulk collector: one BigQuery round-trip returning the raw facts for every
@@ -12,25 +13,6 @@ import type { OrgFacts } from "./classify";
 // ---------------------------------------------------------------------------
 
 const MAX_ORGS = 10000;
-
-/** Personal-mail domains that never identify a company. */
-export const FREE_MAIL_DOMAINS = new Set([
-  "gmail.com",
-  "googlemail.com",
-  "outlook.com",
-  "hotmail.com",
-  "live.com",
-  "yahoo.com",
-  "icloud.com",
-  "me.com",
-  "proton.me",
-  "protonmail.com",
-  "aol.com",
-  "gmx.com",
-  "mail.com",
-  "yandex.com",
-  "zoho.com",
-]);
 
 export type OrgContact = {
   email: string;
@@ -73,12 +55,13 @@ export function domainOfEmail(email: string): string | null {
   return domain || null;
 }
 
-/** Most common corporate email domain among members; null when all personal. */
+/** Most common corporate email domain among members; null when all personal.
+ *  Free-mail, academic and internal domains never qualify — see domains.ts. */
 export function deriveCompanyDomain(emails: string[]): string | null {
   const counts = new Map<string, number>();
   for (const email of emails) {
     const domain = domainOfEmail(email);
-    if (!domain || FREE_MAIL_DOMAINS.has(domain)) continue;
+    if (!domain || classifyDomain(domain) !== "corporate") continue;
     counts.set(domain, (counts.get(domain) ?? 0) + 1);
   }
   let best: string | null = null;
@@ -139,6 +122,26 @@ export async function collectOrgFacts(): Promise<CollectedOrg[]> {
       JOIN \`kody-408918.kodus_postgres.teams\` t ON ta.teamUuid = t.uuid
       GROUP BY 1
     ),
+    pr_authors AS (
+      -- Distinct humans who opened a PR Kodus processed. Fallback team size for
+      -- orgs onboarded before code_host_member_count existed (2026-07-28).
+      -- Undercounts by construction: only devs whose PRs we actually saw.
+      SELECT organizationId AS org_id,
+             COUNT(DISTINCT author) AS pr_author_count
+      FROM (
+        SELECT organizationId,
+               COALESCE(
+                 JSON_VALUE(user, '$.username'),
+                 JSON_VALUE(user, '$.name')
+               ) AS author
+        FROM \`kody-408918.kodus_mongo.pullRequests\`
+        WHERE user IS NOT NULL
+      )
+      WHERE author IS NOT NULL
+        AND TRIM(author) != ''
+        AND NOT REGEXP_CONTAINS(LOWER(author), r'(bot|dependabot|renovate|github-actions|snyk|_token|\\[bot\\])')
+      GROUP BY 1
+    ),
     top_skips AS (
       SELECT org_id, reason AS top_skip_reason
       FROM (
@@ -174,13 +177,17 @@ export async function collectOrgFacts(): Promise<CollectedOrg[]> {
       COALESCE(execs.reviews_30d, 0) AS reviews_30d,
       execs.last_review_at AS last_review_at,
       COALESCE(execs.skips_30d, 0) AS skips_30d,
-      top_skips.top_skip_reason AS top_skip_reason
+      top_skips.top_skip_reason AS top_skip_reason,
+      o.code_host_member_count AS code_host_member_count,
+      o.code_host_member_count_updated_at AS code_host_member_count_at,
+      pr_authors.pr_author_count AS pr_author_count
     FROM \`kody-408918.kodus_postgres.organizations\` o
     LEFT JOIN latest_lic lic ON lic.organizationId = o.uuid
     LEFT JOIN git ON git.organization_id = o.uuid
     LEFT JOIN members ON members.organization_id = o.uuid
     LEFT JOIN execs ON execs.org_id = o.uuid
     LEFT JOIN top_skips ON top_skips.org_id = o.uuid
+    LEFT JOIN pr_authors ON pr_authors.org_id = o.uuid
     LIMIT ${MAX_ORGS}
   `;
 
@@ -232,6 +239,9 @@ export async function collectOrgFacts(): Promise<CollectedOrg[]> {
         typeof r.top_skip_reason === "string" && r.top_skip_reason !== "(none)"
           ? r.top_skip_reason
           : null,
+      codeHostMemberCount: asNumberOrNull(r.code_host_member_count),
+      codeHostMemberCountAt: asIso(r.code_host_member_count_at),
+      prAuthorCount: asNumberOrNull(r.pr_author_count),
       derivedDomain,
       contacts: contacts.slice(0, 5),
     };
