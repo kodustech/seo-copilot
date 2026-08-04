@@ -28,7 +28,8 @@ export type ProductSignals = {
   lastReviewAt: string | null;
   reviews30d: number | null;
   reviews7d: number | null;
-  /** Suggestions delivered in the last 30d, and how many were implemented.
+  /** Suggestions actually delivered (deliveryStatus = 'sent') in the last 30d,
+   *  and how many of those were implemented.
    *  Counts `implemented` only — `partially_implemented` outnumbers it and
    *  folding the two together would roughly double the rate for the same
    *  behaviour, which is not a number anyone should quote to a customer. */
@@ -141,12 +142,18 @@ export async function getProductSignals(orgId: string): Promise<ProductSignals> 
       (SELECT COUNT(*) FROM \`kody-408918.kodus_mongo.pullRequests\` pr
         WHERE pr.organizationId = '${safe}'
           AND SAFE_CAST(pr.createdAt AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)) AS reviews_7d,
+      -- deliveryStatus = 'sent' on both halves. A suggestion the product chose
+      -- not to deliver was never in front of a developer, so counting it in the
+      -- denominator measures our filtering, not their adoption: over the last
+      -- 30d it drags the rate from 17.4% down to 12.3%.
       (SELECT COUNT(*) FROM \`kody-408918.kodus_mongo.suggestions_mv\` s
         WHERE s.organizationId = '${safe}'
+          AND s.suggestionDeliveryStatus = 'sent'
           AND SAFE_CAST(s.suggestionCreatedAt AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)) AS suggestions_30d,
       (SELECT COUNTIF(s.suggestionImplementationStatus = 'implemented')
         FROM \`kody-408918.kodus_mongo.suggestions_mv\` s
         WHERE s.organizationId = '${safe}'
+          AND s.suggestionDeliveryStatus = 'sent'
           AND SAFE_CAST(s.suggestionCreatedAt AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)) AS suggestions_implemented_30d,
       -- Skips come from automation_execution, not pullRequests: a PR row exists
       -- even when every execution on it was skipped, which is exactly the
@@ -156,12 +163,19 @@ export async function getProductSignals(orgId: string): Promise<ProductSignals> 
          JOIN \`kody-408918.kodus_postgres.teams\` t ON ta.teamUuid = t.uuid
         WHERE t.organization_id = '${safe}' AND ae.status = 'skipped'
           AND ae.createdAt >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 30 DAY)) AS skips_30d,
-      (SELECT ae.errorMessage FROM \`kody-408918.kodus_postgres.automation_execution\` ae
+      -- COALESCE so a NULL errorMessage cannot win the GROUP BY and return a
+      -- NULL scalar: the cell is rendered behind a truthiness guard, so that
+      -- would hide the reason on exactly the blocked accounts worth seeing.
+      -- Matches lib/product-signals/collect.ts, which maps '(none)' back to
+      -- null on the way out. No skipped execution has a null message today
+      -- (0 of 96,564 in 30d) — the column is nullable, that is enough.
+      (SELECT COALESCE(ae.errorMessage, '(none)')
+         FROM \`kody-408918.kodus_postgres.automation_execution\` ae
          JOIN \`kody-408918.kodus_postgres.team_automations\` ta ON ae.team_automation_id = ta.uuid
          JOIN \`kody-408918.kodus_postgres.teams\` t ON ta.teamUuid = t.uuid
         WHERE t.organization_id = '${safe}' AND ae.status = 'skipped'
           AND ae.createdAt >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 30 DAY)
-        GROUP BY ae.errorMessage ORDER BY COUNT(*) DESC LIMIT 1) AS top_skip_reason
+        GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1) AS top_skip_reason
     FROM \`kody-408918.kodus_postgres.organizations\` o
     LEFT JOIN \`kody-408918.kodus_billing.organization_licenses\` lic
       ON lic.organizationId = o.uuid
@@ -197,7 +211,10 @@ export async function getProductSignals(orgId: string): Promise<ProductSignals> 
     suggestions30d: asNumber(r.suggestions_30d),
     suggestionsImplemented30d: asNumber(r.suggestions_implemented_30d),
     skips30d: asNumber(r.skips_30d),
-    topSkipReason: (r.top_skip_reason as string | null) ?? null,
+    topSkipReason:
+      typeof r.top_skip_reason === "string" && r.top_skip_reason !== "(none)"
+        ? r.top_skip_reason
+        : null,
     health: deriveHealth(true, lastReviewAt, reviews30d),
   };
 }
