@@ -35,7 +35,36 @@ export type OrgFacts = {
   lastReviewAt: string | null;
   skips30d: number;
   topSkipReason: string | null;
+  /** Members of the connected git org, persisted by kodus-ai at onboarding.
+   *  Null for every org onboarded before 2026-07-28 (no backfill exists). */
+  codeHostMemberCount: number | null;
+  codeHostMemberCountAt: string | null;
+  /** Distinct non-bot PR authors Kodus saw. Fallback when the above is null. */
+  prAuthorCount: number | null;
 };
+
+export type DevCountSource = "code_host" | "pr_authors" | "none";
+
+/**
+ * Engineering team size, from the git side only.
+ *
+ * Never derived from licenses or user_count: those are Kodus seats (often 1 at
+ * signup) and mapping them onto dev_count is the bug 52da752 fixed once already.
+ * An org that never connected git has no source at all and returns "none" —
+ * that is a real state, not a zero.
+ */
+export function resolveDevCount(facts: {
+  codeHostMemberCount: number | null;
+  prAuthorCount: number | null;
+}): { devCount: number | null; source: DevCountSource } {
+  if (facts.codeHostMemberCount != null && facts.codeHostMemberCount > 0) {
+    return { devCount: facts.codeHostMemberCount, source: "code_host" };
+  }
+  if (facts.prAuthorCount != null && facts.prAuthorCount > 0) {
+    return { devCount: facts.prAuthorCount, source: "pr_authors" };
+  }
+  return { devCount: null, source: "none" };
+}
 
 export type Tier = "t0" | "t1" | "t2" | "t3" | "customer" | null;
 

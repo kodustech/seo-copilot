@@ -1099,7 +1099,7 @@ export async function enrollFromCrm(
       if (company.orgId) {
         const { data: sig } = await client
           .from("product_signals_latest")
-          .select("tier,trigger,top_skip_reason,user_count,reviews_30d")
+          .select("tier,trigger,top_skip_reason,dev_count,reviews_30d")
           .eq("org_id", company.orgId)
           .maybeSingle();
         if (sig) {
@@ -1107,8 +1107,11 @@ export async function enrollFromCrm(
           if (sig.trigger) templateVars.trigger = String(sig.trigger);
           if (sig.top_skip_reason)
             templateVars.skip_reason = String(sig.top_skip_reason);
-          if (sig.user_count != null)
-            templateVars.dev_count = String(sig.user_count);
+          // dev_count is the git-derived team size, never user_count: that is
+          // Kodus seats, usually 1, and it used to go out in real emails as if
+          // it were the prospect's engineering headcount.
+          if (sig.dev_count != null)
+            templateVars.dev_count = String(sig.dev_count);
           if (sig.reviews_30d != null)
             templateVars.reviews_30d = String(sig.reviews_30d);
         }

@@ -2,8 +2,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createCompany, createContact, logActivity } from "@/lib/crm";
 
-import { classifyOrg, type Classification } from "./classify";
+import { classifyOrg, resolveDevCount, type Classification } from "./classify";
 import { collectOrgFacts, domainOfEmail, type CollectedOrg } from "./collect";
+import { evaluateOrg, getEnrichment, getFirmographics } from "./icp-gate";
 
 // ---------------------------------------------------------------------------
 // Product-signals sweep (cron):
@@ -16,10 +17,6 @@ import { collectOrgFacts, domainOfEmail, type CollectedOrg } from "./collect";
 
 const UPSERT_CHUNK = 400;
 
-/** Tiers that auto-create a CRM account. t3 (older base) stays signals-only:
- *  reactivation lists are curated by a human, not mass-imported. */
-const CRM_CREATE_TIERS = new Set(["t0", "t1", "t2"]);
-
 export type SweepSummary = {
   orgs: number;
   transitions: number;
@@ -27,6 +24,9 @@ export type SweepSummary = {
   companiesLinked: number;
   tiersUpdated: number;
   contactsCreated: number;
+  /** How each candidate was decided, keyed by GateDecision.reason. */
+  gate: Record<string, number>;
+  enrichmentCalls: number;
   errors: string[];
 };
 
@@ -44,6 +44,7 @@ type CompanyRef = {
   org_id: string | null;
   domain: string | null;
   tier: string | null;
+  dev_count: number | null;
 };
 
 function latestRowFrom(
@@ -71,6 +72,11 @@ function latestRowFrom(
     tier: cls.tier,
     trigger: cls.trigger,
     health: cls.health,
+    code_host_member_count: org.codeHostMemberCount,
+    code_host_member_count_at: org.codeHostMemberCountAt,
+    pr_author_count: org.prAuthorCount,
+    dev_count: resolveDevCount(org).devCount,
+    dev_count_source: resolveDevCount(org).source,
     computed_at: computedAt,
     updated_at: computedAt,
   };
@@ -159,7 +165,7 @@ export async function runProductSignalsSweep(
   const companies = await fetchAll<CompanyRef>((from, to) =>
     client
       .from("crm_companies")
-      .select("id,org_id,domain,tier")
+      .select("id,org_id,domain,tier,dev_count")
       .range(from, to),
   );
   const companyByOrg = new Map(
@@ -175,6 +181,18 @@ export async function runProductSignalsSweep(
   let companiesLinked = 0;
   let tiersUpdated = 0;
   let contactsCreated = 0;
+  let enrichmentCalls = 0;
+  const gate: Record<string, number> = {};
+
+  // One enrichment per domain per sweep, even when several orgs share it.
+  const enrichedThisRun = new Map<string, Awaited<ReturnType<typeof getEnrichment>>>();
+  const enrich = async (domain: string) => {
+    if (enrichedThisRun.has(domain)) return enrichedThisRun.get(domain)!;
+    enrichmentCalls += 1;
+    const result = await getEnrichment(client, domain, now);
+    enrichedThisRun.set(domain, result);
+    return result;
+  };
 
   for (const { org, cls } of classified) {
     // Personal git accounts never enter the CRM.
@@ -199,13 +217,20 @@ export async function runProductSignalsSweep(
         }
       }
 
-      // Create accounts only for tiers the playbook actively works, and only
-      // when the org resolves to a corporate domain.
+      // Account creation is gated on ICP fit — see icp-gate.ts for the two
+      // regimes and why the thresholds differ. Orgs that fail the gate stay
+      // visible in product_signals_latest for manual promotion; the sweep just
+      // does not put them in front of outbound.
       //
-      // Do NOT set dev_count from product user_count: that is Kodus seats
-      // (often 1 at signup), not engineering headcount. Team size stays
-      // human/ICP; product seats live on Product tab / product_signals.
-      if (!company && CRM_CREATE_TIERS.has(cls.tier) && org.derivedDomain) {
+      // dev_count comes from the git side only (code_host_member_count, else
+      // PR authors). Never from user_count/licenses: those are Kodus seats
+      // (often 1 at signup), which is the bug 52da752 fixed once already.
+      const decision = !company
+        ? await evaluateOrg(org, cls.tier, { enrich })
+        : null;
+      if (decision) gate[decision.reason] = (gate[decision.reason] ?? 0) + 1;
+
+      if (!company && decision?.create && org.derivedDomain) {
         const created = await createCompany(client, {
           name: org.orgName?.trim() || org.derivedDomain,
           domain: org.derivedDomain,
@@ -213,17 +238,32 @@ export async function runProductSignalsSweep(
           status: "lead",
           deployment: "cloud",
           source: "product",
+          devCount: decision.devCount,
           tags: ["product-signup"],
+          enrichment: {
+            icp_gate: decision.reason,
+            dev_count_source: decision.devCountSource,
+            ...(decision.employeeCount != null
+              ? { employee_count: decision.employeeCount }
+              : {}),
+          },
         });
         company = {
           id: created.id,
           org_id: org.orgId,
           domain: org.derivedDomain,
           tier: null,
+          dev_count: decision.devCount,
         };
         companyByOrg.set(org.orgId, company);
         companyByDomain.set(org.derivedDomain, company);
         companiesCreated += 1;
+
+        // Only accounts admitted on firmographics get the richer (and pricier)
+        // company-details lookup, to decorate the CRM record. Never a gate input.
+        if (decision.reason === "pass_employees") {
+          await getFirmographics(client, org.derivedDomain, now);
+        }
 
         // isPrimary is per company (not sweep-wide) so each new account gets a lead contact.
         let primarySetForCompany = false;
@@ -242,6 +282,18 @@ export async function runProductSignalsSweep(
       }
 
       if (!company) continue;
+
+      // Keep dev_count fresh on accounts that already exist — including ones
+      // created by cold research before the org linked. Only ever writes a
+      // git-derived number, and never overwrites a known count with null.
+      const { devCount } = resolveDevCount(org);
+      if (devCount != null && devCount !== company.dev_count) {
+        await client
+          .from("crm_companies")
+          .update({ dev_count: devCount })
+          .eq("id", company.id);
+        company.dev_count = devCount;
+      }
 
       if (company.tier !== cls.tier) {
         const { error } = await client
@@ -286,6 +338,8 @@ export async function runProductSignalsSweep(
     companiesLinked,
     tiersUpdated,
     contactsCreated,
+    gate,
+    enrichmentCalls,
     errors: errors.slice(0, 30),
   };
 }
