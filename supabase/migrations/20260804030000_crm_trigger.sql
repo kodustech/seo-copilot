@@ -20,9 +20,21 @@ ALTER TABLE crm_companies ADD COLUMN IF NOT EXISTS trigger TEXT;
 CREATE INDEX IF NOT EXISTS crm_companies_trigger_idx
   ON crm_companies (trigger) WHERE trigger IS NOT NULL;
 
--- Backfill from the signals table so filters work before the next sweep runs.
+-- Backfill from the signals table so filters work before the next sweep runs,
+-- gated the same way the sweep gates itself.
+--
+-- runProductSignalsSweep skips orgs with a null tier outright — personal git
+-- accounts, classified as trigger 'personal_account' (sweep.ts: `if
+-- (org.orgType === "user" || cls.tier == null) continue`). Anything this
+-- backfill writes onto those rows would therefore never be revisited or
+-- cleared, leaving a permanently stale trigger on accounts the playbook
+-- excludes by design, and one that auto-enroll rules could then target.
+--
+-- No such row exists today (0 of 93 linked companies), which is exactly why
+-- this is worth doing now rather than after one appears.
 UPDATE crm_companies c
    SET trigger = s.trigger
   FROM product_signals_latest s
  WHERE s.org_id = c.org_id
+   AND s.tier IS NOT NULL
    AND c.trigger IS DISTINCT FROM s.trigger;
