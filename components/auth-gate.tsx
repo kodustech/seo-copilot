@@ -108,6 +108,11 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           { href: "/sequences", label: "Outbound", icon: Workflow },
           { href: "/inbox", label: "Replies", icon: Mail },
           { href: "/crm", label: "Accounts", icon: Building2 },
+          {
+            href: "/outbound-performance",
+            label: "Outbound perf",
+            icon: BarChart3,
+          },
         ],
       },
       {
