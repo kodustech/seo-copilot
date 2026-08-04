@@ -1077,6 +1077,41 @@ export async function createContact(
   return rowToContact(data as ContactRow);
 }
 
+export async function updateContact(
+  client: SupabaseClient,
+  id: string,
+  input: {
+    name?: string;
+    email?: string | null;
+    role?: string | null;
+    phone?: string | null;
+    linkedin?: string | null;
+    isPrimary?: boolean;
+  },
+): Promise<CrmContact> {
+  const patch: Record<string, unknown> = {};
+  if (input.name !== undefined) {
+    const name = trimOrNull(input.name);
+    if (!name) throw new Error("contact name is required");
+    patch.name = name;
+  }
+  if (input.email !== undefined) patch.email = trimOrNull(input.email);
+  if (input.role !== undefined) patch.role = trimOrNull(input.role);
+  if (input.phone !== undefined) patch.phone = trimOrNull(input.phone);
+  if (input.linkedin !== undefined) patch.linkedin = trimOrNull(input.linkedin);
+  if (input.isPrimary !== undefined) patch.is_primary = input.isPrimary;
+  if (Object.keys(patch).length === 0) throw new Error("nothing to update");
+
+  const { data, error } = await client
+    .from("crm_contacts")
+    .update(patch)
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw new Error(`Failed to update contact: ${error.message}`);
+  return rowToContact(data as ContactRow);
+}
+
 export async function deleteContact(
   client: SupabaseClient,
   id: string,

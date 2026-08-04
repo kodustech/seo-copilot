@@ -7,6 +7,7 @@ import {
   ArrowUp,
   Building2,
   Loader2,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -2375,6 +2376,7 @@ function ContactsTab({
   const [role, setRole] = useState("");
   const [linkedin, setLinkedin] = useState("");
   const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   async function submit() {
     if (!name.trim()) return;
@@ -2425,31 +2427,147 @@ function ContactsTab({
         <p className="py-6 text-center text-sm text-neutral-500">No contacts yet.</p>
       ) : (
         <div className="space-y-2">
-          {contacts.map((c) => (
-            <div key={c.id} className="group flex items-center justify-between rounded-lg border border-white/[0.06] bg-neutral-900/40 px-3 py-2">
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-neutral-100">
-                  {c.name} {c.role && <span className="text-neutral-500">· {c.role}</span>}
-                </p>
-                {c.email && <p className="truncate text-xs text-neutral-500">{c.email}</p>}
-                {c.linkedin && (
-                  <a
-                    href={c.linkedin}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300"
+          {contacts.map((c) =>
+            editingId === c.id ? (
+              <ContactEditRow
+                key={c.id}
+                contact={c}
+                authFetch={authFetch}
+                onDone={() => {
+                  setEditingId(null);
+                  onChange();
+                }}
+                onCancel={() => setEditingId(null)}
+              />
+            ) : (
+              <div key={c.id} className="group flex items-center justify-between rounded-lg border border-white/[0.06] bg-neutral-900/40 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-neutral-100">
+                    {c.name} {c.role && <span className="text-neutral-500">· {c.role}</span>}
+                  </p>
+                  {c.email && <p className="truncate text-xs text-neutral-500">{c.email}</p>}
+                  {c.linkedin && (
+                    <a
+                      href={c.linkedin}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300"
+                    >
+                      LinkedIn <ExternalLink className="size-3" />
+                    </a>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 opacity-0 transition group-hover:opacity-100">
+                  <button
+                    onClick={() => setEditingId(c.id)}
+                    aria-label={`Edit ${c.name}`}
+                    className="text-neutral-600 hover:text-neutral-200"
                   >
-                    LinkedIn <ExternalLink className="size-3" />
-                  </a>
-                )}
+                    <Pencil className="size-3.5" />
+                  </button>
+                  <button
+                    onClick={() => remove(c.id)}
+                    aria-label={`Delete ${c.name}`}
+                    className="text-neutral-600 hover:text-red-400"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                </div>
               </div>
-              <button onClick={() => remove(c.id)} className="text-neutral-600 opacity-0 transition group-hover:opacity-100 hover:text-red-400">
-                <Trash2 className="size-3.5" />
-              </button>
-            </div>
-          ))}
+            ),
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+function ContactEditRow({
+  contact,
+  authFetch,
+  onDone,
+  onCancel,
+}: {
+  contact: CrmContact;
+  authFetch: (url: string, init?: RequestInit) => Promise<Response>;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(contact.name);
+  const [role, setRole] = useState(contact.role ?? "");
+  const [email, setEmail] = useState(contact.email ?? "");
+  const [linkedin, setLinkedin] = useState(contact.linkedin ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save() {
+    if (!name.trim() || saving) return;
+    setSaving(true);
+    setError(null);
+    const res = await authFetch(`/api/crm/contacts/${contact.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name, role, email, linkedin }),
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      setError(j.error ?? "Failed to save");
+      setSaving(false);
+      return;
+    }
+    setSaving(false);
+    onDone();
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border border-white/[0.12] bg-neutral-900/60 px-3 py-2.5">
+      <div className="grid grid-cols-3 gap-2">
+        <Input
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Name *"
+          className="h-8 border-white/10 bg-neutral-900"
+        />
+        <Input
+          value={role}
+          onChange={(e) => setRole(e.target.value)}
+          placeholder="Role"
+          className="h-8 border-white/10 bg-neutral-900"
+        />
+        <Input
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="Email"
+          className="h-8 border-white/10 bg-neutral-900"
+        />
+      </div>
+      <Input
+        type="url"
+        value={linkedin}
+        onChange={(e) => setLinkedin(e.target.value)}
+        placeholder="LinkedIn URL (optional)"
+        className="h-8 border-white/10 bg-neutral-900"
+      />
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      <div className="flex items-center justify-end gap-2">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onCancel}
+          disabled={saving}
+          className="h-7 text-neutral-400 hover:text-neutral-100"
+        >
+          Cancel
+        </Button>
+        <Button
+          size="sm"
+          onClick={save}
+          disabled={saving || !name.trim()}
+          className="h-7 bg-white text-neutral-900 hover:bg-neutral-200"
+        >
+          {saving ? <Loader2 className="size-3.5 animate-spin" /> : "Save"}
+        </Button>
+      </div>
     </div>
   );
 }
