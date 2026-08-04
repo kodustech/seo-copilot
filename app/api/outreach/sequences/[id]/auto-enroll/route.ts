@@ -5,6 +5,7 @@ import {
   deleteAutoEnrollRule,
   listAutoEnrollRules,
   runAutoEnrollRule,
+  sanitizeFilters,
   upsertAutoEnrollRule,
 } from "@/lib/outreach/auto-enroll";
 
@@ -49,7 +50,12 @@ export async function POST(req: Request, ctx: Ctx) {
           id: body.id ?? "preview",
           sequenceId: id,
           name: body.name ?? null,
-          filters: body.filters ?? {},
+          // Sanitised exactly as the save path does. Preview is the safety
+          // mechanism — if it evaluates a different filter than the rule that
+          // gets saved, it stops being one. A raw staleOnly here would shrink
+          // the reported audience while the saved rule (which drops it) went on
+          // to enrol the full set on a first run that cannot be undone.
+          filters: sanitizeFilters(body.filters),
           active: false,
           // Clamped exactly as upsert does, so the preview cannot promise a
           // batch size the saved rule is unable to reach.

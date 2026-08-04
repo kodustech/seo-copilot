@@ -190,6 +190,12 @@ export async function runAutoEnrollRule(
       .select("crm_company_id")
       .eq("sequence_id", rule.sequenceId)
       .not("crm_company_id", "is", null)
+      // Ordered because .range() across an unordered result is only stable if
+      // the planner keeps the same access path between pages. If it switches,
+      // rows shift across page boundaries and some are never read — and a
+      // company missing from this set is one that gets the whole sequence a
+      // second time.
+      .order("id", { ascending: true })
       .range(from, from + 999);
     if (error) throw new Error(`Failed to read enrollments: ${error.message}`);
     for (const r of data ?? []) enrolledEver.add(r.crm_company_id as string);
@@ -200,7 +206,11 @@ export async function runAutoEnrollRule(
   // accounts that will actually be contacted. Taking the first page and letting
   // enrollFromCrm skip most of it burns the cap on accounts already sequenced
   // and the rule never advances past its first run.
-  const PAGE = Math.max(rule.maxPerRun * 5, 50);
+  // Bounded on both ends: large enough that already-enrolled accounts do not
+  // stall progress, small enough that a rule scan stays cheap. listCompanies
+  // does select("*") — enrichment and properties JSONB included — so an
+  // unbounded page times maxPerRun=200 would pull thousands of fat rows per run.
+  const PAGE = Math.min(Math.max(rule.maxPerRun * 5, 50), 200);
   const MAX_PAGES = 20; // bounded: a filter matching thousands is a mistake to see, not to serve
   const targets: string[] = [];
   let matched = 0;
