@@ -177,6 +177,42 @@ function formatRelative(iso: string | null): string {
   return `${Math.floor(days / 365)}y ago`;
 }
 
+/**
+ * Trial end is the only date in this UI that points forward, and formatRelative
+ * only speaks about the past: a future date makes `days` negative, lands on the
+ * `days <= 0` branch and renders as "today". Every live trial therefore looked
+ * like it was expiring right now — including one running to 2030.
+ *
+ * Compares calendar days, not elapsed milliseconds, so a trial ending tonight
+ * reads "today" instead of "tomorrow".
+ */
+function formatDeadline(iso: string | null): string {
+  if (!iso) return "—";
+  const at = new Date(iso).getTime();
+  if (Number.isNaN(at)) return "—";
+  const midnight = (t: number) => new Date(t).setHours(0, 0, 0, 0);
+  const days = Math.round((midnight(at) - midnight(Date.now())) / 86_400_000);
+  if (days > 1) return `in ${days}d`;
+  if (days === 1) return "tomorrow";
+  if (days === 0) return "today";
+  if (days === -1) return "expired yesterday";
+  return `expired ${-days}d ago`;
+}
+
+/**
+ * "12/40 (30%)" — the denominator stays visible on purpose. A bare percentage
+ * hides the difference between 1-of-2 and 300-of-600, and the first is noise.
+ * With no suggestions delivered there is no rate to report, not a 0%.
+ */
+function formatImplementationRate(
+  implemented: number | null,
+  total: number | null,
+): string {
+  if (total == null || implemented == null) return "—";
+  if (total === 0) return "no suggestions";
+  return `${implemented}/${total} (${Math.round((implemented / total) * 100)}%)`;
+}
+
 function ownerLabel(email: string | null, members: TeamMember[]): string {
   if (!email) return "—";
   const m = members.find((x) => x.email === email);
@@ -1246,8 +1282,13 @@ function CompanyDrawer({
           </button>
         </div>
 
-        {/* Tabs — horizontal scroll when the row overflows (narrow drawer) */}
-        <div className="overflow-x-auto overscroll-x-contain border-b border-white/[0.06] [-ms-overflow-style:none] [scrollbar-width:thin]">
+        {/* Tabs — horizontal scroll when the row overflows (narrow drawer).
+            The scrollbar itself is hidden: a visible track sitting under a
+            7-item tab row reads as a rendering glitch, and the row is already
+            swipe/wheel scrollable without it. A right-edge fade signals that
+            there is more to reach. */}
+        <div className="relative border-b border-white/[0.06]">
+          <div className="overflow-x-auto overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <div className="flex min-w-min gap-1 px-2">
             {tabs.map((t) => {
               const Icon = t.icon;
@@ -1273,7 +1314,12 @@ function CompanyDrawer({
                 </button>
               );
             })}
+            </div>
           </div>
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-neutral-950 to-transparent"
+          />
         </div>
 
         {/* Body */}
@@ -2487,10 +2533,24 @@ function SignalsTab({
           label="Users in Kodus"
           value={signals.userCount != null ? String(signals.userCount) : "—"}
         />
-        <SignalCell label="Trial ends" value={signals.trialEnd ? formatRelative(signals.trialEnd) : "—"} />
+        <SignalCell label="Trial ends" value={formatDeadline(signals.trialEnd)} />
         <SignalCell label="Reviews 7d" value={signals.reviews7d != null ? String(signals.reviews7d) : "—"} />
+        <SignalCell
+          label="Suggestions implemented 30d"
+          value={formatImplementationRate(
+            signals.suggestionsImplemented30d,
+            signals.suggestions30d,
+          )}
+        />
+        <SignalCell
+          label="Skipped reviews 30d"
+          value={signals.skips30d != null ? String(signals.skips30d) : "—"}
+        />
         <SignalCell label="Reviews 30d" value={signals.reviews30d != null ? String(signals.reviews30d) : "—"} />
         <SignalCell label="Last review" value={formatRelative(signals.lastReviewAt)} full />
+        {signals.topSkipReason && (
+          <SignalCell label="Top skip reason" value={signals.topSkipReason} full />
+        )}
       </div>
     </div>
   );
