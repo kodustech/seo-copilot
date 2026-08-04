@@ -198,6 +198,17 @@ async function runOutreachSequencesCron(): Promise<void> {
   );
 }
 
+async function runAutoEnrollCron(): Promise<void> {
+  const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
+  const { runAllAutoEnrollRules } = await import("@/lib/outreach/auto-enroll");
+  const res = await runAllAutoEnrollRules(getSupabaseServiceClient());
+  const failed = res.results.filter((r) => r.errors.length > 0).length;
+  console.log(
+    `[cron] auto-enroll: ${res.rules} rules, enrolled ${res.enrolled}` +
+      (failed > 0 ? `, ${failed} with errors` : ""),
+  );
+}
+
 async function runOutreachInboxCron(): Promise<void> {
   const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
   const { syncAllMailboxesInbox } = await import("@/lib/outreach/inbox");
@@ -264,6 +275,15 @@ const JOBS: JobDefinition[] = [
     name: "outreach-sequences",
     schedule: "*/15 * * * *",
     run: runOutreachSequencesCron,
+  },
+  {
+    // Hourly: resolve each active auto-enroll rule (a saved CRM filter) and
+    // enrol whoever is newly matched. Hourly rather than every few minutes
+    // because the inputs — tier, status, owner — change on the order of hours,
+    // and each run sends real email.
+    name: "auto-enroll",
+    schedule: "15 * * * *",
+    run: runAutoEnrollCron,
   },
   {
     // Every 10 min: sync Gmail for outbound sequence replies.

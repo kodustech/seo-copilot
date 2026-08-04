@@ -23,6 +23,7 @@ import {
   Workflow,
 } from "lucide-react";
 
+import { AutoEnrollDialog } from "@/components/auto-enroll-dialog";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { renderTemplate } from "@/lib/outreach/renderer";
 import { cn } from "@/lib/utils";
@@ -1248,6 +1249,15 @@ export function SequencesPage() {
                   )}
                   Save
                 </Button>
+              )}
+              {editingId && (
+                <AutoEnrollDialog
+                  sequenceId={editingId}
+                  sequenceName={editName || "this sequence"}
+                  authFetch={(url, init) =>
+                    fetch(url, { ...init, headers: { ...headers(), ...(init?.headers ?? {}) } })
+                  }
+                />
               )}
               <Button
                 size="sm"
