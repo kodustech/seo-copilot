@@ -28,6 +28,18 @@ export type ProductSignals = {
   lastReviewAt: string | null;
   reviews30d: number | null;
   reviews7d: number | null;
+  /** Suggestions actually delivered (deliveryStatus = 'sent') in the last 30d,
+   *  and how many of those were implemented.
+   *  Counts `implemented` only — `partially_implemented` outnumbers it and
+   *  folding the two together would roughly double the rate for the same
+   *  behaviour, which is not a number anyone should quote to a customer. */
+  suggestions30d: number | null;
+  suggestionsImplemented30d: number | null;
+  /** Reviews the product declined to run, and the most frequent reason.
+   *  The strongest broken-activation signal there is: an org with reviews at
+   *  zero and skips climbing is not quiet, it is blocked. */
+  skips30d: number | null;
+  topSkipReason: string | null;
   health: ProductHealth;
 };
 
@@ -100,6 +112,10 @@ export async function getProductSignals(orgId: string): Promise<ProductSignals> 
     lastReviewAt: null,
     reviews30d: null,
     reviews7d: null,
+    suggestions30d: null,
+    suggestionsImplemented30d: null,
+    skips30d: null,
+    topSkipReason: null,
     health: "unknown",
   };
 
@@ -125,7 +141,40 @@ export async function getProductSignals(orgId: string): Promise<ProductSignals> 
           AND SAFE_CAST(pr.createdAt AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)) AS reviews_30d,
       (SELECT COUNT(*) FROM \`kody-408918.kodus_mongo.pullRequests\` pr
         WHERE pr.organizationId = '${safe}'
-          AND SAFE_CAST(pr.createdAt AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)) AS reviews_7d
+          AND SAFE_CAST(pr.createdAt AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)) AS reviews_7d,
+      -- deliveryStatus = 'sent' on both halves. A suggestion the product chose
+      -- not to deliver was never in front of a developer, so counting it in the
+      -- denominator measures our filtering, not their adoption: over the last
+      -- 30d it drags the rate from 17.4% down to 12.3%.
+      (SELECT COUNT(*) FROM \`kody-408918.kodus_mongo.suggestions_mv\` s
+        WHERE s.organizationId = '${safe}'
+          AND s.suggestionDeliveryStatus = 'sent'
+          AND SAFE_CAST(s.suggestionCreatedAt AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)) AS suggestions_30d,
+      (SELECT COUNTIF(s.suggestionImplementationStatus = 'implemented')
+        FROM \`kody-408918.kodus_mongo.suggestions_mv\` s
+        WHERE s.organizationId = '${safe}'
+          AND s.suggestionDeliveryStatus = 'sent'
+          AND SAFE_CAST(s.suggestionCreatedAt AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)) AS suggestions_implemented_30d,
+      -- Skips come from automation_execution, not pullRequests: a PR row exists
+      -- even when every execution on it was skipped, which is exactly the
+      -- population this number is meant to expose.
+      (SELECT COUNT(*) FROM \`kody-408918.kodus_postgres.automation_execution\` ae
+         JOIN \`kody-408918.kodus_postgres.team_automations\` ta ON ae.team_automation_id = ta.uuid
+         JOIN \`kody-408918.kodus_postgres.teams\` t ON ta.teamUuid = t.uuid
+        WHERE t.organization_id = '${safe}' AND ae.status = 'skipped'
+          AND ae.createdAt >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 30 DAY)) AS skips_30d,
+      -- Deliberately NOT COALESCE'd to a sentinel. collect.ts uses '(none)'
+      -- because it feeds email templates, but here null is meaningful: the
+      -- caller decides what to render from skips30d, so "we skipped 96k times
+      -- and recorded no reason" stays distinguishable from "no skips at all".
+      -- A sentinel would also collide with a genuine message of the same text.
+      (SELECT ae.errorMessage
+         FROM \`kody-408918.kodus_postgres.automation_execution\` ae
+         JOIN \`kody-408918.kodus_postgres.team_automations\` ta ON ae.team_automation_id = ta.uuid
+         JOIN \`kody-408918.kodus_postgres.teams\` t ON ta.teamUuid = t.uuid
+        WHERE t.organization_id = '${safe}' AND ae.status = 'skipped'
+          AND ae.createdAt >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 30 DAY)
+        GROUP BY ae.errorMessage ORDER BY COUNT(*) DESC LIMIT 1) AS top_skip_reason
     FROM \`kody-408918.kodus_postgres.organizations\` o
     LEFT JOIN \`kody-408918.kodus_billing.organization_licenses\` lic
       ON lic.organizationId = o.uuid
@@ -158,6 +207,16 @@ export async function getProductSignals(orgId: string): Promise<ProductSignals> 
     lastReviewAt,
     reviews30d,
     reviews7d,
+    suggestions30d: asNumber(r.suggestions_30d),
+    suggestionsImplemented30d: asNumber(r.suggestions_implemented_30d),
+    skips30d: asNumber(r.skips_30d),
+    // Normalised here so the contract is simply "null means absent" and no
+    // consumer has to remember that blank is also absent. The UI falls back on
+    // null alone; an empty string would slip past that and render a blank cell.
+    topSkipReason:
+      typeof r.top_skip_reason === "string" && r.top_skip_reason.trim()
+        ? r.top_skip_reason
+        : null,
     health: deriveHealth(true, lastReviewAt, reviews30d),
   };
 }
