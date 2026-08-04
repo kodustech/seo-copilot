@@ -475,7 +475,7 @@ export function CrmPage() {
           value={
             (stats.byStatus.lead ?? 0) +
             (stats.byStatus.qualified ?? 0) +
-            (stats.byStatus.trial ?? 0) +
+            (stats.byStatus.poc ?? 0) +
             (stats.byStatus.negotiation ?? 0)
           }
           accent="sky"

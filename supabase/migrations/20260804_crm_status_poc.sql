@@ -26,8 +26,26 @@ ON CONFLICT (status) DO UPDATE SET idle_days = EXCLUDED.idle_days, label = EXCLU
 
 DELETE FROM crm_status_sla WHERE status = 'trial';
 
--- The timeline records status transitions as free text; rewrite the old value
--- so history stays readable next to the new name.
+-- The timeline stores each transition twice: as free text in `summary` and as
+-- structured values in `meta` ({from, to} — see logActivity in lib/crm.ts).
+-- Rewriting only the prose would leave rows disagreeing with themselves
+-- ("Status: lead → poc" carrying meta {"to":"trial"}), and `meta` is what the
+-- API and the AI tools read, so the retired value would keep circulating in
+-- structured data long after it stopped existing anywhere else.
+--
+-- Scoped to the two keys rather than a blanket text replace: a status_change
+-- row can legitimately mention the product's own trial elsewhere in meta, and
+-- that one is not being renamed.
 UPDATE crm_activities
-   SET summary = REPLACE(summary, 'trial', 'poc')
- WHERE kind = 'status_change' AND summary LIKE '%trial%';
+   SET summary = REPLACE(summary, 'trial', 'poc'),
+       meta = CASE
+                WHEN meta->>'from' = 'trial' AND meta->>'to' = 'trial'
+                  THEN jsonb_set(jsonb_set(meta, '{from}', '"poc"'), '{to}', '"poc"')
+                WHEN meta->>'from' = 'trial'
+                  THEN jsonb_set(meta, '{from}', '"poc"')
+                WHEN meta->>'to' = 'trial'
+                  THEN jsonb_set(meta, '{to}', '"poc"')
+                ELSE meta
+              END
+ WHERE kind = 'status_change'
+   AND (summary LIKE '%trial%' OR meta->>'from' = 'trial' OR meta->>'to' = 'trial');
