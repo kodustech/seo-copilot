@@ -19,7 +19,11 @@
 import { deleteCompany } from "../lib/crm";
 import { classifyOrg } from "../lib/product-signals/classify";
 import { collectOrgFacts } from "../lib/product-signals/collect";
-import { evaluateOrg, getEnrichment } from "../lib/product-signals/icp-gate";
+import {
+  CRM_CREATE_TIERS,
+  evaluateOrg,
+  getEnrichment,
+} from "../lib/product-signals/icp-gate";
 import { getSupabaseServiceClient } from "../lib/supabase-server";
 
 const APPLY = process.argv.includes("--apply");
@@ -149,6 +153,12 @@ async function main() {
       // same cached error without retrying. Deleting on it would turn one bad
       // lookup into a permanent removal of a possibly fine account.
       undecided.push(`${label}  [firmografia falhou — sem base para julgar]`);
+    } else if (decision.reason === "no_team_signal") {
+      // Connected git, but no PR history and no member count — the gate's own
+      // words are "nothing to judge on". Same category as enrichment_failed:
+      // absence of data, not a rejection. It will resolve itself once the org
+      // opens a PR or kodus-ai backfills code_host_member_count.
+      undecided.push(`${label}  [sem sinal de time — nada para julgar]`);
     } else if (decision.reason === "tier_not_worked") {
       // t3 (aged past the 90-day window) and customer. The gate declines to
       // CREATE these, which is not the same as wanting them gone: the sweep
@@ -157,6 +167,22 @@ async function main() {
       // Removal targets are students / personal mail / tiny teams, not orgs
       // that simply aged or converted.
       undecided.push(`${label}  [tier ${cls.tier ?? "?"} — fora do escopo da limpeza]`);
+    } else if (
+      (decision.reason === "no_domain" ||
+        decision.reason === "domain_internal") &&
+      !CRM_CREATE_TIERS.has(cls.tier ?? "")
+    ) {
+      // Judging the domain before the tier (icp-gate.ts) is right for deciding
+      // what to CREATE, but it also means aged orgs now arrive here with a
+      // domain verdict instead of tier_not_worked — which would quietly widen
+      // deletion to every t3 whose members no longer resolve a corporate
+      // domain. That is not the same population as a student signup: the CRM
+      // row may still carry a perfectly good domain from when it was created,
+      // and only the org's current member emails stopped resolving one.
+      // free_mail/academic still get removed at any age.
+      undecided.push(
+        `${label}  [${decision.reason}, tier ${cls.tier ?? "?"} — revisar à mão]`,
+      );
     } else {
       remove.push({ row, reason: decision.reason });
     }
