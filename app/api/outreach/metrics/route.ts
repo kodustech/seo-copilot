@@ -20,7 +20,13 @@ export async function GET(req: Request) {
   }
 
   const url = new URL(req.url);
-  const rawDays = Number(url.searchParams.get("days"));
+  // Number(null) is 0, and 0 is finite — reading the param straight into
+  // Number would clamp an absent `days` to a 1-day window instead of the
+  // documented default, quietly reporting outbound as near-dead.
+  // Blank counts as absent too: Number("") is also 0.
+  const rawParam = url.searchParams.get("days");
+  const rawDays =
+    rawParam === null || rawParam.trim() === "" ? NaN : Number(rawParam);
   const days = Number.isFinite(rawDays)
     ? Math.min(Math.max(Math.trunc(rawDays), 1), MAX_DAYS)
     : DEFAULT_DAYS;

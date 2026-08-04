@@ -103,7 +103,21 @@ COMMENT ON COLUMN public.outreach_reply_threads.reply_class IS
 COMMENT ON COLUMN public.outreach_reply_threads.reply_classified_inbound_at IS
   'Value of last_inbound_at when the class was computed; staler => reclassify.';
 
--- ── 2. Metrics RPC ────────────────────────────────────────────────────
+-- ── 2. Index for the metrics scans ────────────────────────────────────
+
+-- Every section of the RPC filters sent tasks by time. The existing indexes
+-- are keyed on scheduled_for (the sending queue) or on enrollment_id, neither
+-- of which helps a window scan over sent_at.
+CREATE INDEX IF NOT EXISTS outreach_send_tasks_sent_at_idx
+  ON public.outreach_send_tasks (sent_at)
+  WHERE status = 'sent';
+
+-- Reply-side windows (reply mix, daily series, per-sequence) filter on
+-- first_inbound_at.
+CREATE INDEX IF NOT EXISTS outreach_reply_threads_first_inbound_idx
+  ON public.outreach_reply_threads (first_inbound_at);
+
+-- ── 3. Metrics RPC ────────────────────────────────────────────────────
 
 CREATE OR REPLACE FUNCTION public.outbound_metrics(
   p_since       TIMESTAMPTZ,
@@ -113,7 +127,12 @@ CREATE OR REPLACE FUNCTION public.outbound_metrics(
 RETURNS JSONB
 LANGUAGE plpgsql
 STABLE
-SECURITY DEFINER
+-- INVOKER, not DEFINER: this only reads tables whose RLS already grants SELECT
+-- to authenticated, so definer rights would buy nothing and would silently
+-- bypass RLS if any of those policies are ever tightened. Verified against
+-- Postgres 16 — the payload is identical either way when called as
+-- `authenticated`.
+SECURITY INVOKER
 SET search_path = public
 AS $$
 DECLARE
@@ -180,9 +199,20 @@ BEGIN
   -- Cohort = enrollments whose FIRST send landed inside the window, measured
   -- at their status today. Dividing replies-this-week by sends-this-week would
   -- mix cohorts: a reply to last month's send is not this week's performance.
-  WITH first_send AS (
+  WITH candidates AS (
+    -- An enrollment can only have its FIRST send inside the window if it has
+    -- any send inside the window. Narrowing to those first keeps the min()
+    -- off the all-time task history, which otherwise grows without bound.
+    SELECT DISTINCT t.enrollment_id
+    FROM outreach_send_tasks t
+    WHERE t.status = 'sent'
+      AND t.sent_at >= p_since
+      AND t.sent_at <  p_until
+  ),
+  first_send AS (
     SELECT t.enrollment_id, min(t.sent_at) AS first_sent_at
     FROM outreach_send_tasks t
+    JOIN candidates c ON c.enrollment_id = t.enrollment_id
     WHERE t.status = 'sent' AND t.sent_at IS NOT NULL
     GROUP BY t.enrollment_id
   ),
@@ -355,9 +385,23 @@ BEGIN
   LEFT JOIN r ON r.d = days.d;
 
   -- ── Speed: how long until they answer ───────────────────────────────
-  WITH first_send AS (
+  WITH replied AS (
+    -- Only enrollments that got a reply in the window need a first-send time.
+    -- Note this cannot reuse the funnel's bound: a reply this week to a send
+    -- from last month is a valid sample, so the send side stays unbounded for
+    -- these few enrollments.
+    SELECT DISTINCT rt.enrollment_id
+    FROM outreach_reply_threads rt
+    WHERE rt.enrollment_id IS NOT NULL
+      AND rt.first_inbound_at >= p_since
+      AND rt.first_inbound_at <  p_until
+      AND COALESCE(rt.reply_class, '') <> 'bounce'
+      AND (p_sequence_id IS NULL OR rt.sequence_id = p_sequence_id)
+  ),
+  first_send AS (
     SELECT t.enrollment_id, min(t.sent_at) AS first_sent_at
     FROM outreach_send_tasks t
+    JOIN replied r ON r.enrollment_id = t.enrollment_id
     WHERE t.status = 'sent' AND t.sent_at IS NOT NULL
     GROUP BY t.enrollment_id
   ),

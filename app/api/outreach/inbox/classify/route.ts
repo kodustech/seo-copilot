@@ -9,10 +9,18 @@ import {
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
+/** Ceiling on one manual run. Each unclassified thread can cost an LLM call. */
+const MAX_LIMIT = 100;
+
 /**
- * Manual trigger for reply classification. The cron already does this after
- * each inbox sync; this exists to backfill threads that predate the classifier
- * and to re-label after a prompt change (`force`).
+ * Manual trigger for reply classification, used to backfill threads that
+ * predate the classifier. The cron covers the routine path.
+ *
+ * `force` (re-label already-classified threads) is deliberately NOT exposed
+ * here. It is a maintenance action for after a prompt change, it re-spends the
+ * LLM budget on work already done, and churning labels moves the dashboard's
+ * reply mix under everyone else. The lib function still takes it, so a script
+ * or a future admin surface can call it.
  */
 export async function POST(req: Request) {
   try {
@@ -25,15 +33,15 @@ export async function POST(req: Request) {
   }
 
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
-  const limit = typeof body.limit === "number" ? body.limit : 50;
-  const force = body.force === true;
+  const requested = typeof body.limit === "number" ? body.limit : 50;
+  const limit = Math.min(Math.max(Math.trunc(requested), 1), MAX_LIMIT);
 
   try {
     // Service role: classification writes to every thread regardless of who
     // owns the mailbox, same posture as the cron.
     const result = await classifyPendingReplyThreads(
       getSupabaseServiceClient(),
-      { limit, force },
+      { limit },
     );
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {

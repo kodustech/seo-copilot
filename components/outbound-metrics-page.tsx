@@ -322,8 +322,9 @@ export function OutboundMetricsPage() {
   async function runClassifier() {
     if (!token || classifying) return;
     setClassifying(true);
+    setError(null);
     try {
-      await fetch("/api/outreach/inbox/classify", {
+      const res = await fetch("/api/outreach/inbox/classify", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -331,9 +332,24 @@ export function OutboundMetricsPage() {
         },
         body: JSON.stringify({ limit: 100 }),
       });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.error) {
+        throw new Error(json.error ?? `Classification failed (${res.status})`);
+      }
+      // Per-thread failures do not fail the request; say so rather than
+      // reloading into unchanged numbers and looking like nothing happened.
+      if (json.failed > 0) {
+        setError(
+          `Classified ${json.classified} of ${json.scanned}; ${json.failed} failed. ${
+            json.errors?.[0] ?? ""
+          }`.trim(),
+        );
+      }
       await load();
     } catch (err) {
-      console.error("[outbound-metrics] classify failed", err);
+      setError(
+        err instanceof Error ? err.message : "Classification failed",
+      );
     } finally {
       setClassifying(false);
     }

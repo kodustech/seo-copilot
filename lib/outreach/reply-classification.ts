@@ -139,6 +139,8 @@ export type ClassifyResult = {
   classified: number;
   byRule: number;
   byModel: number;
+  /** New inbound landed mid-classification; the label was dropped, not saved. */
+  skippedStale: number;
   failed: number;
   errors: string[];
 };
@@ -157,6 +159,7 @@ export async function classifyPendingReplyThreads(
     classified: 0,
     byRule: 0,
     byModel: 0,
+    skippedStale: 0,
     failed: 0,
     errors: [],
   };
@@ -272,7 +275,13 @@ async function classifyOne(
       result.byModel++;
     }
 
-    const { error: upErr } = await client
+    // Freshness guard. The label was computed from the messages as they were
+    // when this thread was read, and the LLM call takes seconds. If a sync
+    // appended new inbound in the meantime, the reset trigger will not save
+    // us: it only fires on updates that move `last_inbound_at`, and this write
+    // does not. Matching on the snapshot value makes the write a no-op in that
+    // case, and the thread stays in the unclassified queue for the next pass.
+    const { data: updated, error: upErr } = await client
       .from("outreach_reply_threads")
       .update({
         reply_class: label,
@@ -282,9 +291,15 @@ async function classifyOne(
         reply_classified_at: new Date().toISOString(),
         reply_classified_inbound_at: thread.last_inbound_at,
       })
-      .eq("id", thread.id);
+      .eq("id", thread.id)
+      .eq("last_inbound_at", thread.last_inbound_at)
+      .select("id");
 
     if (upErr) throw new Error(upErr.message);
+    if (!updated?.length) {
+      result.skippedStale++;
+      return;
+    }
     result.classified++;
   } catch (err) {
     result.failed++;
