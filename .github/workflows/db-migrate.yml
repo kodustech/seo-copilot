@@ -35,8 +35,19 @@ jobs:
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
         run: |
           set -euo pipefail
+          # Format, not just presence. An invalid ref (a full URL, the project
+          # name, a stray newline) passes an emptiness check and then dies four
+          # steps later inside `db push` with "Invalid project ref format" —
+          # which is how this workflow failed silently on every merge from
+          # 2026-07-31 to 2026-08-04. A ref is 20 lowercase letters.
           if [ -z "${SUPABASE_PROJECT_REF:-}" ]; then
             echo "Missing secret SUPABASE_PROJECT_REF"
+            exit 1
+          fi
+          if ! printf '%s' "$SUPABASE_PROJECT_REF" | grep -qE '^[a-z]{20}$'; then
+            echo "SUPABASE_PROJECT_REF is not a valid project ref."
+            echo "Expected 20 lowercase letters (got ${#SUPABASE_PROJECT_REF} chars)."
+            echo "Copy it from the dashboard URL: .../dashboard/project/<ref>"
             exit 1
           fi
           if [ -z "${SUPABASE_ACCESS_TOKEN:-}" ]; then
