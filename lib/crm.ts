@@ -13,7 +13,10 @@ import {
 export type CompanyStatus =
   | "lead"
   | "qualified"
-  | "trial"
+  /** Assisted evaluation run with us: agreed scope, criteria, often a bake-off
+   *  against a competitor. NOT the product's self-serve trial — that is the t0
+   *  tier, which starts at signup without anyone talking to us. */
+  | "poc"
   | "negotiation"
   | "customer"
   | "churned"
@@ -36,7 +39,7 @@ export type CompanySource =
 export const COMPANY_STATUSES: CompanyStatus[] = [
   "lead",
   "qualified",
-  "trial",
+  "poc",
   "negotiation",
   "customer",
   "churned",

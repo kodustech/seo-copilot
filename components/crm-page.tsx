@@ -82,7 +82,7 @@ import {
 const STATUS_LABELS: Record<CompanyStatus, { label: string; className: string }> = {
   lead: { label: "Lead", className: "bg-neutral-500/20 text-neutral-300" },
   qualified: { label: "Qualified", className: "bg-sky-500/20 text-sky-300" },
-  trial: { label: "Trial", className: "bg-amber-500/20 text-amber-300" },
+  poc: { label: "POC", className: "bg-amber-500/20 text-amber-300" },
   negotiation: { label: "Negotiation", className: "bg-violet-500/20 text-violet-300" },
   customer: { label: "Customer", className: "bg-emerald-500/20 text-emerald-300" },
   churned: { label: "Churned", className: "bg-red-500/20 text-red-300" },
