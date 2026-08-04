@@ -12,6 +12,12 @@ import {
 
 export type CompanyStatus =
   | "lead"
+  /** They engaged with us — replied to an email or LinkedIn, or asked to be
+   *  contacted — but there is no concrete next step yet. Not qualification:
+   *  gtm.md requires a substantive conversation AND a nameable next step, and a
+   *  reply on its own is neither. Exists so "never heard from them" and "the
+   *  conversation is live" stop sharing one bucket. */
+  | "engaged"
   | "qualified"
   /** Assisted evaluation run with us: agreed scope, criteria, often a bake-off
    *  against a competitor. NOT the product's self-serve trial — that is the t0
@@ -38,6 +44,7 @@ export type CompanySource =
 
 export const COMPANY_STATUSES: CompanyStatus[] = [
   "lead",
+  "engaged",
   "qualified",
   "poc",
   "negotiation",
@@ -744,10 +751,11 @@ export type PromoteEnrollmentInput = {
 
 /**
  * Convert handoff: sequence person → CRM Account (+ contact).
- * - reply → status lead + priority high + tag outbound-reply. A bare reply is
- *   a triage signal, not qualification: "qualified" requires a substantive
- *   conversation plus a concrete next step (see growth gtm.md), so only a
- *   human sets it after reading the reply.
+ * - reply → status engaged + priority high. They answered, so the conversation
+ *   is live and that is worth seeing in the pipeline — but it is not
+ *   qualification: gtm.md wants a substantive conversation plus a nameable next
+ *   step, and a reply may be "who are you?" or "take me off this list". A human
+ *   moves it to qualified, or to lost, after reading it.
  * - manual promote → status lead (won't downgrade later stages)
  * Domain from enrollment.domain or contact email. Idempotent by domain.
  */
@@ -810,7 +818,8 @@ export async function promoteEnrollmentToCrm(
     name: companyName,
     domain,
     website: `https://${domain}`,
-    status: "lead",
+    // A reply is engagement; a manual promote is not (nobody has answered yet).
+    status: reason === "reply" ? "engaged" : "lead",
     priority: reason === "reply" ? "high" : "medium",
     tags: reason === "reply" ? ["outbound-reply", "sequence"] : ["sequence-promote"],
     source: "sequence",
