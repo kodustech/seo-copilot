@@ -72,6 +72,7 @@ const ALLOWED_FILTERS = [
   "status",
   "priority",
   "tier",
+  "trigger",
   "deployment",
   "source",
   "ownerEmail",

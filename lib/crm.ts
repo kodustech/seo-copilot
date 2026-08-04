@@ -171,8 +171,13 @@ export type CompanyFilters = {
   status?: CompanyStatus | CompanyStatus[];
   priority?: CompanyPriority;
   ownerEmail?: string;
-  /** Outbound tier from product signals: t0 | t1 | t2 | t3 | customer. */
+  /** Outbound tier from product signals: t0 | t1 | t2 | t3 | customer.
+   *  Answers "when do we touch this account". */
   tier?: string | string[];
+  /** Why the account is in that tier: cloud_trial | trial_broken |
+   *  free_limit | healthy_usage | went_quiet | never_connected | ...
+   *  Answers "what do we say to it", which is a different question. */
+  trigger?: string | string[];
   deployment?: CompanyDeployment;
   source?: CompanySource;
   search?: string;
@@ -439,6 +444,10 @@ export async function listCompanies(
   if (filters.tier) {
     if (Array.isArray(filters.tier)) query = query.in("tier", filters.tier);
     else query = query.eq("tier", filters.tier);
+  }
+  if (filters.trigger) {
+    if (Array.isArray(filters.trigger)) query = query.in("trigger", filters.trigger);
+    else query = query.eq("trigger", filters.trigger);
   }
   if (filters.deployment) query = query.eq("deployment", filters.deployment);
   if (filters.source) query = query.eq("source", filters.source);
