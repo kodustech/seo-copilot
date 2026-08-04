@@ -29,12 +29,18 @@ export type ProductSignals = {
   reviews30d: number | null;
   reviews7d: number | null;
   /** Suggestions actually delivered (deliveryStatus = 'sent') in the last 30d,
-   *  and how many of those were implemented.
-   *  Counts `implemented` only — `partially_implemented` outnumbers it and
-   *  folding the two together would roughly double the rate for the same
-   *  behaviour, which is not a number anyone should quote to a customer. */
+   *  split by what the developer did with them.
+   *
+   *  Only 'sent' counts: the ~28% the product discards before delivery
+   *  (discarded-by-severity and friends) were never in front of a developer,
+   *  so including them would measure our filtering rather than their adoption.
+   *
+   *  Full and partial are kept apart here and summed for display. They are
+   *  different facts — partial can outnumber full — and a caller that wants the
+   *  stricter number should not have to re-query for it. */
   suggestions30d: number | null;
   suggestionsImplemented30d: number | null;
+  suggestionsPartial30d: number | null;
   /** Reviews the product declined to run, and the most frequent reason.
    *  The strongest broken-activation signal there is: an org with reviews at
    *  zero and skips climbing is not quiet, it is blocked. */
@@ -114,6 +120,7 @@ export async function getProductSignals(orgId: string): Promise<ProductSignals> 
     reviews7d: null,
     suggestions30d: null,
     suggestionsImplemented30d: null,
+    suggestionsPartial30d: null,
     skips30d: null,
     topSkipReason: null,
     health: "unknown",
@@ -155,6 +162,11 @@ export async function getProductSignals(orgId: string): Promise<ProductSignals> 
         WHERE s.organizationId = '${safe}'
           AND s.suggestionDeliveryStatus = 'sent'
           AND SAFE_CAST(s.suggestionCreatedAt AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)) AS suggestions_implemented_30d,
+      (SELECT COUNTIF(s.suggestionImplementationStatus = 'partially_implemented')
+        FROM \`kody-408918.kodus_mongo.suggestions_mv\` s
+        WHERE s.organizationId = '${safe}'
+          AND s.suggestionDeliveryStatus = 'sent'
+          AND SAFE_CAST(s.suggestionCreatedAt AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)) AS suggestions_partial_30d,
       -- Skips come from automation_execution, not pullRequests: a PR row exists
       -- even when every execution on it was skipped, which is exactly the
       -- population this number is meant to expose.
@@ -209,6 +221,7 @@ export async function getProductSignals(orgId: string): Promise<ProductSignals> 
     reviews7d,
     suggestions30d: asNumber(r.suggestions_30d),
     suggestionsImplemented30d: asNumber(r.suggestions_implemented_30d),
+    suggestionsPartial30d: asNumber(r.suggestions_partial_30d),
     skips30d: asNumber(r.skips_30d),
     // Normalised here so the contract is simply "null means absent" and no
     // consumer has to remember that blank is also absent. The UI falls back on
