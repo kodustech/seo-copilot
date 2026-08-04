@@ -2548,8 +2548,15 @@ function SignalsTab({
         />
         <SignalCell label="Reviews 30d" value={signals.reviews30d != null ? String(signals.reviews30d) : "—"} />
         <SignalCell label="Last review" value={formatRelative(signals.lastReviewAt)} full />
-        {signals.topSkipReason && (
-          <SignalCell label="Top skip reason" value={signals.topSkipReason} full />
+        {(signals.skips30d ?? 0) > 0 && (
+          // Keyed off the skip count, not the message. An org skipping every
+          // review with no reason recorded is the most blocked one there is,
+          // and a truthiness guard on the message would hide exactly that.
+          <SignalCell
+            label="Top skip reason"
+            value={signals.topSkipReason ?? "not recorded"}
+            full
+          />
         )}
       </div>
     </div>

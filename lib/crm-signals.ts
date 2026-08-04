@@ -163,19 +163,18 @@ export async function getProductSignals(orgId: string): Promise<ProductSignals> 
          JOIN \`kody-408918.kodus_postgres.teams\` t ON ta.teamUuid = t.uuid
         WHERE t.organization_id = '${safe}' AND ae.status = 'skipped'
           AND ae.createdAt >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 30 DAY)) AS skips_30d,
-      -- COALESCE so a NULL errorMessage cannot win the GROUP BY and return a
-      -- NULL scalar: the cell is rendered behind a truthiness guard, so that
-      -- would hide the reason on exactly the blocked accounts worth seeing.
-      -- Matches lib/product-signals/collect.ts, which maps '(none)' back to
-      -- null on the way out. No skipped execution has a null message today
-      -- (0 of 96,564 in 30d) — the column is nullable, that is enough.
-      (SELECT COALESCE(ae.errorMessage, '(none)')
+      -- Deliberately NOT COALESCE'd to a sentinel. collect.ts uses '(none)'
+      -- because it feeds email templates, but here null is meaningful: the
+      -- caller decides what to render from skips30d, so "we skipped 96k times
+      -- and recorded no reason" stays distinguishable from "no skips at all".
+      -- A sentinel would also collide with a genuine message of the same text.
+      (SELECT ae.errorMessage
          FROM \`kody-408918.kodus_postgres.automation_execution\` ae
          JOIN \`kody-408918.kodus_postgres.team_automations\` ta ON ae.team_automation_id = ta.uuid
          JOIN \`kody-408918.kodus_postgres.teams\` t ON ta.teamUuid = t.uuid
         WHERE t.organization_id = '${safe}' AND ae.status = 'skipped'
           AND ae.createdAt >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 30 DAY)
-        GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1) AS top_skip_reason
+        GROUP BY ae.errorMessage ORDER BY COUNT(*) DESC LIMIT 1) AS top_skip_reason
     FROM \`kody-408918.kodus_postgres.organizations\` o
     LEFT JOIN \`kody-408918.kodus_billing.organization_licenses\` lic
       ON lic.organizationId = o.uuid
@@ -211,10 +210,7 @@ export async function getProductSignals(orgId: string): Promise<ProductSignals> 
     suggestions30d: asNumber(r.suggestions_30d),
     suggestionsImplemented30d: asNumber(r.suggestions_implemented_30d),
     skips30d: asNumber(r.skips_30d),
-    topSkipReason:
-      typeof r.top_skip_reason === "string" && r.top_skip_reason !== "(none)"
-        ? r.top_skip_reason
-        : null,
+    topSkipReason: (r.top_skip_reason as string | null) ?? null,
     health: deriveHealth(true, lastReviewAt, reviews30d),
   };
 }
