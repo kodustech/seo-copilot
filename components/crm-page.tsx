@@ -200,17 +200,26 @@ function formatDeadline(iso: string | null): string {
 }
 
 /**
- * "12/40 (30%)" — the denominator stays visible on purpose. A bare percentage
- * hides the difference between 1-of-2 and 300-of-600, and the first is noise.
- * With no suggestions delivered there is no rate to report, not a 0%.
+ * "18/121 (15%) · 10 partial" — three deliberate choices.
+ *
+ * The denominator stays visible: a bare percentage hides the difference between
+ * 1-of-2 and 300-of-600, and the first is noise. Partial counts toward the rate
+ * (a developer who took half the suggestion still acted on it) but is also
+ * called out, because partial can outnumber full and the two are not the same
+ * story to tell a customer. And with nothing delivered there is no rate at all,
+ * which is not the same as 0%.
  */
 function formatImplementationRate(
   implemented: number | null,
+  partial: number | null,
   total: number | null,
 ): string {
   if (total == null || implemented == null) return "—";
   if (total === 0) return "no suggestions";
-  return `${implemented}/${total} (${Math.round((implemented / total) * 100)}%)`;
+  const applied = implemented + (partial ?? 0);
+  const pct = Math.round((applied / total) * 100);
+  const suffix = partial ? ` · ${partial} partial` : "";
+  return `${applied}/${total} (${pct}%)${suffix}`;
 }
 
 function ownerLabel(email: string | null, members: TeamMember[]): string {
@@ -2536,11 +2545,13 @@ function SignalsTab({
         <SignalCell label="Trial ends" value={formatDeadline(signals.trialEnd)} />
         <SignalCell label="Reviews 7d" value={signals.reviews7d != null ? String(signals.reviews7d) : "—"} />
         <SignalCell
-          label="Suggestions implemented 30d"
+          label="Suggestions applied 30d"
           value={formatImplementationRate(
             signals.suggestionsImplemented30d,
+            signals.suggestionsPartial30d,
             signals.suggestions30d,
           )}
+          full
         />
         <SignalCell
           label="Skipped reviews 30d"
