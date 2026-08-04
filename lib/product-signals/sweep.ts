@@ -44,6 +44,7 @@ type CompanyRef = {
   org_id: string | null;
   domain: string | null;
   tier: string | null;
+  trigger: string | null;
   dev_count: number | null;
 };
 
@@ -165,7 +166,7 @@ export async function runProductSignalsSweep(
   const companies = await fetchAll<CompanyRef>((from, to) =>
     client
       .from("crm_companies")
-      .select("id,org_id,domain,tier,dev_count")
+      .select("id,org_id,domain,tier,trigger,dev_count")
       .range(from, to),
   );
   const companyByOrg = new Map(
@@ -253,6 +254,7 @@ export async function runProductSignalsSweep(
           org_id: org.orgId,
           domain: org.derivedDomain,
           tier: null,
+          trigger: null,
           dev_count: decision.devCount,
         };
         companyByOrg.set(org.orgId, company);
@@ -295,10 +297,13 @@ export async function runProductSignalsSweep(
         company.dev_count = devCount;
       }
 
-      if (company.tier !== cls.tier) {
+      // Trigger travels with tier: the playbook keys timing off one and the
+      // message off the other, so a stale trigger means the right account gets
+      // the wrong email.
+      if (company.tier !== cls.tier || company.trigger !== cls.trigger) {
         const { error } = await client
           .from("crm_companies")
-          .update({ tier: cls.tier })
+          .update({ tier: cls.tier, trigger: cls.trigger })
           .eq("id", company.id);
         // A linked product org means the account uses Cloud; fill deployment
         // only when unset so a human-set self_hosted marker survives.
@@ -322,6 +327,7 @@ export async function runProductSignalsSweep(
           touch: false,
         });
         company.tier = cls.tier;
+        company.trigger = cls.trigger;
         tiersUpdated += 1;
       }
     } catch (err) {
