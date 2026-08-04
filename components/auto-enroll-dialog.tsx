@@ -44,7 +44,7 @@ type Rule = {
 };
 
 const TIERS = ["t0", "t1", "t2", "t3"];
-const STATUSES = ["lead", "qualified", "poc", "negotiation"];
+const STATUSES = ["lead", "engaged", "qualified", "poc", "negotiation"];
 
 export function AutoEnrollDialog({
   sequenceId,

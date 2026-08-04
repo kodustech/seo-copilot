@@ -81,6 +81,7 @@ import {
 
 const STATUS_LABELS: Record<CompanyStatus, { label: string; className: string }> = {
   lead: { label: "Lead", className: "bg-neutral-500/20 text-neutral-300" },
+  engaged: { label: "Engaged", className: "bg-cyan-500/20 text-cyan-300" },
   qualified: { label: "Qualified", className: "bg-sky-500/20 text-sky-300" },
   poc: { label: "POC", className: "bg-amber-500/20 text-amber-300" },
   negotiation: { label: "Negotiation", className: "bg-violet-500/20 text-violet-300" },
@@ -474,6 +475,7 @@ export function CrmPage() {
           label="Open stage"
           value={
             (stats.byStatus.lead ?? 0) +
+            (stats.byStatus.engaged ?? 0) +
             (stats.byStatus.qualified ?? 0) +
             (stats.byStatus.poc ?? 0) +
             (stats.byStatus.negotiation ?? 0)
