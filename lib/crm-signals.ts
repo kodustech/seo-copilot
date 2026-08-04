@@ -210,7 +210,13 @@ export async function getProductSignals(orgId: string): Promise<ProductSignals> 
     suggestions30d: asNumber(r.suggestions_30d),
     suggestionsImplemented30d: asNumber(r.suggestions_implemented_30d),
     skips30d: asNumber(r.skips_30d),
-    topSkipReason: (r.top_skip_reason as string | null) ?? null,
+    // Normalised here so the contract is simply "null means absent" and no
+    // consumer has to remember that blank is also absent. The UI falls back on
+    // null alone; an empty string would slip past that and render a blank cell.
+    topSkipReason:
+      typeof r.top_skip_reason === "string" && r.top_skip_reason.trim()
+        ? r.top_skip_reason
+        : null,
     health: deriveHealth(true, lastReviewAt, reviews30d),
   };
 }
