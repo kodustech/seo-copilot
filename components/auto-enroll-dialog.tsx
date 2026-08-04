@@ -44,6 +44,19 @@ type Rule = {
 };
 
 const TIERS = ["t0", "t1", "t2", "t3"];
+// Tier says when to touch an account, trigger says what to tell it. Filtering
+// on tier alone puts an account running 492 reviews and one that went silent in
+// the same sequence.
+const TRIGGERS = [
+  "cloud_trial",
+  "trial_broken",
+  "trial_just_expired",
+  "free_limit",
+  "healthy_usage",
+  "went_quiet",
+  "broken_activation",
+  "never_connected",
+];
 const STATUSES = ["lead", "engaged", "qualified", "poc", "negotiation"];
 
 export function AutoEnrollDialog({
@@ -62,6 +75,7 @@ export function AutoEnrollDialog({
   const [err, setErr] = useState<string | null>(null);
 
   const [tier, setTier] = useState("all");
+  const [trigger, setTrigger] = useState("all");
   const [status, setStatus] = useState("lead");
   const [maxPerRun, setMaxPerRun] = useState(10);
   // Preview is required before a rule can go live: how many accounts a filter
@@ -75,9 +89,10 @@ export function AutoEnrollDialog({
   const filters = useCallback(() => {
     const f: Record<string, unknown> = {};
     if (tier !== "all") f.tier = tier;
+    if (trigger !== "all") f.trigger = trigger;
     if (status !== "all") f.status = status;
     return f;
-  }, [tier, status]);
+  }, [tier, trigger, status]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -95,7 +110,7 @@ export function AutoEnrollDialog({
   }, [open, load]);
 
   // Any change to the filter invalidates the preview it produced.
-  useEffect(() => setPreview(null), [tier, status]);
+  useEffect(() => setPreview(null), [tier, trigger, status]);
 
   const runPreview = async () => {
     setErr(null);
@@ -127,7 +142,13 @@ export function AutoEnrollDialog({
           filters: filters(),
           active,
           maxPerRun,
-          name: `${status !== "all" ? status : "any"}${tier !== "all" ? ` · ${tier}` : ""}`,
+          name: [
+            status !== "all" ? status : "any",
+            tier !== "all" ? tier : null,
+            trigger !== "all" ? trigger : null,
+          ]
+            .filter(Boolean)
+            .join(" · "),
         }),
       });
       const json = await res.json();
@@ -193,7 +214,7 @@ export function AutoEnrollDialog({
           </DialogHeader>
 
           <div className="space-y-3">
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 gap-2">
               <div>
                 <p className="mb-1 text-xs text-muted-foreground">Status</p>
                 <Select value={status} onValueChange={setStatus}>
@@ -213,6 +234,18 @@ export function AutoEnrollDialog({
                   <SelectContent>
                     <SelectItem value="all">Any</SelectItem>
                     {TIERS.map((t) => (
+                      <SelectItem key={t} value={t}>{t}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <p className="mb-1 text-xs text-muted-foreground">Trigger</p>
+                <Select value={trigger} onValueChange={setTrigger}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Any</SelectItem>
+                    {TRIGGERS.map((t) => (
                       <SelectItem key={t} value={t}>{t}</SelectItem>
                     ))}
                   </SelectContent>
