@@ -2504,18 +2504,22 @@ function ContactEditRow({
     if (!name.trim() || saving) return;
     setSaving(true);
     setError(null);
-    const res = await authFetch(`/api/crm/contacts/${contact.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ name, role, email, linkedin }),
-    });
-    if (!res.ok) {
-      const j = await res.json().catch(() => ({}));
-      setError(j.error ?? "Failed to save");
+    try {
+      const res = await authFetch(`/api/crm/contacts/${contact.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name, role, email, linkedin }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        setError(j.error ?? "Failed to save");
+        return;
+      }
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save");
+    } finally {
       setSaving(false);
-      return;
     }
-    setSaving(false);
-    onDone();
   }
 
   return (

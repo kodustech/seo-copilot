@@ -1077,6 +1077,14 @@ export async function createContact(
   return rowToContact(data as ContactRow);
 }
 
+/** Thrown when a contact id matches no row, so callers can answer 404. */
+export class ContactNotFoundError extends Error {
+  constructor(id: string) {
+    super(`Contact ${id} not found`);
+    this.name = "ContactNotFoundError";
+  }
+}
+
 export async function updateContact(
   client: SupabaseClient,
   id: string,
@@ -1107,8 +1115,9 @@ export async function updateContact(
     .update(patch)
     .eq("id", id)
     .select("*")
-    .single();
+    .maybeSingle();
   if (error) throw new Error(`Failed to update contact: ${error.message}`);
+  if (!data) throw new ContactNotFoundError(id);
   return rowToContact(data as ContactRow);
 }
 
