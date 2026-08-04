@@ -203,9 +203,13 @@ async function runAutoEnrollCron(): Promise<void> {
   const { runAllAutoEnrollRules } = await import("@/lib/outreach/auto-enroll");
   const res = await runAllAutoEnrollRules(getSupabaseServiceClient());
   const failed = res.results.filter((r) => r.errors.length > 0).length;
+  const truncated = res.results.filter((r) => r.scanTruncated).length;
   console.log(
     `[cron] auto-enroll: ${res.rules} rules, enrolled ${res.enrolled}` +
-      (failed > 0 ? `, ${failed} with errors` : ""),
+      (failed > 0 ? `, ${failed} with errors` : "") +
+      (truncated > 0
+        ? `, ${truncated} whose filter reaches past the scan window (narrow the filter)`
+        : ""),
   );
 }
 

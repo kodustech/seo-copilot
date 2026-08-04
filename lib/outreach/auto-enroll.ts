@@ -160,6 +160,13 @@ export type AutoEnrollRunResult = {
   enrolled: number;
   skipped: number;
   errors: string[];
+  /** The scan hit its page ceiling before filling the cap, so the filter has
+   *  more matches than were looked at. Surfaced rather than silently tolerated:
+   *  listCompanies sorts by last_activity_at DESC NULLS LAST, which puts
+   *  never-touched accounts at the very end — exactly the ones a rule most
+   *  wants — so a filter matching thousands of already-enrolled accounts can
+   *  starve the new ones without anything looking wrong. */
+  scanTruncated?: boolean;
   dryRun: boolean;
 };
 
@@ -214,6 +221,7 @@ export async function runAutoEnrollRule(
   const MAX_PAGES = 20; // bounded: a filter matching thousands is a mistake to see, not to serve
   const targets: string[] = [];
   let matched = 0;
+  let scanTruncated = false;
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const batch = await listCompanies(client, {
       ...rule.filters,
@@ -227,6 +235,9 @@ export async function runAutoEnrollRule(
     }
     if (batch.length < PAGE) break;
     if (targets.length >= rule.maxPerRun) break;
+    // Still short of the cap with pages left unread: the filter reaches further
+    // than this scan does.
+    if (page === MAX_PAGES - 1) scanTruncated = true;
   }
 
   if (dryRun) {
@@ -237,6 +248,7 @@ export async function runAutoEnrollRule(
       enrolled: 0,
       skipped: 0,
       errors: [],
+      ...(scanTruncated ? { scanTruncated } : {}),
       dryRun: true,
     };
   }
@@ -250,6 +262,7 @@ export async function runAutoEnrollRule(
       enrolled: 0,
       skipped: 0,
       errors: [],
+      ...(scanTruncated ? { scanTruncated } : {}),
       dryRun: false,
     };
     await client
@@ -273,6 +286,7 @@ export async function runAutoEnrollRule(
     enrolled: result.enrolled,
     skipped: result.skipped,
     errors: result.errors.slice(0, 20),
+    ...(scanTruncated ? { scanTruncated } : {}),
     dryRun: false,
   };
 

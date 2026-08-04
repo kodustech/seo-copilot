@@ -66,7 +66,11 @@ export function AutoEnrollDialog({
   const [maxPerRun, setMaxPerRun] = useState(10);
   // Preview is required before a rule can go live: how many accounts a filter
   // matches is not obvious from reading it, and the first run sends real email.
-  const [preview, setPreview] = useState<{ matched: number; attempted: number } | null>(null);
+  const [preview, setPreview] = useState<{
+    matched: number;
+    attempted: number;
+    scanTruncated?: boolean;
+  } | null>(null);
 
   const filters = useCallback(() => {
     const f: Record<string, unknown> = {};
@@ -232,6 +236,12 @@ export function AutoEnrollDialog({
                 {preview.matched === 1 ? "account" : "accounts"} right now;{" "}
                 {preview.attempted} would be enrolled on the next run.
                 {preview.matched > preview.attempted && " The cap holds the rest for later runs."}
+                {preview.scanTruncated && (
+                  <span className="mt-1 block text-amber-400">
+                    This filter reaches past what one run scans — narrow it, or
+                    accounts at the far end may never be reached.
+                  </span>
+                )}
               </p>
             )}
             {err && <p className="text-xs text-destructive">{err}</p>}
