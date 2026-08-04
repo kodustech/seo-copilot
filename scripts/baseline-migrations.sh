@@ -7,20 +7,30 @@
 # bookkeeping rows without executing any SQL.
 #
 # Run once, from a machine linked to the project:
-#   supabase link --project-ref <ref>
+#   npx --yes supabase@latest link --project-ref aqhpjlkxlpqfcypcyhdj
 #   ./scripts/baseline-migrations.sh
+#
+# The ref is the subdomain of NEXT_PUBLIC_SUPABASE_URL — public, it ships in the
+# browser bundle. The link step asks for the database password.
 #
 # Then `supabase db push` applies only what is genuinely new, and the
 # db-migrate workflow starts working on merge.
 set -euo pipefail
+
+# The CLI is not a project dependency and may not be installed globally.
+if command -v supabase >/dev/null 2>&1; then
+  SUPABASE="supabase"
+else
+  SUPABASE="npx --yes supabase@latest"
+fi
 
 VERSIONS=$(ls supabase/migrations/*.sql | xargs -n1 basename | sed 's/_.*//')
 
 echo "Marking $(echo "$VERSIONS" | wc -l | tr -d ' ') migrations as applied (no SQL runs):"
 for v in $VERSIONS; do
   echo "  $v"
-  supabase migration repair --status applied "$v"
+  $SUPABASE migration repair --status applied "$v"
 done
 
 echo
-echo "Done. Verify with:  supabase migration list"
+echo "Done. Verify with:  $SUPABASE migration list"
