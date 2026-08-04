@@ -19,6 +19,7 @@
 import { deleteCompany } from "../lib/crm";
 import { classifyOrg } from "../lib/product-signals/classify";
 import { collectOrgFacts } from "../lib/product-signals/collect";
+import { classifyDomain } from "../lib/product-signals/domains";
 import {
   CRM_CREATE_TIERS,
   evaluateOrg,
@@ -170,18 +171,23 @@ async function main() {
     } else if (
       (decision.reason === "no_domain" ||
         decision.reason === "domain_internal") &&
-      !CRM_CREATE_TIERS.has(cls.tier ?? "")
+      !CRM_CREATE_TIERS.has(cls.tier ?? "") &&
+      row.domain != null &&
+      classifyDomain(row.domain) === "corporate"
     ) {
-      // Judging the domain before the tier (icp-gate.ts) is right for deciding
-      // what to CREATE, but it also means aged orgs now arrive here with a
-      // domain verdict instead of tier_not_worked — which would quietly widen
-      // deletion to every t3 whose members no longer resolve a corporate
-      // domain. That is not the same population as a student signup: the CRM
-      // row may still carry a perfectly good domain from when it was created,
-      // and only the org's current member emails stopped resolving one.
-      // free_mail/academic still get removed at any age.
+      // Aged org whose members no longer resolve a corporate domain, but whose
+      // CRM row still carries the good domain it was created with. Only the
+      // current member emails changed, so this needs a human, not a delete.
+      //
+      // The stored domain is what decides, not the gate reason. deriveCompanyDomain
+      // strips free-mail/academic/internal before they ever reach evaluateOrg,
+      // so domain_free_mail and domain_academic are unreachable in practice and
+      // every one of those signups arrives here as plain "no_domain". Keying
+      // this branch off the reason alone would therefore protect the exact
+      // population the cleanup exists to remove — an aged qq.com or
+      // stu.cmb.ac.lk account would survive by having got old.
       undecided.push(
-        `${label}  [${decision.reason}, tier ${cls.tier ?? "?"} — revisar à mão]`,
+        `${label}  [${decision.reason}, tier ${cls.tier ?? "?"} — domínio no CRM ainda é corporativo, revisar à mão]`,
       );
     } else {
       remove.push({ row, reason: decision.reason });
