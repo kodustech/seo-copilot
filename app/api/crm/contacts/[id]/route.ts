@@ -31,9 +31,14 @@ export async function PATCH(
     );
   }
 
+  // `null`, `5` and `"foo"` are all valid JSON but blow up the `in` checks
+  // below, so anything that isn't a plain object becomes an empty patch.
   let body: Record<string, unknown> = {};
   try {
-    body = await req.json();
+    const parsed: unknown = await req.json();
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      body = parsed as Record<string, unknown>;
+    }
   } catch {
     body = {};
   }
