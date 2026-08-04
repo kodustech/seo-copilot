@@ -59,7 +59,15 @@ function rowToRule(r: RuleRow): AutoEnrollRule {
 }
 
 /** Filters a rule may carry. Anything else is dropped rather than passed
- *  through: an unknown key would silently widen the audience. */
+ *  through: an unknown key would silently widen the audience.
+ *
+ *  staleOnly is deliberately absent. listCompanies applies it in JS after the
+ *  SQL LIMIT, so a capped query returns the most recent N and then filters them
+ *  down — a stale rule would under-match by construction and never reach its
+ *  cap, while the preview reported the shrunken number as if it were the whole
+ *  audience. Excluding it removes the bug; supporting it means teaching
+ *  listCompanies to resolve staleness in SQL, which is a change to a function
+ *  the whole CRM depends on and does not belong in this feature. */
 const ALLOWED_FILTERS = [
   "status",
   "priority",
@@ -68,7 +76,6 @@ const ALLOWED_FILTERS = [
   "source",
   "ownerEmail",
   "search",
-  "staleOnly",
 ] as const;
 
 export function sanitizeFilters(input: unknown): CompanyFilters {
@@ -170,14 +177,47 @@ export async function runAutoEnrollRule(
 ): Promise<AutoEnrollRunResult> {
   const dryRun = opts?.dryRun ?? false;
 
-  // Ask for one more than the cap so "matched" can tell the difference between
-  // "this is everyone" and "this is the first page of a much wider net".
-  const companies = await listCompanies(client, {
-    ...rule.filters,
-    limit: rule.maxPerRun + 1,
-  });
-  const matched = companies.length;
-  const targets = companies.slice(0, rule.maxPerRun);
+  // Everyone this sequence has ever touched, at any status — not just the ones
+  // currently active. enrollFromCrm suppresses active enrollments, which is the
+  // right rule for a human enrolling once, and the wrong one for a job that
+  // re-runs hourly: the moment an enrollment turns completed/replied/bounced
+  // the account matches the filter again and the whole sequence goes out a
+  // second time, to a real person, forever.
+  const enrolledEver = new Set<string>();
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await client
+      .from("outreach_enrollments")
+      .select("crm_company_id")
+      .eq("sequence_id", rule.sequenceId)
+      .not("crm_company_id", "is", null)
+      .range(from, from + 999);
+    if (error) throw new Error(`Failed to read enrollments: ${error.message}`);
+    for (const r of data ?? []) enrolledEver.add(r.crm_company_id as string);
+    if ((data ?? []).length < 1000) break;
+  }
+
+  // Page through matches collecting only enrollable accounts, so the cap counts
+  // accounts that will actually be contacted. Taking the first page and letting
+  // enrollFromCrm skip most of it burns the cap on accounts already sequenced
+  // and the rule never advances past its first run.
+  const PAGE = Math.max(rule.maxPerRun * 5, 50);
+  const MAX_PAGES = 20; // bounded: a filter matching thousands is a mistake to see, not to serve
+  const targets: string[] = [];
+  let matched = 0;
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const batch = await listCompanies(client, {
+      ...rule.filters,
+      limit: PAGE,
+      offset: page * PAGE,
+    });
+    matched += batch.length;
+    for (const c of batch) {
+      if (enrolledEver.has(c.id)) continue;
+      if (targets.length < rule.maxPerRun) targets.push(c.id);
+    }
+    if (batch.length < PAGE) break;
+    if (targets.length >= rule.maxPerRun) break;
+  }
 
   if (dryRun) {
     return {
@@ -190,10 +230,28 @@ export async function runAutoEnrollRule(
       dryRun: true,
     };
   }
+  if (targets.length === 0) {
+    // Nothing new to do. Recording the run keeps "it ran and found nobody"
+    // distinguishable from "it never ran".
+    const run: AutoEnrollRunResult = {
+      ruleId: rule.id,
+      matched,
+      attempted: 0,
+      enrolled: 0,
+      skipped: 0,
+      errors: [],
+      dryRun: false,
+    };
+    await client
+      .from("outreach_auto_enroll_rules")
+      .update({ last_run_at: new Date().toISOString(), last_result: run })
+      .eq("id", rule.id);
+    return run;
+  }
 
   const result = await enrollFromCrm(client, {
     sequenceId: rule.sequenceId,
-    companyIds: targets.map((c) => c.id),
+    companyIds: targets,
     enrolledByEmail: rule.createdBy ?? null,
     allContacts: rule.allContacts,
   });

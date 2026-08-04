@@ -51,7 +51,9 @@ export async function POST(req: Request, ctx: Ctx) {
           name: body.name ?? null,
           filters: body.filters ?? {},
           active: false,
-          maxPerRun: body.maxPerRun ?? 10,
+          // Clamped exactly as upsert does, so the preview cannot promise a
+          // batch size the saved rule is unable to reach.
+          maxPerRun: Math.max(1, Math.min(body.maxPerRun ?? 10, 200)),
           allContacts: body.allContacts ?? false,
           lastRunAt: null,
           lastResult: null,
