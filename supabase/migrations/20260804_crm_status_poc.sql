@@ -36,8 +36,16 @@ DELETE FROM crm_status_sla WHERE status = 'trial';
 -- Scoped to the two keys rather than a blanket text replace: a status_change
 -- row can legitimately mention the product's own trial elsewhere in meta, and
 -- that one is not being renamed.
+-- Gated on the structured values, never on the prose. `meta` is what actually
+-- states the transition; `summary` is a rendering of it. Selecting rows by
+-- `summary LIKE '%trial%'` would sweep in any row whose text happens to mention
+-- a trial for some other reason and rewrite it while its meta stayed put —
+-- reintroducing the very divergence this statement exists to remove.
+--
+-- \m and \M anchor to word boundaries so only the standalone status token is
+-- touched: a plain REPLACE would turn "industrial" into "industpoc".
 UPDATE crm_activities
-   SET summary = REPLACE(summary, 'trial', 'poc'),
+   SET summary = regexp_replace(summary, '\mtrial\M', 'poc', 'g'),
        meta = CASE
                 WHEN meta->>'from' = 'trial' AND meta->>'to' = 'trial'
                   THEN jsonb_set(jsonb_set(meta, '{from}', '"poc"'), '{to}', '"poc"')
@@ -48,4 +56,4 @@ UPDATE crm_activities
                 ELSE meta
               END
  WHERE kind = 'status_change'
-   AND (summary LIKE '%trial%' OR meta->>'from' = 'trial' OR meta->>'to' = 'trial');
+   AND (meta->>'from' = 'trial' OR meta->>'to' = 'trial');
