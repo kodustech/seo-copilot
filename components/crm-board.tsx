@@ -120,7 +120,7 @@ export function CrmBoard({
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
 
-  const { byColumn, allColumns } = useMemo(() => {
+  const { byColumn, allColumns, extraIds } = useMemo(() => {
     const map = new Map<string, CompanyWithIdle[]>();
     for (const col of columns) map.set(col.id, []);
     for (const c of companies) {
@@ -142,7 +142,11 @@ export function CrmBoard({
         hint: "Value not recognised by the UI — shown so nothing is hidden",
         className: "bg-red-500/15 text-red-300",
       }));
-    return { byColumn: map, allColumns: [...columns, ...extra] };
+    return {
+      byColumn: map,
+      allColumns: [...columns, ...extra],
+      extraIds: new Set(extra.map((e) => e.id)),
+    };
   }, [companies, columns, groupBy]);
 
   function handleDragEnd(event: DragEndEvent) {
@@ -153,6 +157,11 @@ export function CrmBoard({
     if (!target) return;
     const company = companies.find((c) => c.id === id);
     if (!company || columnOf(company, groupBy) === target) return;
+    // An extra column exists to *show* a value the UI does not know, not to
+    // assign it. The PATCH route validates against COMPANY_STATUSES, so a drop
+    // here would move the card optimistically and then have it snap back on
+    // the next load — the worst outcome, since it looks like it worked.
+    if (extraIds.has(target)) return;
     if (groupBy === "prep") onMove(id, { prepStatus: target });
     else if (groupBy === "status") onMove(id, { status: target });
   }
@@ -175,7 +184,10 @@ export function CrmBoard({
               key={col.id}
               def={col}
               count={items.length}
-              draggable={Boolean(onMove)}
+              // Not a drop target, while the cards inside stay draggable: an
+              // account holding an unknown value is exactly one you want to
+              // drag *out* into a real column.
+              droppable={Boolean(onMove) && !extraIds.has(col.id)}
             >
               {items.map((c) => (
                 <BoardCard
@@ -210,15 +222,15 @@ export function CrmBoard({
 function BoardColumn({
   def,
   count,
-  draggable,
+  droppable,
   children,
 }: {
   def: ColumnDef;
   count: number;
-  draggable: boolean;
+  droppable: boolean;
   children: React.ReactNode;
 }) {
-  const { setNodeRef, isOver } = useDroppable({ id: def.id, disabled: !draggable });
+  const { setNodeRef, isOver } = useDroppable({ id: def.id, disabled: !droppable });
   return (
     <div className="flex w-64 shrink-0 flex-col">
       <div className="mb-2 flex items-center justify-between gap-2 px-1">
