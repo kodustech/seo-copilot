@@ -1,8 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createContact, getCompany, listContacts, updateContact } from "@/lib/crm";
-import { ninjapearEnabled } from "@/lib/ninjapear";
-import { ninjapearPeople } from "@/lib/research/waterfall";
+import { ninjapearPeopleDetailed } from "@/lib/research/waterfall";
 
 // ---------------------------------------------------------------------------
 // Find the people behind a CRM account.
@@ -83,7 +82,7 @@ export async function enrichCompanyContacts(
     return { ...base, note: "Account has no domain — nothing to look up" };
   }
 
-  const people = await ninjapearPeople(
+  const { people, searched, disabled } = await ninjapearPeopleDetailed(
     company.domain,
     company.name,
     opts.personas?.length ? opts.personas : DEFAULT_PERSONAS,
@@ -113,24 +112,32 @@ export async function enrichCompanyContacts(
   );
 
   if (found.length === 0) {
-    // ninjapearPeople returns [] for two different situations, and they must
-    // not be recorded the same way.
+    // An empty result has three causes that look identical, and only one of
+    // them is a fact about the company.
     //
-    // Key missing: nothing ran. Promoting to 'enriched' here would be the
-    // review gate lying — and lying at scale, because a bulk run under a
-    // misconfigured key would empty the raw bucket in one pass and present
-    // every account as processed. That is not hypothetical: NINJAPEAR_API_KEY
-    // was absent from the production environment until today, and the button
-    // returned exactly this empty result.
-    if (!ninjapearEnabled()) {
+    // Key missing, or every search threw (rate limit, timeout, provider down —
+    // the waterfall warns and continues, so failures arrive here as an empty
+    // list): nothing was established. Promoting to 'enriched' would be the
+    // review gate lying, and lying durably: the account leaves the queue as
+    // processed work and nobody looks at it again. At scale that is worse —
+    // a bulk run under a missing key would empty the raw bucket in one pass.
+    // Not hypothetical: NINJAPEAR_API_KEY was absent from production until
+    // today, and the button returned exactly this empty result.
+    if (disabled) {
       return {
         ...base,
         note: "NINJAPEAR_API_KEY is not configured — no lookup ran.",
       };
     }
-    // Key present and the provider had nothing: that is a real result, and the
-    // queue must stop offering this account as unprocessed work. Four of every
-    // five t2 accounts land here.
+    if (!searched) {
+      return {
+        ...base,
+        note: "Lookup failed — the provider did not answer. Try again later.",
+      };
+    }
+    // A search came back clean and held nobody. That is a real result about the
+    // domain, and the queue must stop offering this account as unprocessed
+    // work: four of every five t2 accounts land here.
     await markEnriched(client, companyId);
     return { ...base, note: "No people found for this domain." };
   }

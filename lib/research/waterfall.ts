@@ -398,7 +398,41 @@ export async function ninjapearPeople(
   personas: string[],
   max: number,
 ): Promise<WaterfallPerson[]> {
-  if (max <= 0 || !ninjapearEnabled()) return [];
+  const { people } = await ninjapearPeopleDetailed(
+    domain,
+    companyName,
+    personas,
+    max,
+  );
+  return people;
+}
+
+/**
+ * Same lookup, but says whether it actually ran.
+ *
+ * An empty people list has three causes that look identical to the caller: the
+ * key is missing, the provider genuinely knows nobody at this domain, or every
+ * search threw (rate limit, timeout, provider down) and was swallowed by the
+ * warn-and-continue below. Callers recording a durable decision from the result
+ * need to tell the third apart from the second — marking an account "we looked
+ * and there is nobody" because the provider was briefly down removes it from
+ * the review queue for good.
+ */
+export async function ninjapearPeopleDetailed(
+  domain: string,
+  companyName: string,
+  personas: string[],
+  max: number,
+): Promise<{
+  people: WaterfallPerson[];
+  /** True when at least one employee search returned without throwing. Only
+   *  then does an empty result mean "nobody", rather than "we never asked". */
+  searched: boolean;
+  disabled: boolean;
+}> {
+  if (max <= 0) return { people: [], searched: false, disabled: false };
+  if (!ninjapearEnabled())
+    return { people: [], searched: false, disabled: true };
 
   const rolesToTry = [
     ...new Set(
@@ -412,11 +446,13 @@ export async function ninjapearPeople(
 
   const seen = new Set<string>();
   const employees: NinjapearEmployee[] = [];
+  let searched = false;
 
   for (const role of rolesToTry) {
     if (employees.length >= max * 2) break;
     try {
       const batch = await searchEmployees({ companyWebsite: domain, role });
+      searched = true;
       for (const e of batch) {
         const key = `${e.first_name}|${e.last_name ?? ""}`.toLowerCase();
         if (!e.first_name || seen.has(key)) continue;
@@ -511,7 +547,7 @@ export async function ninjapearPeople(
       notes,
     });
   }
-  return out;
+  return { people: out, searched, disabled: false };
 }
 
 /**
