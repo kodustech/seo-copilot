@@ -41,6 +41,21 @@ const TABS: { id: Half; label: string; hint: string; icon: typeof BarChart3 }[] 
 
 export function PerformancePage() {
   const [half, setHalf] = useState<Half>("inbound");
+  // Mount on first visit, then keep mounted and swap with CSS.
+  //
+  // Conditional rendering alone unmounts the half you are leaving, so every
+  // toggle threw away the period selector on one side and the days/sequence
+  // filters on the other, and re-ran the outbound aggregate queries from
+  // scratch — comparing the two halves meant losing your filters each way.
+  // Rendering both from the start would fix that and pay for the outbound
+  // aggregates for everyone who came to look at traffic. Lazy-mount-then-keep
+  // is the only option that avoids both.
+  const [seen, setSeen] = useState<Set<Half>>(() => new Set<Half>(["inbound"]));
+
+  function show(next: Half) {
+    setHalf(next);
+    setSeen((prev) => (prev.has(next) ? prev : new Set(prev).add(next)));
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -50,7 +65,7 @@ export function PerformancePage() {
           return (
             <button
               key={t.id}
-              onClick={() => setHalf(t.id)}
+              onClick={() => show(t.id)}
               title={t.hint}
               className={cn(
                 "flex items-center gap-1.5 border-b-2 px-3 pb-2 text-sm transition-colors",
@@ -66,11 +81,21 @@ export function PerformancePage() {
         })}
       </div>
 
-      {/* Both stay mounted-on-demand rather than always: each fetches its own
-          data on mount, and the outbound side runs several aggregate queries
-          that are not worth paying for when you came to look at traffic. */}
       <div className="min-h-0 flex-1 overflow-auto">
-        {half === "inbound" ? <Dashboard /> : <OutboundMetricsPage />}
+        {/* `hidden` rather than unmounting: the inactive half keeps its filters
+            and its already-fetched data. Each is only mounted once visited, so
+            the outbound aggregates are never run for someone who came to look
+            at traffic and never opened that tab. */}
+        {seen.has("inbound") ? (
+          <div className={cn(half !== "inbound" && "hidden")}>
+            <Dashboard />
+          </div>
+        ) : null}
+        {seen.has("outbound") ? (
+          <div className={cn(half !== "outbound" && "hidden")}>
+            <OutboundMetricsPage />
+          </div>
+        ) : null}
       </div>
     </div>
   );
