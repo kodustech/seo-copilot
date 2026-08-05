@@ -3386,6 +3386,35 @@ export const listCrmCompanies = tool({
   },
 });
 
+export const enrichCrmCompanyContacts = tool({
+  description:
+    "Find the people behind a CRM account (name, job title, LinkedIn) and merge them into its contacts. Accounts created from product signups carry only whoever signed up, usually an email with no title and no LinkedIn, which leaves LinkedIn sequence steps with no profile to open. Billed per call by the data provider, so run it for accounts you are about to work, not in bulk. Never overwrites existing contact data: it fills gaps and adds people who were missing.",
+  inputSchema: z.object({
+    company_id: z.string().describe("CRM company id"),
+    max_people: z
+      .number()
+      .optional()
+      .describe("How many people to look for, 1 to 10. Defaults to 5."),
+  }),
+  execute: async ({ company_id, max_people }) => {
+    try {
+      const { enrichCompanyContacts } = await import("@/lib/crm-enrich");
+      const result = await enrichCompanyContacts(
+        getSupabaseServiceClient(),
+        company_id,
+        { maxPeople: max_people },
+      );
+      return { success: true as const, ...result };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "Failed to enrich contacts",
+      };
+    }
+  },
+});
+
 export const getCrmCompany = tool({
   description:
     "Get a single CRM company with its contacts, recent comments, activity timeline, custom properties, field definitions, and — when linked to a product org_id — real product usage signals from BigQuery.",
@@ -5730,6 +5759,7 @@ export function createAgentTools(userEmail?: string) {
     listSocialMentions,
     listCrmCompanies,
     getCrmCompany,
+    enrichCrmCompanyContacts,
     createCrmCompany,
     updateCrmCompany,
     listCrmFields,
