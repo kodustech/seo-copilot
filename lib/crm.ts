@@ -287,11 +287,17 @@ function rowToCompany(row: CompanyRow): CrmCompany {
     trigger: row.trigger ?? null,
     deployment: row.deployment ?? null,
     source: row.source ?? "manual",
-    // Rows written before the column existed read as null; 'not_started' is the honest
-    // default — nobody has looked at them either.
-    prepStatus: (COMPANY_PREP_VALUES as string[]).includes(row.prep_status ?? "")
-      ? (row.prep_status as CompanyPrep)
-      : "not_started",
+    // Null means the row predates the column — 'not_started' is the honest
+    // reading, since nobody looked at those either.
+    //
+    // A non-null value passes through even if this build does not recognise it.
+    // Collapsing unknowns to 'not_started' was worse than it looked: a prep
+    // state added to the database ahead of the UI would arrive labelled
+    // "nobody has looked at this" and could then be dragged straight to
+    // 'ready', skipping the gate this column exists to enforce. The board
+    // renders unrecognised values in their own column instead, and the CHECK
+    // constraint is what actually bounds the set.
+    prepStatus: (row.prep_status ?? "not_started") as CompanyPrep,
     lastOutreachAt: row.last_outreach_at ?? null,
     outreachSentCount: Number(row.outreach_sent_count ?? 0),
     notes: row.notes,

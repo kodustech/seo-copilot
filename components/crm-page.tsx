@@ -154,6 +154,23 @@ const PREP_LABELS: Record<
 };
 const PREP_OPTIONS: CompanyPrep[] = ["not_started", "enriched", "ready", "parked"];
 
+/** PREP_LABELS lookup that cannot return undefined.
+ *
+ *  rowToCompany passes a prep_status through even when this build does not know
+ *  it, so that a state added to the database ahead of the UI stays visible
+ *  rather than masquerading as 'not_started'. The cost of that honesty is that
+ *  every render site here has to survive a value with no entry — without this,
+ *  one unrecognised row takes the whole accounts page down with a TypeError. */
+function prepLabel(p: string): { label: string; className: string; hint: string } {
+  return (
+    PREP_LABELS[p as CompanyPrep] ?? {
+      label: p,
+      className: "bg-red-500/15 text-red-300",
+      hint: "Prep state not recognised by this build",
+    }
+  );
+}
+
 /**
  * "Have I written to this account, and when?"
  *
@@ -882,13 +899,13 @@ export function CrmPage() {
                     >
                       <SelectTrigger className="h-7 w-28 border-0 bg-transparent px-1.5 text-xs">
                         <Badge
-                          title={PREP_LABELS[c.prepStatus].hint}
+                          title={prepLabel(c.prepStatus).hint}
                           className={cn(
                             "border-0 font-normal",
-                            PREP_LABELS[c.prepStatus].className,
+                            prepLabel(c.prepStatus).className,
                           )}
                         >
-                          {PREP_LABELS[c.prepStatus].label}
+                          {prepLabel(c.prepStatus).label}
                         </Badge>
                       </SelectTrigger>
                       <SelectContent>
