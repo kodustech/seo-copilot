@@ -24,7 +24,6 @@ import {
   Sparkles,
   Target,
   Workflow,
-  Wrench,
 } from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
@@ -69,7 +68,6 @@ function getPasswordResetRedirectUrl(): string | undefined {
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const pathname = usePathname();
-  const [manualToolParam, setManualToolParam] = useState<string | null>(null);
   // Product IA: AI CMO motions — Command / Attract / Engage / Convert / System
   const navSections = useMemo(
     () => [
@@ -85,12 +83,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         label: "Attract",
         items: [
           { href: "/", label: "Content", icon: Sparkles },
-          {
-            href: "/manual",
-            label: "SEO & production",
-            icon: Wrench,
-            hasSubmenu: true,
-          },
           { href: "/ideas", label: "Ideas", icon: Lightbulb },
           { href: "/dashboard", label: "Performance", icon: BarChart3 },
         ],
@@ -117,19 +109,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     ],
     [],
   );
-  const manualSubLinks = useMemo(
-    () => [
-      { href: "/manual", label: "Overview", tool: "all" },
-      { href: "/manual?tool=complete", label: "Full flow", tool: "complete" },
-      { href: "/manual?tool=reverse", label: "Title → Keywords", tool: "reverse" },
-      { href: "/manual?tool=quick", label: "Quick manual", tool: "quick" },
-      { href: "/manual?tool=comparison", label: "Comparison", tool: "comparison" },
-      { href: "/manual?tool=update", label: "Update article", tool: "update" },
-      { href: "/manual?tool=social", label: "Social posts", tool: "social" },
-      { href: "/manual?tool=yolo", label: "YOLO queue", tool: "yolo" },
-    ],
-    [],
-  );
   // Page title derived from active nav. Computed up here (before early returns)
   // so the hook count stays stable across signed-in / signed-out renders.
   const currentNavLabel = useMemo(() => {
@@ -141,7 +120,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       }
     }
     if (pathname === "/settings") return "Settings";
-    if (pathname.startsWith("/manual")) return "SEO & production";
     if (pathname.startsWith("/sequences")) return "Campaigns";
     if (pathname.startsWith("/research")) return "Search";
     if (pathname.startsWith("/crm") || pathname.startsWith("/outreach"))
@@ -177,22 +155,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const [domainError, setDomainError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const readQuery = () => {
-      const params = new URLSearchParams(window.location.search);
-      setManualToolParam(params.get("tool"));
-    };
-
-    readQuery();
-    window.addEventListener("popstate", readQuery);
-    return () => {
-      window.removeEventListener("popstate", readQuery);
-    };
-  }, [pathname]);
 
   useEffect(() => {
     if (!supabase) {
@@ -459,8 +421,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  const manualSectionActive = pathname === "/manual";
-  const activeManualTool = manualSectionActive ? (manualToolParam ?? "all") : null;
 
   const sidebarItemClass = (active: boolean) =>
     cn(
@@ -528,10 +488,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
               <div className="space-y-0.5">
                 {section.items.map((item) => {
                   const Icon = item.icon;
-                  const isManual = item.href === "/manual";
-                  const active = isManual
-                    ? manualSectionActive
-                    : pathname === item.href;
+                  const active = pathname === item.href;
                   return (
                     <div key={item.href}>
                       <Link
@@ -556,37 +513,9 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
                           )}
                         />
                         {!sidebarCollapsed && (
-                          <>
-                            <span className="truncate">{item.label}</span>
-                            {isManual && manualSectionActive && (
-                              <ChevronRight className="ml-auto size-3 rotate-90 text-neutral-500" />
-                            )}
-                          </>
+                          <span className="truncate">{item.label}</span>
                         )}
                       </Link>
-                      {/* Manual sub-items — only shown when sidebar is expanded */}
-                      {!sidebarCollapsed && isManual && manualSectionActive && (
-                        <div className="mt-0.5 ml-4 space-y-0.5 border-l border-white/[0.06] pl-2">
-                          {manualSubLinks.map((sub) => {
-                            const subActive = activeManualTool === sub.tool;
-                            return (
-                              <Link
-                                key={sub.href}
-                                href={sub.href}
-                                onClick={() => setManualToolParam(sub.tool)}
-                                className={cn(
-                                  "flex h-7 items-center rounded-md px-2 text-xs transition-colors",
-                                  subActive
-                                    ? "bg-white/[0.06] text-white"
-                                    : "text-neutral-500 hover:bg-white/[0.04] hover:text-neutral-200",
-                                )}
-                              >
-                                {sub.label}
-                              </Link>
-                            );
-                          })}
-                        </div>
-                      )}
                     </div>
                   );
                 })}
