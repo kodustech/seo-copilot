@@ -1050,6 +1050,17 @@ export async function enrollFromCrm(
   if (seq.steps.length === 0) throw new Error("Sequence has no steps");
   const first = seq.steps[0];
   const needsEmailLater = seq.steps.some((s) => s.channel === "email");
+  // Whether {{skip_reason}} needs a value is a property of the copy that will
+  // be sent, not of the org receiving it. Trigger and destination sequence are
+  // independent — an auto-enroll rule filters on trigger but points at any
+  // sequence it likes, and the AI tool takes arbitrary company × sequence
+  // pairs — so keying the fallback on the org's trigger gets it wrong in both
+  // directions at once.
+  const usesSkipReason = seq.steps.some(
+    (s) =>
+      (s.bodyTemplate ?? "").includes("skip_reason") ||
+      (s.subjectTemplate ?? "").includes("skip_reason"),
+  );
 
   const { listContacts, getCompany } = await import("@/lib/crm");
 
@@ -1105,16 +1116,14 @@ export async function enrollFromCrm(
         if (sig) {
           if (sig.tier) templateVars.tier = String(sig.tier);
           if (sig.trigger) templateVars.trigger = String(sig.trigger);
-          // The fallback is scoped to broken_activation on purpose. These vars
-          // are frozen at enrollment and spread into every step of whatever
-          // sequence the account lands in, so an unconditional default would
-          // put "no reason logged on our side" inside a free_limit sales email
-          // too, where it reads as an apology for something nobody asked about.
-          // Only the broken_activation copy builds a sentence around the token
-          // and needs it to always resolve.
+          // Set only when the destination copy actually builds a sentence
+          // around the token. An unconditional default would put "no reason
+          // logged on our side" inside a free_limit sales email, where it reads
+          // as an apology for something nobody asked about; leaving it unset
+          // where the copy does use it renders "the reason we record is: ."
           if (sig.top_skip_reason) {
             templateVars.skip_reason = String(sig.top_skip_reason);
-          } else if (sig.trigger === "broken_activation") {
+          } else if (usesSkipReason) {
             templateVars.skip_reason = "no reason logged on our side";
           }
           // dev_count is the git-derived team size, never user_count: that is

@@ -384,7 +384,9 @@ async function attachVerifiedLinkedIn(
  * NinjaPear provider: search employees across buyer personas, then resolve
  * person profile (employment) + work emails for kept matches.
  */
-async function ninjapearPeople(
+/** Exported for the CRM enrichment path (lib/crm-enrich.ts), which needs the
+ *  same people lookup without a research row behind it. */
+export async function ninjapearPeople(
   domain: string,
   companyName: string,
   personas: string[],
