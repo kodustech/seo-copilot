@@ -53,23 +53,42 @@ export const CRM_CREATE_TIERS = new Set(["t0", "t1", "t2"]);
 const ENRICHMENT_TTL_DAYS = 180;
 
 /**
- * NinjaPear `company_type` values that mean "institution, not a company we
- * sell to". Matched case-insensitively as substrings because the provider
- * mixes styles ("Educational Institution", "EDUCATIONAL", "NON_PROFIT").
+ * Firmographics that mean "school, not a company we sell to".
  *
  * This exists because domains.ts cannot see universities that do not advertise
  * themselves in the domain: esprit.tn is a Tunisian engineering school and
  * matches none of ACADEMIC_PATTERNS, so it reached the gate as "corporate",
- * cleared MIN_EMPLOYEES on its several-thousand headcount, and became a lead
- * whose "company" was one student's auto-generated org. Regexes over domains
- * will always lose that race; the firmographics already say what the place is.
+ * cleared MIN_EMPLOYEES on its 750 headcount, and became a lead whose "company"
+ * was one student's auto-generated org. No regex over domains will win that
+ * race; the firmographics already say what the place is.
+ *
+ * The signal is `industry`, a GICS code — 25302010 is Education Services.
+ * NOT company_type: NinjaPear returns PRIVATELY_HELD for esprit.tn, which is
+ * true (it is a private school) and useless here, because company_type
+ * describes ownership structure, not what the organisation does. company_type
+ * is still checked as a cheap second net for providers that do say EDUCATIONAL.
+ *
+ * Known cost: GICS puts edtech vendors in the same bucket as the schools they
+ * sell to (codequotient.com, swivl.com). Rejecting them is deliberate — this
+ * gate only decides whether a *never-connected* signup becomes a lead, and an
+ * education-services org that never connected a repo is far more likely a
+ * student than a buyer. One that is real will come back through t0/t1 once it
+ * connects git, where the dev count gates it properly.
  */
+const EDUCATION_GICS = new Set(["25302010"]);
 const INSTITUTION_COMPANY_TYPES = ["educat", "school", "university", "college"];
 
-function isInstitution(companyType: string | null): boolean {
-  if (!companyType) return false;
-  const t = companyType.toLowerCase();
-  return INSTITUTION_COMPANY_TYPES.some((needle) => t.includes(needle));
+export type Firmographics = {
+  companyType: string | null;
+  /** GICS sub-industry code, as stored (string). */
+  industry: string | null;
+};
+
+function isInstitution(f: Firmographics | null | undefined): boolean {
+  if (!f) return false;
+  if (f.industry && EDUCATION_GICS.has(f.industry.trim())) return true;
+  const t = f.companyType?.toLowerCase() ?? "";
+  return t !== "" && INSTITUTION_COMPANY_TYPES.some((needle) => t.includes(needle));
 }
 
 export type GateDecision = {
@@ -175,23 +194,26 @@ export async function getEnrichment(
  * never-connected signups are rejected on the cheaper employee-count lookup and
  * never reach this.
  *
- * Mostly CRM decoration, with one qualification input: company_type, which is
- * how an institution gets caught (see INSTITUTION_COMPANY_TYPES). Returns the
- * company_type it ended up with — cached or fresh — and null when the lookup is
- * unavailable or failed, which callers must read as "unknown", not "fine".
+ * Mostly CRM decoration, with one qualification input: industry, which is how a
+ * school gets caught (see EDUCATION_GICS). Returns what it ended up with —
+ * cached or fresh — and null when the lookup is unavailable or failed, which
+ * callers must read as "unknown", not "fine".
  */
 export async function getFirmographics(
   client: SupabaseClient,
   domain: string,
   now: Date,
-): Promise<{ companyType: string | null } | null> {
+): Promise<Firmographics | null> {
   const { data: cached } = await client
     .from("company_enrichment")
-    .select("domain,raw,company_type,fetched_at")
+    .select("domain,raw,company_type,industry,fetched_at")
     .eq("domain", domain)
     .maybeSingle();
   if (cached?.raw && isFresh(cached.fetched_at as string, now)) {
-    return { companyType: (cached.company_type as string | null) ?? null };
+    return {
+      companyType: (cached.company_type as string | null) ?? null,
+      industry: (cached.industry as string | null) ?? null,
+    };
   }
   if (!ninjapearEnabled()) return null;
 
@@ -212,7 +234,10 @@ export async function getFirmographics(
         raw: details as unknown as Record<string, unknown>,
       })
       .eq("domain", domain);
-    return { companyType: details.company_type };
+    return {
+      companyType: details.company_type,
+      industry: details.industry != null ? String(details.industry) : null,
+    };
   } catch {
     // Never let a decoration lookup fail the sweep.
     return null;
@@ -231,9 +256,7 @@ export async function evaluateOrg(
     /** Company details for the last check before admitting a never-connected
      *  org. Optional: when absent (or returning null) the institution check is
      *  skipped and the decision falls back to headcount alone. */
-    firmographics?: (
-      domain: string,
-    ) => Promise<{ companyType: string | null } | null>;
+    firmographics?: (domain: string) => Promise<Firmographics | null>;
   },
 ): Promise<GateDecision> {
   const { devCount, source } = resolveDevCount(org);
@@ -290,12 +313,12 @@ export async function evaluateOrg(
     return { ...base, create: false, reason: "below_min_employees", employeeCount };
   }
 
-  // Big headcount is not the same as a company. Universities, schools and the
-  // like clear MIN_EMPLOYEES trivially, and their signups are students on a
-  // personal project — the population the domain rules are supposed to catch
-  // and structurally cannot when the domain gives nothing away.
+  // Big headcount is not the same as a company. Schools clear MIN_EMPLOYEES
+  // trivially, and their signups are students on a personal project — the
+  // population the domain rules are supposed to catch and structurally cannot
+  // when the domain gives nothing away.
   const details = await opts.firmographics?.(domain);
-  if (isInstitution(details?.companyType ?? null)) {
+  if (isInstitution(details)) {
     return {
       ...base,
       create: false,

@@ -185,9 +185,13 @@ export function classifyOrg(facts: OrgFacts, now: Date = new Date()): Classifica
         return { tier: "t0", trigger: "trial_just_expired", health };
       }
     }
-  }
-  if (hitsFreeLimit(facts)) {
-    return { tier: "t0", trigger: "free_limit", health };
+    // Inside the gate too, for the same reason. In practice free_limit already
+    // implies a connected repo — it reads topSkipReason, and skips only exist
+    // where executions ran — but an org whose integration was later removed
+    // would still carry 30 days of skips and re-enter t0 through this door.
+    if (hitsFreeLimit(facts)) {
+      return { tier: "t0", trigger: "free_limit", health };
+    }
   }
 
   const signupDays = daysBetween(facts.signupAt, now);

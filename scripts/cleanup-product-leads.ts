@@ -118,10 +118,15 @@ async function main() {
     if (ENRICH) return getFirmographics(client, domain, now);
     const { data: cached } = await client
       .from("company_enrichment")
-      .select("company_type")
+      .select("company_type,industry")
       .eq("domain", domain)
       .maybeSingle();
-    return cached ? { companyType: (cached.company_type as string | null) ?? null } : null;
+    return cached
+      ? {
+          companyType: (cached.company_type as string | null) ?? null,
+          industry: (cached.industry as string | null) ?? null,
+        }
+      : null;
   };
 
   const keep: string[] = [];

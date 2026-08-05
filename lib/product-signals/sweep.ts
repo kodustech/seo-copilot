@@ -18,8 +18,19 @@ import { evaluateOrg, getEnrichment, getFirmographics } from "./icp-gate";
 const UPSERT_CHUNK = 400;
 
 /** Tier priority when several product orgs map to the same CRM account. Higher
- *  wins: the account should carry the most urgent signal among its orgs. */
-const TIER_RANK: Record<string, number> = { t0: 4, t1: 3, t2: 2, t3: 1 };
+ *  wins: the account should carry the most urgent signal among its orgs.
+ *
+ *  `customer` outranks every lead tier and is not a typo. A paying org sharing
+ *  a domain with a free one must keep the account marked customer — losing the
+ *  election would let the free sibling's tier overwrite it and put a paying
+ *  account back into the outbound queue. */
+const TIER_RANK: Record<string, number> = {
+  customer: 5,
+  t0: 4,
+  t1: 3,
+  t2: 2,
+  t3: 1,
+};
 
 export type SweepSummary = {
   orgs: number;
@@ -260,15 +271,25 @@ export async function runProductSignalsSweep(
   for (const { org, cls } of classified) {
     // Personal git accounts never enter the CRM.
     if (org.orgType === "user" || cls.tier == null) continue;
-    if (ownerByAccount.get(accountKeyFor(org))?.orgId !== org.orgId) {
-      orgsSharingAccount += 1;
-      continue;
-    }
+    const isOwner = ownerByAccount.get(accountKeyFor(org))?.orgId === org.orgId;
 
     try {
       let company =
         companyByOrg.get(org.orgId) ??
         (org.derivedDomain ? companyByDomain.get(org.derivedDomain) : undefined);
+
+      // A non-owner stops here once the account exists — that write is the
+      // owner's. It is still allowed to CREATE one, because ownership is about
+      // who maintains the tier, not about who is allowed to be a lead: the
+      // top-ranked org can fail the gate (t0 with devCount < MIN_DEVS) while a
+      // sibling on the same domain would pass on headcount, and suppressing it
+      // would silently drop leads the sweep used to create. Whoever creates the
+      // account writes the first tier; the owner takes it over from there (this
+      // same sweep if it is still ahead in the loop, otherwise the next one).
+      if (!isOwner && company) {
+        orgsSharingAccount += 1;
+        continue;
+      }
 
       // Link a domain-matched account (e.g. created by cold research) to the org.
       if (company && !company.org_id) {
