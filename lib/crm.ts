@@ -70,7 +70,7 @@ export type ActivityKind =
   | "property_change"
   /** Product-signals sweep recorded a tier/trigger transition. */
   | "signal"
-  /** A human moved the account through the review gate (raw → ready etc.). */
+  /** A human moved the account through the review gate (not_started → ready etc.). */
   | "prep_change"
   /** An outbound message actually went out — email or LinkedIn. */
   | "outreach_sent";
@@ -83,10 +83,10 @@ export type ActivityKind =
  * Only `ready` may be enrolled in a sequence. `parked` is a decision, not a
  * failure — it is what keeps the review queue finite.
  */
-export type CompanyPrep = "raw" | "enriched" | "ready" | "parked";
+export type CompanyPrep = "not_started" | "enriched" | "ready" | "parked";
 
 export const COMPANY_PREP_VALUES: CompanyPrep[] = [
-  "raw",
+  "not_started",
   "enriched",
   "ready",
   "parked",
@@ -195,7 +195,7 @@ export type CreateCompanyInput = {
 export type UpdateCompanyInput = Partial<
   Omit<CreateCompanyInput, "createdByEmail" | "source">
 > & {
-  /** Not part of CreateCompanyInput on purpose: every account starts at 'raw'.
+  /** Not part of CreateCompanyInput on purpose: every account starts at 'not_started'.
    *  The enrichment run sets 'enriched'; only a human sets 'ready' or 'parked'. */
   prepStatus?: CompanyPrep;
 };
@@ -213,7 +213,7 @@ export type CompanyFilters = {
   trigger?: string | string[];
   deployment?: CompanyDeployment;
   source?: CompanySource;
-  /** The review queue is a filter on this: prepStatus: ["raw", "enriched"]. */
+  /** The review queue is a filter on this: prepStatus: ["not_started", "enriched"]. */
   prepStatus?: CompanyPrep | CompanyPrep[];
   search?: string;
   staleOnly?: boolean;
@@ -287,11 +287,11 @@ function rowToCompany(row: CompanyRow): CrmCompany {
     trigger: row.trigger ?? null,
     deployment: row.deployment ?? null,
     source: row.source ?? "manual",
-    // Rows written before the column existed read as null; 'raw' is the honest
+    // Rows written before the column existed read as null; 'not_started' is the honest
     // default — nobody has looked at them either.
     prepStatus: (COMPANY_PREP_VALUES as string[]).includes(row.prep_status ?? "")
       ? (row.prep_status as CompanyPrep)
-      : "raw",
+      : "not_started",
     lastOutreachAt: row.last_outreach_at ?? null,
     outreachSentCount: Number(row.outreach_sent_count ?? 0),
     notes: row.notes,

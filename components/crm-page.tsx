@@ -130,10 +130,10 @@ const PREP_LABELS: Record<
   CompanyPrep,
   { label: string; className: string; hint: string }
 > = {
-  raw: {
-    label: "Raw",
+  not_started: {
+    label: "Not started",
     className: "bg-neutral-700/40 text-neutral-400",
-    hint: "Came from the sweep — nobody has looked at it",
+    hint: "Nothing done yet — not enriched, not contacted, not in a sequence",
   },
   enriched: {
     label: "Enriched",
@@ -151,7 +151,7 @@ const PREP_LABELS: Record<
     hint: "Vetted and set aside — not worth working",
   },
 };
-const PREP_OPTIONS: CompanyPrep[] = ["raw", "enriched", "ready", "parked"];
+const PREP_OPTIONS: CompanyPrep[] = ["not_started", "enriched", "ready", "parked"];
 
 /**
  * "Have I written to this account, and when?"
@@ -383,7 +383,7 @@ export function CrmPage() {
       if (statusFilter !== "all") params.set("status", statusFilter);
       if (tierFilter !== "all") params.set("tier", tierFilter);
       // "todo" is the review queue: the two states nobody has judged yet.
-      if (prepFilter === "todo") params.set("prepStatus", "raw,enriched");
+      if (prepFilter === "todo") params.set("prepStatus", "not_started,enriched");
       else if (prepFilter !== "all") params.set("prepStatus", prepFilter);
       if (channelFilter !== "all") params.set("source", channelFilter);
       if (deploymentFilter !== "all") params.set("deployment", deploymentFilter);
@@ -609,7 +609,7 @@ export function CrmPage() {
             <SelectItem value="all">All prep states</SelectItem>
             {/* The review queue, as one click: everything the machine has
                 processed and a human has not yet judged. */}
-            <SelectItem value="todo">To review (raw + enriched)</SelectItem>
+            <SelectItem value="todo">To review (not started + enriched)</SelectItem>
             {PREP_OPTIONS.map((p) => (
               <SelectItem key={p} value={p}>
                 {PREP_LABELS[p].label} — {PREP_LABELS[p].hint}

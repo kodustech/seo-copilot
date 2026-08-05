@@ -120,7 +120,7 @@ export async function enrichCompanyContacts(
     // list): nothing was established. Promoting to 'enriched' would be the
     // review gate lying, and lying durably: the account leaves the queue as
     // processed work and nobody looks at it again. At scale that is worse —
-    // a bulk run under a missing key would empty the raw bucket in one pass.
+    // a bulk run under a missing key would empty the not-started bucket in one pass.
     // Not hypothetical: NINJAPEAR_API_KEY was absent from production until
     // today, and the button returned exactly this empty result.
     if (disabled) {
@@ -188,7 +188,7 @@ export async function enrichCompanyContacts(
 /**
  * Move the account out of the "nobody has touched this" bucket.
  *
- * Only ever promotes from 'raw'. An account a human already vetted — 'ready' or
+ * Only ever promotes from 'not_started'. An account a human already vetted — 'ready' or
  * 'parked' — must not be dragged backwards by a re-run: the machine's opinion
  * does not overwrite the human's, which is the entire point of separating the
  * two states. Best-effort, because failing to update a label is not a reason to
@@ -203,7 +203,7 @@ async function markEnriched(
       .from("crm_companies")
       .update({ prep_status: "enriched" })
       .eq("id", companyId)
-      .eq("prep_status", "raw");
+      .eq("prep_status", "not_started");
   } catch (err) {
     console.warn("[crm-enrich] failed to mark account enriched:", err);
   }
