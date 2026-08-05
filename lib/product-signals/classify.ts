@@ -194,7 +194,21 @@ export function classifyOrg(facts: OrgFacts, now: Date = new Date()): Classifica
     // through to went_quiet and read as "lost interest". Five accounts are in
     // that state right now, one of them skipping 777 times in 30 days with 42
     // developers behind it.
-    if (facts.reviews30d === 0 && facts.skips30d > 0) {
+    // The widened path requires a recorded reason. broken_activation exists to
+    // name the reason and offer the fix, so without one there is nothing to
+    // send: the email would read "the reason we record is: ." collect.ts maps
+    // the '(none)' placeholder back to null, and a skip can be logged with no
+    // errorMessage at all, so this is reachable — just not today (0 of the 31
+    // t1 orgs currently skipping without reviews).
+    //
+    // The original narrow case keeps firing unconditionally: an org that never
+    // received a single review is broken whether or not the skip was labelled,
+    // and that behaviour predates this change.
+    if (
+      facts.reviews30d === 0 &&
+      facts.skips30d > 0 &&
+      (facts.lastReviewAt == null || facts.topSkipReason != null)
+    ) {
       return { tier: "t1", trigger: "broken_activation", health };
     }
     if (facts.reviews30d > 0) {
