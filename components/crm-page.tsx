@@ -23,6 +23,7 @@ import {
   ExternalLink,
 } from "lucide-react";
 
+import { CrmBoard, boardColumns, type BoardGroupBy } from "@/components/crm-board";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
 import {
@@ -314,6 +315,10 @@ export function CrmPage() {
   const [statusFilter, setStatusFilter] = useState<CompanyStatus | "all">("all");
   const [tierFilter, setTierFilter] = useState<string>("all");
   const [prepFilter, setPrepFilter] = useState<string>("all");
+  const [view, setView] = useState<"list" | "board">("list");
+  // Defaults to prep because that is the work that exists: 85 of 107 accounts
+  // sit in `lead`, so a status board is one tall column and seven empty ones.
+  const [groupBy, setGroupBy] = useState<BoardGroupBy>("prep");
   const [channelFilter, setChannelFilter] = useState<string>("all");
   const [deploymentFilter, setDeploymentFilter] = useState<string>("all");
   const [ownerFilter, setOwnerFilter] = useState<string>("all");
@@ -601,6 +606,41 @@ export function CrmPage() {
             ))}
           </SelectContent>
         </Select>
+        {/* View switch, and — on the board — what the columns are.
+            The grouping question has no permanent right answer: the board that
+            matters today is the work queue (prep), and the one that matters
+            once deals move is the pipeline (status). */}
+        <div className="flex items-center rounded-md border border-white/10 bg-neutral-900">
+          {(["list", "board"] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={cn(
+                "h-8 px-3 text-sm capitalize transition-colors",
+                view === v
+                  ? "text-neutral-100"
+                  : "text-neutral-500 hover:text-neutral-300",
+              )}
+            >
+              {v}
+            </button>
+          ))}
+        </div>
+        {view === "board" ? (
+          <Select
+            value={groupBy}
+            onValueChange={(v) => setGroupBy(v as BoardGroupBy)}
+          >
+            <SelectTrigger className="h-8 w-44 border-white/10 bg-neutral-900 text-sm">
+              <SelectValue placeholder="Group by" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="prep">Group by prep — the work</SelectItem>
+              <SelectItem value="status">Group by status — the deal</SelectItem>
+              <SelectItem value="tier">Group by tier — read-only</SelectItem>
+            </SelectContent>
+          </Select>
+        ) : null}
         <Select value={prepFilter} onValueChange={setPrepFilter}>
           <SelectTrigger className="h-8 w-40 border-white/10 bg-neutral-900 text-sm">
             <SelectValue placeholder="Prep" />
@@ -671,7 +711,53 @@ export function CrmPage() {
         </div>
       )}
 
-      {/* Table */}
+      {view === "board" ? (
+        <CrmBoard
+          companies={companies}
+          groupBy={groupBy}
+          columns={boardColumns(groupBy, {
+            prep: PREP_LABELS,
+            status: STATUS_LABELS,
+            tier: TIER_LABELS,
+          })}
+          // Tier is machine-owned: the sweep derives it from product behaviour,
+          // so a card dragged between tier columns would be asserting something
+          // the next sweep overwrites within four hours. Read-only instead of
+          // silently reverting.
+          onMove={
+            groupBy === "tier"
+              ? null
+              : (id, patch) => void patchCompany(id, patch)
+          }
+          onOpen={(c) => setSelectedId(c.id)}
+          renderCardMeta={(c) => (
+            <>
+              {c.tier && TIER_LABELS[c.tier] ? (
+                <Badge
+                  title={TIER_LABELS[c.tier].hint}
+                  className={cn(
+                    "border-0 text-[11px] font-normal",
+                    TIER_LABELS[c.tier].className,
+                  )}
+                >
+                  {TIER_LABELS[c.tier].label}
+                </Badge>
+              ) : null}
+              {c.devCount ? (
+                <span className="text-[11px] text-neutral-500">
+                  {c.devCount} devs
+                </span>
+              ) : null}
+              <span className="text-[11px] text-neutral-600">
+                {c.outreachSentCount > 0
+                  ? `${c.outreachSentCount} sent`
+                  : "never contacted"}
+              </span>
+            </>
+          )}
+        />
+      ) : (
+      /* Table */
       <div className="overflow-hidden rounded-xl border border-white/[0.06]">
         <Table>
           <TableHeader>
@@ -876,6 +962,7 @@ export function CrmPage() {
           </TableBody>
         </Table>
       </div>
+      )}
 
       {createOpen && (
         <CreateCompanyDialog
