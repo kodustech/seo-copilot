@@ -892,7 +892,27 @@ export function CrmPage() {
                   </TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()}>
                     {/* Editable inline: vetting happens while scanning the
-                        list, not only inside the drawer. */}
+                        list, not only inside the drawer.
+
+                        Unless the value is one this build does not know, in
+                        which case it is shown and not offered for editing. A
+                        Select cannot represent a value absent from its items:
+                        it would render with nothing selected, and confirming
+                        the open dropdown by keyboard falls through to the
+                        first option — writing 'not_started' onto exactly the
+                        account whose real state we went out of our way to stop
+                        disguising as 'not_started'. */}
+                    {PREP_LABELS[c.prepStatus as CompanyPrep] === undefined ? (
+                      <Badge
+                        title={prepLabel(c.prepStatus).hint}
+                        className={cn(
+                          "border-0 font-normal",
+                          prepLabel(c.prepStatus).className,
+                        )}
+                      >
+                        {prepLabel(c.prepStatus).label}
+                      </Badge>
+                    ) : (
                     <Select
                       value={c.prepStatus}
                       onValueChange={(v) => patchCompany(c.id, { prepStatus: v })}
@@ -916,6 +936,7 @@ export function CrmPage() {
                         ))}
                       </SelectContent>
                     </Select>
+                    )}
                   </TableCell>
                   <TableCell>
                     <OutreachCell
