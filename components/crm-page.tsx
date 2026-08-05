@@ -9,6 +9,7 @@ import {
   Loader2,
   Pencil,
   Plus,
+  Sparkles,
   RefreshCw,
   Search,
   Settings2,
@@ -2377,6 +2378,32 @@ function ContactsTab({
   const [linkedin, setLinkedin] = useState("");
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [enriching, setEnriching] = useState(false);
+  const [enrichNote, setEnrichNote] = useState<string | null>(null);
+
+  async function enrich() {
+    setEnriching(true);
+    setEnrichNote(null);
+    try {
+      const res = await authFetch(`/api/crm/companies/${companyId}/enrich`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxPeople: 5 }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "Enrichment failed");
+      const r = json.result;
+      setEnrichNote(
+        r.note ??
+          `${r.found} found · ${r.created} added · ${r.updated} filled in · ${r.skipped} already complete`,
+      );
+      onChange();
+    } catch (e) {
+      setEnrichNote(e instanceof Error ? e.message : "Enrichment failed");
+    } finally {
+      setEnriching(false);
+    }
+  }
 
   async function submit() {
     if (!name.trim()) return;
@@ -2417,11 +2444,31 @@ function ContactsTab({
         placeholder="LinkedIn URL (optional)"
         className="border-white/10 bg-neutral-900"
       />
-      <div className="flex justify-end">
+      <div className="flex items-center justify-between gap-2">
+        {/* Billed per call, so it is a deliberate click rather than something
+            that happens on open. */}
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => void enrich()}
+          disabled={enriching}
+          className="h-7 gap-1.5 border-white/10"
+          title="Look up people at this company (name, role, LinkedIn)"
+        >
+          {enriching ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Sparkles className="size-3.5" />
+          )}
+          Find people
+        </Button>
         <Button size="sm" onClick={submit} disabled={saving || !name.trim()} className="h-7 gap-1.5 bg-white text-neutral-900 hover:bg-neutral-200">
           <Plus className="size-3.5" /> Add contact
         </Button>
       </div>
+      {enrichNote && (
+        <p className="text-xs text-neutral-400">{enrichNote}</p>
+      )}
 
       {contacts.length === 0 ? (
         <p className="py-6 text-center text-sm text-neutral-500">No contacts yet.</p>
