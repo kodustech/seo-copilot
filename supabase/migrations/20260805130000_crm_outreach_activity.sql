@@ -25,3 +25,25 @@ ALTER TABLE crm_companies
 
 CREATE INDEX IF NOT EXISTS crm_companies_last_outreach_at_idx
   ON crm_companies (last_outreach_at DESC NULLS LAST);
+
+-- Atomic increment.
+--
+-- Read-then-write from the application loses a send whenever two go out to the
+-- same account close together: both read the same base value and both write
+-- base + 1. That is not a rare shape here — one account can hold several
+-- contacts on the same sequence, and the auto-send cron and a human completing
+-- a task from the queue can land in the same second.
+--
+-- GREATEST on the timestamp so an out-of-order write (a retry finishing after a
+-- later send) cannot drag last_outreach_at backwards.
+CREATE OR REPLACE FUNCTION bump_outreach_counters(
+  p_company_id UUID,
+  p_sent_at TIMESTAMPTZ
+) RETURNS void
+LANGUAGE sql
+AS $$
+  UPDATE crm_companies
+     SET outreach_sent_count = COALESCE(outreach_sent_count, 0) + 1,
+         last_outreach_at = GREATEST(COALESCE(last_outreach_at, p_sent_at), p_sent_at)
+   WHERE id = p_company_id;
+$$;

@@ -1804,18 +1804,15 @@ async function recordOutreachOnCrm(
     // Denormalised onto the account so the list can show "2 sent · 3d ago"
     // without walking the activity table. last_activity_at cannot serve here:
     // the signal sweep moves it every few hours on every account.
-    const { data: current } = await client
-      .from("crm_companies")
-      .select("outreach_sent_count")
-      .eq("id", companyId)
-      .maybeSingle();
-    await client
-      .from("crm_companies")
-      .update({
-        last_outreach_at: opts.sentAt,
-        outreach_sent_count: Number(current?.outreach_sent_count ?? 0) + 1,
-      })
-      .eq("id", companyId);
+    //
+    // Through an RPC rather than read-then-write: one account can hold several
+    // contacts on the same sequence, so two sends landing together would both
+    // read the same count and both write base + 1, quietly losing one.
+    const { error } = await client.rpc("bump_outreach_counters", {
+      p_company_id: companyId,
+      p_sent_at: opts.sentAt,
+    });
+    if (error) throw new Error(error.message);
   } catch (err) {
     console.warn("[outreach] failed to record send on CRM account:", err);
   }

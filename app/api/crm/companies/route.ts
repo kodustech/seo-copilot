@@ -16,6 +16,7 @@ import {
 
 const STATUS_SET = new Set<string>(COMPANY_STATUSES);
 const PRIORITY_SET = new Set<string>(COMPANY_PRIORITIES);
+const PREP_SET = new Set<string>(COMPANY_PREP_VALUES);
 
 function unauthorized(message = "Unauthorized") {
   return NextResponse.json({ error: message }, { status: 401 });
@@ -66,17 +67,23 @@ export async function GET(req: Request) {
     if (source) filters.source = source as CompanyFilters["source"];
     if (search) filters.search = search;
     if (prepStatus) {
-      // Unknown values are dropped rather than passed through: an unrecognised
-      // prep state would otherwise silently match nothing and read as "no
-      // accounts" instead of "bad filter".
       const wanted = prepStatus
         .split(",")
         .map((p) => p.trim())
-        .filter((p): p is CompanyPrep =>
-          (COMPANY_PREP_VALUES as string[]).includes(p),
+        .filter((p): p is CompanyPrep => PREP_SET.has(p));
+      // A filter that survives with none of its values recognised is worse than
+      // an error: dropping it returns *every* account, so a typo in the query
+      // string reads as "here is the whole CRM" on a list that decides who
+      // gets emailed. Fail loudly instead.
+      if (wanted.length === 0) {
+        return NextResponse.json(
+          {
+            error: `Unknown prepStatus: ${prepStatus}. Expected one or more of ${COMPANY_PREP_VALUES.join(", ")}.`,
+          },
+          { status: 400 },
         );
-      if (wanted.length === 1) filters.prepStatus = wanted[0];
-      else if (wanted.length > 1) filters.prepStatus = wanted;
+      }
+      filters.prepStatus = wanted.length === 1 ? wanted[0] : wanted;
     }
 
     const [companies, stats] = await Promise.all([

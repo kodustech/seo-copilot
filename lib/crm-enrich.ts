@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createContact, getCompany, listContacts, updateContact } from "@/lib/crm";
+import { ninjapearEnabled } from "@/lib/ninjapear";
 import { ninjapearPeople } from "@/lib/research/waterfall";
 
 // ---------------------------------------------------------------------------
@@ -112,17 +113,26 @@ export async function enrichCompanyContacts(
   );
 
   if (found.length === 0) {
-    // Still counts as enriched: the lookup ran and established there is nothing
-    // to find. That is a result, and the review queue must not keep offering
-    // this account as unprocessed work — 4 of every 5 t2 accounts land here.
+    // ninjapearPeople returns [] for two different situations, and they must
+    // not be recorded the same way.
+    //
+    // Key missing: nothing ran. Promoting to 'enriched' here would be the
+    // review gate lying — and lying at scale, because a bulk run under a
+    // misconfigured key would empty the raw bucket in one pass and present
+    // every account as processed. That is not hypothetical: NINJAPEAR_API_KEY
+    // was absent from the production environment until today, and the button
+    // returned exactly this empty result.
+    if (!ninjapearEnabled()) {
+      return {
+        ...base,
+        note: "NINJAPEAR_API_KEY is not configured — no lookup ran.",
+      };
+    }
+    // Key present and the provider had nothing: that is a real result, and the
+    // queue must stop offering this account as unprocessed work. Four of every
+    // five t2 accounts land here.
     await markEnriched(client, companyId);
-    // ninjapearPeople returns [] both when the provider found nobody and when
-    // NINJAPEAR_API_KEY is unset. Saying so beats reporting "0 people found"
-    // for what may be a missing key.
-    return {
-      ...base,
-      note: "No people returned. If this is unexpected, check NINJAPEAR_API_KEY.",
-    };
+    return { ...base, note: "No people found for this domain." };
   }
 
   const existing = await listContacts(client, companyId);
