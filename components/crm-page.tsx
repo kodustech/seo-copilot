@@ -23,11 +23,13 @@ import {
   ExternalLink,
 } from "lucide-react";
 
+import { CrmBoard, boardColumns, type BoardGroupBy } from "@/components/crm-board";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
 import {
   COMPANY_PRIORITIES,
   COMPANY_STATUSES,
+  type CompanyPrep,
   type CompanyPriority,
   type CompanyStatus,
   type CompanyWithIdle,
@@ -121,6 +123,92 @@ const TIER_LABELS: Record<string, { label: string; className: string; hint: stri
   },
 };
 const TIER_OPTIONS = ["t0", "t1", "t2", "t3", "customer"] as const;
+
+// Preparation state — a different axis from status. Status says where the
+// relationship stands; this says whether the account has been vetted enough to
+// be worked at all. Only `ready` can enter a sequence.
+const PREP_LABELS: Record<
+  CompanyPrep,
+  { label: string; className: string; hint: string }
+> = {
+  not_started: {
+    label: "Not started",
+    className: "bg-neutral-700/40 text-neutral-400",
+    hint: "Nothing done yet — not enriched, not contacted, not in a sequence",
+  },
+  enriched: {
+    label: "Enriched",
+    className: "bg-indigo-500/20 text-indigo-300",
+    hint: "Lookup ran. Waiting on you to vet it",
+  },
+  ready: {
+    label: "Ready",
+    className: "bg-emerald-500/20 text-emerald-300",
+    hint: "Vetted — can be enrolled in a sequence",
+  },
+  parked: {
+    label: "Parked",
+    className: "bg-neutral-800/60 text-neutral-500",
+    hint: "Vetted and set aside — not worth working",
+  },
+};
+const PREP_OPTIONS: CompanyPrep[] = ["not_started", "enriched", "ready", "parked"];
+
+/** PREP_LABELS lookup that cannot return undefined.
+ *
+ *  rowToCompany passes a prep_status through even when this build does not know
+ *  it, so that a state added to the database ahead of the UI stays visible
+ *  rather than masquerading as 'not_started'. The cost of that honesty is that
+ *  every render site here has to survive a value with no entry — without this,
+ *  one unrecognised row takes the whole accounts page down with a TypeError. */
+function isKnownPrep(p: string): p is CompanyPrep {
+  // Object.hasOwn, not `map[p] === undefined`: PREP_LABELS is an object
+  // literal, so a lookup of 'toString' or 'constructor' returns the inherited
+  // member rather than undefined, and the value would be treated as known.
+  return Object.hasOwn(PREP_LABELS, p);
+}
+
+function prepLabel(p: string): { label: string; className: string; hint: string } {
+  return isKnownPrep(p)
+    ? PREP_LABELS[p]
+    : {
+        label: p,
+        className: "bg-red-500/15 text-red-300",
+        hint: "Prep state not recognised by this build",
+      };
+}
+
+/**
+ * "Have I written to this account, and when?"
+ *
+ * Its own column rather than a reading of Last activity, because Last activity
+ * moves on every signal sweep — of the 500 most recent activities, 342 are
+ * sweep signals. An account contacted last week and one never touched show the
+ * same Last activity, which is precisely why this was unanswerable before.
+ *
+ * "Never" is deliberately not an em dash: an empty cell reads as missing data,
+ * and this one is a fact.
+ */
+function OutreachCell({
+  count,
+  lastAt,
+}: {
+  count: number;
+  lastAt: string | null;
+}) {
+  if (!count || !lastAt) {
+    return <span className="text-sm text-neutral-600">Never</span>;
+  }
+  const days = Math.floor(
+    (Date.now() - new Date(lastAt).getTime()) / 86_400_000,
+  );
+  const when = days <= 0 ? "today" : days === 1 ? "1d ago" : `${days}d ago`;
+  return (
+    <span className="whitespace-nowrap text-sm text-neutral-300">
+      {count} sent <span className="text-neutral-500">· {when}</span>
+    </span>
+  );
+}
 
 // Where the account came from (crm_companies.source), shown as "Channel".
 const CHANNEL_LABELS: Record<string, string> = {
@@ -250,6 +338,11 @@ export function CrmPage() {
 
   const [statusFilter, setStatusFilter] = useState<CompanyStatus | "all">("all");
   const [tierFilter, setTierFilter] = useState<string>("all");
+  const [prepFilter, setPrepFilter] = useState<string>("all");
+  const [view, setView] = useState<"list" | "board">("list");
+  // Defaults to prep because that is the work that exists: 85 of 107 accounts
+  // sit in `lead`, so a status board is one tall column and seven empty ones.
+  const [groupBy, setGroupBy] = useState<BoardGroupBy>("prep");
   const [channelFilter, setChannelFilter] = useState<string>("all");
   const [deploymentFilter, setDeploymentFilter] = useState<string>("all");
   const [ownerFilter, setOwnerFilter] = useState<string>("all");
@@ -318,6 +411,9 @@ export function CrmPage() {
       const params = new URLSearchParams();
       if (statusFilter !== "all") params.set("status", statusFilter);
       if (tierFilter !== "all") params.set("tier", tierFilter);
+      // "todo" is the review queue: the two states nobody has judged yet.
+      if (prepFilter === "todo") params.set("prepStatus", "not_started,enriched");
+      else if (prepFilter !== "all") params.set("prepStatus", prepFilter);
       if (channelFilter !== "all") params.set("source", channelFilter);
       if (deploymentFilter !== "all") params.set("deployment", deploymentFilter);
       if (ownerFilter !== "all") params.set("ownerEmail", ownerFilter);
@@ -333,7 +429,7 @@ export function CrmPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, statusFilter, tierFilter, channelFilter, deploymentFilter, ownerFilter, staleOnly, search, authFetch]);
+  }, [token, statusFilter, tierFilter, prepFilter, channelFilter, deploymentFilter, ownerFilter, staleOnly, search, authFetch]);
 
   useEffect(() => {
     void load();
@@ -534,6 +630,57 @@ export function CrmPage() {
             ))}
           </SelectContent>
         </Select>
+        {/* View switch, and — on the board — what the columns are.
+            The grouping question has no permanent right answer: the board that
+            matters today is the work queue (prep), and the one that matters
+            once deals move is the pipeline (status). */}
+        <div className="flex items-center rounded-md border border-white/10 bg-neutral-900">
+          {(["list", "board"] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={cn(
+                "h-8 px-3 text-sm capitalize transition-colors",
+                view === v
+                  ? "text-neutral-100"
+                  : "text-neutral-500 hover:text-neutral-300",
+              )}
+            >
+              {v}
+            </button>
+          ))}
+        </div>
+        {view === "board" ? (
+          <Select
+            value={groupBy}
+            onValueChange={(v) => setGroupBy(v as BoardGroupBy)}
+          >
+            <SelectTrigger className="h-8 w-44 border-white/10 bg-neutral-900 text-sm">
+              <SelectValue placeholder="Group by" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="prep">Group by prep — the work</SelectItem>
+              <SelectItem value="status">Group by status — the deal</SelectItem>
+              <SelectItem value="tier">Group by tier — read-only</SelectItem>
+            </SelectContent>
+          </Select>
+        ) : null}
+        <Select value={prepFilter} onValueChange={setPrepFilter}>
+          <SelectTrigger className="h-8 w-40 border-white/10 bg-neutral-900 text-sm">
+            <SelectValue placeholder="Prep" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All prep states</SelectItem>
+            {/* The review queue, as one click: everything the machine has
+                processed and a human has not yet judged. */}
+            <SelectItem value="todo">To review (not started + enriched)</SelectItem>
+            {PREP_OPTIONS.map((p) => (
+              <SelectItem key={p} value={p}>
+                {PREP_LABELS[p].label} — {PREP_LABELS[p].hint}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Select value={channelFilter} onValueChange={setChannelFilter}>
           <SelectTrigger className="h-8 w-36 border-white/10 bg-neutral-900 text-sm">
             <SelectValue placeholder="Channel" />
@@ -588,7 +735,53 @@ export function CrmPage() {
         </div>
       )}
 
-      {/* Table */}
+      {view === "board" ? (
+        <CrmBoard
+          companies={companies}
+          groupBy={groupBy}
+          columns={boardColumns(groupBy, {
+            prep: PREP_LABELS,
+            status: STATUS_LABELS,
+            tier: TIER_LABELS,
+          })}
+          // Tier is machine-owned: the sweep derives it from product behaviour,
+          // so a card dragged between tier columns would be asserting something
+          // the next sweep overwrites within four hours. Read-only instead of
+          // silently reverting.
+          onMove={
+            groupBy === "tier"
+              ? null
+              : (id, patch) => void patchCompany(id, patch)
+          }
+          onOpen={(c) => setSelectedId(c.id)}
+          renderCardMeta={(c) => (
+            <>
+              {c.tier && TIER_LABELS[c.tier] ? (
+                <Badge
+                  title={TIER_LABELS[c.tier].hint}
+                  className={cn(
+                    "border-0 text-[11px] font-normal",
+                    TIER_LABELS[c.tier].className,
+                  )}
+                >
+                  {TIER_LABELS[c.tier].label}
+                </Badge>
+              ) : null}
+              {c.devCount ? (
+                <span className="text-[11px] text-neutral-500">
+                  {c.devCount} devs
+                </span>
+              ) : null}
+              <span className="text-[11px] text-neutral-600">
+                {c.outreachSentCount > 0
+                  ? `${c.outreachSentCount} sent`
+                  : "never contacted"}
+              </span>
+            </>
+          )}
+        />
+      ) : (
+      /* Table */
       <div className="overflow-hidden rounded-xl border border-white/[0.06]">
         <Table>
           <TableHeader>
@@ -596,6 +789,8 @@ export function CrmPage() {
               <TableHead className="text-neutral-500">Company</TableHead>
               <TableHead className="text-neutral-500">Status</TableHead>
               <TableHead className="text-neutral-500">Tier</TableHead>
+              <TableHead className="text-neutral-500">Prep</TableHead>
+              <TableHead className="text-neutral-500">Outreach</TableHead>
               <TableHead className="text-neutral-500">Priority</TableHead>
               <TableHead className="text-neutral-500">Owner</TableHead>
               <TableHead className="text-neutral-500">Last activity</TableHead>
@@ -703,6 +898,60 @@ export function CrmPage() {
                     )}
                   </TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()}>
+                    {/* Editable inline: vetting happens while scanning the
+                        list, not only inside the drawer.
+
+                        Unless the value is one this build does not know, in
+                        which case it is shown and not offered for editing. A
+                        Select cannot represent a value absent from its items:
+                        it would render with nothing selected, and confirming
+                        the open dropdown by keyboard falls through to the
+                        first option — writing 'not_started' onto exactly the
+                        account whose real state we went out of our way to stop
+                        disguising as 'not_started'. */}
+                    {!isKnownPrep(c.prepStatus) ? (
+                      <Badge
+                        title={prepLabel(c.prepStatus).hint}
+                        className={cn(
+                          "border-0 font-normal",
+                          prepLabel(c.prepStatus).className,
+                        )}
+                      >
+                        {prepLabel(c.prepStatus).label}
+                      </Badge>
+                    ) : (
+                    <Select
+                      value={c.prepStatus}
+                      onValueChange={(v) => patchCompany(c.id, { prepStatus: v })}
+                    >
+                      <SelectTrigger className="h-7 w-28 border-0 bg-transparent px-1.5 text-xs">
+                        <Badge
+                          title={prepLabel(c.prepStatus).hint}
+                          className={cn(
+                            "border-0 font-normal",
+                            prepLabel(c.prepStatus).className,
+                          )}
+                        >
+                          {prepLabel(c.prepStatus).label}
+                        </Badge>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {PREP_OPTIONS.map((p) => (
+                          <SelectItem key={p} value={p}>
+                            {PREP_LABELS[p].label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <OutreachCell
+                      count={c.outreachSentCount}
+                      lastAt={c.lastOutreachAt}
+                    />
+                  </TableCell>
+                  <TableCell onClick={(e) => e.stopPropagation()}>
                     <Select
                       value={c.priority}
                       onValueChange={(v) => patchCompany(c.id, { priority: v })}
@@ -758,6 +1007,7 @@ export function CrmPage() {
           </TableBody>
         </Table>
       </div>
+      )}
 
       {createOpen && (
         <CreateCompanyDialog

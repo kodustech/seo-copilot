@@ -89,8 +89,10 @@ import {
   listActivities,
   COMPANY_STATUSES,
   COMPANY_PRIORITIES,
+  COMPANY_PREP_VALUES,
   type CompanyStatus,
   type CompanyPriority,
+  type CompanyPrep,
 } from "@/lib/crm";
 import { getProductSignals } from "@/lib/crm-signals";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -3549,6 +3551,12 @@ export const updateCrmCompany = tool({
     id: z.string().describe("Company id"),
     status: z.enum(COMPANY_STATUSES as unknown as [string, ...string[]]).optional(),
     priority: z.enum(COMPANY_PRIORITIES as unknown as [string, ...string[]]).optional(),
+    prep_status: z
+      .enum(COMPANY_PREP_VALUES as unknown as [string, ...string[]])
+      .optional()
+      .describe(
+        "Review gate, separate from status: raw (untouched) → enriched (lookup ran) → ready (vetted, may be enrolled) or parked (set aside). Only 'ready' accounts can enter a sequence.",
+      ),
     owner_email: z.string().nullable().optional(),
     org_id: z.string().nullable().optional(),
     deployment: z
@@ -3574,6 +3582,7 @@ export const updateCrmCompany = tool({
     id,
     status,
     priority,
+    prep_status,
     owner_email,
     org_id,
     deployment,
@@ -3591,6 +3600,9 @@ export const updateCrmCompany = tool({
         {
           status: status as CompanyStatus | undefined,
           priority: priority as CompanyPriority | undefined,
+          ...(prep_status !== undefined
+            ? { prepStatus: prep_status as CompanyPrep }
+            : {}),
           ownerEmail: owner_email,
           orgId: org_id,
           ...(deployment !== undefined ? { deployment } : {}),

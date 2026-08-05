@@ -10,6 +10,30 @@ export function ninjapearEnabled(): boolean {
   return Boolean(process.env.NINJAPEAR_API_KEY?.trim());
 }
 
+// ---------------------------------------------------------------------------
+// Call accounting.
+//
+// Every endpoint here is credit-billed and there is no balance endpoint to ask
+// (Proxycurl had one; NinjaPear sunset it, so the only balance is the one in
+// their dashboard). Without a counter the cost of a bulk run is a guess, and
+// guessing it wrong is expensive in one direction only.
+//
+// Counts calls per endpoint. Credits are deliberately NOT derived here: search
+// bills per returned employee and work-email bills differently on hit vs miss,
+// so a call count is a fact and a credit total is an estimate. Callers that
+// want the estimate can apply the rates in the doc comments below.
+// ---------------------------------------------------------------------------
+const callCounts = new Map<string, number>();
+
+/** Calls made per endpoint since the last reset. */
+export function ninjapearCallCounts(): Record<string, number> {
+  return Object.fromEntries(callCounts);
+}
+
+export function resetNinjapearCallCounts(): void {
+  callCounts.clear();
+}
+
 function normalizeWebsite(website: string): string {
   const t = website.trim();
   if (!t) return t;
@@ -37,6 +61,10 @@ async function npFetch<T>(
       url.searchParams.set(k, String(v));
     }
   }
+  // Counted before the request, not after: a call that times out or 500s was
+  // still dispatched, and several endpoints bill on empty results anyway.
+  callCounts.set(apiPath, (callCounts.get(apiPath) ?? 0) + 1);
+
   // Docs: most endpoints 30–60s; use 100s read timeout. Profile can be slow.
   const timeoutMs = opts?.timeoutMs ?? 100_000;
   const res = await fetch(url.toString(), {

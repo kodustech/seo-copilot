@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 import {
+  COMPANY_PREP_VALUES,
   COMPANY_PRIORITIES,
   COMPANY_STATUSES,
   deleteCompany,
@@ -10,6 +11,7 @@ import {
   listComments,
   listContacts,
   updateCompany,
+  type CompanyPrep,
   type CompanyPriority,
   type CompanyStatus,
   type UpdateCompanyInput,
@@ -98,6 +100,11 @@ export async function PATCH(
     updates.status = body.status as CompanyStatus;
   if (typeof body.priority === "string" && PRIORITY_SET.has(body.priority))
     updates.priority = body.priority as CompanyPriority;
+  if (
+    typeof body.prepStatus === "string" &&
+    (COMPANY_PREP_VALUES as string[]).includes(body.prepStatus)
+  )
+    updates.prepStatus = body.prepStatus as CompanyPrep;
   if ("ownerEmail" in body)
     updates.ownerEmail =
       typeof body.ownerEmail === "string" ? body.ownerEmail : null;

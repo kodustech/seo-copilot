@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createContact, getCompany, listContacts, updateContact } from "@/lib/crm";
-import { ninjapearPeople } from "@/lib/research/waterfall";
+import { ninjapearPeopleDetailed } from "@/lib/research/waterfall";
 
 // ---------------------------------------------------------------------------
 // Find the people behind a CRM account.
@@ -82,7 +82,7 @@ export async function enrichCompanyContacts(
     return { ...base, note: "Account has no domain — nothing to look up" };
   }
 
-  const people = await ninjapearPeople(
+  const { people, searched, disabled } = await ninjapearPeopleDetailed(
     company.domain,
     company.name,
     opts.personas?.length ? opts.personas : DEFAULT_PERSONAS,
@@ -112,13 +112,34 @@ export async function enrichCompanyContacts(
   );
 
   if (found.length === 0) {
-    // ninjapearPeople returns [] both when the provider found nobody and when
-    // NINJAPEAR_API_KEY is unset. Saying so beats reporting "0 people found"
-    // for what may be a missing key.
-    return {
-      ...base,
-      note: "No people returned. If this is unexpected, check NINJAPEAR_API_KEY.",
-    };
+    // An empty result has three causes that look identical, and only one of
+    // them is a fact about the company.
+    //
+    // Key missing, or every search threw (rate limit, timeout, provider down —
+    // the waterfall warns and continues, so failures arrive here as an empty
+    // list): nothing was established. Promoting to 'enriched' would be the
+    // review gate lying, and lying durably: the account leaves the queue as
+    // processed work and nobody looks at it again. At scale that is worse —
+    // a bulk run under a missing key would empty the not-started bucket in one pass.
+    // Not hypothetical: NINJAPEAR_API_KEY was absent from production until
+    // today, and the button returned exactly this empty result.
+    if (disabled) {
+      return {
+        ...base,
+        note: "NINJAPEAR_API_KEY is not configured — no lookup ran.",
+      };
+    }
+    if (!searched) {
+      return {
+        ...base,
+        note: "Lookup failed — the provider did not answer. Try again later.",
+      };
+    }
+    // A search came back clean and held nobody. That is a real result about the
+    // domain, and the queue must stop offering this account as unprocessed
+    // work: four of every five t2 accounts land here.
+    await markEnriched(client, companyId);
+    return { ...base, note: "No people found for this domain." };
   }
 
   const existing = await listContacts(client, companyId);
@@ -160,7 +181,32 @@ export async function enrichCompanyContacts(
     result.people.push({ ...personSummary(person), action: "created" });
   }
 
+  await markEnriched(client, companyId);
   return result;
+}
+
+/**
+ * Move the account out of the "nobody has touched this" bucket.
+ *
+ * Only ever promotes from 'not_started'. An account a human already vetted — 'ready' or
+ * 'parked' — must not be dragged backwards by a re-run: the machine's opinion
+ * does not overwrite the human's, which is the entire point of separating the
+ * two states. Best-effort, because failing to update a label is not a reason to
+ * discard contacts that were just written.
+ */
+async function markEnriched(
+  client: SupabaseClient,
+  companyId: string,
+): Promise<void> {
+  try {
+    await client
+      .from("crm_companies")
+      .update({ prep_status: "enriched" })
+      .eq("id", companyId)
+      .eq("prep_status", "not_started");
+  } catch (err) {
+    console.warn("[crm-enrich] failed to mark account enriched:", err);
+  }
 }
 
 function personSummary(p: {
