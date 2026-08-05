@@ -161,14 +161,21 @@ const PREP_OPTIONS: CompanyPrep[] = ["not_started", "enriched", "ready", "parked
  *  rather than masquerading as 'not_started'. The cost of that honesty is that
  *  every render site here has to survive a value with no entry — without this,
  *  one unrecognised row takes the whole accounts page down with a TypeError. */
+function isKnownPrep(p: string): p is CompanyPrep {
+  // Object.hasOwn, not `map[p] === undefined`: PREP_LABELS is an object
+  // literal, so a lookup of 'toString' or 'constructor' returns the inherited
+  // member rather than undefined, and the value would be treated as known.
+  return Object.hasOwn(PREP_LABELS, p);
+}
+
 function prepLabel(p: string): { label: string; className: string; hint: string } {
-  return (
-    PREP_LABELS[p as CompanyPrep] ?? {
-      label: p,
-      className: "bg-red-500/15 text-red-300",
-      hint: "Prep state not recognised by this build",
-    }
-  );
+  return isKnownPrep(p)
+    ? PREP_LABELS[p]
+    : {
+        label: p,
+        className: "bg-red-500/15 text-red-300",
+        hint: "Prep state not recognised by this build",
+      };
 }
 
 /**
@@ -902,7 +909,7 @@ export function CrmPage() {
                         first option — writing 'not_started' onto exactly the
                         account whose real state we went out of our way to stop
                         disguising as 'not_started'. */}
-                    {PREP_LABELS[c.prepStatus as CompanyPrep] === undefined ? (
+                    {!isKnownPrep(c.prepStatus) ? (
                       <Badge
                         title={prepLabel(c.prepStatus).hint}
                         className={cn(
