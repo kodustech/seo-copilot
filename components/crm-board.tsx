@@ -120,17 +120,29 @@ export function CrmBoard({
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
 
-  const byColumn = useMemo(() => {
+  const { byColumn, allColumns } = useMemo(() => {
     const map = new Map<string, CompanyWithIdle[]>();
     for (const col of columns) map.set(col.id, []);
     for (const c of companies) {
       const key = columnOf(c, groupBy);
-      // A value with no column (a status added to the DB but not to the UI)
-      // would otherwise vanish from the board without a trace.
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(c);
     }
-    return map;
+    // A value the UI does not know about — a status added to the database
+    // before it was added here — gets a column of its own rather than being
+    // dropped. Bucketing it without rendering it, which is what a first version
+    // of this did, hides the card just as completely as having no bucket: the
+    // board would quietly hold fewer accounts than the list.
+    const known = new Set(columns.map((c) => c.id));
+    const extra: ColumnDef[] = [...map.keys()]
+      .filter((k) => !known.has(k))
+      .map((k) => ({
+        id: k,
+        label: k,
+        hint: "Value not recognised by the UI — shown so nothing is hidden",
+        className: "bg-red-500/15 text-red-300",
+      }));
+    return { byColumn: map, allColumns: [...columns, ...extra] };
   }, [companies, columns, groupBy]);
 
   function handleDragEnd(event: DragEndEvent) {
@@ -156,7 +168,7 @@ export function CrmBoard({
       onDragCancel={() => setDragging(null)}
     >
       <div className="flex gap-3 overflow-x-auto pb-4">
-        {columns.map((col) => {
+        {allColumns.map((col) => {
           const items = byColumn.get(col.id) ?? [];
           return (
             <BoardColumn
