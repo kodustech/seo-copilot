@@ -185,8 +185,8 @@ export function classifyOrg(facts: OrgFacts, now: Date = new Date()): Classifica
   // --- t1: connected recently, outside the window -------------------------
   if (recent && facts.connectedGit) {
     // Skips happening with no reviews landing means the product is refusing to
-    // run, and it records why. Whether the org ever reviewed before does not
-    // change the message: the email names the skip reason and offers the fix.
+    // run. Whether the org ever reviewed before does not change the message:
+    // name the reason, offer the fix.
     //
     // This used to also require lastReviewAt == null, so it only caught orgs
     // that never got a single review. An org that ran fine and then hit a
@@ -194,21 +194,13 @@ export function classifyOrg(facts: OrgFacts, now: Date = new Date()): Classifica
     // through to went_quiet and read as "lost interest". Five accounts are in
     // that state right now, one of them skipping 777 times in 30 days with 42
     // developers behind it.
-    // The widened path requires a recorded reason. broken_activation exists to
-    // name the reason and offer the fix, so without one there is nothing to
-    // send: the email would read "the reason we record is: ." collect.ts maps
-    // the '(none)' placeholder back to null, and a skip can be logged with no
-    // errorMessage at all, so this is reachable — just not today (0 of the 31
-    // t1 orgs currently skipping without reviews).
     //
-    // The original narrow case keeps firing unconditionally: an org that never
-    // received a single review is broken whether or not the skip was labelled,
-    // and that behaviour predates this change.
-    if (
-      facts.reviews30d === 0 &&
-      facts.skips30d > 0 &&
-      (facts.lastReviewAt == null || facts.topSkipReason != null)
-    ) {
+    // A skip logged without a reason does not make a blocked org a quiet one
+    // either: routing those to went_quiet would send an email claiming nothing
+    // reached the product at all, which is the opposite of true. The missing
+    // reason is a rendering problem, handled where rendering happens —
+    // sequences.ts supplies a fallback for {{skip_reason}}.
+    if (facts.reviews30d === 0 && facts.skips30d > 0) {
       return { tier: "t1", trigger: "broken_activation", health };
     }
     if (facts.reviews30d > 0) {

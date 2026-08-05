@@ -1105,8 +1105,14 @@ export async function enrollFromCrm(
         if (sig) {
           if (sig.tier) templateVars.tier = String(sig.tier);
           if (sig.trigger) templateVars.trigger = String(sig.trigger);
-          if (sig.top_skip_reason)
-            templateVars.skip_reason = String(sig.top_skip_reason);
+          // Always set, even with nothing recorded: the broken_activation
+          // template builds a sentence around this token, and an unset one
+          // renders as "the reason we record is: ." A blocked org is still
+          // blocked when the skip went unlabelled, so it gets the email — just
+          // without a reason to name.
+          templateVars.skip_reason = String(
+            sig.top_skip_reason || "no reason logged on our side",
+          );
           // dev_count is the git-derived team size, never user_count: that is
           // Kodus seats, usually 1, and it used to go out in real emails as if
           // it were the prospect's engineering headcount.
