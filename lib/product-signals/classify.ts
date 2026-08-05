@@ -184,7 +184,23 @@ export function classifyOrg(facts: OrgFacts, now: Date = new Date()): Classifica
 
   // --- t1: connected recently, outside the window -------------------------
   if (recent && facts.connectedGit) {
-    if (facts.reviews30d === 0 && facts.lastReviewAt == null && facts.skips30d > 0) {
+    // Skips happening with no reviews landing means the product is refusing to
+    // run. Whether the org ever reviewed before does not change the message:
+    // name the reason, offer the fix.
+    //
+    // This used to also require lastReviewAt == null, so it only caught orgs
+    // that never got a single review. An org that ran fine and then hit a
+    // config wall — a BYOK key removed, automated review switched off — fell
+    // through to went_quiet and read as "lost interest". Five accounts are in
+    // that state right now, one of them skipping 777 times in 30 days with 42
+    // developers behind it.
+    //
+    // A skip logged without a reason does not make a blocked org a quiet one
+    // either: routing those to went_quiet would send an email claiming nothing
+    // reached the product at all, which is the opposite of true. The missing
+    // reason is a rendering problem, handled where rendering happens —
+    // sequences.ts supplies a fallback for {{skip_reason}}.
+    if (facts.reviews30d === 0 && facts.skips30d > 0) {
       return { tier: "t1", trigger: "broken_activation", health };
     }
     if (facts.reviews30d > 0) {

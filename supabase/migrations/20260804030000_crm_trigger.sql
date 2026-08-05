@@ -15,10 +15,15 @@
 -- Machine-owned, exactly like tier: the sweep writes it, humans do not.
 -- ---------------------------------------------------------------------------
 
-ALTER TABLE crm_companies ADD COLUMN IF NOT EXISTS trigger TEXT;
+-- "trigger" is quoted throughout: it is a reserved word in Postgres, and while
+-- a bare `trigger TEXT` parses inside CREATE TABLE (column-definition context,
+-- which is how product_signals_latest declares its own), ALTER TABLE ADD COLUMN
+-- reads it as the keyword and fails with a syntax error pointing at the *next*
+-- statement, which is a confusing place to start looking.
+ALTER TABLE crm_companies ADD COLUMN IF NOT EXISTS "trigger" TEXT;
 
 CREATE INDEX IF NOT EXISTS crm_companies_trigger_idx
-  ON crm_companies (trigger) WHERE trigger IS NOT NULL;
+  ON crm_companies ("trigger") WHERE "trigger" IS NOT NULL;
 
 -- Backfill from the signals table so filters work before the next sweep runs,
 -- gated the same way the sweep gates itself.
@@ -33,8 +38,8 @@ CREATE INDEX IF NOT EXISTS crm_companies_trigger_idx
 -- No such row exists today (0 of 93 linked companies), which is exactly why
 -- this is worth doing now rather than after one appears.
 UPDATE crm_companies c
-   SET trigger = s.trigger
+   SET "trigger" = s.trigger
   FROM product_signals_latest s
  WHERE s.org_id = c.org_id
    AND s.tier IS NOT NULL
-   AND c.trigger IS DISTINCT FROM s.trigger;
+   AND c."trigger" IS DISTINCT FROM s.trigger;

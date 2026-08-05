@@ -242,8 +242,13 @@ export async function collectOrgFacts(): Promise<CollectedOrg[]> {
       reviews30d: asNumber(r.reviews_30d),
       lastReviewAt: asIso(r.last_review_at),
       skips30d: asNumber(r.skips_30d),
+      // Blank counts as absent, same contract as lib/crm-signals.ts. Callers
+      // check this for truthiness to decide whether there is a reason worth
+      // naming, and an empty string passes a null check while naming nothing.
       topSkipReason:
-        typeof r.top_skip_reason === "string" && r.top_skip_reason !== "(none)"
+        typeof r.top_skip_reason === "string" &&
+        r.top_skip_reason !== "(none)" &&
+        r.top_skip_reason.trim().length > 0
           ? r.top_skip_reason
           : null,
       codeHostMemberCount: asNumberOrNull(r.code_host_member_count),

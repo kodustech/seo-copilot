@@ -384,13 +384,21 @@ async function attachVerifiedLinkedIn(
  * NinjaPear provider: search employees across buyer personas, then resolve
  * person profile (employment) + work emails for kept matches.
  */
-async function ninjapearPeople(
+/** Exported for the CRM enrichment path, which needs the same people lookup
+ *  without a research row behind it.
+ *
+ *  Gated internally rather than at the caller. Every path in here bills:
+ *  searchEmployees is 2 credits plus 1 per employee returned, findWorkEmail 2
+ *  more. The original caller checks ninjapearEnabled() before reaching this
+ *  function, which was fine while it had exactly one; an exported function
+ *  cannot rely on every future caller remembering. */
+export async function ninjapearPeople(
   domain: string,
   companyName: string,
   personas: string[],
   max: number,
 ): Promise<WaterfallPerson[]> {
-  if (max <= 0) return [];
+  if (max <= 0 || !ninjapearEnabled()) return [];
 
   const rolesToTry = [
     ...new Set(
