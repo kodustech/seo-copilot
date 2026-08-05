@@ -104,15 +104,10 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       {
         label: "Convert",
         items: [
-          { href: "/research", label: "ICP lists", icon: Search },
-          { href: "/sequences", label: "Outbound", icon: Workflow },
+          { href: "/research", label: "Search", icon: Search },
+          { href: "/sequences", label: "Campaigns", icon: Workflow },
           { href: "/inbox", label: "Replies", icon: Mail },
           { href: "/crm", label: "Accounts", icon: Building2 },
-          {
-            href: "/outbound-performance",
-            label: "Outbound perf",
-            icon: BarChart3,
-          },
         ],
       },
       {
@@ -147,8 +142,8 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     }
     if (pathname === "/settings") return "Settings";
     if (pathname.startsWith("/manual")) return "SEO & production";
-    if (pathname.startsWith("/sequences")) return "Outbound";
-    if (pathname.startsWith("/research")) return "ICP lists";
+    if (pathname.startsWith("/sequences")) return "Campaigns";
+    if (pathname.startsWith("/research")) return "Search";
     if (pathname.startsWith("/crm") || pathname.startsWith("/outreach"))
       return "Accounts";
     return "";
