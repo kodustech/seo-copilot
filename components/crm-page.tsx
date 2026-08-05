@@ -189,6 +189,140 @@ function prepLabel(p: string): { label: string; className: string; hint: string 
  * "Never" is deliberately not an em dash: an empty cell reads as missing data,
  * and this one is a fact.
  */
+/**
+ * Put one account into a sequence, from the account.
+ *
+ * enrollFromCrm has existed for a while, reachable from an auto-enroll rule and
+ * from the AI tool — that is, by writing a filter or by asking the agent, but
+ * not by a person looking at the account they want to enrol, which is the most
+ * obvious way to want it.
+ *
+ * Gated on prep_status: only a vetted account may be enrolled, the same rule
+ * runAutoEnrollRule applies server-side. Shown-but-disabled rather than hidden,
+ * because "why can't I send to this one" is a question the UI should answer
+ * where it is asked.
+ */
+function EnrollInSequence({
+  company,
+  authFetch,
+  onEnrolled,
+}: {
+  company: CompanyWithIdle;
+  authFetch: (url: string, init?: RequestInit) => Promise<Response>;
+  onEnrolled: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [sequences, setSequences] = useState<
+    { id: string; name: string; status: string }[]
+  >([]);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const ready = company.prepStatus === "ready";
+
+  useEffect(() => {
+    if (!open || sequences.length > 0) return;
+    void (async () => {
+      const res = await authFetch("/api/outreach/sequences");
+      const json = await res.json().catch(() => ({}));
+      setSequences(
+        (json.sequences ?? []).map((s: Record<string, unknown>) => ({
+          id: String(s.id),
+          name: String(s.name),
+          status: String(s.status ?? "draft"),
+        })),
+      );
+    })();
+  }, [open, sequences.length, authFetch]);
+
+  async function enroll(sequenceId: string) {
+    setBusy(true);
+    setNote(null);
+    try {
+      const res = await authFetch(
+        `/api/outreach/sequences/${sequenceId}/enroll`,
+        {
+          method: "POST",
+          body: JSON.stringify({ source: "crm", company_ids: [company.id] }),
+        },
+      );
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setNote(json.error ?? "Enroll failed");
+        return;
+      }
+      // enrollFromCrm reports its own refusals — no contact, no email, already
+      // enrolled elsewhere, account is a paying customer. Reporting "enrolled"
+      // when it enrolled nobody is how you find out days later that a sequence
+      // has been quietly empty.
+      const parts = [
+        `Enrolled ${json.enrolled ?? 0}`,
+        json.skipped ? `skipped ${json.skipped}` : null,
+        json.sequenceStatus !== "active"
+          ? `sequence is ${json.sequenceStatus} — nothing will send until it is active`
+          : null,
+        ...(json.warnings ?? []),
+        ...(json.errors ?? []),
+      ].filter(Boolean);
+      setNote(parts.join(" · "));
+      onEnrolled();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={!ready}
+        onClick={() => setOpen(true)}
+        className="h-7 gap-1.5 border-white/10"
+        title={
+          ready
+            ? "Add this account to a sequence"
+            : `Only a 'ready' account can be enrolled — this one is '${company.prepStatus}'`
+        }
+      >
+        <Mail className="size-3.5" /> Sequence
+      </Button>
+    );
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <div className="flex items-center gap-1">
+        <Select onValueChange={(v) => void enroll(v)} disabled={busy}>
+          <SelectTrigger className="h-7 w-52 border-white/10 bg-neutral-900 text-xs">
+            <SelectValue placeholder={busy ? "Enrolling…" : "Pick a sequence"} />
+          </SelectTrigger>
+          <SelectContent>
+            {sequences.map((s) => (
+              <SelectItem key={s.id} value={s.id}>
+                {s.name}
+                {s.status !== "active" ? ` (${s.status})` : ""}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <button
+          onClick={() => {
+            setOpen(false);
+            setNote(null);
+          }}
+          className="text-neutral-500 hover:text-white"
+        >
+          <X className="size-4" />
+        </button>
+      </div>
+      {note ? (
+        <p className="max-w-64 text-right text-[11px] text-neutral-400">{note}</p>
+      ) : null}
+    </div>
+  );
+}
+
 function OutreachCell({
   count,
   lastAt,
@@ -1540,9 +1674,21 @@ function CompanyDrawer({
               </a>
             )}
           </div>
-          <button onClick={onClose} className="text-neutral-500 hover:text-white">
-            <X className="size-5" />
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            {company ? (
+              <EnrollInSequence
+                company={company}
+                authFetch={authFetch}
+                onEnrolled={() => {
+                  onChanged();
+                  void load();
+                }}
+              />
+            ) : null}
+            <button onClick={onClose} className="text-neutral-500 hover:text-white">
+              <X className="size-5" />
+            </button>
+          </div>
         </div>
 
         {/* Tabs — horizontal scroll when the row overflows (narrow drawer).
