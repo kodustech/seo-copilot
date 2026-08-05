@@ -235,7 +235,8 @@ async function runProductSignalsCron(): Promise<void> {
   console.log(
     `[cron] product-signals: ${res.orgs} orgs, ${res.transitions} transitions, ` +
       `${res.companiesCreated} companies created, ${res.companiesLinked} linked, ` +
-      `${res.tiersUpdated} tiers updated, ${res.contactsCreated} contacts` +
+      `${res.tiersUpdated} tiers updated, ${res.contactsCreated} contacts, ` +
+      `${res.orgsSharingAccount} orgs sharing an account` +
       (res.errors.length ? `, ${res.errors.length} errors: ${res.errors[0]}` : ""),
   );
 }

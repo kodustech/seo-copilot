@@ -21,7 +21,8 @@ import { classifyDomain } from "./domains";
 //   never connected (t2)  → no team-size signal exists and none ever will:
 //                           code_host_member_count is written at onboarding,
 //                           which requires connecting git. So we buy
-//                           firmographics and gate on MIN_EMPLOYEES.
+//                           firmographics and gate on MIN_EMPLOYEES, then on
+//                           company_type (a university is not a lead).
 //
 // The two thresholds are deliberately different numbers for different units.
 // MIN_DEVS counts developers; MIN_EMPLOYEES counts total headcount, which
@@ -51,6 +52,26 @@ export const CRM_CREATE_TIERS = new Set(["t0", "t1", "t2"]);
  *  lookup costs credits. */
 const ENRICHMENT_TTL_DAYS = 180;
 
+/**
+ * NinjaPear `company_type` values that mean "institution, not a company we
+ * sell to". Matched case-insensitively as substrings because the provider
+ * mixes styles ("Educational Institution", "EDUCATIONAL", "NON_PROFIT").
+ *
+ * This exists because domains.ts cannot see universities that do not advertise
+ * themselves in the domain: esprit.tn is a Tunisian engineering school and
+ * matches none of ACADEMIC_PATTERNS, so it reached the gate as "corporate",
+ * cleared MIN_EMPLOYEES on its several-thousand headcount, and became a lead
+ * whose "company" was one student's auto-generated org. Regexes over domains
+ * will always lose that race; the firmographics already say what the place is.
+ */
+const INSTITUTION_COMPANY_TYPES = ["educat", "school", "university", "college"];
+
+function isInstitution(companyType: string | null): boolean {
+  if (!companyType) return false;
+  const t = companyType.toLowerCase();
+  return INSTITUTION_COMPANY_TYPES.some((needle) => t.includes(needle));
+}
+
 export type GateDecision = {
   create: boolean;
   /** Machine-readable reason, stored on the account and in the sweep summary. */
@@ -65,6 +86,7 @@ export type GateDecision = {
     | "enrichment_unavailable"
     | "enrichment_failed"
     | "below_min_employees"
+    | "institution_not_company"
     | "pass_devs"
     | "pass_employees";
   devCount: number | null;
@@ -95,8 +117,8 @@ function isFresh(fetchedAt: string, now: Date): boolean {
  * employee_count field: that field comes back null for companies the dedicated
  * endpoint answers fine (fretebras.com.br → details null, employee-count 819),
  * so gating on details would reject real ICP companies as "no data". Details is
- * richer but is only worth buying once an org has already passed the gate —
- * see getFirmographics.
+ * richer but is only worth buying once an org has already cleared the headcount
+ * bar, which is where it settles the last question — see getFirmographics.
  *
  * Failures and unknown counts are cached as rows with `error` set: otherwise a
  * domain NinjaPear cannot resolve gets retried, and billed, on every sweep.
@@ -149,21 +171,29 @@ export async function getEnrichment(
 
 /**
  * Full firmographics (industry, country, founded year, executives) — 3 credits.
- * Only called for orgs that already passed the gate, since this is CRM decoration
- * rather than a qualification input.
+ * Only called for orgs that already cleared MIN_EMPLOYEES, so the majority of
+ * never-connected signups are rejected on the cheaper employee-count lookup and
+ * never reach this.
+ *
+ * Mostly CRM decoration, with one qualification input: company_type, which is
+ * how an institution gets caught (see INSTITUTION_COMPANY_TYPES). Returns the
+ * company_type it ended up with — cached or fresh — and null when the lookup is
+ * unavailable or failed, which callers must read as "unknown", not "fine".
  */
 export async function getFirmographics(
   client: SupabaseClient,
   domain: string,
   now: Date,
-): Promise<void> {
-  if (!ninjapearEnabled()) return;
+): Promise<{ companyType: string | null } | null> {
   const { data: cached } = await client
     .from("company_enrichment")
-    .select("domain,raw,fetched_at")
+    .select("domain,raw,company_type,fetched_at")
     .eq("domain", domain)
     .maybeSingle();
-  if (cached?.raw && isFresh(cached.fetched_at as string, now)) return;
+  if (cached?.raw && isFresh(cached.fetched_at as string, now)) {
+    return { companyType: (cached.company_type as string | null) ?? null };
+  }
+  if (!ninjapearEnabled()) return null;
 
   try {
     const details = await getCompanyDetails(domain);
@@ -182,8 +212,10 @@ export async function getFirmographics(
         raw: details as unknown as Record<string, unknown>,
       })
       .eq("domain", domain);
+    return { companyType: details.company_type };
   } catch {
-    // Decoration only: never let it fail the sweep.
+    // Never let a decoration lookup fail the sweep.
+    return null;
   }
 }
 
@@ -196,6 +228,12 @@ export async function evaluateOrg(
   tier: string | null,
   opts: {
     enrich: (domain: string) => Promise<EnrichmentRow | null>;
+    /** Company details for the last check before admitting a never-connected
+     *  org. Optional: when absent (or returning null) the institution check is
+     *  skipped and the decision falls back to headcount alone. */
+    firmographics?: (
+      domain: string,
+    ) => Promise<{ companyType: string | null } | null>;
   },
 ): Promise<GateDecision> {
   const { devCount, source } = resolveDevCount(org);
@@ -247,17 +285,24 @@ export async function evaluateOrg(
   if (enrichment.error || enrichment.employee_count == null) {
     return { ...base, create: false, reason: "enrichment_failed" };
   }
-  return enrichment.employee_count >= MIN_EMPLOYEES
-    ? {
-        ...base,
-        create: true,
-        reason: "pass_employees",
-        employeeCount: enrichment.employee_count,
-      }
-    : {
-        ...base,
-        create: false,
-        reason: "below_min_employees",
-        employeeCount: enrichment.employee_count,
-      };
+  const employeeCount = enrichment.employee_count;
+  if (employeeCount < MIN_EMPLOYEES) {
+    return { ...base, create: false, reason: "below_min_employees", employeeCount };
+  }
+
+  // Big headcount is not the same as a company. Universities, schools and the
+  // like clear MIN_EMPLOYEES trivially, and their signups are students on a
+  // personal project — the population the domain rules are supposed to catch
+  // and structurally cannot when the domain gives nothing away.
+  const details = await opts.firmographics?.(domain);
+  if (isInstitution(details?.companyType ?? null)) {
+    return {
+      ...base,
+      create: false,
+      reason: "institution_not_company",
+      employeeCount,
+    };
+  }
+
+  return { ...base, create: true, reason: "pass_employees", employeeCount };
 }

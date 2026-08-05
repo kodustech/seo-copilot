@@ -7,9 +7,12 @@
  *   npx tsx --env-file=.env scripts/cleanup-product-leads.ts --enrich
  *   npx tsx --env-file=.env scripts/cleanup-product-leads.ts --enrich --apply
  *
- * --enrich  allows NinjaPear lookups for t2 accounts (2 credits on a cache
- *           miss, free on a hit). Without it, t2 accounts with no cached
- *           firmographics are reported as "undecided", not proposed for deletion.
+ * --enrich  allows NinjaPear lookups for t2 accounts (2 credits for the
+ *           employee count on a cache miss, plus 3 for company details on the
+ *           ones that clear MIN_EMPLOYEES; free on a hit). Without it, t2
+ *           accounts with no cached firmographics are reported as "undecided",
+ *           not proposed for deletion, and the institution check falls back to
+ *           whatever company_type is already cached.
  * --apply   actually deletes the accounts in the "remove" bucket.
  *
  * Never proposes removing an account a human has invested in: anything past
@@ -24,6 +27,7 @@ import {
   CRM_CREATE_TIERS,
   evaluateOrg,
   getEnrichment,
+  getFirmographics,
 } from "../lib/product-signals/icp-gate";
 import { getSupabaseServiceClient } from "../lib/supabase-server";
 
@@ -108,6 +112,18 @@ async function main() {
     return getEnrichment(client, domain, now);
   };
 
+  // Institution check. Without --enrich this reads company_type from cache only
+  // and returns null (= unknown) on a miss, so the cleanup never buys details.
+  const firmographics = async (domain: string) => {
+    if (ENRICH) return getFirmographics(client, domain, now);
+    const { data: cached } = await client
+      .from("company_enrichment")
+      .select("company_type")
+      .eq("domain", domain)
+      .maybeSingle();
+    return cached ? { companyType: (cached.company_type as string | null) ?? null } : null;
+  };
+
   const keep: string[] = [];
   const pinned: string[] = [];
   const remove: Array<{ row: Row; reason: string }> = [];
@@ -134,7 +150,7 @@ async function main() {
     }
 
     const cls = classifyOrg(org, now);
-    const decision = await evaluateOrg(org, cls.tier, { enrich });
+    const decision = await evaluateOrg(org, cls.tier, { enrich, firmographics });
 
     if (cls.tier === "customer") {
       // Never judge a paying org, whatever the stored row.tier says. The pin

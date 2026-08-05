@@ -7,8 +7,9 @@
 // by editing this file alone.
 //
 // Tiers (attack order by demonstrated intent, see growth/context/growth/gtm.md):
-//   t0  open decision window: in cloud trial, trial just expired, or hitting
-//       the free plan limit. Deciding right now whether to pay.
+//   t0  open decision window: connected git AND in cloud trial, trial just
+//       expired, or hitting the free plan limit. Deciding right now whether to
+//       pay. Without a connected repo there is nothing to decide — see below.
 //   t1  connected git in the last 90 days, outside the window. Either broken
 //       activation (no review ever delivered) or healthy free usage.
 //   t2  signed up recently but never connected git.
@@ -152,27 +153,37 @@ export function classifyOrg(facts: OrgFacts, now: Date = new Date()): Classifica
   // say". An account in trial with nothing delivered stays t0 — the trial
   // clock is burning while the product looks broken, which makes it the most
   // urgent touch of all — but the message is rescue, not sales.
-  if (facts.subscriptionStatus === "trial") {
-    const ended = daysBetween(facts.trialEnd, now);
-    // trialEnd in the future (negative days) or unknown → in trial.
-    // Recently ended → still inside the grace window.
-    if (ended == null || ended <= TRIAL_GRACE_DAYS) {
-      const broken = facts.lastReviewAt == null;
-      return {
-        tier: "t0",
-        trigger: broken
-          ? "trial_broken"
-          : ended != null && ended > 0
-            ? "trial_just_expired"
-            : "cloud_trial",
-        health,
-      };
+  //
+  // The whole window is conditional on connectedGit. A licence row says a plan
+  // exists, not that anyone is deciding anything: every cloud signup gets one,
+  // so an org that never connected a repo would otherwise arrive here as
+  // t0/trial_broken — "the trial is broken" when in truth it never started.
+  // Those belong in t2 (recent, never connected) or t3, and the difference is
+  // not cosmetic: t0 is the top of the outbound queue and gets the rescue
+  // message, which reads as nonsense to someone who never onboarded.
+  if (facts.connectedGit) {
+    if (facts.subscriptionStatus === "trial") {
+      const ended = daysBetween(facts.trialEnd, now);
+      // trialEnd in the future (negative days) or unknown → in trial.
+      // Recently ended → still inside the grace window.
+      if (ended == null || ended <= TRIAL_GRACE_DAYS) {
+        const broken = facts.lastReviewAt == null;
+        return {
+          tier: "t0",
+          trigger: broken
+            ? "trial_broken"
+            : ended != null && ended > 0
+              ? "trial_just_expired"
+              : "cloud_trial",
+          health,
+        };
+      }
     }
-  }
-  if (facts.subscriptionStatus === "expired") {
-    const ended = daysBetween(facts.trialEnd, now);
-    if (ended != null && ended >= 0 && ended <= TRIAL_GRACE_DAYS) {
-      return { tier: "t0", trigger: "trial_just_expired", health };
+    if (facts.subscriptionStatus === "expired") {
+      const ended = daysBetween(facts.trialEnd, now);
+      if (ended != null && ended >= 0 && ended <= TRIAL_GRACE_DAYS) {
+        return { tier: "t0", trigger: "trial_just_expired", health };
+      }
     }
   }
   if (hitsFreeLimit(facts)) {
