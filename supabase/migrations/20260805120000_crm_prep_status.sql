@@ -23,21 +23,40 @@
 -- re-examined every week, which is how a review queue quietly stops being used.
 -- ---------------------------------------------------------------------------
 
+-- Every statement below is written to be correct whether this file has run
+-- before or not, and specifically whether it ran in its first form, where the
+-- initial state was called 'raw'.
+--
+-- Supabase records migrations by version, so a file edited after some
+-- environment applied it never runs again there. An earlier revision of this
+-- one shipped 'raw' as the default and inside the CHECK constraint; had it been
+-- applied anywhere, an in-place rename would have left that environment
+-- rejecting every write of 'not_started' at the constraint while the code
+-- queried for a value the column could never hold. No environment did apply it
+-- — production shows all three of this batch pending — but the fix is cheaper
+-- than the verification, so the file simply does not depend on the answer.
 ALTER TABLE crm_companies
   ADD COLUMN IF NOT EXISTS prep_status TEXT NOT NULL DEFAULT 'not_started';
 
-DO $$
-BEGIN
-  ALTER TABLE crm_companies
-    ADD CONSTRAINT crm_companies_prep_status_check
-    CHECK (prep_status IN ('not_started', 'enriched', 'ready', 'parked'));
-EXCEPTION
-  WHEN duplicate_object THEN NULL;
-END $$;
+ALTER TABLE crm_companies
+  ALTER COLUMN prep_status SET DEFAULT 'not_started';
+
+UPDATE crm_companies SET prep_status = 'not_started' WHERE prep_status = 'raw';
+
+-- Dropped and recreated rather than added-if-absent: an existing constraint
+-- here is the *old* one, listing 'raw', and keeping it is the failure.
+ALTER TABLE crm_companies
+  DROP CONSTRAINT IF EXISTS crm_companies_prep_status_check;
+ALTER TABLE crm_companies
+  ADD CONSTRAINT crm_companies_prep_status_check
+  CHECK (prep_status IN ('not_started', 'enriched', 'ready', 'parked'));
 
 -- Partial index: the review queue is a filter on the two unfinished states, and
 -- 'ready' is read on every auto-enroll run. Nothing ever queries for 'parked'.
-CREATE INDEX IF NOT EXISTS crm_companies_prep_status_idx
+-- Same reasoning as the constraint — an index left over from the first revision
+-- has 'raw' in its WHERE clause and would never match a row again.
+DROP INDEX IF EXISTS crm_companies_prep_status_idx;
+CREATE INDEX crm_companies_prep_status_idx
   ON crm_companies (prep_status)
   WHERE prep_status IN ('not_started', 'enriched', 'ready');
 
