@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils";
 import {
   COMPANY_PRIORITIES,
   COMPANY_STATUSES,
+  type CompanyPrep,
   type CompanyPriority,
   type CompanyStatus,
   type CompanyWithIdle,
@@ -121,6 +122,68 @@ const TIER_LABELS: Record<string, { label: string; className: string; hint: stri
   },
 };
 const TIER_OPTIONS = ["t0", "t1", "t2", "t3", "customer"] as const;
+
+// Preparation state — a different axis from status. Status says where the
+// relationship stands; this says whether the account has been vetted enough to
+// be worked at all. Only `ready` can enter a sequence.
+const PREP_LABELS: Record<
+  CompanyPrep,
+  { label: string; className: string; hint: string }
+> = {
+  raw: {
+    label: "Raw",
+    className: "bg-neutral-700/40 text-neutral-400",
+    hint: "Came from the sweep — nobody has looked at it",
+  },
+  enriched: {
+    label: "Enriched",
+    className: "bg-indigo-500/20 text-indigo-300",
+    hint: "Lookup ran. Waiting on you to vet it",
+  },
+  ready: {
+    label: "Ready",
+    className: "bg-emerald-500/20 text-emerald-300",
+    hint: "Vetted — can be enrolled in a sequence",
+  },
+  parked: {
+    label: "Parked",
+    className: "bg-neutral-800/60 text-neutral-500",
+    hint: "Vetted and set aside — not worth working",
+  },
+};
+const PREP_OPTIONS: CompanyPrep[] = ["raw", "enriched", "ready", "parked"];
+
+/**
+ * "Have I written to this account, and when?"
+ *
+ * Its own column rather than a reading of Last activity, because Last activity
+ * moves on every signal sweep — of the 500 most recent activities, 342 are
+ * sweep signals. An account contacted last week and one never touched show the
+ * same Last activity, which is precisely why this was unanswerable before.
+ *
+ * "Never" is deliberately not an em dash: an empty cell reads as missing data,
+ * and this one is a fact.
+ */
+function OutreachCell({
+  count,
+  lastAt,
+}: {
+  count: number;
+  lastAt: string | null;
+}) {
+  if (!count || !lastAt) {
+    return <span className="text-sm text-neutral-600">Never</span>;
+  }
+  const days = Math.floor(
+    (Date.now() - new Date(lastAt).getTime()) / 86_400_000,
+  );
+  const when = days <= 0 ? "today" : days === 1 ? "1d ago" : `${days}d ago`;
+  return (
+    <span className="whitespace-nowrap text-sm text-neutral-300">
+      {count} sent <span className="text-neutral-500">· {when}</span>
+    </span>
+  );
+}
 
 // Where the account came from (crm_companies.source), shown as "Channel".
 const CHANNEL_LABELS: Record<string, string> = {
@@ -250,6 +313,7 @@ export function CrmPage() {
 
   const [statusFilter, setStatusFilter] = useState<CompanyStatus | "all">("all");
   const [tierFilter, setTierFilter] = useState<string>("all");
+  const [prepFilter, setPrepFilter] = useState<string>("all");
   const [channelFilter, setChannelFilter] = useState<string>("all");
   const [deploymentFilter, setDeploymentFilter] = useState<string>("all");
   const [ownerFilter, setOwnerFilter] = useState<string>("all");
@@ -318,6 +382,9 @@ export function CrmPage() {
       const params = new URLSearchParams();
       if (statusFilter !== "all") params.set("status", statusFilter);
       if (tierFilter !== "all") params.set("tier", tierFilter);
+      // "todo" is the review queue: the two states nobody has judged yet.
+      if (prepFilter === "todo") params.set("prepStatus", "raw,enriched");
+      else if (prepFilter !== "all") params.set("prepStatus", prepFilter);
       if (channelFilter !== "all") params.set("source", channelFilter);
       if (deploymentFilter !== "all") params.set("deployment", deploymentFilter);
       if (ownerFilter !== "all") params.set("ownerEmail", ownerFilter);
@@ -333,7 +400,7 @@ export function CrmPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, statusFilter, tierFilter, channelFilter, deploymentFilter, ownerFilter, staleOnly, search, authFetch]);
+  }, [token, statusFilter, tierFilter, prepFilter, channelFilter, deploymentFilter, ownerFilter, staleOnly, search, authFetch]);
 
   useEffect(() => {
     void load();
@@ -534,6 +601,22 @@ export function CrmPage() {
             ))}
           </SelectContent>
         </Select>
+        <Select value={prepFilter} onValueChange={setPrepFilter}>
+          <SelectTrigger className="h-8 w-40 border-white/10 bg-neutral-900 text-sm">
+            <SelectValue placeholder="Prep" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All prep states</SelectItem>
+            {/* The review queue, as one click: everything the machine has
+                processed and a human has not yet judged. */}
+            <SelectItem value="todo">To review (raw + enriched)</SelectItem>
+            {PREP_OPTIONS.map((p) => (
+              <SelectItem key={p} value={p}>
+                {PREP_LABELS[p].label} — {PREP_LABELS[p].hint}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Select value={channelFilter} onValueChange={setChannelFilter}>
           <SelectTrigger className="h-8 w-36 border-white/10 bg-neutral-900 text-sm">
             <SelectValue placeholder="Channel" />
@@ -596,6 +679,8 @@ export function CrmPage() {
               <TableHead className="text-neutral-500">Company</TableHead>
               <TableHead className="text-neutral-500">Status</TableHead>
               <TableHead className="text-neutral-500">Tier</TableHead>
+              <TableHead className="text-neutral-500">Prep</TableHead>
+              <TableHead className="text-neutral-500">Outreach</TableHead>
               <TableHead className="text-neutral-500">Priority</TableHead>
               <TableHead className="text-neutral-500">Owner</TableHead>
               <TableHead className="text-neutral-500">Last activity</TableHead>
@@ -701,6 +786,39 @@ export function CrmPage() {
                     ) : (
                       <span className="text-sm text-neutral-600">—</span>
                     )}
+                  </TableCell>
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    {/* Editable inline: vetting happens while scanning the
+                        list, not only inside the drawer. */}
+                    <Select
+                      value={c.prepStatus}
+                      onValueChange={(v) => patchCompany(c.id, { prepStatus: v })}
+                    >
+                      <SelectTrigger className="h-7 w-28 border-0 bg-transparent px-1.5 text-xs">
+                        <Badge
+                          title={PREP_LABELS[c.prepStatus].hint}
+                          className={cn(
+                            "border-0 font-normal",
+                            PREP_LABELS[c.prepStatus].className,
+                          )}
+                        >
+                          {PREP_LABELS[c.prepStatus].label}
+                        </Badge>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {PREP_OPTIONS.map((p) => (
+                          <SelectItem key={p} value={p}>
+                            {PREP_LABELS[p].label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </TableCell>
+                  <TableCell>
+                    <OutreachCell
+                      count={c.outreachSentCount}
+                      lastAt={c.lastOutreachAt}
+                    />
                   </TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()}>
                     <Select

@@ -112,6 +112,10 @@ export async function enrichCompanyContacts(
   );
 
   if (found.length === 0) {
+    // Still counts as enriched: the lookup ran and established there is nothing
+    // to find. That is a result, and the review queue must not keep offering
+    // this account as unprocessed work — 4 of every 5 t2 accounts land here.
+    await markEnriched(client, companyId);
     // ninjapearPeople returns [] both when the provider found nobody and when
     // NINJAPEAR_API_KEY is unset. Saying so beats reporting "0 people found"
     // for what may be a missing key.
@@ -160,7 +164,32 @@ export async function enrichCompanyContacts(
     result.people.push({ ...personSummary(person), action: "created" });
   }
 
+  await markEnriched(client, companyId);
   return result;
+}
+
+/**
+ * Move the account out of the "nobody has touched this" bucket.
+ *
+ * Only ever promotes from 'raw'. An account a human already vetted — 'ready' or
+ * 'parked' — must not be dragged backwards by a re-run: the machine's opinion
+ * does not overwrite the human's, which is the entire point of separating the
+ * two states. Best-effort, because failing to update a label is not a reason to
+ * discard contacts that were just written.
+ */
+async function markEnriched(
+  client: SupabaseClient,
+  companyId: string,
+): Promise<void> {
+  try {
+    await client
+      .from("crm_companies")
+      .update({ prep_status: "enriched" })
+      .eq("id", companyId)
+      .eq("prep_status", "raw");
+  } catch (err) {
+    console.warn("[crm-enrich] failed to mark account enriched:", err);
+  }
 }
 
 function personSummary(p: {

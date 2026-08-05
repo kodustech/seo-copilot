@@ -69,7 +69,28 @@ export type ActivityKind =
   | "note"
   | "property_change"
   /** Product-signals sweep recorded a tier/trigger transition. */
-  | "signal";
+  | "signal"
+  /** A human moved the account through the review gate (raw → ready etc.). */
+  | "prep_change"
+  /** An outbound message actually went out — email or LinkedIn. */
+  | "outreach_sent";
+
+/**
+ * How far an account has come through preparation, which is a different axis
+ * from `status`. Status says where the relationship stands; this says whether
+ * the account has been vetted enough to work at all.
+ *
+ * Only `ready` may be enrolled in a sequence. `parked` is a decision, not a
+ * failure — it is what keeps the review queue finite.
+ */
+export type CompanyPrep = "raw" | "enriched" | "ready" | "parked";
+
+export const COMPANY_PREP_VALUES: CompanyPrep[] = [
+  "raw",
+  "enriched",
+  "ready",
+  "parked",
+];
 
 export type CrmCompany = {
   id: string;
@@ -93,8 +114,16 @@ export type CrmCompany = {
   /** Outbound tier (t0..t3 | customer). Machine-owned: written by the
    *  product-signals sweep, never edited by hand. */
   tier: string | null;
+  /** Why the account sits in that tier — machine-owned, like tier. */
+  trigger: string | null;
   deployment: CompanyDeployment | null;
   source: CompanySource;
+  /** Human-owned: the review gate in front of every sequence. */
+  prepStatus: CompanyPrep;
+  /** Last time an outbound message actually went out to this account.
+   *  Distinct from lastActivityAt, which the signal sweep moves constantly. */
+  lastOutreachAt: string | null;
+  outreachSentCount: number;
   notes: string | null;
   lastActivityAt: string | null;
   createdByEmail: string | null;
@@ -165,7 +194,11 @@ export type CreateCompanyInput = {
 
 export type UpdateCompanyInput = Partial<
   Omit<CreateCompanyInput, "createdByEmail" | "source">
->;
+> & {
+  /** Not part of CreateCompanyInput on purpose: every account starts at 'raw'.
+   *  The enrichment run sets 'enriched'; only a human sets 'ready' or 'parked'. */
+  prepStatus?: CompanyPrep;
+};
 
 export type CompanyFilters = {
   status?: CompanyStatus | CompanyStatus[];
@@ -180,6 +213,8 @@ export type CompanyFilters = {
   trigger?: string | string[];
   deployment?: CompanyDeployment;
   source?: CompanySource;
+  /** The review queue is a filter on this: prepStatus: ["raw", "enriched"]. */
+  prepStatus?: CompanyPrep | CompanyPrep[];
   search?: string;
   staleOnly?: boolean;
   limit?: number;
@@ -216,8 +251,12 @@ type CompanyRow = {
   enrichment: Record<string, unknown> | null;
   properties?: Record<string, unknown> | null;
   tier?: string | null;
+  trigger?: string | null;
   deployment?: CompanyDeployment | null;
   source: CompanySource | null;
+  prep_status?: string | null;
+  last_outreach_at?: string | null;
+  outreach_sent_count?: number | null;
   notes: string | null;
   last_activity_at: string | null;
   created_by_email: string | null;
@@ -245,8 +284,16 @@ function rowToCompany(row: CompanyRow): CrmCompany {
     enrichment: row.enrichment ?? {},
     properties: normalizeProperties(row.properties),
     tier: row.tier ?? null,
+    trigger: row.trigger ?? null,
     deployment: row.deployment ?? null,
     source: row.source ?? "manual",
+    // Rows written before the column existed read as null; 'raw' is the honest
+    // default — nobody has looked at them either.
+    prepStatus: (COMPANY_PREP_VALUES as string[]).includes(row.prep_status ?? "")
+      ? (row.prep_status as CompanyPrep)
+      : "raw",
+    lastOutreachAt: row.last_outreach_at ?? null,
+    outreachSentCount: Number(row.outreach_sent_count ?? 0),
     notes: row.notes,
     lastActivityAt: row.last_activity_at,
     createdByEmail: row.created_by_email,
@@ -451,6 +498,11 @@ export async function listCompanies(
   }
   if (filters.deployment) query = query.eq("deployment", filters.deployment);
   if (filters.source) query = query.eq("source", filters.source);
+  if (filters.prepStatus) {
+    if (Array.isArray(filters.prepStatus))
+      query = query.in("prep_status", filters.prepStatus);
+    else query = query.eq("prep_status", filters.prepStatus);
+  }
   if (filters.search && filters.search.trim()) {
     const term = `%${filters.search.trim()}%`;
     query = query.or(
@@ -579,6 +631,12 @@ export async function updateCompany(
   if ("enrichment" in updates && updates.enrichment !== undefined)
     patch.enrichment = updates.enrichment;
   if ("notes" in updates) patch.notes = trimOrNull(updates.notes);
+  if ("prepStatus" in updates && updates.prepStatus !== undefined) {
+    if (!COMPANY_PREP_VALUES.includes(updates.prepStatus)) {
+      throw new Error(`Invalid prepStatus: ${updates.prepStatus}`);
+    }
+    patch.prep_status = updates.prepStatus;
+  }
 
   let propertyDiff: {
     key: string;
@@ -625,6 +683,16 @@ export async function updateCompany(
     await logActivity(client, id, "status_change", {
       summary: `Status: ${prev.status} → ${next.status}`,
       meta: { from: prev.status, to: next.status },
+      actorEmail,
+    });
+  }
+  // Vetting decisions belong on the timeline: "ready" is the claim that someone
+  // checked this account, and a claim with no author and no date is not worth
+  // much when the sequence turns out to have gone to the wrong company.
+  if (patch.prep_status && next.prepStatus !== prev.prepStatus) {
+    await logActivity(client, id, "prep_change", {
+      summary: `Prep: ${prev.prepStatus} → ${next.prepStatus}`,
+      meta: { from: prev.prepStatus, to: next.prepStatus },
       actorEmail,
     });
   }

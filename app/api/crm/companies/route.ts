@@ -2,12 +2,14 @@ import { NextResponse } from "next/server";
 
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 import {
+  COMPANY_PREP_VALUES,
   COMPANY_PRIORITIES,
   COMPANY_STATUSES,
   createCompany,
   getCompanyStats,
   listCompanies,
   type CompanyFilters,
+  type CompanyPrep,
   type CompanyPriority,
   type CompanyStatus,
 } from "@/lib/crm";
@@ -48,6 +50,8 @@ export async function GET(req: Request) {
     const deployment = url.searchParams.get("deployment");
     const source = url.searchParams.get("source");
     const search = url.searchParams.get("search");
+    // Comma-separated so the review queue ("raw,enriched") is one request.
+    const prepStatus = url.searchParams.get("prepStatus");
     const staleOnly = url.searchParams.get("staleOnly") === "true";
     const limit = Number(url.searchParams.get("limit")) || 300;
 
@@ -61,6 +65,19 @@ export async function GET(req: Request) {
       filters.deployment = deployment;
     if (source) filters.source = source as CompanyFilters["source"];
     if (search) filters.search = search;
+    if (prepStatus) {
+      // Unknown values are dropped rather than passed through: an unrecognised
+      // prep state would otherwise silently match nothing and read as "no
+      // accounts" instead of "bad filter".
+      const wanted = prepStatus
+        .split(",")
+        .map((p) => p.trim())
+        .filter((p): p is CompanyPrep =>
+          (COMPANY_PREP_VALUES as string[]).includes(p),
+        );
+      if (wanted.length === 1) filters.prepStatus = wanted[0];
+      else if (wanted.length > 1) filters.prepStatus = wanted;
+    }
 
     const [companies, stats] = await Promise.all([
       listCompanies(client, filters),

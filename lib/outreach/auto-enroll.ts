@@ -226,6 +226,15 @@ export async function runAutoEnrollRule(
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const batch = await listCompanies(client, {
       ...rule.filters,
+      // Non-negotiable, and deliberately not a rule setting: only an account a
+      // human vetted may be enrolled. The filters a rule carries describe *who*
+      // to reach; this describes whether we are entitled to reach them yet.
+      //
+      // Without it a rule sends to whatever the sweep dropped in overnight. One
+      // account here signed up on a starian.com address while the people are at
+      // Checklist Fácil — no filter over tier and trigger would have caught it,
+      // and the sequence would have written to the wrong company.
+      prepStatus: "ready",
       limit: PAGE,
       offset: page * PAGE,
     });

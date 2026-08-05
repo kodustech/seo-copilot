@@ -1738,6 +1738,14 @@ export async function completeTask(
 
   const enrollment = await advanceEnrollment(client, task.enrollmentId);
 
+  if (input.outcome === "sent") {
+    await recordOutreachOnCrm(client, enrollment, {
+      channel: task.channel,
+      sentAt: now,
+      actorEmail: input.sentByEmail ?? null,
+    });
+  }
+
   // best-effort prospect status
   if (enrollment?.outreachProspectId && input.outcome === "sent") {
     try {
@@ -1754,6 +1762,63 @@ export async function completeTask(
     task: mapTask(updated as Record<string, unknown>),
     enrollment,
   };
+}
+
+/**
+ * Write a send onto the CRM account it went to.
+ *
+ * Until this existed the CRM could not answer "have I already written to this
+ * account". The fact was in outreach_send_tasks the whole time, but reaching it
+ * meant joining through the enrollment, so in practice nobody could tell at a
+ * glance — and the accounts list showed a contacted account and an untouched one
+ * identically.
+ *
+ * Best-effort by design: a failure here must never turn a delivered email into a
+ * failed task. The send already happened; losing the bookkeeping is the smaller
+ * loss, and the send task itself remains the source of truth.
+ *
+ * Only fires for enrollments that carry a crm_company_id. The research-table
+ * sequences do not, which is correct — those prospects are not CRM accounts.
+ */
+async function recordOutreachOnCrm(
+  client: SupabaseClient,
+  enrollment: OutreachEnrollment | null,
+  opts: { channel: string; sentAt: string; actorEmail?: string | null },
+): Promise<void> {
+  const companyId = enrollment?.crmCompanyId;
+  if (!companyId) return;
+  try {
+    const { logActivity } = await import("@/lib/crm");
+    const who = enrollment?.contactName ?? enrollment?.contactEmail ?? "contact";
+    await logActivity(client, companyId, "outreach_sent", {
+      summary: `${opts.channel === "linkedin" ? "LinkedIn" : "Email"} sent to ${who}`,
+      meta: {
+        channel: opts.channel,
+        enrollment_id: enrollment?.id,
+        sequence_id: enrollment?.sequenceId,
+        contact_email: enrollment?.contactEmail,
+      },
+      actorEmail: opts.actorEmail ?? null,
+    });
+
+    // Denormalised onto the account so the list can show "2 sent · 3d ago"
+    // without walking the activity table. last_activity_at cannot serve here:
+    // the signal sweep moves it every few hours on every account.
+    const { data: current } = await client
+      .from("crm_companies")
+      .select("outreach_sent_count")
+      .eq("id", companyId)
+      .maybeSingle();
+    await client
+      .from("crm_companies")
+      .update({
+        last_outreach_at: opts.sentAt,
+        outreach_sent_count: Number(current?.outreach_sent_count ?? 0) + 1,
+      })
+      .eq("id", companyId);
+  } catch (err) {
+    console.warn("[outreach] failed to record send on CRM account:", err);
+  }
 }
 
 async function advanceEnrollment(
@@ -2227,6 +2292,13 @@ async function sendDueEmailTask(
     .eq("id", task.id);
 
   await advanceEnrollment(client, enrollment.id);
+
+  await recordOutreachOnCrm(client, enrollment, {
+    channel: task.channel,
+    sentAt: now,
+    // Auto-sent: no human pressed anything, so the timeline says so.
+    actorEmail: null,
+  });
 
   if (enrollment.outreachProspectId) {
     try {
