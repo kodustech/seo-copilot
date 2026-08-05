@@ -226,9 +226,15 @@ export async function runAutoEnrollRule(
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const batch = await listCompanies(client, {
       ...rule.filters,
-      // Non-negotiable, and deliberately not a rule setting: only an account a
-      // human vetted may be enrolled. The filters a rule carries describe *who*
-      // to reach; this describes whether we are entitled to reach them yet.
+      // Only an account a human vetted may be enrolled. The filters a rule
+      // carries describe *who* to reach; this describes whether we are entitled
+      // to reach them yet.
+      //
+      // enrollFromCrm now refuses unvetted accounts itself, so this is no
+      // longer the only place the rule holds — it stays because filtering in
+      // SQL keeps the scan from spending its per-run cap on accounts that would
+      // be rejected one call later, and because a rule that "matched 20,
+      // enrolled 0" every hour reads as broken.
       //
       // Without it a rule sends to whatever the sweep dropped in overnight. One
       // account here signed up on a starian.com address while the people are at

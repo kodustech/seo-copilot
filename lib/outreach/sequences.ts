@@ -1080,6 +1080,25 @@ export async function enrollFromCrm(
       }
       companyName = company.name;
 
+      // Suppression: only a vetted account may be contacted.
+      //
+      // This lives here, not in the callers, because it is the one rule that
+      // must hold no matter how the enrollment was requested. It used to live
+      // only in runAutoEnrollRule's listCompanies filter, which meant the AI
+      // tool and any direct POST to the enroll route walked straight past it —
+      // and a disabled button in the drawer was the whole of the enforcement.
+      //
+      // 'parked' is the sharpest case: it is an explicit decision not to
+      // contact this account, and ignoring it is worse than sending to one
+      // nobody has looked at yet.
+      if (company.prepStatus !== "ready") {
+        skipped += 1;
+        errors.push(
+          `${company.name}: prep is '${company.prepStatus}' — only 'ready' accounts can be enrolled`,
+        );
+        continue;
+      }
+
       // Suppression: never sequence paying or closed accounts.
       if (["customer", "churned", "lost"].includes(company.status)) {
         skipped += 1;

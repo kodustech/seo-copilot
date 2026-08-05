@@ -197,10 +197,11 @@ function prepLabel(p: string): { label: string; className: string; hint: string 
  * not by a person looking at the account they want to enrol, which is the most
  * obvious way to want it.
  *
- * Gated on prep_status: only a vetted account may be enrolled, the same rule
- * runAutoEnrollRule applies server-side. Shown-but-disabled rather than hidden,
- * because "why can't I send to this one" is a question the UI should answer
- * where it is asked.
+ * Gated on prep_status: only a vetted account may be enrolled. The button being
+ * disabled is the courtesy; enrollFromCrm refuses unvetted accounts itself, so
+ * the gate does not depend on this component. Shown-but-disabled rather than
+ * hidden, because "why can.t I send to this one" is a question the UI should
+ * answer where it is asked.
  */
 function EnrollInSequence({
   company,
