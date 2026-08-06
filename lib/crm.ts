@@ -126,6 +126,9 @@ export type CrmCompany = {
   outreachSentCount: number;
   notes: string | null;
   lastActivityAt: string | null;
+  /** Set when a human excluded the account. The row stays — it is what stops
+   *  the product-signals sweep from creating the account again. */
+  archivedAt: string | null;
   createdByEmail: string | null;
   createdAt: string;
   updatedAt: string;
@@ -140,6 +143,9 @@ export type CrmContact = {
   phone: string | null;
   linkedin: string | null;
   isPrimary: boolean;
+  /** Set when a human excluded the person. Kept so the people lookup can see
+   *  them and skip them instead of discovering them again. */
+  archivedAt: string | null;
   createdAt: string;
 };
 
@@ -198,6 +204,9 @@ export type UpdateCompanyInput = Partial<
   /** Not part of CreateCompanyInput on purpose: every account starts at 'not_started'.
    *  The enrichment run sets 'enriched'; only a human sets 'ready' or 'parked'. */
   prepStatus?: CompanyPrep;
+  /** false restores an excluded account. Prefer archiveCompany() to exclude
+   *  one — this exists so the same PATCH that edits an account can undo it. */
+  archived?: boolean;
 };
 
 export type CompanyFilters = {
@@ -217,6 +226,10 @@ export type CompanyFilters = {
   prepStatus?: CompanyPrep | CompanyPrep[];
   search?: string;
   staleOnly?: boolean;
+  /** Archived accounts are excluded everywhere by default — they are the ones
+   *  a human removed, and every list in the product is a working list. Only a
+   *  screen whose subject *is* the exclusions should pass this. */
+  includeArchived?: boolean;
   limit?: number;
   offset?: number;
 };
@@ -259,6 +272,7 @@ type CompanyRow = {
   outreach_sent_count?: number | null;
   notes: string | null;
   last_activity_at: string | null;
+  archived_at?: string | null;
   created_by_email: string | null;
   created_at: string;
   updated_at: string;
@@ -302,6 +316,7 @@ function rowToCompany(row: CompanyRow): CrmCompany {
     outreachSentCount: Number(row.outreach_sent_count ?? 0),
     notes: row.notes,
     lastActivityAt: row.last_activity_at,
+    archivedAt: row.archived_at ?? null,
     createdByEmail: row.created_by_email,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -317,6 +332,7 @@ type ContactRow = {
   phone: string | null;
   linkedin: string | null;
   is_primary: boolean | null;
+  archived_at?: string | null;
   created_at: string;
 };
 
@@ -330,6 +346,7 @@ function rowToContact(row: ContactRow): CrmContact {
     phone: row.phone,
     linkedin: row.linkedin,
     isPrimary: row.is_primary ?? false,
+    archivedAt: row.archived_at ?? null,
     createdAt: row.created_at,
   };
 }
@@ -488,6 +505,7 @@ export async function listCompanies(
     .select("*")
     .order("last_activity_at", { ascending: false, nullsFirst: false });
 
+  if (!filters.includeArchived) query = query.is("archived_at", null);
   if (filters.status) {
     if (Array.isArray(filters.status)) query = query.in("status", filters.status);
     else query = query.eq("status", filters.status);
@@ -643,6 +661,9 @@ export async function updateCompany(
     }
     patch.prep_status = updates.prepStatus;
   }
+  if ("archived" in updates && updates.archived !== undefined) {
+    patch.archived_at = updates.archived ? new Date().toISOString() : null;
+  }
 
   let propertyDiff: {
     key: string;
@@ -702,6 +723,20 @@ export async function updateCompany(
       actorEmail,
     });
   }
+  // Exclusion and restore both belong on the timeline. The account keeps being
+  // a row in the database either way, so the log is the only place that says
+  // who removed it and when — the first question anyone asks when it turns out
+  // the sweep was right and we were wrong.
+  if ("archived_at" in patch && !next.archivedAt !== !prev.archivedAt) {
+    await logActivity(client, id, "note", {
+      summary: next.archivedAt
+        ? "Account excluded — hidden from lists and never recreated by the sweep"
+        : "Account restored",
+      meta: { archived: Boolean(next.archivedAt) },
+      actorEmail,
+      touch: false,
+    });
+  }
   if ("owner_email" in patch && next.ownerEmail !== prev.ownerEmail) {
     await logActivity(client, id, "owner_change", {
       summary: `Owner: ${prev.ownerEmail ?? "—"} → ${next.ownerEmail ?? "—"}`,
@@ -723,12 +758,33 @@ export async function updateCompany(
   return next;
 }
 
-export async function deleteCompany(
+/**
+ * Exclude an account. Archives instead of deleting, and the difference is the
+ * whole point: a deleted account was recreated by the next product-signals
+ * sweep, because the sweep decides "does this org have an account?" by looking
+ * the domain up and finding nothing. An archived one is still found, so the
+ * answer is yes and it is left alone.
+ *
+ * Contacts, comments and the timeline ride along on the same row rather than
+ * being cascaded away, which is what makes the exclusion reviewable and makes
+ * restoreCompany a real undo rather than a re-import.
+ */
+export async function archiveCompany(
   client: SupabaseClient,
   id: string,
-): Promise<void> {
-  const { error } = await client.from("crm_companies").delete().eq("id", id);
-  if (error) throw new Error(`Failed to delete company: ${error.message}`);
+  actorEmail?: string | null,
+): Promise<CrmCompany> {
+  return updateCompany(client, id, { archived: true }, actorEmail);
+}
+
+/** Undo an exclusion: the account returns to every list, and the sweep resumes
+ *  maintaining its tier. */
+export async function restoreCompany(
+  client: SupabaseClient,
+  id: string,
+  actorEmail?: string | null,
+): Promise<CrmCompany> {
+  return updateCompany(client, id, { archived: false }, actorEmail);
 }
 
 // ---------------------------------------------------------------------------
@@ -748,8 +804,19 @@ export async function upsertAccountByDomain(
       role?: string | null;
       linkedin?: string | null;
     } | null;
+    /** Bring an excluded account back. Off by default: an importer finding the
+     *  domain again is not new information — it is the same source that put it
+     *  there before the human said no. Only a reply sets this. */
+    revive?: boolean;
   },
-): Promise<{ company: CrmCompany; created: boolean; contactCreated: boolean }> {
+): Promise<{
+  company: CrmCompany;
+  created: boolean;
+  contactCreated: boolean;
+  /** True when the account exists but is excluded and was left that way. The
+   *  caller wrote nothing. */
+  skippedArchived?: boolean;
+}> {
   const domain = normalizeDomain(input.domain);
   let existing: CrmCompany | null = null;
   if (domain) {
@@ -761,10 +828,24 @@ export async function upsertAccountByDomain(
     existing = data ? rowToCompany(data as CompanyRow) : null;
   }
 
+  // An excluded account is a decision, not a gap. Every caller of this
+  // function is a machine re-discovering a domain it already fed us once
+  // (research, the social monitor, the legacy pipeline import), and letting any
+  // of them write is how the exclusion silently expires.
+  if (existing?.archivedAt && !input.revive) {
+    return {
+      company: existing,
+      created: false,
+      contactCreated: false,
+      skippedArchived: true,
+    };
+  }
+
   let company: CrmCompany;
   let created = false;
   if (existing) {
     const patch: UpdateCompanyInput = {};
+    if (existing.archivedAt) patch.archived = false;
     if (input.name) patch.name = input.name;
     if (input.website != null) patch.website = input.website;
     if (input.notes != null && !existing.notes) patch.notes = input.notes;
@@ -798,7 +879,11 @@ export async function upsertAccountByDomain(
   let contactCreated = false;
   const contact = input.contact;
   if (contact?.name?.trim()) {
-    const existingContacts = await listContacts(client, company.id);
+    // Archived people count as duplicates: they were removed by hand, and
+    // re-adding them is exactly the loop this change exists to close.
+    const existingContacts = await listContacts(client, company.id, {
+      includeArchived: true,
+    });
     const emailKey = contact.email?.toLowerCase().trim() ?? "";
     const nameKey = contact.name.toLowerCase().trim();
     const dup = existingContacts.some(
@@ -812,7 +897,9 @@ export async function upsertAccountByDomain(
         email: contact.email,
         role: contact.role,
         linkedin: contact.linkedin,
-        isPrimary: existingContacts.length === 0,
+        // Primary among the people who are actually on the account: an
+        // archived contact must not leave a new one without the lead flag.
+        isPrimary: existingContacts.every((c) => c.archivedAt),
       });
       contactCreated = true;
     }
@@ -901,6 +988,11 @@ export async function promoteEnrollmentToCrm(
     name: companyName,
     domain,
     website: `https://${domain}`,
+    // A reply is the one thing that overturns an exclusion: somebody at the
+    // account answered, which is better evidence than whatever made us drop it.
+    // A manual promote does not — the person promoting can restore it, and
+    // should have to see that the account was excluded on purpose.
+    revive: reason === "reply",
     // A reply is engagement; a manual promote is not (nobody has answered yet).
     status: reason === "reply" ? "engaged" : "lead",
     priority: reason === "reply" ? "high" : "medium",
@@ -950,6 +1042,9 @@ export async function promoteEnrollmentToCrm(
     company: result.company,
     created: result.created,
     contactCreated: result.contactCreated,
+    ...(result.skippedArchived
+      ? { skipped: "Account was excluded — restore it to promote" }
+      : {}),
   };
 }
 
@@ -1073,6 +1168,18 @@ export async function upsertCompanyFromWebhook(
     existing = (data as CompanyRow | null) ?? null;
   }
 
+  if (existing?.archived_at) {
+    // Same rule as upsertAccountByDomain: an enrichment webhook re-announcing
+    // a domain is the sender repeating itself, not a reason to undo a human's
+    // exclusion. The payload is dropped and the account stays out.
+    await logActivity(client, existing.id, "webhook", {
+      summary: "Enrichment webhook ignored — account is excluded",
+      meta: (input.enrichment ?? {}) as Record<string, unknown>,
+      touch: false,
+    });
+    return { company: rowToCompany(existing), created: false };
+  }
+
   if (existing) {
     // Merge: only fill fields that arrived in the payload; deep-merge enrichment.
     const merged: UpdateCompanyInput & { enrichment?: Record<string, unknown> } =
@@ -1115,14 +1222,26 @@ export async function upsertCompanyFromWebhook(
 // Contacts
 // ---------------------------------------------------------------------------
 
+/**
+ * People on an account. Excluded people are left out by default — the callers
+ * are the account page, the sequence enroller and the email composer, and none
+ * of them should be looking at someone a human removed.
+ *
+ * `includeArchived` is for the one caller that has to see them: the people
+ * lookup, which merges discovered people into the contact list and would
+ * otherwise rediscover and recreate every person you deleted.
+ */
 export async function listContacts(
   client: SupabaseClient,
   companyId: string,
+  opts: { includeArchived?: boolean } = {},
 ): Promise<CrmContact[]> {
-  const { data, error } = await client
+  let query = client
     .from("crm_contacts")
     .select("*")
-    .eq("company_id", companyId)
+    .eq("company_id", companyId);
+  if (!opts.includeArchived) query = query.is("archived_at", null);
+  const { data, error } = await query
     .order("is_primary", { ascending: false })
     .order("created_at", { ascending: true });
   if (error) throw new Error(`Failed to list contacts: ${error.message}`);
@@ -1204,12 +1323,26 @@ export async function updateContact(
   return rowToContact(data as ContactRow);
 }
 
-export async function deleteContact(
+/**
+ * Exclude a person. Archived, not deleted: the people lookup matches against
+ * the contacts it can see, so a deleted person was invisible to it and got
+ * created again by the next run. Archived, they are matched and skipped.
+ *
+ * Also drops `is_primary` — an excluded person must not stay the account's
+ * lead contact, which is the field the email composer reads first.
+ */
+export async function archiveContact(
   client: SupabaseClient,
   id: string,
 ): Promise<void> {
-  const { error } = await client.from("crm_contacts").delete().eq("id", id);
-  if (error) throw new Error(`Failed to delete contact: ${error.message}`);
+  const { data, error } = await client
+    .from("crm_contacts")
+    .update({ archived_at: new Date().toISOString(), is_primary: false })
+    .eq("id", id)
+    .select("id")
+    .maybeSingle();
+  if (error) throw new Error(`Failed to archive contact: ${error.message}`);
+  if (!data) throw new ContactNotFoundError(id);
 }
 
 // ---------------------------------------------------------------------------

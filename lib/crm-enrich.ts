@@ -67,6 +67,10 @@ export async function enrichCompanyContacts(
 ): Promise<EnrichCompanyResult> {
   const company = await getCompany(client, companyId);
   if (!company) throw new Error("Company not found");
+  // Excluded accounts are not looked up. The provider bills per call, and the
+  // account is one a human removed — spending credits to find people we have
+  // decided not to write to is the wrong end of both problems.
+  if (company.archivedAt) throw new Error("Account is excluded — restore it first");
 
   const base: EnrichCompanyResult = {
     companyId,
@@ -142,7 +146,13 @@ export async function enrichCompanyContacts(
     return { ...base, note: "No people found for this domain." };
   }
 
-  const existing = await listContacts(client, companyId);
+  // Archived contacts are included so the matcher can see them. They are the
+  // people someone removed by hand, and they are invisible everywhere else —
+  // which is precisely why a lookup that only saw the live list rediscovered
+  // them and created them again, every single run.
+  const existing = await listContacts(client, companyId, {
+    includeArchived: true,
+  });
   const result: EnrichCompanyResult = { ...base, found: found.length };
 
   for (const person of found) {
@@ -150,6 +160,15 @@ export async function enrichCompanyContacts(
       (c) =>
         sameContact(c.email, person.email) || sameContact(c.name, person.name),
     );
+
+    // Matched someone excluded: leave them excluded and write nothing. Filling
+    // a hole on an archived row would be harmless, but it makes "did the
+    // lookup touch this person?" a question with a surprising answer.
+    if (match?.archivedAt) {
+      result.skipped += 1;
+      result.people.push({ ...personSummary(person), action: "skipped" });
+      continue;
+    }
 
     if (match) {
       // Fill only the holes. Anything already recorded stays.

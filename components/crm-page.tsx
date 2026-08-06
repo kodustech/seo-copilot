@@ -594,8 +594,16 @@ export function CrmPage() {
     else void load();
   }
 
+  // Excludes rather than deletes: the account is hidden everywhere and the
+  // product-signals sweep stops recreating it, but its contacts, comments and
+  // timeline survive so the decision can be reviewed — or undone.
   async function removeCompany(id: string) {
-    if (!confirm("Delete this company and all its data?")) return;
+    if (
+      !confirm(
+        "Exclude this account? It disappears from every list and the sweep will not bring it back. Nothing is erased — it can be restored.",
+      )
+    )
+      return;
     setCompanies((prev) => prev.filter((c) => c.id !== id));
     await authFetch(`/api/crm/companies/${id}`, { method: "DELETE" });
     void load();

@@ -13,13 +13,16 @@
  *           accounts with no cached firmographics are reported as "undecided",
  *           not proposed for deletion, and the institution check falls back to
  *           whatever company_type is already cached.
- * --apply   actually deletes the accounts in the "remove" bucket.
+ * --apply   excludes the accounts in the "remove" bucket. Excluding archives
+ *           rather than deletes: a deleted account was recreated by the next
+ *           product-signals sweep, so every run of this script with --apply
+ *           used to undo itself within four hours.
  *
  * Never proposes removing an account a human has invested in: anything past
  * `lead`, with an owner, with logged activity, or enrolled in a sequence is
  * always kept, whatever the gate says.
  */
-import { deleteCompany } from "../lib/crm";
+import { archiveCompany } from "../lib/crm";
 import { classifyOrg } from "../lib/product-signals/classify";
 import { collectOrgFacts } from "../lib/product-signals/collect";
 import { classifyDomain } from "../lib/product-signals/domains";
@@ -60,6 +63,9 @@ async function main() {
     .from("crm_companies")
     .select("id,name,domain,org_id,tier,status,owner_email,dev_count")
     .eq("source", "product")
+    // Already-excluded accounts are not candidates: they would be reported as
+    // "remove" forever and pad the count of work this script says it did.
+    .is("archived_at", null)
     .limit(2000);
   if (error) throw new Error(error.message);
   const rows = (data ?? []) as Row[];
@@ -249,9 +255,9 @@ async function main() {
     return;
   }
   for (const { row } of remove) {
-    await deleteCompany(client, row.id);
+    await archiveCompany(client, row.id);
   }
-  console.log(`\n${remove.length} contas removidas.`);
+  console.log(`\n${remove.length} contas excluídas (arquivadas, não apagadas).`);
 }
 
 main().catch((e) => {

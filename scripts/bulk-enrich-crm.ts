@@ -69,6 +69,9 @@ async function main() {
     .from("crm_companies")
     .select("id,name,domain,tier,trigger")
     .in("tier", tiers)
+    // Excluded accounts are not enriched — the lookup refuses them anyway, and
+    // each refusal would land in the failures list as if something broke.
+    .is("archived_at", null)
     .order("tier");
   if (error) throw new Error(`crm_companies: ${error.message}`);
 
