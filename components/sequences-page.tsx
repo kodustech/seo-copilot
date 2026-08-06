@@ -166,11 +166,11 @@ const CAP_WARN_RATIO = 0.8;
 function QueueStatus({
   stats,
   taskCount,
-  loading,
+  failed,
 }: {
   stats: ActivityStats | null;
   taskCount: number;
-  loading: boolean;
+  failed: boolean;
 }) {
   // Before the first fetch resolves there is no queue, no mailbox list and no
   // send count — and every empty branch below reads as a finding: "Nothing due
@@ -179,19 +179,19 @@ function QueueStatus({
   // outreach is dead. Say what is true instead, which is that we do not know
   // yet.
   //
-  // "Not fetched yet" and "the fetch failed" look identical from here — load()
-  // keeps stats null on a non-ok response and records nothing, and the queue
-  // route answers every internal error with a 401 — so `loading` has to
-  // separate them. Without it the pending message becomes permanent on
-  // failure, which is a worse lie than the one above: it says we are still
-  // looking when we have stopped.
+  // "Not fetched yet" and "the fetch failed" look identical from here — the
+  // queue route answers every internal error with a 401 and load() keeps stats
+  // null either way — so the failure is passed in from the response that saw
+  // it. Not derived from the shared `loading` flag: several handlers call
+  // load(), and a stale one clearing the flag while a newer fetch is still in
+  // the air would announce a failure that has not happened.
   if (!stats && taskCount === 0) {
     return (
       <section className="rounded-xl border border-border bg-card px-4 py-3.5">
         <span className="text-sm text-muted-foreground">
-          {loading
-            ? "Checking today’s queue…"
-            : "Couldn’t load today’s queue — refresh to try again."}
+          {failed
+            ? "Couldn’t load today’s queue — refresh to try again."
+            : "Checking today’s queue…"}
         </span>
       </section>
     );
@@ -653,6 +653,7 @@ export function SequencesPage() {
   const [sequences, setSequences] = useState<Sequence[]>([]);
   const [tasks, setTasks] = useState<QueueTask[]>([]);
   const [stats, setStats] = useState<ActivityStats | null>(null);
+  const [queueFailed, setQueueFailed] = useState(false);
   const [activityFilter, setActivityFilter] = useState<
     "all" | "linkedin" | "email"
   >("all");
@@ -723,6 +724,13 @@ export function SequencesPage() {
         const d = await queueRes.json();
         setTasks(d.tasks ?? []);
         setStats(d.stats ?? null);
+        setQueueFailed(false);
+      } else {
+        // Record the failure instead of inferring it from an empty queue.
+        // The route answers every internal error with a 401, so this response
+        // is the only place the difference between "no work" and "we never
+        // found out" exists.
+        setQueueFailed(true);
       }
       if (tablesRes.ok) {
         const d = await tablesRes.json();
@@ -3098,7 +3106,7 @@ export function SequencesPage() {
           <QueueStatus
             stats={stats}
             taskCount={tasks.length}
-            loading={loading}
+            failed={queueFailed}
           />
           {stats && !stats.emailAutoSend && (
             <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
