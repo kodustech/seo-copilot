@@ -211,8 +211,8 @@ export async function runProductSignalsSweep(
   // different order. Losers keep their own row in product_signals_latest; they
   // are hidden from outbound, not from us.
   //
-  // connectedGit sits above tier because tier ranks urgency, not evidence. Only
-  // t2/t3 can lack a repo (t0/t1 require one), so the pair this decides is
+  // The connected bit sits above tier because tier ranks urgency, not evidence.
+  // Only t2/t3 can lack a repo (t0/t1 require one), so the pair this decides is
   // always "connected but older" vs "recent and never connected" — and the
   // account increscotech.com showed which way it has to go: an org with 16
   // developers, a connected GitHub org and 17 BYOK-blocked skips in 30 days
@@ -220,6 +220,14 @@ export async function runProductSignalsSweep(
   // never connected anything, and the account started carrying
   // trigger=never_connected. That is the outbound email telling a team that
   // already onboarded to go connect its repository.
+  //
+  // "Connected" here means connected AND with a dev count behind it, the same
+  // bar icp-gate.ts calls no_team_signal: an org that linked a repo but never
+  // produced a PR and predates code_host_member_count has nothing to judge on.
+  // Without that qualifier the bit is winner-takes-all in the wrong direction —
+  // an empty connection aged into t3 (signals-only, CRM_CREATE_TIERS) would
+  // take the account from a fresh t2 sibling and drop a real lead out of
+  // outbound, which is the same class of mistake in the other direction.
   const accountKeyFor = (org: CollectedOrg): string => {
     const linked = companyByOrg.get(org.orgId);
     const domain = linked?.domain ?? org.derivedDomain;
@@ -249,7 +257,8 @@ export async function runProductSignalsSweep(
     const candidate: Owner = {
       orgId: org.orgId,
       paying: cls.tier === "customer" ? 1 : 0,
-      connected: org.connectedGit ? 1 : 0,
+      connected:
+        org.connectedGit && resolveDevCount(org).devCount != null ? 1 : 0,
       rank: TIER_RANK[cls.tier] ?? 0,
       signupAt: org.signupAt ?? "",
     };
