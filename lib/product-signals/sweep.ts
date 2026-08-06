@@ -93,6 +93,10 @@ export type SweepSummary = {
   contactsCreated: number;
   /** Orgs skipped for CRM sync because a sibling org owns the same account. */
   orgsSharingAccount: number;
+  /** Orgs whose account a human excluded. Reported rather than silent: this is
+   *  the number that says how much of the signup feed we are deliberately not
+   *  working, and a jump in it is worth reading. */
+  orgsArchivedAccount: number;
   /** How each candidate was decided, keyed by GateDecision.reason. */
   gate: Record<string, number>;
   enrichmentCalls: number;
@@ -115,6 +119,7 @@ type CompanyRef = {
   tier: string | null;
   trigger: string | null;
   dev_count: number | null;
+  archived_at: string | null;
 };
 
 function latestRowFrom(
@@ -232,10 +237,16 @@ export async function runProductSignalsSweep(
   }
 
   // --- sync CRM --------------------------------------------------------------
+  // Archived accounts are fetched with the rest on purpose. They are how an
+  // exclusion survives: the sweep creates an account when the org's domain
+  // matches nothing, so an account that had been deleted outright was
+  // recreated here on the next run, with fresh contacts and prep_status back
+  // at 'not_started'. Loaded into the same maps, the archived row matches and
+  // the org is skipped below.
   const companies = await fetchAll<CompanyRef>((from, to) =>
     client
       .from("crm_companies")
-      .select("id,org_id,domain,tier,trigger,dev_count")
+      .select("id,org_id,domain,tier,trigger,dev_count,archived_at")
       .range(from, to),
   );
   const companyByOrg = new Map(
@@ -324,6 +335,7 @@ export async function runProductSignalsSweep(
   let contactsCreated = 0;
   let enrichmentCalls = 0;
   let orgsSharingAccount = 0;
+  let orgsArchivedAccount = 0;
   const gate: Record<string, number> = {};
 
   // One enrichment per domain per sweep, even when several orgs share it.
@@ -358,6 +370,16 @@ export async function runProductSignalsSweep(
       let company =
         companyByOrg.get(org.orgId) ??
         (org.derivedDomain ? companyByDomain.get(org.derivedDomain) : undefined);
+
+      // Excluded by a human: nothing here writes to it. Not the domain link,
+      // not dev_count, not the tier — an excluded account that keeps logging
+      // "Product signal: t2 → t1" is still being worked by the machine, just
+      // where nobody can see it, and it would come back the moment someone
+      // restores it carrying a timeline nobody wrote.
+      if (company?.archived_at) {
+        orgsArchivedAccount += 1;
+        continue;
+      }
 
       // A non-owner stops here once the account exists — that write is the
       // owner's. It is still allowed to CREATE one, because ownership is about
@@ -424,6 +446,7 @@ export async function runProductSignalsSweep(
           tier: null,
           trigger: null,
           dev_count: decision.devCount,
+          archived_at: null,
         };
         companyByOrg.set(org.orgId, company);
         companyByDomain.set(org.derivedDomain, company);
@@ -514,6 +537,7 @@ export async function runProductSignalsSweep(
     tiersUpdated,
     contactsCreated,
     orgsSharingAccount,
+    orgsArchivedAccount,
     gate,
     enrichmentCalls,
     errors: errors.slice(0, 30),

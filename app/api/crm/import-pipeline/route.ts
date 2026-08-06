@@ -21,7 +21,14 @@ export async function POST(req: Request) {
     return NextResponse.json({
       ok: true,
       ...result,
-      message: `Imported ${result.imported} new accounts, updated ${result.updated}, ${result.contactsCreated} contacts from ${result.total} pipeline rows.`,
+      message:
+        `Imported ${result.imported} new accounts, updated ${result.updated}, ` +
+        `${result.contactsCreated} contacts from ${result.total} pipeline rows.` +
+        // Only shown when it happened: a "0 excluded" on every run trains
+        // people to stop reading the line that matters.
+        (result.skippedArchived
+          ? ` ${result.skippedArchived} skipped (excluded accounts).`
+          : ""),
     });
   } catch (err) {
     return NextResponse.json(

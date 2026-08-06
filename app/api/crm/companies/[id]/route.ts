@@ -5,7 +5,7 @@ import {
   COMPANY_PREP_VALUES,
   COMPANY_PRIORITIES,
   COMPANY_STATUSES,
-  deleteCompany,
+  archiveCompany,
   getCompany,
   listActivities,
   listComments,
@@ -126,6 +126,9 @@ export async function PATCH(
     updates.tags = body.tags.filter((t) => typeof t === "string") as string[];
   if ("notes" in body)
     updates.notes = typeof body.notes === "string" ? body.notes : null;
+  // Restore is a PATCH: `{ archived: false }`. Excluding still goes through
+  // DELETE, so the client that removes an account did not have to change.
+  if (typeof body.archived === "boolean") updates.archived = body.archived;
   if (
     "properties" in body &&
     body.properties &&
@@ -152,14 +155,20 @@ export async function DELETE(
 ) {
   const { id } = await params;
   let client;
+  let userEmail;
   try {
-    ({ client } = await getSupabaseUserClient(req.headers.get("authorization")));
+    ({ client, userEmail } = await getSupabaseUserClient(
+      req.headers.get("authorization"),
+    ));
   } catch (err) {
     return unauthorized(err instanceof Error ? err.message : "Unauthorized");
   }
 
+  // Archives rather than deletes — see archiveCompany. Still a DELETE to the
+  // caller: the account disappears from every list, it just stops reappearing
+  // on the next product-signals sweep.
   try {
-    await deleteCompany(client, id);
+    await archiveCompany(client, id, userEmail);
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(

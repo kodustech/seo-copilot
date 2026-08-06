@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getSupabaseUserClient } from "@/lib/supabase-server";
-import { ContactNotFoundError, deleteContact, updateContact } from "@/lib/crm";
+import { ContactNotFoundError, archiveContact, updateContact } from "@/lib/crm";
 
 const TEXT_FIELDS = ["email", "role", "phone", "linkedin"] as const;
 const PATCHABLE = ["name", ...TEXT_FIELDS, "isPrimary"];
@@ -103,10 +103,15 @@ export async function DELETE(
       { status: 401 },
     );
   }
+  // Archives rather than deletes — the person vanishes from the account, and
+  // the people lookup stops rediscovering them on every run.
   try {
-    await deleteContact(client, id);
+    await archiveContact(client, id);
     return NextResponse.json({ ok: true });
   } catch (err) {
+    if (err instanceof ContactNotFoundError) {
+      return NextResponse.json({ error: err.message }, { status: 404 });
+    }
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed to delete" },
       { status: 500 },
