@@ -1736,7 +1736,14 @@ export async function getActivityStats(
 export async function sendTaskNow(
   client: SupabaseClient,
   taskId: string,
-  input: { sentByEmail?: string | null } = {},
+  input: {
+    sentByEmail?: string | null;
+    /** Copy edited in the queue just before sending. Applies to this task
+     *  only — the step template other prospects are rendered from is never
+     *  touched. */
+    subject?: string | null;
+    body?: string | null;
+  } = {},
 ): Promise<{ ok: boolean; status: "sent" | "failed" | "skipped"; error?: string }> {
   const { data: raw, error } = await client
     .from("outreach_send_tasks")
@@ -1776,9 +1783,24 @@ export async function sendTaskNow(
     mailboxId = (seq?.mailbox_id as string | null) ?? null;
   }
 
+  // An edited body is the whole email — an empty one would send a blank mail
+  // and burn the step. An edited subject may legitimately be empty (a reply
+  // inherits the thread subject further down), so only the body is required.
+  const editedSubject =
+    typeof input.subject === "string" ? input.subject.trim() : undefined;
+  const editedBody =
+    typeof input.body === "string" ? input.body.trim() : undefined;
+  if (editedBody !== undefined && !editedBody) {
+    throw new Error("The email body is empty — nothing to send.");
+  }
+
   const result = await sendDueEmailTask(client, task, mailboxId, {
     claimFrom: ["ready", "scheduled"],
     actorEmail: input.sentByEmail ?? null,
+    override:
+      editedSubject !== undefined || editedBody !== undefined
+        ? { subject: editedSubject, body: editedBody }
+        : undefined,
   });
 
   if (result === "sent") {
@@ -2242,6 +2264,9 @@ async function sendDueEmailTask(
     claimFrom?: readonly string[];
     /** Who pressed send, for the CRM timeline. null = the cron did it. */
     actorEmail?: string | null;
+    /** Copy a human edited in the queue, replacing the rendered template for
+     *  this send. Never set by the cron. */
+    override?: { subject?: string; body?: string };
   },
 ): Promise<"sent" | "failed" | "skipped"> {
   const now = new Date().toISOString();
@@ -2302,8 +2327,8 @@ async function sendDueEmailTask(
   if (!claimed || claimed.length === 0) return "skipped";
 
   const { sendOutreachEmail } = await import("@/lib/outreach/send-email");
-  let subject = task.renderedSubject ?? "";
-  const body = task.renderedBody ?? "";
+  let subject = opts?.override?.subject ?? task.renderedSubject ?? "";
+  const body = opts?.override?.body ?? task.renderedBody ?? "";
 
   // Per-step: new thread vs reply to previous email in this enrollment
   const { data: stepRow } = await client
@@ -2413,6 +2438,15 @@ async function sendDueEmailTask(
     .from("outreach_send_tasks")
     .update({
       status: "sent",
+      // Only when a human rewrote it: the row is this app's record of the mail
+      // that left, and the queue, the CRM timeline and the reply-threading
+      // subject fallback all read it. Leaving the rendered template here after
+      // sending something else would make every one of them lie. Written on
+      // success only — a failed send drops back to 'scheduled', and the cron
+      // must re-send the template, not an edit nobody approved for it.
+      ...(opts?.override
+        ? { rendered_subject: subject, rendered_body: body }
+        : {}),
       sent_at: now,
       provider: send.gmailThreadId ? "gmail" : "smtp",
       provider_message_id: send.messageId,

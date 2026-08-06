@@ -15,6 +15,7 @@ import {
   Loader2,
   Mail,
   Pause,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -791,6 +792,17 @@ export function SequencesPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  /**
+   * Per-task copy edits made in the queue, keyed by task id. A task with an
+   * entry here is being edited; absent means "send what the server rendered".
+   *
+   * Deliberately client-only: the edit is for the send you are about to make,
+   * not a saved draft, so it does not survive a reload and never becomes what
+   * the cron picks up.
+   */
+  const [drafts, setDrafts] = useState<
+    Record<string, { subject: string; body: string }>
+  >({});
   const [mailboxConfigured, setMailboxConfigured] = useState(true);
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
 
@@ -1411,14 +1423,60 @@ export function SequencesPage() {
    * accounting, and "Mark as done" then advances the cadence on your word
    * alone.
    */
+  const startDraft = (t: QueueTask) => {
+    setDrafts((prev) =>
+      prev[t.id]
+        ? prev
+        : {
+            ...prev,
+            [t.id]: {
+              subject: t.renderedSubject ?? "",
+              body: t.renderedBody ?? "",
+            },
+          },
+    );
+  };
+
+  const updateDraft = (
+    taskId: string,
+    patch: Partial<{ subject: string; body: string }>,
+  ) => {
+    setDrafts((prev) =>
+      prev[taskId] ? { ...prev, [taskId]: { ...prev[taskId], ...patch } } : prev,
+    );
+  };
+
+  const discardDraft = (taskId: string) => {
+    setDrafts((prev) => {
+      if (!prev[taskId]) return prev;
+      const next = { ...prev };
+      delete next[taskId];
+      return next;
+    });
+  };
+
   const sendNow = async (taskId: string) => {
+    const draft = drafts[taskId];
+    if (draft && !draft.body.trim()) {
+      setError("The email body is empty — nothing to send.");
+      return;
+    }
     setBusyId(taskId);
     setError(null);
     setNotice(null);
     try {
       const res = await fetch(
         `/api/outreach/sequences/tasks/${taskId}/send`,
-        { method: "POST", headers: headers() },
+        {
+          method: "POST",
+          headers: headers(),
+          // Only when this card was actually edited: an untouched task sends
+          // the copy the server already has, so a stale draft can never be
+          // what goes out.
+          body: draft
+            ? JSON.stringify({ subject: draft.subject, body: draft.body })
+            : undefined,
+        },
       );
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -1426,16 +1484,19 @@ export function SequencesPage() {
         return;
       }
       setNotice("Sent — this person moves to the next step");
+      discardDraft(taskId);
       await load();
     } finally {
       setBusyId(null);
     }
   };
 
-  const openEmailCompose = (t: QueueTask) => {
+  const openEmailCompose = (
+    t: QueueTask,
+    copy: { subject: string; body: string },
+  ) => {
     const to = t.enrollment?.contactEmail ?? "";
-    const subject = t.renderedSubject ?? "";
-    const body = t.renderedBody ?? "";
+    const { subject, body } = copy;
     const gmail = new URL("https://mail.google.com/mail/");
     gmail.searchParams.set("view", "cm");
     gmail.searchParams.set("fs", "1");
@@ -3502,6 +3563,12 @@ export function SequencesPage() {
                   t.step?.linkedinAction === "connect_note"
                     ? "connection request"
                     : "message";
+                const draft = drafts[t.id];
+                // What will actually be sent, and therefore what Copy and
+                // "Open Gmail" have to show — otherwise the buttons next to an
+                // edited card quietly hand back the original text.
+                const subject = draft?.subject ?? t.renderedSubject ?? "";
+                const body = draft?.body ?? t.renderedBody ?? "";
                 return (
                   <div
                     key={t.id}
@@ -3548,14 +3615,42 @@ export function SequencesPage() {
                       )}
                     </div>
                     <div className="px-4 py-3">
-                      {!isLi && t.renderedSubject && (
-                        <p className="mb-2 text-sm font-medium">
-                          {t.renderedSubject}
-                        </p>
+                      {draft ? (
+                        <div className="space-y-2">
+                          <Input
+                            value={draft.subject}
+                            onChange={(ev) =>
+                              updateDraft(t.id, { subject: ev.target.value })
+                            }
+                            placeholder="Subject"
+                            className="text-sm font-medium"
+                          />
+                          <Textarea
+                            value={draft.body}
+                            onChange={(ev) =>
+                              updateDraft(t.id, { body: ev.target.value })
+                            }
+                            rows={10}
+                            className="text-sm leading-relaxed"
+                          />
+                          <p className="text-[11px] text-muted-foreground">
+                            Editing this email only — the sequence step stays as
+                            it is, and everyone else still gets the template.
+                            Nothing is saved until you send.
+                          </p>
+                        </div>
+                      ) : (
+                        <>
+                          {!isLi && t.renderedSubject && (
+                            <p className="mb-2 text-sm font-medium">
+                              {t.renderedSubject}
+                            </p>
+                          )}
+                          <pre className="whitespace-pre-wrap text-sm leading-relaxed text-pretty text-foreground/90">
+                            {t.renderedBody}
+                          </pre>
+                        </>
                       )}
-                      <pre className="whitespace-pre-wrap text-sm leading-relaxed text-pretty text-foreground/90">
-                        {t.renderedBody}
-                      </pre>
 
                       {isLi ? (
                         <div className="mt-4 space-y-3 rounded-lg border border-[#0A66C2]/20 bg-[#0A66C2]/5 px-3 py-3">
@@ -3652,11 +3747,41 @@ export function SequencesPage() {
                               Send now
                             </Button>
                           )}
+                          {/* Editing here keeps the send inside the app —
+                              which is the whole point: "Open Gmail" was the
+                              only way to change a word, and it costs the
+                              message-id, the cap accounting and the CRM
+                              record. */}
+                          {draft ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={busyId === t.id}
+                              onClick={() => discardDraft(t.id)}
+                              title="Drop your changes and go back to the sequence copy"
+                            >
+                              <RefreshCw className="size-3.5" />
+                              Reset copy
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={busyId === t.id}
+                              onClick={() => startDraft(t)}
+                              title="Edit the subject and body before sending"
+                            >
+                              <Pencil className="size-3.5" />
+                              Edit
+                            </Button>
+                          )}
                           {e?.contactEmail && (
                             <Button
                               size="sm"
                               variant="outline"
-                              onClick={() => openEmailCompose(t)}
+                              onClick={() =>
+                                openEmailCompose(t, { subject, body })
+                              }
                               title="Compose in Gmail instead — use this when you want to edit or attach something first"
                             >
                               <Mail className="size-3.5" />
@@ -3668,12 +3793,7 @@ export function SequencesPage() {
                             variant="outline"
                             onClick={() => {
                               void copyText(
-                                [
-                                  t.renderedSubject
-                                    ? `Subject: ${t.renderedSubject}`
-                                    : "",
-                                  t.renderedBody ?? "",
-                                ]
+                                [subject ? `Subject: ${subject}` : "", body]
                                   .filter(Boolean)
                                   .join("\n\n"),
                               );
