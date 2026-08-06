@@ -5023,6 +5023,242 @@ export const outreachListMailboxes = tool({
   },
 });
 
+/**
+ * Both inbox tools take either a company id or a name/domain. Resolving here
+ * keeps the caller from having to run listCrmCompanies first, but an ambiguous
+ * name must NOT silently pick the first hit — the wrong account would return a
+ * plausible, complete-looking correspondence history for someone else.
+ */
+async function resolveCompanyRef(
+  client: ReturnType<typeof getSupabaseServiceClient>,
+  ref: { company_id?: string; company?: string },
+): Promise<
+  | { ok: true; id: string; name: string }
+  | { ok: false; message: string; candidates?: { id: string; name: string; domain: string | null }[] }
+> {
+  if (ref.company_id?.trim()) {
+    const company = await getCompany(client, ref.company_id.trim());
+    if (!company) return { ok: false, message: "Company not found" };
+    return { ok: true, id: company.id, name: company.name };
+  }
+
+  const term = ref.company?.trim();
+  if (!term) {
+    return { ok: false, message: "Pass company_id or company (name or domain)" };
+  }
+
+  const matches = await listCompanies(client, { search: term, limit: 10 });
+  if (matches.length === 0) {
+    return { ok: false, message: `No CRM company matches "${term}"` };
+  }
+  // An exact name/domain hit beats the substring noise around it.
+  const exact = matches.filter(
+    (c) =>
+      c.name.toLowerCase() === term.toLowerCase() ||
+      (c.domain ?? "").toLowerCase() === term.toLowerCase(),
+  );
+  const pool = exact.length === 1 ? exact : matches;
+  if (pool.length > 1) {
+    return {
+      ok: false,
+      message: `"${term}" matches ${pool.length} companies — call again with company_id`,
+      candidates: pool.map((c) => ({ id: c.id, name: c.name, domain: c.domain })),
+    };
+  }
+  return { ok: true, id: pool[0].id, name: pool[0].name };
+}
+
+export const crmGetCompanyEmails = tool({
+  description:
+    "Full email correspondence with a CRM account, in both directions, searched live in Gmail across every connected mailbox (not just sequence replies). Matches on the company domain and on its contacts' emails. Use this to answer 'what have we exchanged with <company>' or to read the history before writing a follow-up. Mailboxes connected without gmail.readonly are reported as skipped instead of silently returning nothing.",
+  inputSchema: z.object({
+    company_id: z.string().optional().describe("CRM company id (preferred)"),
+    company: z
+      .string()
+      .optional()
+      .describe("Company name or domain, when the id is unknown"),
+    limit: z
+      .number()
+      .optional()
+      .describe("Max messages to return, newest first (default 40)"),
+    include_body: z
+      .boolean()
+      .optional()
+      .describe("Include full message bodies instead of snippets (default false)"),
+  }),
+  execute: async ({ company_id, company, limit, include_body }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const resolved = await resolveCompanyRef(client, { company_id, company });
+      if (!resolved.ok) {
+        return {
+          success: false as const,
+          message: resolved.message,
+          candidates: resolved.candidates,
+        };
+      }
+
+      const { getCompanyEmailTimeline } = await import("@/lib/crm-emails");
+      const timeline = await getCompanyEmailTimeline(client, resolved.id);
+      if (!timeline) {
+        return { success: false as const, message: "Company not found" };
+      }
+
+      const max = Math.min(200, Math.max(1, limit ?? 40));
+      const skipped = timeline.mailboxes.filter((m) => !m.ok);
+
+      return {
+        success: true as const,
+        company: { id: resolved.id, name: resolved.name },
+        // What the search actually keyed on — a thin match here is the usual
+        // reason the history looks emptier than the user expects.
+        matched_on: {
+          domain: timeline.match.domain,
+          contact_emails: timeline.match.contactEmails,
+        },
+        counts: timeline.counts,
+        // Non-fatal: some mailboxes answer while others lack read scope.
+        mailboxes_skipped: skipped.map((m) => ({
+          from_email: m.fromEmail,
+          reason: m.skipReason ?? m.error ?? "unknown",
+        })),
+        messages: timeline.items.slice(0, max).map((m) => ({
+          at: m.at,
+          direction: m.direction,
+          from: m.fromEmail,
+          to: m.toEmail,
+          subject: m.subject,
+          body: include_body ? m.bodyText : null,
+          snippet: m.snippet,
+          mailbox: m.mailboxEmail,
+          sequence: m.sequenceName,
+          gmail_thread_id: m.gmailThreadId,
+        })),
+        truncated: timeline.items.length > max,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "Failed to load company emails",
+      };
+    }
+  },
+});
+
+export const outreachListReplyThreads = tool({
+  description:
+    "Reply inbox threads — inbound answers to outbound sequences, on both email (Gmail) and LinkedIn (Unipile). Filter by company to see everything a given account replied. Note the scope difference vs crmGetCompanyEmails: this reads the synced reply inbox, so it covers LinkedIn but only holds conversations tied to a sequence; crmGetCompanyEmails searches Gmail live and covers all email, including threads that never came from a cadence.",
+  inputSchema: z.object({
+    company_id: z.string().optional().describe("CRM company id"),
+    company: z
+      .string()
+      .optional()
+      .describe("Company name or domain, when the id is unknown"),
+    channel: z
+      .enum(["email", "linkedin", "all"])
+      .optional()
+      .describe("Default all"),
+    status: z
+      .enum(["new", "open", "done", "snoozed", "active", "all"])
+      .optional()
+      .describe("active = new+open+snoozed (default); all = includes done"),
+    limit: z.number().optional().describe("Max threads (default 50, cap 200)"),
+    include_messages: z
+      .boolean()
+      .optional()
+      .describe(
+        "Expand each thread with its messages, both directions (default false; capped at 10 threads)",
+      ),
+  }),
+  execute: async ({ company_id, company, channel, status, limit, include_messages }) => {
+    try {
+      const client = getSupabaseServiceClient();
+
+      let resolvedCompany: { id: string; name: string } | null = null;
+      if (company_id?.trim() || company?.trim()) {
+        const resolved = await resolveCompanyRef(client, { company_id, company });
+        if (!resolved.ok) {
+          return {
+            success: false as const,
+            message: resolved.message,
+            candidates: resolved.candidates,
+          };
+        }
+        resolvedCompany = { id: resolved.id, name: resolved.name };
+      }
+
+      const { listReplyThreads, getReplyThread } = await import(
+        "@/lib/outreach/inbox"
+      );
+      const { threads, newCount } = await listReplyThreads(client, {
+        companyId: resolvedCompany?.id,
+        channel: channel ?? "all",
+        status: status ?? "active",
+        limit,
+      });
+
+      // Expanding every thread would be one query each; cap it and say so
+      // rather than quietly returning bodies for only part of the list.
+      const EXPAND_CAP = 10;
+      const expandIds = include_messages
+        ? threads.slice(0, EXPAND_CAP).map((t) => t.id)
+        : [];
+      const messagesByThread = new Map<
+        string,
+        { at: string | null; direction: string; from: string | null; subject: string | null; body: string | null }[]
+      >();
+      for (const id of expandIds) {
+        const detail = await getReplyThread(client, id);
+        if (!detail) continue;
+        messagesByThread.set(
+          id,
+          detail.messages.map((m) => ({
+            at: m.internalDate,
+            direction: m.direction,
+            from: m.fromEmail,
+            subject: m.subject,
+            body: m.bodyText ?? m.snippet,
+          })),
+        );
+      }
+
+      return {
+        success: true as const,
+        company: resolvedCompany,
+        new_count: newCount,
+        threads: threads.map((t) => ({
+          id: t.id,
+          channel: t.channel,
+          contact_name: t.contactName,
+          contact_email: t.contactEmail,
+          contact_linkedin: t.contactLinkedin,
+          company_name: t.companyName,
+          subject: t.subject,
+          snippet: t.snippet,
+          status: t.status,
+          // How the thread was tied to an enrollment — 'unmatched' means it
+          // landed in the inbox without a cadence behind it.
+          matched_how: t.matchedHow,
+          sequence: t.sequenceName ?? null,
+          message_count: t.messageCount,
+          first_inbound_at: t.firstInboundAt,
+          last_inbound_at: t.lastInboundAt,
+          messages: messagesByThread.get(t.id) ?? null,
+        })),
+        messages_truncated:
+          Boolean(include_messages) && threads.length > EXPAND_CAP,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "Failed to list reply threads",
+      };
+    }
+  },
+});
+
 const sequenceStepSchema = z.object({
   channel: z
     .enum(["linkedin", "email"])
@@ -5876,6 +6112,7 @@ export function createAgentTools(userEmail?: string) {
     updateCrmField,
     deleteCrmField,
     addCrmComment,
+    crmGetCompanyEmails,
     researchListTables,
     researchCreateTable,
     researchCreateFromIcp,
@@ -5900,6 +6137,7 @@ export function createAgentTools(userEmail?: string) {
     researchPeopleHistory,
     researchRestorePeople,
     outreachListMailboxes,
+    outreachListReplyThreads,
     sequenceList,
     sequenceGet,
     sequenceCreate,

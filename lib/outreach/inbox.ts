@@ -1211,16 +1211,95 @@ export async function syncAllMailboxesInbox(
 
 // ── CRUD for UI ────────────────────────────────────────────────────
 
+/**
+ * PostgREST `or` filter that matches every thread belonging to a CRM company.
+ *
+ * A thread has no company_id of its own, so identity comes from four weaker
+ * handles, any of which is enough: the enrollments the company was put in,
+ * the contact emails on file, anything at the company domain, and the
+ * LinkedIn slugs of its contacts. Threads that arrived before the account
+ * existed in the CRM (or that were never enrolled) only match on the last
+ * three, which is exactly why they are all OR'd rather than intersected.
+ *
+ * Returns null when the company gives us nothing to match on — the caller
+ * must then return zero rows rather than fall through to an unfiltered list.
+ */
+async function buildCompanyThreadFilter(
+  client: SupabaseClient,
+  companyId: string,
+): Promise<string | null> {
+  const [{ getCompany, listContacts }, { normalizeLinkedInIdentity }] =
+    await Promise.all([import("@/lib/crm"), import("@/lib/unipile")]);
+
+  const company = await getCompany(client, companyId);
+  if (!company) return null;
+  const contacts = await listContacts(client, companyId);
+
+  const { data: enrollRows } = await client
+    .from("outreach_enrollments")
+    .select("id")
+    .eq("crm_company_id", companyId);
+  const enrollmentIds = (enrollRows ?? []).map((r) => r.id as string);
+
+  const emails = [
+    ...new Set(
+      contacts
+        .map((c) => c.email?.trim().toLowerCase())
+        .filter((e): e is string => Boolean(e) && e!.includes("@")),
+    ),
+  ];
+
+  const slugs = [
+    ...new Set(
+      contacts
+        .map((c) => normalizeLinkedInIdentity(c.linkedin))
+        .filter((s): s is string => Boolean(s)),
+    ),
+  ];
+
+  const domain = company.domain?.trim().toLowerCase().replace(/^www\./, "") ?? null;
+
+  const clauses: string[] = [];
+  // PostgREST parses the or= value as CSV, so a comma inside any operand
+  // would split the clause. Emails and slugs cannot contain one; a stray
+  // comma in a domain would, hence the guard.
+  if (enrollmentIds.length) {
+    clauses.push(`enrollment_id.in.(${enrollmentIds.join(",")})`);
+  }
+  if (emails.length) {
+    clauses.push(`contact_email.in.(${emails.join(",")})`);
+  }
+  if (domain && !domain.includes(",")) {
+    clauses.push(`contact_email.ilike.*@${domain}`);
+  }
+  for (const slug of slugs) {
+    if (!slug.includes(",")) clauses.push(`contact_linkedin.ilike.*${slug}*`);
+  }
+
+  return clauses.length ? clauses.join(",") : null;
+}
+
 export async function listReplyThreads(
   client: SupabaseClient,
   opts?: {
     status?: ReplyThreadStatus | "active" | "all";
     channel?: ReplyChannel | "all";
     mailboxId?: string;
+    /** CRM company id — restricts to threads with that account. */
+    companyId?: string;
     limit?: number;
   },
 ): Promise<{ threads: ReplyThread[]; newCount: number }> {
   const limit = Math.min(200, Math.max(1, opts?.limit ?? 50));
+
+  let companyFilter: string | null = null;
+  if (opts?.companyId) {
+    companyFilter = await buildCompanyThreadFilter(client, opts.companyId);
+    // Nothing to match on — an unfiltered list here would read as "these are
+    // the company's threads", which is the one answer we must not give.
+    if (!companyFilter) return { threads: [], newCount: 0 };
+  }
+
   let q = client
     .from("outreach_reply_threads")
     .select("*")
@@ -1228,6 +1307,7 @@ export async function listReplyThreads(
     .limit(limit);
 
   if (opts?.mailboxId) q = q.eq("mailbox_id", opts.mailboxId);
+  if (companyFilter) q = q.or(companyFilter);
 
   const channel = opts?.channel ?? "all";
   if (channel === "email" || channel === "linkedin") {
@@ -1273,6 +1353,9 @@ export async function listReplyThreads(
   if (channel === "email" || channel === "linkedin") {
     newCountQ = newCountQ.eq("channel", channel);
   }
+  // Scoped listing → scoped badge. Left global otherwise, which is what the
+  // inbox UI reads it as.
+  if (companyFilter) newCountQ = newCountQ.or(companyFilter);
   const { count, error: cErr } = await newCountQ;
   if (cErr) throw new Error(cErr.message);
 
