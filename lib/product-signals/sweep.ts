@@ -18,7 +18,8 @@ import { evaluateOrg, getEnrichment, getFirmographics } from "./icp-gate";
 const UPSERT_CHUNK = 400;
 
 /** Tier priority when several product orgs map to the same CRM account. Higher
- *  wins: the account should carry the most urgent signal among its orgs.
+ *  wins: among orgs that are otherwise equal, the account should carry the most
+ *  urgent signal. It is one key of the election below, not the whole of it.
  *
  *  `customer` outranks every lead tier and is not a typo. A paying org sharing
  *  a domain with a free one must keep the account marked customer — losing the
@@ -31,6 +32,57 @@ const TIER_RANK: Record<string, number> = {
   t2: 2,
   t3: 1,
 };
+
+/**
+ * Did this org ever put anything through the product?
+ *
+ * The account election needs to tell a live integration from an empty one, and
+ * a dev count alone cannot: codeHostMemberCount has no backfill before
+ * 2026-07-28 and prAuthorCount only counts PRs Kodus actually processed, which
+ * is exactly zero for an org whose every execution was skipped. increscotech.com
+ * is that org — 17 skips in 30 days, all "BYOK Configuration Required" — so
+ * reading a null dev count as "nobody is there" would demote the very account
+ * this rule exists to protect.
+ *
+ * Executions count as evidence whether they succeeded or were skipped. A skip
+ * means a PR arrived, Kodus looked at it and refused: the repo is live and the
+ * team is working. Only an org with no devs, no reviews and no skips has
+ * genuinely nothing behind the connection.
+ *
+ * Activity counts within EVIDENCE_DAYS, and the shape of that window matters
+ * more than its length. The rolling reviews30d/skips30d counters are not used:
+ * a count can go positive, fall back to zero on a quiet month and rise again,
+ * so ownership of a shared account would swing back and forth and the account
+ * would flip in and out of never_connected — the oscillation the owner election
+ * exists to stop. A timestamp aging past a threshold crosses once and stays
+ * crossed, so the window bounds the claim without ever flapping.
+ *
+ * Six months, because the alternative in each direction is worse: unbounded,
+ * an org that churned two years ago keeps a domain's account forever and
+ * suppresses a live t2 sibling; much shorter, and a team that simply had a
+ * quiet quarter gets told to go connect the repo it already connected.
+ *
+ * devCount stays unbounded on purpose — it is not an activity signal. It says a
+ * team of N exists behind this org, which does not stop being true because
+ * nobody opened a PR this month.
+ */
+const EVIDENCE_DAYS = 180;
+
+function daysSince(iso: string | null, now: Date): number | null {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.floor((now.getTime() - t) / 86_400_000);
+}
+
+function hasProductEvidence(org: CollectedOrg, now: Date): boolean {
+  if (resolveDevCount(org).devCount != null) return true;
+  const lastActivity = [
+    daysSince(org.lastReviewAt, now),
+    daysSince(org.lastSkipAt, now),
+  ].filter((d): d is number => d != null);
+  return lastActivity.some((d) => d <= EVIDENCE_DAYS);
+}
 
 export type SweepSummary = {
   orgs: number;
@@ -203,36 +255,65 @@ export async function runProductSignalsSweep(
   // six "Product signal" activities in one day alternating t0 ↔ t2. That is not
   // a state change, it is two orgs overwriting each other.
   //
-  // So only the owner org touches the CRM. It is the one with the most urgent
-  // tier, then the newest signup, then the highest org id — deterministic, so
-  // the owner does not change between sweeps just because BigQuery returned the
-  // rows in a different order. Losers keep their own row in
-  // product_signals_latest; they are hidden from outbound, not from us.
+  // So only the owner org touches the CRM. It is elected on, in order: paying
+  // first, then connected git, then the most urgent tier, then the newest
+  // signup, then the highest org id — deterministic, so the owner does not
+  // change between sweeps just because BigQuery returned the rows in a
+  // different order. Losers keep their own row in product_signals_latest; they
+  // are hidden from outbound, not from us.
+  //
+  // The connected bit sits above tier because tier ranks urgency, not evidence.
+  // Only t2/t3 can lack a repo (t0/t1 require one), so the pair this decides is
+  // always "connected but older" vs "recent and never connected" — and the
+  // account increscotech.com showed which way it has to go: an org with 16
+  // developers, a connected GitHub org and 17 BYOK-blocked skips in 30 days
+  // aged past RECENT_DAYS into t3, lost the account to a one-seat sibling that
+  // never connected anything, and the account started carrying
+  // trigger=never_connected. That is the outbound email telling a team that
+  // already onboarded to go connect its repository.
+  //
+  // "Connected" here means connected AND with something behind it — devs,
+  // reviews or skips, see hasProductEvidence. Unqualified, the bit is
+  // winner-takes-all in the wrong direction: an empty connection aged into t3
+  // (signals-only, outside CRM_CREATE_TIERS) would take the account from a
+  // fresh t2 sibling and drop a real lead out of outbound, which is the same
+  // mistake pointing the other way.
   const accountKeyFor = (org: CollectedOrg): string => {
     const linked = companyByOrg.get(org.orgId);
     const domain = linked?.domain ?? org.derivedDomain;
     if (domain) return `domain:${domain.toLowerCase()}`;
     return linked ? `company:${linked.id}` : `org:${org.orgId}`;
   };
-  type Owner = { orgId: string; rank: number; signupAt: string };
+  type Owner = {
+    orgId: string;
+    paying: number;
+    connected: number;
+    rank: number;
+    signupAt: string;
+  };
+  // Ordered comparison keys, most significant first. `paying` stays on top of
+  // connectedGit: a customer must keep the account marked customer even if its
+  // integration row is missing, which is the invariant TIER_RANK encodes.
+  const beats = (a: Owner, b: Owner): boolean => {
+    if (a.paying !== b.paying) return a.paying > b.paying;
+    if (a.connected !== b.connected) return a.connected > b.connected;
+    if (a.rank !== b.rank) return a.rank > b.rank;
+    if (a.signupAt !== b.signupAt) return a.signupAt > b.signupAt;
+    return a.orgId > b.orgId;
+  };
   const ownerByAccount = new Map<string, Owner>();
   for (const { org, cls } of classified) {
     if (org.orgType === "user" || cls.tier == null) continue;
     const candidate: Owner = {
       orgId: org.orgId,
+      paying: cls.tier === "customer" ? 1 : 0,
+      connected: org.connectedGit && hasProductEvidence(org, now) ? 1 : 0,
       rank: TIER_RANK[cls.tier] ?? 0,
       signupAt: org.signupAt ?? "",
     };
     const key = accountKeyFor(org);
     const current = ownerByAccount.get(key);
-    if (
-      !current ||
-      candidate.rank > current.rank ||
-      (candidate.rank === current.rank &&
-        (candidate.signupAt > current.signupAt ||
-          (candidate.signupAt === current.signupAt &&
-            candidate.orgId > current.orgId)))
-    ) {
+    if (!current || beats(candidate, current)) {
       ownerByAccount.set(key, candidate);
     }
   }
