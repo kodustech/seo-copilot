@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowDown,
@@ -654,6 +654,8 @@ export function SequencesPage() {
   const [tasks, setTasks] = useState<QueueTask[]>([]);
   const [stats, setStats] = useState<ActivityStats | null>(null);
   const [queueFailed, setQueueFailed] = useState(false);
+  /** Monotonic load counter — see load(). Only the newest generation writes. */
+  const loadIdRef = useRef(0);
   const [activityFilter, setActivityFilter] = useState<
     "all" | "linkedin" | "email"
   >("all");
@@ -705,13 +707,23 @@ export function SequencesPage() {
 
   const load = useCallback(async () => {
     if (!token) return;
+    // Only the newest load writes state. Refresh fires load() without awaiting
+    // it and a dozen mutation handlers call it too, so two can be in the air at
+    // once — and then a stale one landing last would undo the newer result,
+    // most visibly by flipping the queue back to failed after it had loaded.
+    const generation = ++loadIdRef.current;
+    const current = () => loadIdRef.current === generation;
+
     setLoading(true);
     // A retry is not a failure until it fails. Left set, the previous failure
     // would keep claiming the queue could not be loaded for the whole of the
     // next in-flight fetch.
     setQueueFailed(false);
     try {
-      const [seqRes, queueRes, tablesRes, mailboxRes] = await Promise.all([
+      // allSettled, not all: fail-fast would throw away three good responses
+      // because the fourth rejected, and worse, it would attribute someone
+      // else's network error to the queue. Each endpoint answers for itself.
+      const [seqRes, queueRes, tablesRes, mailboxRes] = await Promise.allSettled([
         fetch("/api/outreach/sequences", { headers: headers() }),
         fetch("/api/outreach/sequences/queue", {
           headers: headers(),
@@ -719,38 +731,49 @@ export function SequencesPage() {
         fetch("/api/research/tables", { headers: headers() }),
         fetch("/api/outreach/mailbox", { headers: headers() }),
       ]);
-      if (seqRes.ok) {
-        const d = await seqRes.json();
+      if (!current()) return;
+
+      if (seqRes.status === "fulfilled" && seqRes.value.ok) {
+        const d = await seqRes.value.json();
+        if (!current()) return;
         setSequences(d.sequences ?? []);
         setMailboxConfigured(Boolean(d.mailboxConfigured));
       }
-      if (queueRes.ok) {
-        const d = await queueRes.json();
-        setTasks(d.tasks ?? []);
-        setStats(d.stats ?? null);
-        setQueueFailed(false);
-      } else {
-        // Record the failure instead of inferring it from an empty queue.
-        // The route answers every internal error with a 401, so this response
-        // is the only place the difference between "no work" and "we never
-        // found out" exists.
+
+      // Record the queue failure instead of inferring it from an empty queue:
+      // the route answers every internal error with a 401, so this response is
+      // the only place the difference between "no work" and "we never found
+      // out" exists. A rejected fetch — refused connection, DNS — counts the
+      // same, and is why this is not just an `!ok` check.
+      if (queueRes.status === "fulfilled" && queueRes.value.ok) {
+        try {
+          const d = await queueRes.value.json();
+          if (!current()) return;
+          setTasks(d.tasks ?? []);
+          setStats(d.stats ?? null);
+        } catch {
+          if (current()) setQueueFailed(true);
+        }
+      } else if (current()) {
         setQueueFailed(true);
       }
-      if (tablesRes.ok) {
-        const d = await tablesRes.json();
+
+      if (tablesRes.status === "fulfilled" && tablesRes.value.ok) {
+        const d = await tablesRes.value.json();
+        if (!current()) return;
         setTables(d.tables ?? []);
       }
-      if (mailboxRes.ok) {
-        const d = await mailboxRes.json();
+      if (mailboxRes.status === "fulfilled" && mailboxRes.value.ok) {
+        const d = await mailboxRes.value.json();
+        if (!current()) return;
         setMailboxes((d.mailboxes ?? []) as Mailbox[]);
       }
     } catch {
-      // A refused connection or DNS failure never reaches the branches above,
-      // so without this the panel would sit on "Checking today's queue…"
-      // forever — the failure state exists precisely for this.
-      setQueueFailed(true);
+      // A body that fails to parse on one of the other three routes is not the
+      // queue's failure to report — swallow it here rather than let it escape
+      // as an unhandled rejection or mislabel the queue.
     } finally {
-      setLoading(false);
+      if (current()) setLoading(false);
     }
   }, [token, headers]);
 
