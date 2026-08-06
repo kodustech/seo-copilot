@@ -1616,5 +1616,10 @@ export async function getCompanyStats(
 export async function getStaleCompanies(
   client: SupabaseClient,
 ): Promise<CompanyWithIdle[]> {
-  return listCompanies(client, { staleOnly: true, limit: 1000 });
+  // The idle cron's own list — it reads status and idleDays, never sequences.
+  return listCompanies(client, {
+    staleOnly: true,
+    limit: 1000,
+    includeSequences: false,
+  });
 }

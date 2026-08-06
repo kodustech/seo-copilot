@@ -1828,6 +1828,13 @@ export async function completeTask(
   if (task.status === "sent" || task.status === "skipped") {
     return { task, enrollment: null };
   }
+  // A send is in flight on this task. Recording an outcome now would advance
+  // the enrollment and write the CRM activity, and sendDueEmailTask would do
+  // both again when it lands — the cadence skips a step and the timeline shows
+  // two touches for one real email.
+  if (task.status === "sending") {
+    throw new Error("This step is sending right now — wait for it to finish.");
+  }
 
   const now = new Date().toISOString();
   const { data: updated, error: uerr } = await client
@@ -1839,9 +1846,27 @@ export async function completeTask(
       updated_at: now,
     })
     .eq("id", taskId)
+    // The read above is not the guard: a send can claim the task between that
+    // select and this update. Excluding the claimed state here is what makes
+    // the check hold — the update matches nothing and we bail, rather than
+    // overwriting a send that is already on its way out.
+    .not("status", "in", "(sending,sent,skipped)")
     .select("*")
-    .single();
+    .maybeSingle();
   if (uerr) throw new Error(uerr.message);
+  if (!updated) {
+    // Someone (or something) got there first. Report the task as it actually
+    // is rather than the outcome we were asked to write.
+    const { data: fresh } = await client
+      .from("outreach_send_tasks")
+      .select("*")
+      .eq("id", taskId)
+      .maybeSingle();
+    return {
+      task: mapTask((fresh ?? raw) as Record<string, unknown>),
+      enrollment: null,
+    };
+  }
 
   const enrollment = await advanceEnrollment(client, task.enrollmentId);
 

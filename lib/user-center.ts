@@ -137,9 +137,13 @@ export async function getUserOverview(
   const [allWorkItems, companies, prospects, goals, jobs, replyPending] =
     await Promise.all([
       listWorkItems(client).catch(() => [] as GrowthWorkItem[]),
-      listCompanies(client, { ownerEmail: userEmail, limit: 500 }).catch(
-        () => [] as CompanyWithIdle[],
-      ),
+      listCompanies(client, {
+        ownerEmail: userEmail,
+        limit: 500,
+        // The overview counts accounts and surfaces stale ones; it never reads
+        // sequence membership, so it should not pay for the lookup.
+        includeSequences: false,
+      }).catch(() => [] as CompanyWithIdle[]),
       listProspects(client, { responsibleEmail: userEmail, limit: 500 }).catch(
         () => [] as OutreachProspect[],
       ),

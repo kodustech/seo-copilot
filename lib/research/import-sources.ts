@@ -12,6 +12,8 @@ export async function importFromCrm(
   const companies = await listCompanies(client, {
     status: opts.status as never,
     limit: 500,
+    // Only name and domain are read into the research table.
+    includeSequences: false,
   });
   return addRows(
     client,
