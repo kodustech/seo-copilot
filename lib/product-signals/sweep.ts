@@ -33,6 +33,31 @@ const TIER_RANK: Record<string, number> = {
   t3: 1,
 };
 
+/**
+ * Did this org ever put anything through the product?
+ *
+ * The account election needs to tell a live integration from an empty one, and
+ * a dev count alone cannot: codeHostMemberCount has no backfill before
+ * 2026-07-28 and prAuthorCount only counts PRs Kodus actually processed, which
+ * is exactly zero for an org whose every execution was skipped. increscotech.com
+ * is that org — 17 skips in 30 days, all "BYOK Configuration Required" — so
+ * reading a null dev count as "nobody is there" would demote the very account
+ * this rule exists to protect.
+ *
+ * Executions count as evidence whether they succeeded or were skipped. A skip
+ * means a PR arrived, Kodus looked at it and refused: the repo is live and the
+ * team is working. Only an org with no devs, no reviews and no skips has
+ * genuinely nothing behind the connection.
+ */
+function hasProductEvidence(org: CollectedOrg): boolean {
+  return (
+    resolveDevCount(org).devCount != null ||
+    org.lastReviewAt != null ||
+    org.reviews30d > 0 ||
+    org.skips30d > 0
+  );
+}
+
 export type SweepSummary = {
   orgs: number;
   transitions: number;
@@ -221,13 +246,12 @@ export async function runProductSignalsSweep(
   // trigger=never_connected. That is the outbound email telling a team that
   // already onboarded to go connect its repository.
   //
-  // "Connected" here means connected AND with a dev count behind it, the same
-  // bar icp-gate.ts calls no_team_signal: an org that linked a repo but never
-  // produced a PR and predates code_host_member_count has nothing to judge on.
-  // Without that qualifier the bit is winner-takes-all in the wrong direction —
-  // an empty connection aged into t3 (signals-only, CRM_CREATE_TIERS) would
-  // take the account from a fresh t2 sibling and drop a real lead out of
-  // outbound, which is the same class of mistake in the other direction.
+  // "Connected" here means connected AND with something behind it — devs,
+  // reviews or skips, see hasProductEvidence. Unqualified, the bit is
+  // winner-takes-all in the wrong direction: an empty connection aged into t3
+  // (signals-only, outside CRM_CREATE_TIERS) would take the account from a
+  // fresh t2 sibling and drop a real lead out of outbound, which is the same
+  // mistake pointing the other way.
   const accountKeyFor = (org: CollectedOrg): string => {
     const linked = companyByOrg.get(org.orgId);
     const domain = linked?.domain ?? org.derivedDomain;
@@ -257,8 +281,7 @@ export async function runProductSignalsSweep(
     const candidate: Owner = {
       orgId: org.orgId,
       paying: cls.tier === "customer" ? 1 : 0,
-      connected:
-        org.connectedGit && resolveDevCount(org).devCount != null ? 1 : 0,
+      connected: org.connectedGit && hasProductEvidence(org) ? 1 : 0,
       rank: TIER_RANK[cls.tier] ?? 0,
       signupAt: org.signupAt ?? "",
     };
