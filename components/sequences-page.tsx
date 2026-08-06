@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowDown,
@@ -143,11 +143,191 @@ function formatLastSent(iso: string | null | undefined): string {
   });
 }
 
-/** Short label for compact hints (last segment after " - "). */
-function shortSeqName(name: string): string {
-  const parts = name.split(/\s+[—–-]\s+/);
-  const last = parts[parts.length - 1]?.trim();
-  return last && last.length > 0 ? last : name;
+/** A mailbox is worth looking at well before it is actually full: at 80 % of
+ *  the cap there is still time to move sends to another inbox or raise the
+ *  limit, and at 100 % the decision has already been made for you. The old
+ *  strip only coloured a full mailbox, so 67/70 — one morning away from
+ *  blocking every active sequence — rendered in the same grey as 0/40. */
+const CAP_WARN_RATIO = 0.8;
+
+/**
+ * What today is, in one line.
+ *
+ * Replaces three equally-weighted cards (inboxes · auto email · human queue).
+ * Two problems with that shape: a background process had the same visual claim
+ * as the list you came to work, and the largest type on the page was spent
+ * rendering "0 · 0 · 0" — the most prominent thing on screen was the absence of
+ * work, which is the one thing needing no attention at all.
+ *
+ * The rule here: a number is emphasised only when it asks for a decision.
+ * Everything else is a sentence, and anything with nothing to say is absent
+ * rather than shown as a zero.
+ */
+function QueueStatus({
+  stats,
+  taskCount,
+  failed,
+}: {
+  stats: ActivityStats | null;
+  taskCount: number;
+  failed: boolean;
+}) {
+  // Before the first fetch resolves there is no queue, no mailbox list and no
+  // send count — and every empty branch below reads as a finding: "Nothing due
+  // right now", "Nothing sent today", "No enabled mailboxes — nothing can
+  // send." On a slow network the page opens by telling an operator their
+  // outreach is dead. Say what is true instead, which is that we do not know
+  // yet.
+  //
+  // "Not fetched yet" and "the fetch failed" look identical from here — the
+  // queue route answers every internal error with a 401 and load() keeps stats
+  // null either way — so the failure is passed in from the response that saw
+  // it. Not derived from the shared `loading` flag: several handlers call
+  // load(), and a stale one clearing the flag while a newer fetch is still in
+  // the air would announce a failure that has not happened.
+  if (!stats && taskCount === 0) {
+    return (
+      <section className="rounded-xl border border-border bg-card px-4 py-3.5">
+        <span className="text-sm text-muted-foreground">
+          {failed
+            ? "Couldn’t load today’s queue — refresh to try again."
+            : "Checking today’s queue…"}
+        </span>
+      </section>
+    );
+  }
+
+  const ready = stats?.readyTotal ?? taskCount;
+  const mailboxes = stats?.mailboxes ?? [];
+  const sequences = stats?.sequences ?? [];
+
+  const waitingCap = sequences.reduce((n, s) => n + s.emailWaitingCap, 0);
+  const autoSentToday = sequences.reduce((n, s) => n + s.emailSentToday, 0);
+  const tightMailboxes = mailboxes.filter(
+    (mb) => mb.dailyCap > 0 && mb.sentToday / mb.dailyCap >= CAP_WARN_RATIO,
+  );
+
+  return (
+    <section className="rounded-xl border border-border bg-card">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2 px-4 py-3.5">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          {ready > 0 ? (
+            <>
+              <span className="text-2xl font-semibold tabular-nums leading-none">
+                {ready}
+              </span>
+              <span className="text-sm text-muted-foreground">
+                ready for you
+                {stats && (stats.readyLinkedin > 0 || stats.readyEmail > 0) ? (
+                  <>
+                    {" — "}
+                    {[
+                      stats.readyLinkedin > 0
+                        ? `${stats.readyLinkedin} LinkedIn`
+                        : null,
+                      stats.readyEmail > 0 ? `${stats.readyEmail} email` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </>
+                ) : null}
+              </span>
+            </>
+          ) : (
+            // No count, no tile, no checkmark: an empty queue is a sentence.
+            <span className="text-sm font-medium">Nothing due right now</span>
+          )}
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          {autoSentToday > 0 || (stats?.sentToday ?? 0) > 0 ? (
+            <>
+              <span className="font-medium text-foreground tabular-nums">
+                {stats?.sentToday ?? 0}
+              </span>{" "}
+              sent today
+              {(stats?.skippedToday ?? 0) > 0
+                ? ` · ${stats?.skippedToday} skipped`
+                : ""}
+            </>
+          ) : (
+            "Nothing sent today"
+          )}
+        </p>
+      </div>
+
+      {/* Capacity. One row per mailbox, and the bar is the point — a number
+          out of a number takes a beat to read, a bar near its end does not. */}
+      {mailboxes.length > 0 ? (
+        <div className="flex flex-wrap gap-x-6 gap-y-2 border-t border-border px-4 py-2.5">
+          {mailboxes.map((mb) => {
+            const pct =
+              mb.dailyCap > 0
+                ? Math.min(100, (mb.sentToday / mb.dailyCap) * 100)
+                : 0;
+            const tight = mb.dailyCap > 0 && pct >= CAP_WARN_RATIO * 100;
+            const full = mb.dailyCap > 0 && mb.sentToday >= mb.dailyCap;
+            return (
+              <div
+                key={mb.id}
+                className="min-w-0 flex-1 basis-48"
+                title={`${mb.label}${mb.emailAutoSend ? "" : " · auto-send off"} · last ${formatLastSent(mb.lastSentAt)}`}
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="min-w-0 truncate text-xs text-muted-foreground">
+                    {mb.fromEmail}
+                  </span>
+                  <span
+                    className={cn(
+                      "shrink-0 text-xs tabular-nums",
+                      tight
+                        ? "font-medium text-amber-600 dark:text-amber-400"
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    {mb.sentToday}/{mb.dailyCap}
+                    {full ? " · full" : ""}
+                  </span>
+                </div>
+                <div className="mt-1 h-1 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className={cn(
+                      "h-full rounded-full transition-[width]",
+                      tight ? "bg-amber-500" : "bg-foreground/40",
+                    )}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : stats ? (
+        // Only claimable once stats arrived: an empty mailbox list is also what
+        // "not fetched yet" looks like, and the two must not read the same.
+        <p className="border-t border-border px-4 py-2.5 text-xs text-muted-foreground">
+          No enabled mailboxes — nothing can send.
+        </p>
+      ) : null}
+
+      {/* Only rendered when something is actually held up. A row that always
+          shows, reading "0 waiting cap", trains you to stop reading it. */}
+      {waitingCap > 0 || tightMailboxes.length > 0 ? (
+        <p className="border-t border-border bg-amber-500/[0.06] px-4 py-2 text-xs text-amber-700 dark:text-amber-400">
+          {[
+            waitingCap > 0
+              ? `${waitingCap} email${waitingCap === 1 ? "" : "s"} held by the daily cap — they retry tomorrow, or now if you raise the limit`
+              : null,
+            tightMailboxes.length > 0 && waitingCap === 0
+              ? `${tightMailboxes.map((mb) => mb.fromEmail).join(", ")} near the daily cap`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </p>
+      ) : null}
+    </section>
+  );
 }
 
 type EnrollmentRow = {
@@ -473,6 +653,9 @@ export function SequencesPage() {
   const [sequences, setSequences] = useState<Sequence[]>([]);
   const [tasks, setTasks] = useState<QueueTask[]>([]);
   const [stats, setStats] = useState<ActivityStats | null>(null);
+  const [queueFailed, setQueueFailed] = useState(false);
+  /** Monotonic load counter — see load(). Only the newest generation writes. */
+  const loadIdRef = useRef(0);
   const [activityFilter, setActivityFilter] = useState<
     "all" | "linkedin" | "email"
   >("all");
@@ -524,9 +707,23 @@ export function SequencesPage() {
 
   const load = useCallback(async () => {
     if (!token) return;
+    // Only the newest load writes state. Refresh fires load() without awaiting
+    // it and a dozen mutation handlers call it too, so two can be in the air at
+    // once — and then a stale one landing last would undo the newer result,
+    // most visibly by flipping the queue back to failed after it had loaded.
+    const generation = ++loadIdRef.current;
+    const current = () => loadIdRef.current === generation;
+
     setLoading(true);
+    // A retry is not a failure until it fails. Left set, the previous failure
+    // would keep claiming the queue could not be loaded for the whole of the
+    // next in-flight fetch.
+    setQueueFailed(false);
     try {
-      const [seqRes, queueRes, tablesRes, mailboxRes] = await Promise.all([
+      // allSettled, not all: fail-fast would throw away three good responses
+      // because the fourth rejected, and worse, it would attribute someone
+      // else's network error to the queue. Each endpoint answers for itself.
+      const [seqRes, queueRes, tablesRes, mailboxRes] = await Promise.allSettled([
         fetch("/api/outreach/sequences", { headers: headers() }),
         fetch("/api/outreach/sequences/queue", {
           headers: headers(),
@@ -534,26 +731,49 @@ export function SequencesPage() {
         fetch("/api/research/tables", { headers: headers() }),
         fetch("/api/outreach/mailbox", { headers: headers() }),
       ]);
-      if (seqRes.ok) {
-        const d = await seqRes.json();
+      if (!current()) return;
+
+      if (seqRes.status === "fulfilled" && seqRes.value.ok) {
+        const d = await seqRes.value.json();
+        if (!current()) return;
         setSequences(d.sequences ?? []);
         setMailboxConfigured(Boolean(d.mailboxConfigured));
       }
-      if (queueRes.ok) {
-        const d = await queueRes.json();
-        setTasks(d.tasks ?? []);
-        setStats(d.stats ?? null);
+
+      // Record the queue failure instead of inferring it from an empty queue:
+      // the route answers every internal error with a 401, so this response is
+      // the only place the difference between "no work" and "we never found
+      // out" exists. A rejected fetch — refused connection, DNS — counts the
+      // same, and is why this is not just an `!ok` check.
+      if (queueRes.status === "fulfilled" && queueRes.value.ok) {
+        try {
+          const d = await queueRes.value.json();
+          if (!current()) return;
+          setTasks(d.tasks ?? []);
+          setStats(d.stats ?? null);
+        } catch {
+          if (current()) setQueueFailed(true);
+        }
+      } else if (current()) {
+        setQueueFailed(true);
       }
-      if (tablesRes.ok) {
-        const d = await tablesRes.json();
+
+      if (tablesRes.status === "fulfilled" && tablesRes.value.ok) {
+        const d = await tablesRes.value.json();
+        if (!current()) return;
         setTables(d.tables ?? []);
       }
-      if (mailboxRes.ok) {
-        const d = await mailboxRes.json();
+      if (mailboxRes.status === "fulfilled" && mailboxRes.value.ok) {
+        const d = await mailboxRes.value.json();
+        if (!current()) return;
         setMailboxes((d.mailboxes ?? []) as Mailbox[]);
       }
+    } catch {
+      // A body that fails to parse on one of the other three routes is not the
+      // queue's failure to report — swallow it here rather than let it escape
+      // as an unhandled rejection or mislabel the queue.
     } finally {
-      setLoading(false);
+      if (current()) setLoading(false);
     }
   }, [token, headers]);
 
@@ -1071,6 +1291,20 @@ export function SequencesPage() {
     if (activityFilter === "all") return tasks;
     return tasks.filter((t) => t.channel === activityFilter);
   }, [tasks, activityFilter]);
+
+  // An empty queue has nothing to filter, and the chip row hides itself when
+  // readyTotal hits 0 — so a user sitting on "Email" when the last task clears
+  // would be stranded: the row that holds the way back is gone, and the empty
+  // state keeps saying "try All" while offering no All to try (and hiding the
+  // Enroll action behind the same condition). Drop the filter instead of the
+  // way out of it. Only after loading, or every mount would clear it before
+  // the first queue arrives.
+  useEffect(() => {
+    if (loading) return;
+    if (activityFilter !== "all" && (stats?.readyTotal ?? tasks.length) === 0) {
+      setActivityFilter("all");
+    }
+  }, [loading, activityFilter, stats, tasks.length]);
 
   const activityLabel = (t: QueueTask) => {
     if (t.channel === "linkedin") {
@@ -2892,208 +3126,20 @@ export function SequencesPage() {
 
       {view === "queue" && (
         <div className="min-h-0 flex-1 space-y-4 overflow-auto pb-8">
-          {/* Ops strip: inbox cap · auto email by sequence · human work */}
-          <div className="space-y-3">
-            <div className="rounded-xl border border-border bg-card">
-              <div className="border-b border-border px-4 py-2.5">
-                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  Inboxes
-                </p>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">
-                  Daily send cap is per mailbox — active sequences share the same
-                  inbox.
-                </p>
-              </div>
-              {(stats?.mailboxes?.length ?? 0) === 0 ? (
-                <p className="px-4 py-3 text-sm text-muted-foreground">
-                  No enabled mailboxes.
-                </p>
-              ) : (
-                <ul className="divide-y divide-border">
-                  {(stats?.mailboxes ?? []).map((mb) => {
-                    const full = mb.sentToday >= mb.dailyCap && mb.dailyCap > 0;
-                    const pct =
-                      mb.dailyCap > 0
-                        ? Math.min(100, (mb.sentToday / mb.dailyCap) * 100)
-                        : 0;
-                    return (
-                      <li
-                        key={mb.id}
-                        className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium">
-                            {mb.fromEmail}
-                          </p>
-                          <p className="text-[11px] text-muted-foreground">
-                            {mb.label}
-                            {mb.emailAutoSend ? "" : " · auto-send off"}
-                            {" · last "}
-                            {formatLastSent(mb.lastSentAt)}
-                          </p>
-                        </div>
-                        <div className="w-full max-w-[11rem] sm:w-44">
-                          <div className="flex items-baseline justify-between gap-2">
-                            <span
-                              className={cn(
-                                "text-sm font-semibold tabular-nums",
-                                full && "text-amber-600 dark:text-amber-400",
-                              )}
-                            >
-                              {mb.sentToday}/{mb.dailyCap}
-                            </span>
-                            <span className="text-[11px] text-muted-foreground">
-                              {full ? "cap full" : "today"}
-                            </span>
-                          </div>
-                          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
-                            <div
-                              className={cn(
-                                "h-full rounded-full transition-[width]",
-                                full
-                                  ? "bg-amber-500"
-                                  : "bg-foreground/70",
-                              )}
-                              style={{ width: `${pct}%` }}
-                            />
-                          </div>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </div>
-
-            <div className="rounded-xl border border-border bg-card">
-              <div className="border-b border-border px-4 py-2.5">
-                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  Email auto (today)
-                </p>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">
-                  Sent by the engine in the background — not the human list
-                  below. Waiting cap retries tomorrow or when you raise the
-                  limit.
-                </p>
-              </div>
-              {(stats?.sequences?.length ?? 0) === 0 ? (
-                <p className="px-4 py-3 text-sm text-muted-foreground">
-                  No active sequences.
-                </p>
-              ) : (
-                <ul className="divide-y divide-border">
-                  {(stats?.sequences ?? []).map((s) => (
-                    <li
-                      key={s.id}
-                      className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-4 py-2.5"
-                    >
-                      <p className="min-w-0 flex-1 truncate text-sm font-medium">
-                        {s.name}
-                      </p>
-                      <p className="text-xs tabular-nums text-muted-foreground">
-                        <span className="font-medium text-foreground">
-                          {s.emailSentToday} sent
-                        </span>
-                        {" · "}
-                        <span
-                          className={cn(
-                            s.emailWaitingCap > 0 &&
-                              "font-medium text-amber-600 dark:text-amber-400",
-                          )}
-                        >
-                          {s.emailWaitingCap} waiting cap
-                        </span>
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-
-            <div className="rounded-xl border border-border bg-card">
-              <div className="border-b border-border px-4 py-2.5">
-                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  Today (human)
-                </p>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">
-                  LinkedIn and manual email ready for you — same list below.
-                </p>
-              </div>
-              <div className="grid gap-2 p-3 sm:grid-cols-4">
-                {(
-                  [
-                    {
-                      label: "To do now",
-                      value: stats?.readyTotal ?? tasks.length,
-                      hint: "Ready for you",
-                    },
-                    {
-                      label: "LinkedIn",
-                      value: stats?.readyLinkedin ?? 0,
-                      hint:
-                        (stats?.sequences ?? [])
-                          .filter((s) => s.readyLinkedin > 0)
-                          .map((s) => `${shortSeqName(s.name)} ${s.readyLinkedin}`)
-                          .join(" · ") || "Connections & DMs",
-                    },
-                    {
-                      label: "Email",
-                      value: stats?.readyEmail ?? 0,
-                      hint: stats?.emailAutoSend
-                        ? "Manual queue only"
-                        : "Auto-send is off",
-                    },
-                    {
-                      label: "Done today",
-                      value: stats?.sentToday ?? 0,
-                      hint: `${stats?.skippedToday ?? 0} skipped · human + auto`,
-                    },
-                  ] as const
-                ).map((c) => (
-                  <div
-                    key={c.label}
-                    className="rounded-lg border border-border/80 bg-muted/20 px-3 py-2.5"
-                  >
-                    <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                      {c.label}
-                    </p>
-                    <p className="mt-1 text-2xl font-semibold tabular-nums">
-                      {c.value}
-                    </p>
-                    <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">
-                      {c.hint}
-                    </p>
-                  </div>
-                ))}
-              </div>
-              {(stats?.sequences ?? []).some(
-                (s) => s.readyLinkedin + s.readyEmail > 0,
-              ) && (
-                <ul className="border-t border-border divide-y divide-border">
-                  {(stats?.sequences ?? [])
-                    .filter((s) => s.readyLinkedin + s.readyEmail > 0)
-                    .map((s) => (
-                      <li
-                        key={`ready-${s.id}`}
-                        className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-4 py-2 text-xs text-muted-foreground"
-                      >
-                        <span className="min-w-0 flex-1 truncate font-medium text-foreground">
-                          {s.name}
-                        </span>
-                        <span className="tabular-nums">
-                          {s.readyLinkedin > 0
-                            ? `${s.readyLinkedin} LinkedIn`
-                            : null}
-                          {s.readyLinkedin > 0 && s.readyEmail > 0 ? " · " : null}
-                          {s.readyEmail > 0 ? `${s.readyEmail} email` : null}
-                        </span>
-                      </li>
-                    ))}
-                </ul>
-              )}
-            </div>
-          </div>
-
+          {/* Status line, then capacity, then the work.
+              This used to be three cards of equal weight — inboxes, auto email,
+              human queue — which gave a background process the same visual claim
+              as the list you are here to work. It also spent the largest type on
+              the page rendering "0 · 0 · 0", so the most prominent thing on
+              screen was the absence of work.
+              Now: one sentence says what today is, the numbers that need a
+              decision are the only ones emphasised, and everything else is
+              support text or hidden until it matters. */}
+          <QueueStatus
+            stats={stats}
+            taskCount={tasks.length}
+            failed={queueFailed}
+          />
           {stats && !stats.emailAutoSend && (
             <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
               Email auto-send is{" "}
@@ -3109,8 +3155,15 @@ export function SequencesPage() {
             </div>
           )}
 
-          {/* Filters */}
-          <div className="flex flex-wrap items-center gap-2">
+          {/* Filters — hidden when there is nothing to filter. Three chips
+              reading "All · 0 · LinkedIn · 0 · Email · 0" are three more zeros
+              and no available action. */}
+          <div
+            className={cn(
+              "flex flex-wrap items-center gap-2",
+              (stats?.readyTotal ?? tasks.length) === 0 && "hidden",
+            )}
+          >
             <span className="text-xs text-muted-foreground">Show</span>
             {(
               [
@@ -3148,26 +3201,28 @@ export function SequencesPage() {
               Loading today&apos;s work…
             </div>
           ) : filteredTasks.length === 0 ? (
-            <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border px-6 py-16 text-center">
-              <Check className="size-8 text-emerald-500/80" />
-              <p className="mt-4 text-sm font-medium">Nothing due right now</p>
-              <p className="mt-1 max-w-sm text-sm text-pretty text-muted-foreground">
-                Enroll a list into a sequence, or wait for delayed steps to come
-                due. Auto emails send in the background when enabled.
-              </p>
-              <div className="mt-5 flex gap-2">
-                <Button variant="outline" onClick={() => setView("list")}>
-                  Sequences
-                </Button>
-                <Button
+            // The status line above already says the queue is empty; a large
+            // dashed box with a green tick repeats it in the loudest way
+            // available, and celebrates having nothing to do. What is useful
+            // here is the way out, so that is all that stays.
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-1 py-6 text-sm text-muted-foreground">
+              <span>
+                {activityFilter === "all"
+                  ? "Delayed steps will appear here as they come due."
+                  : "No work of this kind due — try All."}
+              </span>
+              {activityFilter === "all" ? (
+                <button
+                  type="button"
                   onClick={() => {
                     setEnrollSeqId(sequences[0]?.id ?? "");
                     setEnrollOpen(true);
                   }}
+                  className="font-medium text-foreground underline underline-offset-4 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                 >
-                  Enroll list
-                </Button>
-              </div>
+                  Enroll a list
+                </button>
+              ) : null}
             </div>
           ) : (
             <div className="space-y-3">

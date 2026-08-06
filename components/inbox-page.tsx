@@ -118,6 +118,62 @@ function matchLabel(how: string) {
   }
 }
 
+/**
+ * Undo HTML entity encoding on a plain-text body.
+ *
+ * Gmail returns entity-encoded text even for text/plain parts, and this pane
+ * renders it as text — so a real reply arrived on screen reading
+ * "I&#39;m OOO 7/30-8/7", which is the first thing anyone notices and the
+ * cheapest possible way to look broken.
+ *
+ * Uses a fixed table rather than a DOM parse: routing an untrusted inbound
+ * email body through innerHTML to decode five entities is a bad trade, and
+ * this text is never rendered as markup.
+ */
+const ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+};
+
+function decodeEntities(text: string): string {
+  return text.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (whole, body: string) => {
+    if (body[0] === "#") {
+      const code =
+        body[1] === "x" || body[1] === "X"
+          ? Number.parseInt(body.slice(2), 16)
+          : Number.parseInt(body.slice(1), 10);
+      // Leave anything out of range as written rather than emitting U+FFFD:
+      // showing the raw entity is honest, a replacement glyph is not.
+      return Number.isFinite(code) && code > 0 && code <= 0x10ffff
+        ? String.fromCodePoint(code)
+        : whole;
+    }
+    return ENTITIES[body.toLowerCase()] ?? whole;
+  });
+}
+
+/**
+ * Decode only what was encoded. LinkedIn bodies arrive verbatim from Unipile
+ * (lib/unipile-replies.ts stores payload.message as sent), so a DM that
+ * legitimately reads "use &lt;div&gt;" would come out of decodeEntities as
+ * "use <div>" — the pane would be inventing text nobody wrote. The encoding is
+ * a Gmail property, so the decode belongs to the Gmail path alone.
+ *
+ * Anything that is not LinkedIn decodes: the server defaults channel to
+ * "email" (lib/outreach/inbox.ts), and an absent channel on the email side
+ * must not silently turn the fix off.
+ */
+function decodeBody(
+  text: string,
+  channel: "email" | "linkedin" | undefined,
+): string {
+  return channel === "linkedin" ? text : decodeEntities(text);
+}
+
 function channelBadge(channel: "email" | "linkedin" | undefined) {
   if (channel === "linkedin") {
     return (
@@ -239,8 +295,8 @@ function MessageThread({
       );
     }
 
-    const body =
-      m.bodyText?.trim() || m.snippet?.trim() || "(empty body)";
+    const raw = m.bodyText?.trim() || m.snippet?.trim() || "";
+    const body = raw ? decodeBody(raw, channel) : "(empty body)";
     const who = ours ? "You" : prospectLabel;
 
     nodes.push(
@@ -780,7 +836,7 @@ export function InboxPage() {
                   <span>
                     {someChecked
                       ? `${checkedIds.size} selected`
-                      : `${threads.length} threads`}
+                      : `${threads.length} ${threads.length === 1 ? "thread" : "threads"}`}
                   </span>
                 </div>
                 <ul className="divide-y">
@@ -824,11 +880,17 @@ export function InboxPage() {
                                 {formatWhen(t.lastInboundAt)}
                               </span>
                             </div>
-                            <div className="flex items-center gap-1.5">
+                            {/* min-w-0 on both the row and the label is what
+                                makes `truncate` work here. A flex item defaults
+                                to min-width:auto, so it cannot shrink below its
+                                content — overflow:hidden has nothing to clip,
+                                and a long sequence name pushes the whole row
+                                past the column and under the detail pane. */}
+                            <div className="flex min-w-0 items-center gap-1.5">
                               {channelBadge(t.channel)}
                               {statusBadge(t.status)}
                               {t.sequenceName && (
-                                <span className="truncate text-[11px] text-muted-foreground">
+                                <span className="min-w-0 truncate text-[11px] text-muted-foreground">
                                   {t.sequenceName}
                                 </span>
                               )}
@@ -838,7 +900,7 @@ export function InboxPage() {
                             </p>
                             {t.snippet && (
                               <p className="line-clamp-2 text-[11px] text-muted-foreground/80">
-                                {t.snippet}
+                                {decodeBody(t.snippet, t.channel)}
                               </p>
                             )}
                           </button>
@@ -878,23 +940,37 @@ export function InboxPage() {
                       .filter(Boolean)
                       .join(" · ")}
                   </p>
-                  <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-                    <span>{matchLabel(selected.matchedHow)}</span>
+                  {/* Separated by a middot and ordered by what you actually
+                      want to know: which campaign, then which inbox, then how
+                      we matched it. The match reason came first and ran
+                      together with the rest, so the line opened on the least
+                      useful fact — and "From match" is our own plumbing, worth
+                      reading only when a thread looks mis-attached. */}
+                  <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-muted-foreground">
                     {selected.sequenceName && selected.sequenceId && (
-                      <Link
-                        href="/sequences"
-                        className="underline-offset-2 hover:underline"
-                      >
-                        Sequence: {selected.sequenceName}
-                      </Link>
+                      <>
+                        <Link
+                          href="/sequences"
+                          className="underline-offset-2 hover:underline"
+                        >
+                          {selected.sequenceName}
+                        </Link>
+                        <span aria-hidden>·</span>
+                      </>
                     )}
                     {mailbox && (
-                      <span>
-                        via {mailbox.label} ({mailbox.fromEmail})
-                      </span>
+                      <>
+                        <span>{mailbox.fromEmail}</span>
+                        <span aria-hidden>·</span>
+                      </>
                     )}
+                    <span title="How this reply was matched to the enrollment">
+                      {matchLabel(selected.matchedHow)}
+                    </span>
+                    {(selected.channel === "linkedin" ||
+                      selected.contactLinkedin) && <span aria-hidden>·</span>}
                     {selected.channel === "linkedin" && (
-                      <span>via LinkedIn (Unipile)</span>
+                      <span>LinkedIn</span>
                     )}
                     {selected.contactLinkedin && (
                       <a
@@ -912,15 +988,19 @@ export function InboxPage() {
                     )}
                   </div>
                 </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {selected.status !== "open" && selected.status !== "done" && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={acting}
-                      onClick={() => void patchStatus("open")}
-                    >
-                      Open
+                {/* One primary, the rest quiet.
+                    Five buttons of equal weight ask you to read all five every
+                    time; the one you reach for on a reply is almost always
+                    "open it where I can answer". Done and Snooze are the two
+                    that dispose of the thread, so they stay visible and plain;
+                    Open and Mark replied are state repairs and drop to text. */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {gmailUrl && (
+                    <Button size="sm" variant="default" asChild>
+                      <a href={gmailUrl} target="_blank" rel="noreferrer">
+                        <ExternalLink className="size-3.5" />
+                        Reply in Gmail
+                      </a>
                     </Button>
                   )}
                   <Button
@@ -940,23 +1020,26 @@ export function InboxPage() {
                   >
                     Snooze 1d
                   </Button>
+                  {selected.status !== "open" && selected.status !== "done" && (
+                    <button
+                      type="button"
+                      disabled={acting}
+                      onClick={() => void patchStatus("open")}
+                      className="rounded px-1.5 py-1 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                    >
+                      Reopen
+                    </button>
+                  )}
                   {selected.enrollmentId && (
-                    <Button
-                      size="sm"
-                      variant="secondary"
+                    <button
+                      type="button"
                       disabled={acting}
                       onClick={() => void markReplied()}
+                      title="Stop the sequence for this contact"
+                      className="rounded px-1.5 py-1 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                     >
-                      Mark enrollment replied
-                    </Button>
-                  )}
-                  {gmailUrl && (
-                    <Button size="sm" variant="default" asChild>
-                      <a href={gmailUrl} target="_blank" rel="noreferrer">
-                        <ExternalLink className="size-3.5" />
-                        Open in Gmail
-                      </a>
-                    </Button>
+                      Stop sequence
+                    </button>
                   )}
                 </div>
               </div>
