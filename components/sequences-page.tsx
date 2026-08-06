@@ -143,13 +143,6 @@ function formatLastSent(iso: string | null | undefined): string {
   });
 }
 
-/** Short label for compact hints (last segment after " - "). */
-function shortSeqName(name: string): string {
-  const parts = name.split(/\s+[—–-]\s+/);
-  const last = parts[parts.length - 1]?.trim();
-  return last && last.length > 0 ? last : name;
-}
-
 /** A mailbox is worth looking at well before it is actually full: at 80 % of
  *  the cap there is still time to move sends to another inbox or raise the
  *  limit, and at 100 % the decision has already been made for you. The old
@@ -177,6 +170,22 @@ function QueueStatus({
   stats: ActivityStats | null;
   taskCount: number;
 }) {
+  // Before the first fetch resolves there is no queue, no mailbox list and no
+  // send count — and every empty branch below reads as a finding: "Nothing due
+  // right now", "Nothing sent today", "No enabled mailboxes — nothing can
+  // send." On a slow network the page opens by telling an operator their
+  // outreach is dead. Say what is true instead, which is that we do not know
+  // yet.
+  if (!stats && taskCount === 0) {
+    return (
+      <section className="rounded-xl border border-border bg-card px-4 py-3.5">
+        <span className="text-sm text-muted-foreground">
+          Checking today&apos;s queue…
+        </span>
+      </section>
+    );
+  }
+
   const ready = stats?.readyTotal ?? taskCount;
   const mailboxes = stats?.mailboxes ?? [];
   const sequences = stats?.sequences ?? [];
@@ -282,11 +291,13 @@ function QueueStatus({
             );
           })}
         </div>
-      ) : (
+      ) : stats ? (
+        // Only claimable once stats arrived: an empty mailbox list is also what
+        // "not fetched yet" looks like, and the two must not read the same.
         <p className="border-t border-border px-4 py-2.5 text-xs text-muted-foreground">
           No enabled mailboxes — nothing can send.
         </p>
-      )}
+      ) : null}
 
       {/* Only rendered when something is actually held up. A row that always
           shows, reading "0 waiting cap", trains you to stop reading it. */}
@@ -1229,6 +1240,20 @@ export function SequencesPage() {
     if (activityFilter === "all") return tasks;
     return tasks.filter((t) => t.channel === activityFilter);
   }, [tasks, activityFilter]);
+
+  // An empty queue has nothing to filter, and the chip row hides itself when
+  // readyTotal hits 0 — so a user sitting on "Email" when the last task clears
+  // would be stranded: the row that holds the way back is gone, and the empty
+  // state keeps saying "try All" while offering no All to try (and hiding the
+  // Enroll action behind the same condition). Drop the filter instead of the
+  // way out of it. Only after loading, or every mount would clear it before
+  // the first queue arrives.
+  useEffect(() => {
+    if (loading) return;
+    if (activityFilter !== "all" && (stats?.readyTotal ?? tasks.length) === 0) {
+      setActivityFilter("all");
+    }
+  }, [loading, activityFilter, stats, tasks.length]);
 
   const activityLabel = (t: QueueTask) => {
     if (t.channel === "linkedin") {

@@ -156,6 +156,24 @@ function decodeEntities(text: string): string {
   });
 }
 
+/**
+ * Decode only what was encoded. LinkedIn bodies arrive verbatim from Unipile
+ * (lib/unipile-replies.ts stores payload.message as sent), so a DM that
+ * legitimately reads "use &lt;div&gt;" would come out of decodeEntities as
+ * "use <div>" — the pane would be inventing text nobody wrote. The encoding is
+ * a Gmail property, so the decode belongs to the Gmail path alone.
+ *
+ * Anything that is not LinkedIn decodes: the server defaults channel to
+ * "email" (lib/outreach/inbox.ts), and an absent channel on the email side
+ * must not silently turn the fix off.
+ */
+function decodeBody(
+  text: string,
+  channel: "email" | "linkedin" | undefined,
+): string {
+  return channel === "linkedin" ? text : decodeEntities(text);
+}
+
 function channelBadge(channel: "email" | "linkedin" | undefined) {
   if (channel === "linkedin") {
     return (
@@ -278,7 +296,7 @@ function MessageThread({
     }
 
     const raw = m.bodyText?.trim() || m.snippet?.trim() || "";
-    const body = raw ? decodeEntities(raw) : "(empty body)";
+    const body = raw ? decodeBody(raw, channel) : "(empty body)";
     const who = ours ? "You" : prospectLabel;
 
     nodes.push(
@@ -882,7 +900,7 @@ export function InboxPage() {
                             </p>
                             {t.snippet && (
                               <p className="line-clamp-2 text-[11px] text-muted-foreground/80">
-                                {decodeEntities(t.snippet)}
+                                {decodeBody(t.snippet, t.channel)}
                               </p>
                             )}
                           </button>
