@@ -706,6 +706,10 @@ export function SequencesPage() {
   const load = useCallback(async () => {
     if (!token) return;
     setLoading(true);
+    // A retry is not a failure until it fails. Left set, the previous failure
+    // would keep claiming the queue could not be loaded for the whole of the
+    // next in-flight fetch.
+    setQueueFailed(false);
     try {
       const [seqRes, queueRes, tablesRes, mailboxRes] = await Promise.all([
         fetch("/api/outreach/sequences", { headers: headers() }),
@@ -740,6 +744,11 @@ export function SequencesPage() {
         const d = await mailboxRes.json();
         setMailboxes((d.mailboxes ?? []) as Mailbox[]);
       }
+    } catch {
+      // A refused connection or DNS failure never reaches the branches above,
+      // so without this the panel would sit on "Checking today's queue…"
+      // forever — the failure state exists precisely for this.
+      setQueueFailed(true);
     } finally {
       setLoading(false);
     }
