@@ -96,6 +96,7 @@ import {
   type CompanyPrep,
 } from "@/lib/crm";
 import { getProductSignals } from "@/lib/crm-signals";
+import { TEMPLATE_TOKEN_HELP } from "@/lib/outreach/template-vars";
 import { CRM_TIER_TRIGGERS } from "@/lib/product-signals/classify";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getModel } from "@/lib/ai/provider";
@@ -5047,11 +5048,11 @@ const sequenceStepSchema = z.object({
   subject_template: z
     .string()
     .optional()
-    .describe("Email subject; tokens {{first_name}} {{company}} {{role}} etc."),
+    .describe(`Email subject. ${TEMPLATE_TOKEN_HELP}`),
   body_template: z
     .string()
     .describe(
-      "Message body. Tokens: {{first_name}} {{full_name}} {{company}} {{domain}} {{role}} {{email}} {{linkedin}}. Write in the campaign language (e.g. pt-BR).",
+      `Message body. ${TEMPLATE_TOKEN_HELP} Write in the campaign language (e.g. pt-BR).`,
     ),
 });
 
@@ -5173,7 +5174,9 @@ export const sequenceGet = tool({
 
 export const sequenceCreate = tool({
   description:
-    "Create a fully custom outreach campaign (sequence). Pass steps[] for custom multi-channel cadence (LinkedIn connect/message + email) with body/subject templates. Prefer writing copy in the user's language (e.g. pt-BR for Brazilian ICP). Tokens: {{first_name}} {{full_name}} {{company}} {{domain}} {{role}} {{email}} {{linkedin}}. If steps omitted, uses a default EN cadence. Typical agent flow: researchListTables → researchListRows (understand ICP) → sequenceCreate with custom pt-BR steps → sequenceEnrollResearch → sequenceListQueue.",
+    "Create a fully custom outreach campaign (sequence). Pass steps[] for custom multi-channel cadence (LinkedIn connect/message + email) with body/subject templates. Prefer writing copy in the user's language (e.g. pt-BR for Brazilian ICP). " +
+    TEMPLATE_TOKEN_HELP +
+    " If steps omitted, uses a default EN cadence. Typical agent flow: researchListTables → researchListRows (understand ICP) → sequenceCreate with custom pt-BR steps → sequenceEnrollResearch → sequenceListQueue.",
   inputSchema: z.object({
     name: z.string().describe("Campaign name, e.g. 'QA founders BR jul/26'"),
     description: z
@@ -5391,7 +5394,7 @@ export const sequenceRestoreSnapshot = tool({
 
 export const sequencePreview = tool({
   description:
-    "Preview how sequence templates render for a real person (enrollment) or a sample contact from a research list. Use before enroll to validate pt-BR copy and tokens.",
+    "Preview how sequence templates render for a real person (enrollment) or a sample contact from a research list. Use before enroll to validate pt-BR copy and tokens. Returns unfilled_variables per step: any token left as {{token}} has no value and will block that send in the queue.",
   inputSchema: z.object({
     sequence_id: z.string().optional(),
     enrollment_id: z.string().optional(),
@@ -5407,7 +5410,7 @@ export const sequencePreview = tool({
   execute: async ({ sequence_id, enrollment_id, table_ref, steps }) => {
     try {
       const client = getSupabaseServiceClient();
-      const { renderTemplate } = await import("@/lib/outreach/renderer");
+      const { renderTemplateParts } = await import("@/lib/outreach/renderer");
       const { getSequence, listEnrollments } = await import(
         "@/lib/outreach/sequences"
       );
@@ -5419,6 +5422,8 @@ export const sequencePreview = tool({
         contactEmail: string | null;
         contactLinkedin: string | null;
         contactRole: string | null;
+        /** Product-signal tokens, present only on a real CRM enrollment. */
+        templateVars?: Record<string, string> | null;
       };
 
       let person: Person = {
@@ -5442,6 +5447,9 @@ export const sequencePreview = tool({
             contactEmail: e.contactEmail,
             contactLinkedin: e.contactLinkedin,
             contactRole: e.contactRole,
+            // Without this every product token previewed as unfilled, even for
+            // an enrollment that carries the values.
+            templateVars: e.templateVars,
           };
           person_source = "enrollment";
         }
@@ -5510,31 +5518,52 @@ export const sequencePreview = tool({
         };
       }
 
-      const rendered = stepDefs.map((s, i) => ({
-        position: i,
-        channel: s.channel,
-        mode: s.mode,
-        delay_hours: s.delayHours,
-        linkedin_action: s.linkedinAction,
-        subject: s.subjectTemplate
-          ? renderTemplate(s.subjectTemplate, person)
-          : null,
-        body: renderTemplate(s.bodyTemplate, person),
-        gaps: [
-          s.channel === "linkedin" && !person.contactLinkedin
-            ? "missing_linkedin"
-            : null,
-          s.channel === "email" && !person.contactEmail
-            ? "missing_email"
-            : null,
-        ].filter(Boolean),
-      }));
+      const rendered = stepDefs.map((s, i) => {
+        const subject = s.subjectTemplate
+          ? renderTemplateParts(s.subjectTemplate, person)
+          : null;
+        const body = renderTemplateParts(s.bodyTemplate, person);
+        // An unfilled token blocks the send at queue time, so the preview has
+        // to name it here — otherwise the copy reads fine and the campaign
+        // silently jams once it is enrolled.
+        const unfilled = [
+          ...new Set([...(subject?.missing ?? []), ...body.missing]),
+        ];
+        return {
+          position: i,
+          channel: s.channel,
+          mode: s.mode,
+          delay_hours: s.delayHours,
+          linkedin_action: s.linkedinAction,
+          subject: subject?.text ?? null,
+          body: body.text,
+          unfilled_variables: unfilled,
+          gaps: [
+            s.channel === "linkedin" && !person.contactLinkedin
+              ? "missing_linkedin"
+              : null,
+            s.channel === "email" && !person.contactEmail
+              ? "missing_email"
+              : null,
+            unfilled.length > 0 ? "unfilled_variables" : null,
+          ].filter(Boolean),
+        };
+      });
+
+      const anyUnfilled = rendered.some(
+        (r) => r.unfilled_variables.length > 0,
+      );
 
       return {
         success: true as const,
         person_source,
         person,
         steps: rendered,
+        note: anyUnfilled
+          ? person_source === "enrollment"
+            ? "Tokens left as {{token}} have no value for this enrollment — the queue will block those sends. Rewrite the copy or fix the account data."
+            : "Tokens left as {{token}} are unfilled for this preview contact. Product tokens (signup_date, trial_days_left, …) only resolve on CRM enrollments — preview with enrollment_id to check them for real."
+          : undefined,
       };
     } catch (error) {
       return {
