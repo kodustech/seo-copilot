@@ -3320,7 +3320,7 @@ const listSocialMentions = tool({
 
 export const listCrmCompanies = tool({
   description:
-    "List/filter companies in the Company CRM. Filter by status, owner, outbound tier (t0=open decision window, t1=connected git recently, t2=signed up never connected, t3=older base, customer=paying), search text, or only accounts that are idle past their status SLA (stale_only).",
+    "List/filter companies in the Company CRM. Filter by status, owner, outbound tier (t0=open decision window, t1=connected git recently, t2=signed up never connected, t3=older base, customer=paying), prep gate (only 'ready' accounts may be enrolled), search text, or only accounts that are idle past their status SLA (stale_only). Every row carries its trigger — the reason behind the tier, which is what decides the message.",
   inputSchema: z.object({
     status: z
       .enum(COMPANY_STATUSES as unknown as [string, ...string[]])
@@ -3330,6 +3330,18 @@ export const listCrmCompanies = tool({
       .enum(["t0", "t1", "t2", "t3", "customer"])
       .optional()
       .describe("Filter by outbound tier from product signals"),
+    trigger: z
+      .string()
+      .optional()
+      .describe(
+        "Filter by the reason behind the tier: cloud_trial, trial_broken, trial_just_expired, free_limit, broken_activation, healthy_usage, went_quiet, never_connected, older_base, paying",
+      ),
+    prep_status: z
+      .enum(COMPANY_PREP_VALUES as unknown as [string, ...string[]])
+      .optional()
+      .describe(
+        "Filter by review gate: not_started | enriched | ready | parked. Only 'ready' accounts may be enrolled in a sequence.",
+      ),
     deployment: z
       .enum(["cloud", "self_hosted"])
       .optional()
@@ -3346,12 +3358,25 @@ export const listCrmCompanies = tool({
     search: z.string().optional().describe("Search name, domain, org id, industry, notes"),
     limit: z.number().optional().describe("Max rows (default 50)"),
   }),
-  execute: async ({ status, tier, deployment, channel, owner_email, stale_only, search, limit }) => {
+  execute: async ({
+    status,
+    tier,
+    trigger,
+    prep_status,
+    deployment,
+    channel,
+    owner_email,
+    stale_only,
+    search,
+    limit,
+  }) => {
     try {
       const client = getSupabaseServiceClient();
       const companies = await listCompanies(client, {
         status: status as CompanyStatus | undefined,
         tier,
+        trigger,
+        prepStatus: prep_status as CompanyPrep | undefined,
         deployment,
         source: channel,
         ownerEmail: owner_email,
@@ -3370,6 +3395,11 @@ export const listCrmCompanies = tool({
           status: c.status,
           priority: c.priority,
           tier: c.tier,
+          // Tier says when to touch the account, trigger says what to say. A
+          // caller that can only see the tier is picking a queue position with
+          // no idea which message belongs to it.
+          trigger: c.trigger,
+          prep_status: c.prepStatus,
           deployment: c.deployment,
           channel: c.source,
           owner_email: c.ownerEmail,
@@ -3450,6 +3480,12 @@ export const getCrmCompany = tool({
           org_id: company.orgId,
           status: company.status,
           priority: company.priority,
+          // The outbound state of the account: which queue it sits in (tier),
+          // why it is there (trigger), and whether it has been vetted enough
+          // to work at all (prep_status — only 'ready' may be enrolled).
+          tier: company.tier,
+          trigger: company.trigger,
+          prep_status: company.prepStatus,
           owner_email: company.ownerEmail,
           industry: company.industry,
           size: company.size,
@@ -3459,6 +3495,11 @@ export const getCrmCompany = tool({
           notes: company.notes,
           properties: company.properties,
           last_activity_at: company.lastActivityAt,
+          last_outreach_at: company.lastOutreachAt,
+          outreach_sent_count: company.outreachSentCount,
+          // icp_gate reason, dev_count_source, employee_count — how the sweep
+          // decided this account was worth creating.
+          enrichment: company.enrichment,
         },
         field_defs: fieldDefs.map((f) => ({
           key: f.key,
