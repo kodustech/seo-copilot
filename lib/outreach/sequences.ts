@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { renderTemplate } from "@/lib/outreach/renderer";
+import { findUnresolvedTokens, renderTemplate } from "@/lib/outreach/renderer";
 import type {
   EmailThreadMode,
   EnrollmentSource,
@@ -20,6 +20,10 @@ import {
   nextSendingSlot,
   nextSendingSlotAfter,
 } from "@/lib/outreach/sending-window";
+import {
+  freezeSignalVars,
+  PRODUCT_SIGNAL_COLUMNS,
+} from "@/lib/outreach/template-vars";
 import { listPeople, listRows } from "@/lib/research/tables";
 import { resolveTable } from "@/lib/research/columns";
 import { getProspect, updateProspect } from "@/lib/outreach";
@@ -1123,35 +1127,31 @@ export async function enrollFromCrm(
         }
       }
 
-      // Freeze product-signal tokens for templates ({{skip_reason}}, {{tier}},
-      // {{trigger}}, {{dev_count}}, {{reviews_30d}}).
-      const templateVars: Record<string, string> = {};
+      // Freeze product-signal tokens for templates — see lib/outreach/
+      // template-vars.ts for the full catalog. Dates are frozen as ISO and
+      // formatted at render time, so {{signup_date}} and {{days_since_signup}}
+      // both come from one field and the day count is never stale.
+      let templateVars: Record<string, string> = {};
       if (company.orgId) {
         const { data: sig } = await client
           .from("product_signals_latest")
-          .select("tier,trigger,top_skip_reason,dev_count,reviews_30d")
+          .select(PRODUCT_SIGNAL_COLUMNS)
           .eq("org_id", company.orgId)
           .maybeSingle();
         if (sig) {
-          if (sig.tier) templateVars.tier = String(sig.tier);
-          if (sig.trigger) templateVars.trigger = String(sig.trigger);
+          const row = sig as unknown as Record<string, unknown>;
+          templateVars = freezeSignalVars(row);
           // Set only when the destination copy actually builds a sentence
           // around the token. An unconditional default would put "no reason
           // logged on our side" inside a free_limit sales email, where it reads
           // as an apology for something nobody asked about; leaving it unset
           // where the copy does use it renders "the reason we record is: ."
-          if (sig.top_skip_reason) {
-            templateVars.skip_reason = String(sig.top_skip_reason);
+          const topSkip = row.top_skip_reason;
+          if (topSkip) {
+            templateVars.skip_reason = String(topSkip);
           } else if (usesSkipReason) {
             templateVars.skip_reason = "no reason logged on our side";
           }
-          // dev_count is the git-derived team size, never user_count: that is
-          // Kodus seats, usually 1, and it used to go out in real emails as if
-          // it were the prospect's engineering headcount.
-          if (sig.dev_count != null)
-            templateVars.dev_count = String(sig.dev_count);
-          if (sig.reviews_30d != null)
-            templateVars.reviews_30d = String(sig.reviews_30d);
         }
       }
 
@@ -1295,6 +1295,144 @@ export async function enrollFromProspects(
 // ---------------------------------------------------------------------------
 // Queue + complete
 // ---------------------------------------------------------------------------
+
+/**
+ * Re-freeze product-signal tokens on active CRM enrollments and re-render the
+ * copy of anything not sent yet.
+ *
+ * Without this, template_vars is whatever the account looked like on the day it
+ * was enrolled: an account enrolled before a token existed can never fill it,
+ * and its emails would sit blocked forever. Running it on the cron also means
+ * the unblock is automatic — fix the account data, and the next tick renders
+ * the email and lets it go.
+ *
+ * Only unsent tasks are touched, and only when the frozen values actually
+ * changed; a sent email is a record of what went out and is never rewritten.
+ */
+export async function refreshCrmSignalVars(
+  client: SupabaseClient,
+  opts: { limit?: number } = {},
+): Promise<{ enrollmentsUpdated: number; tasksRerendered: number }> {
+  const { data: rawEnrollments, error } = await client
+    .from("outreach_enrollments")
+    .select("*")
+    .eq("status", "active")
+    .not("crm_company_id", "is", null)
+    .limit(opts.limit ?? 500);
+  if (error) throw new Error(error.message);
+
+  const enrollments = (rawEnrollments ?? []).map((r) =>
+    mapEnrollment(r as Record<string, unknown>),
+  );
+  if (enrollments.length === 0)
+    return { enrollmentsUpdated: 0, tasksRerendered: 0 };
+
+  const companyIds = [
+    ...new Set(enrollments.map((e) => e.crmCompanyId).filter(Boolean)),
+  ] as string[];
+  const { data: companies } = await client
+    .from("crm_companies")
+    .select("id,org_id")
+    .in("id", companyIds);
+  const orgByCompany = new Map(
+    (companies ?? [])
+      .filter((c) => c.org_id)
+      .map((c) => [c.id as string, c.org_id as string]),
+  );
+  const orgIds = [...new Set(orgByCompany.values())];
+  if (orgIds.length === 0) return { enrollmentsUpdated: 0, tasksRerendered: 0 };
+
+  const { data: signals } = await client
+    .from("product_signals_latest")
+    .select(PRODUCT_SIGNAL_COLUMNS + ",org_id")
+    .in("org_id", orgIds);
+  const sigByOrg = new Map(
+    (signals ?? []).map((s) => {
+      const row = s as unknown as Record<string, unknown>;
+      return [String(row.org_id), row];
+    }),
+  );
+
+  const now = new Date().toISOString();
+  const stepsBySequence = new Map<string, OutreachSequenceStep[]>();
+  let enrollmentsUpdated = 0;
+  let tasksRerendered = 0;
+
+  for (const enrollment of enrollments) {
+    const orgId = enrollment.crmCompanyId
+      ? orgByCompany.get(enrollment.crmCompanyId)
+      : undefined;
+    const sig = orgId ? sigByOrg.get(orgId) : undefined;
+    if (!sig) continue;
+
+    const previous = enrollment.templateVars ?? {};
+    const next = freezeSignalVars(sig);
+    // skip_reason is copy-dependent (the enroll path only sets the "no reason
+    // logged" fallback when a template asks for it), so a refresh must not
+    // drop the one the enrollment already carries.
+    if (sig.top_skip_reason) {
+      next.skip_reason = String(sig.top_skip_reason);
+    } else if (previous.skip_reason) {
+      next.skip_reason = previous.skip_reason;
+    }
+
+    if (JSON.stringify(next) === JSON.stringify(previous)) continue;
+
+    const { error: updateError } = await client
+      .from("outreach_enrollments")
+      .update({ template_vars: next, updated_at: now })
+      .eq("id", enrollment.id);
+    if (updateError) throw new Error(updateError.message);
+    enrollmentsUpdated += 1;
+
+    const refreshed: OutreachEnrollment = { ...enrollment, templateVars: next };
+    const { data: rawTasks } = await client
+      .from("outreach_send_tasks")
+      .select("*")
+      .eq("enrollment_id", enrollment.id)
+      .in("status", ["scheduled", "ready"]);
+
+    let steps = stepsBySequence.get(enrollment.sequenceId);
+    if (!steps) {
+      steps = await listSteps(client, enrollment.sequenceId);
+      stepsBySequence.set(enrollment.sequenceId, steps);
+    }
+    const stepById = new Map(steps.map((s) => [s.id, s]));
+
+    for (const rawTask of rawTasks ?? []) {
+      const task = mapTask(rawTask as Record<string, unknown>);
+      const step = stepById.get(task.stepId);
+      if (!step) continue;
+      const body = renderTemplate(step.bodyTemplate, refreshed);
+      const subject = step.subjectTemplate
+        ? renderTemplate(step.subjectTemplate, refreshed)
+        : null;
+      if (body === task.renderedBody && subject === task.renderedSubject)
+        continue;
+      const stillUnfilled = findUnresolvedTokens(subject, body);
+      const { error: taskError } = await client
+        .from("outreach_send_tasks")
+        .update({
+          rendered_subject: subject,
+          rendered_body: body,
+          // Clear the block once the data that caused it arrived.
+          error:
+            stillUnfilled.length > 0
+              ? task.error
+              : task.error?.startsWith("Unfilled variables:")
+                ? null
+                : task.error,
+          updated_at: now,
+        })
+        .eq("id", task.id)
+        .in("status", ["scheduled", "ready"]);
+      if (taskError) throw new Error(taskError.message);
+      tasksRerendered += 1;
+    }
+  }
+
+  return { enrollmentsUpdated, tasksRerendered };
+}
 
 export async function listReadyQueue(
   client: SupabaseClient,
@@ -2312,6 +2450,34 @@ async function sendDueEmailTask(
       })
       .eq("id", task.id);
     await advanceEnrollment(client, enrollment.id);
+    return "skipped";
+  }
+
+  // Unfilled {{token}} guard, before the claim so a blocked task stays sendable
+  // after someone fixes the copy instead of being burned as 'sending'.
+  //
+  // The renderer leaves an unresolvable token in the text rather than blanking
+  // it, so this catches both a template the enrollment has no value for and a
+  // token a human pasted into an edited draft. An email with a hole in it is
+  // worse than a late one: "you signed up on  and never connected" is the kind
+  // of thing a prospect answers once, badly.
+  const unresolved = findUnresolvedTokens(
+    opts?.override?.subject ?? task.renderedSubject,
+    opts?.override?.body ?? task.renderedBody,
+  );
+  if (unresolved.length > 0) {
+    await client
+      .from("outreach_send_tasks")
+      .update({
+        // 'ready' puts it on the human queue, where the copy can be edited.
+        status: "ready",
+        error: `Unfilled variables: ${unresolved
+          .map((t) => `{{${t}}}`)
+          .join(", ")} — edit the email or fix the account data before sending.`,
+        updated_at: now,
+      })
+      .eq("id", task.id)
+      .in("status", claimFrom);
     return "skipped";
   }
 

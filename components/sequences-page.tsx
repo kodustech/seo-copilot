@@ -29,7 +29,11 @@ import {
 
 import { AutoEnrollDialog } from "@/components/auto-enroll-dialog";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
-import { renderTemplate } from "@/lib/outreach/renderer";
+import { findUnresolvedTokens, renderTemplate } from "@/lib/outreach/renderer";
+import {
+  CONTACT_TEMPLATE_VARS,
+  PRODUCT_TEMPLATE_VARS,
+} from "@/lib/outreach/template-vars";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -606,6 +610,47 @@ function StatusDot({ status }: { status: string }) {
           ? "bg-neutral-500"
           : "bg-sky-500";
   return <span className={cn("inline-block size-1.5 rounded-full", color)} />;
+}
+
+/**
+ * The tokens a step template may use, in the editor next to the body.
+ *
+ * Without it the only discoverable tokens were the two in the placeholder hint,
+ * so copy that needed a signup date got a hand-typed "[DATE]" that no renderer
+ * ever filled.
+ */
+function TokenCatalog() {
+  const groups: Array<{ label: string; vars: typeof CONTACT_TEMPLATE_VARS }> = [
+    { label: "Always available", vars: CONTACT_TEMPLATE_VARS },
+    {
+      label: "Product signals — CRM accounts with a connected org only",
+      vars: PRODUCT_TEMPLATE_VARS,
+    },
+  ];
+  return (
+    <details className="rounded-lg border border-dashed border-border px-2.5 py-1.5">
+      <summary className="cursor-pointer text-[10px] text-muted-foreground marker:text-muted-foreground">
+        Variables you can use — a token with no value blocks the send
+      </summary>
+      <div className="mt-2 space-y-3">
+        {groups.map((g) => (
+          <div key={g.label} className="space-y-1">
+            <p className="text-[10px] font-medium text-muted-foreground">
+              {g.label}
+            </p>
+            <ul className="grid gap-x-4 gap-y-0.5 sm:grid-cols-2">
+              {g.vars.map((v) => (
+                <li key={v.token} className="text-[10px] leading-relaxed">
+                  <code className="text-foreground">{`{{${v.token}}}`}</code>{" "}
+                  <span className="text-muted-foreground">{v.description}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
 }
 
 // ── Segmented control ──────────────────────────────────────────────
@@ -3056,7 +3101,7 @@ export function SequencesPage() {
                                       : "Email body"}
                                   </p>
                                   <p className="text-[10px] text-muted-foreground">
-                                    {"{{first_name}} {{company}}"}
+                                    {"{{first_name}} {{company}} …"}
                                   </p>
                                 </div>
                                 <Textarea
@@ -3069,6 +3114,7 @@ export function SequencesPage() {
                                   rows={step.channel === "email" ? 7 : 4}
                                   className="resize-y text-sm leading-relaxed"
                                 />
+                                <TokenCatalog />
                               </div>
 
                               {/* Live preview strip */}
@@ -3569,6 +3615,11 @@ export function SequencesPage() {
                 // edited card quietly hand back the original text.
                 const subject = draft?.subject ?? t.renderedSubject ?? "";
                 const body = draft?.body ?? t.renderedBody ?? "";
+                // Tokens the enrollment had no value for. The renderer leaves
+                // them as {{token}} instead of blanking them, so the hole is
+                // visible in the copy above and the send stays blocked until
+                // someone writes over it.
+                const unfilled = findUnresolvedTokens(subject, body);
                 return (
                   <div
                     key={t.id}
@@ -3652,6 +3703,26 @@ export function SequencesPage() {
                         </>
                       )}
 
+                      {unfilled.length > 0 && (
+                        <div className="mt-3 flex gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2.5">
+                          <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-destructive" />
+                          <div className="min-w-0 space-y-1">
+                            <p className="text-xs font-medium text-destructive">
+                              {unfilled.length === 1
+                                ? "1 variable has no value for this account"
+                                : `${unfilled.length} variables have no value for this account`}
+                              {isLi ? "" : " — sending is blocked"}
+                            </p>
+                            <p className="text-[11px] text-muted-foreground">
+                              {unfilled.map((v) => `{{${v}}}`).join(", ")} —{" "}
+                              {isLi
+                                ? "rewrite the note before you paste it into LinkedIn."
+                                : "click Edit and write over it, or fill the data on the account and refresh."}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
                       {isLi ? (
                         <div className="mt-4 space-y-3 rounded-lg border border-[#0A66C2]/20 bg-[#0A66C2]/5 px-3 py-3">
                           <p className="text-xs font-medium text-foreground">
@@ -3731,12 +3802,20 @@ export function SequencesPage() {
                           {e?.contactEmail && (
                             <Button
                               size="sm"
-                              disabled={busyId === t.id || !mailboxConfigured}
+                              disabled={
+                                busyId === t.id ||
+                                !mailboxConfigured ||
+                                unfilled.length > 0
+                              }
                               onClick={() => void sendNow(t.id)}
                               title={
-                                mailboxConfigured
-                                  ? `Send now from the sequence's mailbox to ${e.contactEmail}`
-                                  : "Connect Gmail in Settings to send from here"
+                                unfilled.length > 0
+                                  ? `Blocked: ${unfilled
+                                      .map((v) => `{{${v}}}`)
+                                      .join(", ")} has no value for this account`
+                                  : mailboxConfigured
+                                    ? `Send now from the sequence's mailbox to ${e.contactEmail}`
+                                    : "Connect Gmail in Settings to send from here"
                               }
                             >
                               {busyId === t.id ? (
