@@ -886,12 +886,21 @@ export async function upsertAccountByDomain(
     });
     const emailKey = contact.email?.toLowerCase().trim() ?? "";
     const nameKey = contact.name.toLowerCase().trim();
-    const dup = existingContacts.some(
+    const dup = existingContacts.find(
       (c) =>
         (emailKey && c.email?.toLowerCase() === emailKey) ||
         c.name.toLowerCase() === nameKey,
     );
-    if (!dup) {
+
+    // Reviving an account has to revive the person it came back for. The only
+    // revive is a reply, and the replier matching an archived contact is the
+    // normal case — they were excluded with the account. Left archived, the
+    // account returns without the one person anybody wants to answer: every
+    // reader (account page, enroller, composer) filters archived out.
+    if (dup?.archivedAt && input.revive) {
+      await restoreContact(client, dup.id);
+      contactCreated = true;
+    } else if (!dup) {
       await createContact(client, company.id, {
         name: contact.name,
         email: contact.email,
@@ -1018,6 +1027,19 @@ export async function promoteEnrollmentToCrm(
         : null,
   });
 
+  // Nothing was written, so nothing is logged. logActivity touches
+  // last_activity_at by default, and an excluded account climbing the "recent
+  // activity" ordering because a machine tried to promote it and was refused
+  // is the machine-write this whole change exists to stop.
+  if (result.skippedArchived) {
+    return {
+      company: result.company,
+      created: false,
+      contactCreated: false,
+      skipped: "Account was excluded — restore it to promote",
+    };
+  }
+
   try {
     await logActivity(client, result.company.id, "note", {
       summary:
@@ -1042,9 +1064,6 @@ export async function promoteEnrollmentToCrm(
     company: result.company,
     created: result.created,
     contactCreated: result.contactCreated,
-    ...(result.skippedArchived
-      ? { skipped: "Account was excluded — restore it to promote" }
-      : {}),
   };
 }
 
@@ -1078,6 +1097,9 @@ export async function importPipelineProspectsToAccounts(
 ): Promise<{
   imported: number;
   updated: number;
+  /** Prospects whose account a human excluded. Counted apart from `updated`,
+   *  which would otherwise report work that never happened. */
+  skippedArchived: number;
   contactsCreated: number;
   total: number;
 }> {
@@ -1088,6 +1110,7 @@ export async function importPipelineProspectsToAccounts(
 
   let imported = 0;
   let updated = 0;
+  let skippedArchived = 0;
   let contactsCreated = 0;
 
   for (const p of prospects) {
@@ -1129,7 +1152,8 @@ export async function importPipelineProspectsToAccounts(
             }
           : null,
     });
-    if (result.created) imported += 1;
+    if (result.skippedArchived) skippedArchived += 1;
+    else if (result.created) imported += 1;
     else updated += 1;
     if (result.contactCreated) contactsCreated += 1;
   }
@@ -1137,6 +1161,7 @@ export async function importPipelineProspectsToAccounts(
   return {
     imported,
     updated,
+    skippedArchived,
     contactsCreated,
     total: prospects.length,
   };
@@ -1342,6 +1367,23 @@ export async function archiveContact(
     .select("id")
     .maybeSingle();
   if (error) throw new Error(`Failed to archive contact: ${error.message}`);
+  if (!data) throw new ContactNotFoundError(id);
+}
+
+/** Undo an exclusion. Does not restore `is_primary` — archiving cleared it,
+ *  and whoever the account has been treating as its lead contact since then
+ *  should stay the lead contact. */
+export async function restoreContact(
+  client: SupabaseClient,
+  id: string,
+): Promise<void> {
+  const { data, error } = await client
+    .from("crm_contacts")
+    .update({ archived_at: null })
+    .eq("id", id)
+    .select("id")
+    .maybeSingle();
+  if (error) throw new Error(`Failed to restore contact: ${error.message}`);
   if (!data) throw new ContactNotFoundError(id);
 }
 

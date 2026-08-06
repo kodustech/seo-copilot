@@ -86,6 +86,16 @@ export async function pushRowToCrm(
         }
       : null,
   });
+  // The account exists but a human excluded it, so upsertAccountByDomain wrote
+  // nothing. Failing loudly is the point: returning normally would report a
+  // promote that did not happen, and logging the "Promoted from research list"
+  // note below would touch last_activity_at on an account nobody works.
+  if (base.skippedArchived) {
+    throw new Error(
+      `${domain} is an excluded account — restore it in Accounts to promote this row`,
+    );
+  }
+
   companyId = base.company.id;
   if (base.contactCreated) contactsCreated += 1;
 
