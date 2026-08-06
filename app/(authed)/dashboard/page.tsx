@@ -1,5 +1,5 @@
-import { Dashboard } from "@/components/dashboard";
+import { PerformancePage } from "@/components/performance-page";
 
 export default function Page() {
-  return <Dashboard />;
+  return <PerformancePage />;
 }

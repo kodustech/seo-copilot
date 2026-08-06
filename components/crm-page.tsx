@@ -488,8 +488,6 @@ export function CrmPage() {
   const [fieldsOpen, setFieldsOpen] = useState(false);
   const [fieldDefs, setFieldDefs] = useState<CrmFieldDef[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [importingPipeline, setImportingPipeline] = useState(false);
-  const [importNotice, setImportNotice] = useState<string | null>(null);
 
   // ── auth token ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -603,32 +601,6 @@ export function CrmPage() {
     void load();
   }
 
-  async function importPipeline() {
-    if (
-      !confirm(
-        "Import legacy Pipeline prospects into Accounts? Companies match by domain; existing accounts are updated, not duplicated.",
-      )
-    ) {
-      return;
-    }
-    setImportingPipeline(true);
-    setImportNotice(null);
-    setError(null);
-    try {
-      const res = await authFetch("/api/crm/import-pipeline", {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Import failed");
-      setImportNotice(json.message ?? "Import complete");
-      void load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Import failed");
-    } finally {
-      setImportingPipeline(false);
-    }
-  }
 
   return (
     <div className="mx-auto max-w-[1400px] px-5 py-6">
@@ -661,20 +633,6 @@ export function CrmPage() {
             <Settings2 className="size-3.5" />
             Manage fields
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={importingPipeline}
-            onClick={() => void importPipeline()}
-            className="h-8 gap-1.5 border-white/10 text-neutral-300"
-          >
-            {importingPipeline ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <Zap className="size-3.5" />
-            )}
-            Import pipeline
-          </Button>
           <WebhookDocs />
           <Button
             variant="ghost"
@@ -693,12 +651,6 @@ export function CrmPage() {
           </Button>
         </div>
       </div>
-
-      {importNotice && (
-        <div className="mb-3 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
-          {importNotice}
-        </div>
-      )}
 
       {/* Stat tiles */}
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">

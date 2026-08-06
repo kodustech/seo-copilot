@@ -31,15 +31,11 @@ let started = false;
 const tasks: ScheduledTask[] = [];
 
 async function runScheduledJobsCron(): Promise<void> {
-  const [
-    { getSupabaseServiceClient },
-    { isJobDue, executeJob },
-    { ensureTodayYoloBatchForUser, getDefaultYoloUsers },
-  ] = await Promise.all([
-    import("@/lib/supabase-server"),
-    import("@/lib/scheduled-jobs"),
-    import("@/lib/social-yolo"),
-  ]);
+  const [{ getSupabaseServiceClient }, { isJobDue, executeJob }] =
+    await Promise.all([
+      import("@/lib/supabase-server"),
+      import("@/lib/scheduled-jobs"),
+    ]);
 
   const client = getSupabaseServiceClient();
   const now = new Date();
@@ -71,14 +67,11 @@ async function runScheduledJobsCron(): Promise<void> {
     }
   }
 
-  const yoloUsers = getDefaultYoloUsers();
-  for (const userEmail of yoloUsers) {
-    try {
-      await ensureTodayYoloBatchForUser({ client, userEmail, now });
-    } catch (err) {
-      console.error(`[cron] YOLO batch for ${userEmail} failed:`, err);
-    }
-  }
+  // The YOLO batch builder ran here until the SEO & production screens were
+  // removed. Keeping it would have left a job that queues and publishes social
+  // posts every day with no screen left to review or stop it — a publisher
+  // running blind is worse than no publisher. The content work moves to a skill
+  // in the local agent, which owns the scheduling too.
 }
 
 async function runLlmMentionsCron(): Promise<void> {
@@ -243,7 +236,7 @@ async function runProductSignalsCron(): Promise<void> {
 
 const JOBS: JobDefinition[] = [
   {
-    name: "scheduled-jobs + YOLO",
+    name: "scheduled-jobs",
     schedule: "0 * * * *",
     run: runScheduledJobsCron,
   },
