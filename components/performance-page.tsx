@@ -15,7 +15,7 @@
 // this puts them one click apart and leaves the arithmetic alone.
 // ---------------------------------------------------------------------------
 
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { BarChart3, Send } from "lucide-react";
 
 import { Dashboard } from "@/components/dashboard";
@@ -52,7 +52,32 @@ export function PerformancePage() {
   // is the only option that avoids both.
   const [seen, setSeen] = useState<Set<Half>>(() => new Set<Half>(["inbound"]));
 
+  // Scroll position is per half, because the container is not.
+  //
+  // Keeping both halves mounted means one scroller serves two documents: the
+  // scrollTop you left behind on Inbound is still applied when Outbound
+  // appears, so switching after reading a while opened the other tab mid-page —
+  // or at its end, when the incoming half is shorter. Unmounting used to reset
+  // it as a side effect, which is exactly the side effect this component gave
+  // up to keep its filters.
+  //
+  // So park the outgoing offset and restore the incoming one: 0 on a first
+  // visit, where you left off on a return. useLayoutEffect, not useEffect, so
+  // the position is set in the same frame the tab becomes visible and nothing
+  // flashes at the wrong offset.
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const offsets = useRef<Record<Half, number>>({ inbound: 0, outbound: 0 });
+
+  useLayoutEffect(() => {
+    const el = scrollerRef.current;
+    if (el) el.scrollTop = offsets.current[half];
+  }, [half]);
+
   function show(next: Half) {
+    if (next === half) return;
+    if (scrollerRef.current) {
+      offsets.current[half] = scrollerRef.current.scrollTop;
+    }
     setHalf(next);
     setSeen((prev) => (prev.has(next) ? prev : new Set(prev).add(next)));
   }
@@ -81,7 +106,7 @@ export function PerformancePage() {
         })}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div ref={scrollerRef} className="min-h-0 flex-1 overflow-auto">
         {/* `hidden` rather than unmounting: the inactive half keeps its filters
             and its already-fetched data. Each is only mounted once visited, so
             the outbound aggregates are never run for someone who came to look
