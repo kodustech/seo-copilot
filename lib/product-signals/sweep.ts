@@ -48,13 +48,20 @@ const TIER_RANK: Record<string, number> = {
  * means a PR arrived, Kodus looked at it and refused: the repo is live and the
  * team is working. Only an org with no devs, no reviews and no skips has
  * genuinely nothing behind the connection.
+ *
+ * Every term is monotonic — a dev count, and the two lifetime timestamps. The
+ * rolling reviews30d/skips30d counters are deliberately not used: evidence
+ * built on a 30-day window expires on a quiet month, ownership of a shared
+ * account swings back to the never-connected sibling, and the account flips to
+ * never_connected until the repo gets busy again. That oscillation is the very
+ * thing the owner election was introduced to stop, and it would be worse here
+ * for taking a month to come back around.
  */
 function hasProductEvidence(org: CollectedOrg): boolean {
   return (
     resolveDevCount(org).devCount != null ||
     org.lastReviewAt != null ||
-    org.reviews30d > 0 ||
-    org.skips30d > 0
+    org.lastSkipAt != null
   );
 }
 

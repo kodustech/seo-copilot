@@ -116,7 +116,8 @@ export async function collectOrgFacts(): Promise<CollectedOrg[]> {
                      AND ae.createdAt >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 30 DAY)) AS reviews_30d,
              MAX(IF(ae.status = 'success', ae.createdAt, NULL)) AS last_review_at,
              COUNTIF(ae.status = 'skipped'
-                     AND ae.createdAt >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 30 DAY)) AS skips_30d
+                     AND ae.createdAt >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 30 DAY)) AS skips_30d,
+             MAX(IF(ae.status = 'skipped', ae.createdAt, NULL)) AS last_skip_at
       FROM \`kody-408918.kodus_postgres.automation_execution\` ae
       JOIN \`kody-408918.kodus_postgres.team_automations\` ta ON ae.team_automation_id = ta.uuid
       JOIN \`kody-408918.kodus_postgres.teams\` t ON ta.teamUuid = t.uuid
@@ -184,6 +185,7 @@ export async function collectOrgFacts(): Promise<CollectedOrg[]> {
       COALESCE(execs.reviews_30d, 0) AS reviews_30d,
       execs.last_review_at AS last_review_at,
       COALESCE(execs.skips_30d, 0) AS skips_30d,
+      execs.last_skip_at AS last_skip_at,
       top_skips.top_skip_reason AS top_skip_reason,
       o.code_host_member_count AS code_host_member_count,
       o.code_host_member_count_updated_at AS code_host_member_count_at,
@@ -242,6 +244,7 @@ export async function collectOrgFacts(): Promise<CollectedOrg[]> {
       reviews30d: asNumber(r.reviews_30d),
       lastReviewAt: asIso(r.last_review_at),
       skips30d: asNumber(r.skips_30d),
+      lastSkipAt: asIso(r.last_skip_at),
       // Blank counts as absent, same contract as lib/crm-signals.ts. Callers
       // check this for truthiness to decide whether there is a reason worth
       // naming, and an empty string passes a null check while naming nothing.

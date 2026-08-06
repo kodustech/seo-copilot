@@ -35,6 +35,10 @@ export type OrgFacts = {
   reviews30d: number;
   lastReviewAt: string | null;
   skips30d: number;
+  /** Lifetime max, like lastReviewAt — a skip that happened does not un-happen.
+   *  Used by the sweep's owner election, which needs evidence that cannot age
+   *  out of a rolling window and flip an account back and forth. */
+  lastSkipAt: string | null;
   topSkipReason: string | null;
   /** Members of the connected git org, persisted by kodus-ai at onboarding.
    *  Null for every org onboarded before 2026-07-28 (no backfill exists). */
