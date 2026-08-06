@@ -941,6 +941,13 @@ export type PromoteEnrollmentInput = {
  *   step, and a reply may be "who are you?" or "take me off this list". A human
  *   moves it to qualified, or to lost, after reading it.
  * - manual promote → status lead (won't downgrade later stages)
+ *
+ * A reply revives an *excluded account*, and restores the replier along with
+ * it. It does not revive a person excluded on their own: on a live account
+ * that exclusion is a decision about that person — often the reason they were
+ * written to and asked to be left alone — and answering is not consent to
+ * undo it. Callers get `contactCreated: false` there, and the person stays off
+ * the account.
  * Domain from enrollment.domain or contact email. Idempotent by domain.
  */
 export async function promoteEnrollmentToCrm(
