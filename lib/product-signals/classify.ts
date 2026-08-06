@@ -101,7 +101,10 @@ export const TIER_TRIGGERS = [
  *  them: those orgs never reach an account at all (sweep.ts skips orgType
  *  "user"), so offering it as a filter would only ever return nothing. */
 export const CRM_TIER_TRIGGERS = TIER_TRIGGERS.filter(
-  (t) => t !== "personal_account",
+  // Predicate, not a bare comparison: filter alone keeps the full union in the
+  // result type, so the constant would advertise a value it does not contain.
+  (t): t is Exclude<(typeof TIER_TRIGGERS)[number], "personal_account"> =>
+    t !== "personal_account",
 );
 
 export type TierTrigger =
