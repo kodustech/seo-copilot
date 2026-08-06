@@ -897,7 +897,12 @@ export async function upsertAccountByDomain(
     // normal case — they were excluded with the account. Left archived, the
     // account returns without the one person anybody wants to answer: every
     // reader (account page, enroller, composer) filters archived out.
-    if (dup?.archivedAt && input.revive) {
+    //
+    // Gated on the *account* having been excluded, not just the contact. On a
+    // live account, an archived person is a standalone decision — the wrong
+    // contact, or one who asked to be left alone — and a reply from them is
+    // not consent to undo it. There is nothing to revive them alongside.
+    if (existing?.archivedAt && dup?.archivedAt && input.revive) {
       await restoreContact(client, dup.id);
       contactCreated = true;
     } else if (!dup) {
