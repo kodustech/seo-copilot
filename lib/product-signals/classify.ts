@@ -73,23 +73,42 @@ export function resolveDevCount(facts: {
 
 export type Tier = "t0" | "t1" | "t2" | "t3" | "customer" | null;
 
-export type TierTrigger =
+/** Every trigger this classifier can write, grouped by the tier that carries
+ *  it. Exported as a value, not only a type: callers that validate a trigger
+ *  coming from outside — the MCP filter in lib/ai/tools.ts — need the list at
+ *  runtime, and a hand-copied second list would drift the first time a trigger
+ *  is added here. */
+export const TIER_TRIGGERS = [
   // t0
-  | "cloud_trial"
-  | "trial_broken"
-  | "trial_just_expired"
-  | "free_limit"
+  "cloud_trial",
+  "trial_broken",
+  "trial_just_expired",
+  "free_limit",
   // t1
-  | "broken_activation"
-  | "healthy_usage"
-  | "went_quiet"
+  "broken_activation",
+  "healthy_usage",
+  "went_quiet",
   // t2
-  | "never_connected"
+  "never_connected",
   // t3
-  | "older_base"
+  "older_base",
   // customer / excluded
-  | "paying"
-  | "personal_account"
+  "paying",
+  "personal_account",
+] as const;
+
+/** Triggers an org can carry into the CRM. personal_account is not one of
+ *  them: those orgs never reach an account at all (sweep.ts skips orgType
+ *  "user"), so offering it as a filter would only ever return nothing. */
+export const CRM_TIER_TRIGGERS = TIER_TRIGGERS.filter(
+  // Predicate, not a bare comparison: filter alone keeps the full union in the
+  // result type, so the constant would advertise a value it does not contain.
+  (t): t is Exclude<(typeof TIER_TRIGGERS)[number], "personal_account"> =>
+    t !== "personal_account",
+);
+
+export type TierTrigger =
+  | (typeof TIER_TRIGGERS)[number]
   | null;
 
 export type Health = "active" | "cooling" | "at_risk" | "dormant" | "unknown";
