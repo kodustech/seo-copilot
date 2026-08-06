@@ -49,20 +49,39 @@ const TIER_RANK: Record<string, number> = {
  * team is working. Only an org with no devs, no reviews and no skips has
  * genuinely nothing behind the connection.
  *
- * Every term is monotonic — a dev count, and the two lifetime timestamps. The
- * rolling reviews30d/skips30d counters are deliberately not used: evidence
- * built on a 30-day window expires on a quiet month, ownership of a shared
- * account swings back to the never-connected sibling, and the account flips to
- * never_connected until the repo gets busy again. That oscillation is the very
- * thing the owner election was introduced to stop, and it would be worse here
- * for taking a month to come back around.
+ * Activity counts within EVIDENCE_DAYS, and the shape of that window matters
+ * more than its length. The rolling reviews30d/skips30d counters are not used:
+ * a count can go positive, fall back to zero on a quiet month and rise again,
+ * so ownership of a shared account would swing back and forth and the account
+ * would flip in and out of never_connected — the oscillation the owner election
+ * exists to stop. A timestamp aging past a threshold crosses once and stays
+ * crossed, so the window bounds the claim without ever flapping.
+ *
+ * Six months, because the alternative in each direction is worse: unbounded,
+ * an org that churned two years ago keeps a domain's account forever and
+ * suppresses a live t2 sibling; much shorter, and a team that simply had a
+ * quiet quarter gets told to go connect the repo it already connected.
+ *
+ * devCount stays unbounded on purpose — it is not an activity signal. It says a
+ * team of N exists behind this org, which does not stop being true because
+ * nobody opened a PR this month.
  */
-function hasProductEvidence(org: CollectedOrg): boolean {
-  return (
-    resolveDevCount(org).devCount != null ||
-    org.lastReviewAt != null ||
-    org.lastSkipAt != null
-  );
+const EVIDENCE_DAYS = 180;
+
+function daysSince(iso: string | null, now: Date): number | null {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.floor((now.getTime() - t) / 86_400_000);
+}
+
+function hasProductEvidence(org: CollectedOrg, now: Date): boolean {
+  if (resolveDevCount(org).devCount != null) return true;
+  const lastActivity = [
+    daysSince(org.lastReviewAt, now),
+    daysSince(org.lastSkipAt, now),
+  ].filter((d): d is number => d != null);
+  return lastActivity.some((d) => d <= EVIDENCE_DAYS);
 }
 
 export type SweepSummary = {
@@ -288,7 +307,7 @@ export async function runProductSignalsSweep(
     const candidate: Owner = {
       orgId: org.orgId,
       paying: cls.tier === "customer" ? 1 : 0,
-      connected: org.connectedGit && hasProductEvidence(org) ? 1 : 0,
+      connected: org.connectedGit && hasProductEvidence(org, now) ? 1 : 0,
       rank: TIER_RANK[cls.tier] ?? 0,
       signupAt: org.signupAt ?? "",
     };
