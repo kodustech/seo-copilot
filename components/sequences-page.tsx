@@ -166,9 +166,11 @@ const CAP_WARN_RATIO = 0.8;
 function QueueStatus({
   stats,
   taskCount,
+  loading,
 }: {
   stats: ActivityStats | null;
   taskCount: number;
+  loading: boolean;
 }) {
   // Before the first fetch resolves there is no queue, no mailbox list and no
   // send count — and every empty branch below reads as a finding: "Nothing due
@@ -176,11 +178,20 @@ function QueueStatus({
   // send." On a slow network the page opens by telling an operator their
   // outreach is dead. Say what is true instead, which is that we do not know
   // yet.
+  //
+  // "Not fetched yet" and "the fetch failed" look identical from here — load()
+  // keeps stats null on a non-ok response and records nothing, and the queue
+  // route answers every internal error with a 401 — so `loading` has to
+  // separate them. Without it the pending message becomes permanent on
+  // failure, which is a worse lie than the one above: it says we are still
+  // looking when we have stopped.
   if (!stats && taskCount === 0) {
     return (
       <section className="rounded-xl border border-border bg-card px-4 py-3.5">
         <span className="text-sm text-muted-foreground">
-          Checking today&apos;s queue…
+          {loading
+            ? "Checking today’s queue…"
+            : "Couldn’t load today’s queue — refresh to try again."}
         </span>
       </section>
     );
@@ -3084,7 +3095,11 @@ export function SequencesPage() {
               Now: one sentence says what today is, the numbers that need a
               decision are the only ones emphasised, and everything else is
               support text or hidden until it matters. */}
-          <QueueStatus stats={stats} taskCount={tasks.length} />
+          <QueueStatus
+            stats={stats}
+            taskCount={tasks.length}
+            loading={loading}
+          />
           {stats && !stats.emailAutoSend && (
             <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
               Email auto-send is{" "}
