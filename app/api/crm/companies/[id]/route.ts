@@ -9,6 +9,7 @@ import {
   getCompany,
   listActivities,
   listComments,
+  listCompanySequences,
   listContacts,
   updateCompany,
   type CompanyPrep,
@@ -54,12 +55,19 @@ export async function GET(
     if (!company) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
-    const [contacts, comments, activities] = await Promise.all([
+    const [contacts, comments, activities, sequences] = await Promise.all([
       listContacts(client, id),
       listComments(client, id),
       listActivities(client, id),
+      listCompanySequences(client, [id]),
     ]);
-    return NextResponse.json({ company, contacts, comments, activities });
+    // Shaped like a list row so the drawer reads the same field the table does.
+    return NextResponse.json({
+      company: { ...company, sequences: sequences.get(id) ?? [] },
+      contacts,
+      comments,
+      activities,
+    });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed to load" },

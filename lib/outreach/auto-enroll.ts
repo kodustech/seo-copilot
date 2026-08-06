@@ -241,6 +241,9 @@ export async function runAutoEnrollRule(
       // Checklist Fácil — no filter over tier and trigger would have caught it,
       // and the sequence would have written to the wrong company.
       prepStatus: "ready",
+      // The scan only needs ids; enrolledEver already answers "is this one
+      // spoken for", so the per-page enrollment lookup would be pure cost.
+      includeSequences: false,
       limit: PAGE,
       offset: page * PAGE,
     });

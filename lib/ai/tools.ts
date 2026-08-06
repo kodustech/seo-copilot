@@ -5571,7 +5571,7 @@ export const sequenceEnrollResearch = tool({
 
 export const sequenceEnrollCrm = tool({
   description:
-    "Enroll CRM accounts (companies + their contacts with email) into an outreach sequence. This is the entry path for product-signal tiers: filter accounts with listCrmCompanies (e.g. tier=t0) then enroll their ids here. Suppression built in: customer/churned/lost accounts are skipped, and accounts already active in another sequence are skipped unless allow_parallel=true. Does NOT auto-activate the sequence.",
+    "Enroll CRM accounts (companies + their contacts with email) into an outreach sequence. This is the entry path for product-signal tiers: filter accounts with listCrmCompanies (e.g. tier=t0, prep_status='ready') then enroll their ids here. Suppression built in: ONLY accounts whose prep_status is 'ready' can be enrolled — every not_started/enriched/parked account is refused, so enrolling without that filter reports mostly skips. Customer/churned/lost accounts are skipped too, and accounts already active in another sequence are skipped unless allow_parallel=true. The prep gate lives on the CRM account (crm_companies.prep_status), not on research tables. Does NOT auto-activate the sequence.",
   inputSchema: z.object({
     sequence_id: z.string(),
     company_ids: z.array(z.string()).min(1).describe("CRM company ids from listCrmCompanies"),

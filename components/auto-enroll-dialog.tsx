@@ -214,6 +214,18 @@ export function AutoEnrollDialog({
           </DialogHeader>
 
           <div className="space-y-3">
+            {/* Prep is not offered as a choice because it is not one: the rule
+                runner filters on prepStatus 'ready' itself, and enrollFromCrm
+                refuses anything else after that. A dropdown here could only
+                ever be set to the value it already has, and setting it to
+                'raw' would silently match nothing. Stated, not offered. */}
+            <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+              Prep:{" "}
+              <span className="font-medium text-foreground">ready only</span> —
+              accounts nobody has vetted are never enrolled by a rule, whatever
+              the filter below says.
+            </p>
+
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <p className="mb-1 text-xs text-muted-foreground">Status</p>
