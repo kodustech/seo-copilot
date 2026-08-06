@@ -95,6 +95,7 @@ import {
   type CompanyPrep,
 } from "@/lib/crm";
 import { getProductSignals } from "@/lib/crm-signals";
+import { CRM_TIER_TRIGGERS } from "@/lib/product-signals/classify";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getModel } from "@/lib/ai/provider";
 import { CONTENT_PLAN_SYNTHESIS_PROMPT } from "@/lib/ai/system-prompt";
@@ -3330,12 +3331,15 @@ export const listCrmCompanies = tool({
       .enum(["t0", "t1", "t2", "t3", "customer"])
       .optional()
       .describe("Filter by outbound tier from product signals"),
+    // Enum, not a free string: the set is machine-written by classify.ts, so a
+    // typo has no chance of matching. As a string it would reach
+    // .eq("trigger", …) and come back count: 0 — a caller that asked for
+    // "trial-expired" would read that as "no accounts in that state" rather
+    // than "that state does not exist".
     trigger: z
-      .string()
+      .enum(CRM_TIER_TRIGGERS as unknown as [string, ...string[]])
       .optional()
-      .describe(
-        "Filter by the reason behind the tier: cloud_trial, trial_broken, trial_just_expired, free_limit, broken_activation, healthy_usage, went_quiet, never_connected, older_base, paying",
-      ),
+      .describe("Filter by the reason behind the tier"),
     prep_status: z
       .enum(COMPANY_PREP_VALUES as unknown as [string, ...string[]])
       .optional()
