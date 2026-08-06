@@ -31,6 +31,7 @@ import {
   COMPANY_STATUSES,
   type CompanyPrep,
   type CompanyPriority,
+  type CompanySequence,
   type CompanyStatus,
   type CompanyWithIdle,
   type CrmActivity,
@@ -220,6 +221,10 @@ function EnrollInSequence({
   const [note, setNote] = useState<string | null>(null);
 
   const ready = company.prepStatus === "ready";
+  // enrollFromCrm refuses an account that is already active somewhere, so the
+  // button would fail on click. Saying so up front is the same courtesy the
+  // prep gate gets. Paused is left enrollable: nothing is going out from it.
+  const live = (company.sequences ?? []).find((s) => s.status === "active");
 
   useEffect(() => {
     if (!open || sequences.length > 0) return;
@@ -277,16 +282,21 @@ function EnrollInSequence({
       <Button
         size="sm"
         variant="outline"
-        disabled={!ready}
+        disabled={!ready || !!live}
         onClick={() => setOpen(true)}
         className="h-7 gap-1.5 border-white/10"
         title={
-          ready
-            ? "Add this account to a sequence"
-            : `Only a 'ready' account can be enrolled — this one is '${company.prepStatus}'`
+          live
+            ? `Already in "${live.sequenceName}" — one active sequence per account`
+            : ready
+              ? "Add this account to a sequence"
+              : `Only a 'ready' account can be enrolled — this one is '${company.prepStatus}'`
         }
       >
-        <Mail className="size-3.5" /> Sequence
+        <Mail className="size-3.5 shrink-0" />
+        <span className="max-w-32 truncate">
+          {live ? `In ${live.sequenceName}` : "Sequence"}
+        </span>
       </Button>
     );
   }
@@ -327,20 +337,76 @@ function EnrollInSequence({
 function OutreachCell({
   count,
   lastAt,
+  sequences,
 }: {
   count: number;
   lastAt: string | null;
+  sequences: CompanySequence[];
 }) {
-  if (!count || !lastAt) {
-    return <span className="text-sm text-neutral-600">Never</span>;
-  }
-  const days = Math.floor(
-    (Date.now() - new Date(lastAt).getTime()) / 86_400_000,
-  );
-  const when = days <= 0 ? "today" : days === 1 ? "1d ago" : `${days}d ago`;
+  const days =
+    lastAt == null
+      ? null
+      : Math.floor((Date.now() - new Date(lastAt).getTime()) / 86_400_000);
+  const when =
+    days == null ? null : days <= 0 ? "today" : days === 1 ? "1d ago" : `${days}d ago`;
+  const live = sequences[0];
   return (
-    <span className="whitespace-nowrap text-sm text-neutral-300">
-      {count} sent <span className="text-neutral-500">· {when}</span>
+    <div className="flex flex-col gap-0.5">
+      {live ? (
+        <SequenceBadge sequences={sequences} />
+      ) : (
+        <span className="text-[11px] text-neutral-600">Not in a sequence</span>
+      )}
+      {count > 0 && when ? (
+        <span className="whitespace-nowrap text-sm text-neutral-300">
+          {count} sent <span className="text-neutral-500">· {when}</span>
+        </span>
+      ) : (
+        <span className="text-sm text-neutral-600">Never</span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * "This account is in a cadence right now."
+ *
+ * Separate from the sent count on purpose: an account enrolled an hour ago has
+ * sent nothing yet, and used to be indistinguishable from one nobody had ever
+ * touched. 'paused' gets its own colour rather than being folded into "in a
+ * sequence" — it is the state where nothing will go out until someone acts,
+ * and reading it as running is how a cadence sits still for a week unnoticed.
+ */
+function SequenceBadge({ sequences }: { sequences: CompanySequence[] }) {
+  const first = sequences[0];
+  if (!first) return null;
+  const extra = sequences.length - 1;
+  const paused = sequences.every((s) => s.status === "paused");
+  const step =
+    first.stepPosition > 0 ? `step ${first.stepPosition}` : "not started";
+  return (
+    <span
+      title={sequences
+        .map(
+          (s) =>
+            `${s.sequenceName} — ${s.status}, ${
+              s.stepPosition > 0 ? `step ${s.stepPosition}` : "no step sent yet"
+            }${s.nextRunAt ? `, next ${new Date(s.nextRunAt).toLocaleString()}` : ""}`,
+        )
+        .join("\n")}
+      className={cn(
+        "inline-flex max-w-44 items-center gap-1 truncate rounded px-1.5 py-0.5 text-[11px]",
+        paused
+          ? "bg-amber-500/15 text-amber-300"
+          : "bg-emerald-500/15 text-emerald-300",
+      )}
+    >
+      <Mail className="size-3 shrink-0" />
+      <span className="truncate">{first.sequenceName}</span>
+      <span className="shrink-0 opacity-70">
+        · {paused ? "paused" : step}
+        {extra > 0 ? ` +${extra}` : ""}
+      </span>
     </span>
   );
 }
@@ -872,6 +938,9 @@ export function CrmPage() {
                   ? `${c.outreachSentCount} sent`
                   : "never contacted"}
               </span>
+              {(c.sequences ?? []).length > 0 ? (
+                <SequenceBadge sequences={c.sequences} />
+              ) : null}
             </>
           )}
         />
@@ -1044,6 +1113,7 @@ export function CrmPage() {
                     <OutreachCell
                       count={c.outreachSentCount}
                       lastAt={c.lastOutreachAt}
+                      sequences={c.sequences ?? []}
                     />
                   </TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()}>

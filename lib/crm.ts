@@ -230,8 +230,28 @@ export type CompanyFilters = {
    *  a human removed, and every list in the product is a working list. Only a
    *  screen whose subject *is* the exclusions should pass this. */
   includeArchived?: boolean;
+  /** Load live sequence membership onto each row (default true). Scans that
+   *  never read `sequences` — the auto-enroll paging, the stats count — pass
+   *  false to skip two extra queries per page. */
+  includeSequences?: boolean;
   limit?: number;
   offset?: number;
+};
+
+/** A sequence this account is *currently* in.
+ *
+ *  Only 'active' and 'paused' count as being in one: those are the two states
+ *  from which another message can still go out, and they are the two the
+ *  double-enroll guards already treat as occupied. A completed or replied
+ *  enrollment is history, and history belongs in the timeline, not in a badge
+ *  that says "we are talking to them right now". */
+export type CompanySequence = {
+  sequenceId: string;
+  sequenceName: string;
+  status: "active" | "paused";
+  /** Which step of the cadence the account is on, 0 before the first send. */
+  stepPosition: number;
+  nextRunAt: string | null;
 };
 
 // A company plus the idle assessment derived from its status SLA.
@@ -239,6 +259,10 @@ export type CompanyWithIdle = CrmCompany & {
   idleDays: number | null;
   slaDays: number | null;
   isStale: boolean;
+  /** Live enrollments, one entry per distinct sequence. Empty is the honest
+   *  answer for "not in any"; the field is always present so a caller never
+   *  has to read `undefined` as either "none" or "not loaded". */
+  sequences: CompanySequence[];
 };
 
 // ---------------------------------------------------------------------------
@@ -484,12 +508,102 @@ export async function listStatusSla(
 function withIdle(
   company: CrmCompany,
   slaByStatus: Map<string, number>,
+  sequences: CompanySequence[] = [],
 ): CompanyWithIdle {
   const idleDays = daysSince(company.lastActivityAt);
   const slaDays = slaByStatus.get(company.status) ?? null;
   const isStale =
     idleDays != null && slaDays != null && slaDays < 900 && idleDays >= slaDays;
-  return { ...company, idleDays, slaDays, isStale };
+  return { ...company, idleDays, slaDays, isStale, sequences };
+}
+
+// ---------------------------------------------------------------------------
+// Live sequence membership
+// ---------------------------------------------------------------------------
+
+/**
+ * "Is this account already in a sequence?" — for a batch of accounts.
+ *
+ * The fact lived only in outreach_enrollments, so the accounts list could show
+ * how many mails had *gone out* (last_outreach_at) but not that an account was
+ * mid-cadence with the next step still to fire. Those differ for exactly the
+ * accounts it matters for: one enrolled an hour ago has sent nothing yet and
+ * looked identical to one nobody had touched.
+ *
+ * enrollFromCrm already refuses an account with an active enrollment. Showing
+ * it here is what turns that refusal from a surprise at click time into
+ * something visible on the row.
+ *
+ * Enrollments that predate crm_company_id, or that came from the research
+ * tables, carry no company id and cannot be attributed — those accounts read
+ * as "not in a sequence" here, the same way they do to the suppression check.
+ */
+export async function listCompanySequences(
+  client: SupabaseClient,
+  companyIds: string[],
+): Promise<Map<string, CompanySequence[]>> {
+  const byCompany = new Map<string, CompanySequence[]>();
+  if (companyIds.length === 0) return byCompany;
+
+  type EnrollmentRow = {
+    crm_company_id: string;
+    sequence_id: string;
+    status: string;
+    current_step_position: number | null;
+    next_run_at: string | null;
+  };
+  const rows: EnrollmentRow[] = [];
+  // Chunked so a 1000-account page does not become one enormous IN list.
+  const CHUNK = 200;
+  for (let i = 0; i < companyIds.length; i += CHUNK) {
+    const { data, error } = await client
+      .from("outreach_enrollments")
+      .select("crm_company_id,sequence_id,status,current_step_position,next_run_at")
+      .in("crm_company_id", companyIds.slice(i, i + CHUNK))
+      .in("status", ["active", "paused"]);
+    if (error) {
+      throw new Error(`Failed to read enrollments: ${error.message}`);
+    }
+    rows.push(...((data ?? []) as EnrollmentRow[]));
+  }
+  if (rows.length === 0) return byCompany;
+
+  const names = new Map<string, string>();
+  const { data: seqs, error: seqErr } = await client
+    .from("outreach_sequences")
+    .select("id,name")
+    .in("id", [...new Set(rows.map((r) => r.sequence_id))]);
+  if (seqErr) throw new Error(`Failed to read sequences: ${seqErr.message}`);
+  for (const s of seqs ?? []) names.set(s.id as string, s.name as string);
+
+  for (const row of rows) {
+    const list = byCompany.get(row.crm_company_id) ?? [];
+    // One enrollment per contact means the same account can appear several
+    // times in the same sequence. The row is about the account, so collapse to
+    // one entry per sequence and keep the one furthest along — that is the one
+    // whose next step lands first.
+    const existing = list.find((s) => s.sequenceId === row.sequence_id);
+    const position = Number(row.current_step_position ?? 0);
+    if (existing) {
+      if (position > existing.stepPosition) {
+        existing.stepPosition = position;
+        existing.nextRunAt = row.next_run_at;
+      }
+      // 'active' outranks 'paused': if any contact is still running, the
+      // account is still being contacted.
+      if (row.status === "active") existing.status = "active";
+      continue;
+    }
+    list.push({
+      sequenceId: row.sequence_id,
+      sequenceName: names.get(row.sequence_id) ?? "Unknown sequence",
+      status: row.status === "paused" ? "paused" : "active",
+      stepPosition: position,
+      nextRunAt: row.next_run_at,
+    });
+    byCompany.set(row.crm_company_id, list);
+  }
+  return byCompany;
 }
 
 // ---------------------------------------------------------------------------
@@ -551,8 +665,19 @@ export async function listCompanies(
   let companies = (data ?? []).map((row) =>
     withIdle(rowToCompany(row as CompanyRow), slaByStatus),
   );
+  // Filter before the enrollment lookup: a stale-only list can drop most of the
+  // page, and there is no point asking about accounts nobody will see.
   if (filters.staleOnly) companies = companies.filter((c) => c.isStale);
-  return companies;
+  if (filters.includeSequences === false) return companies;
+
+  const seqByCompany = await listCompanySequences(
+    client,
+    companies.map((c) => c.id),
+  );
+  return companies.map((c) => ({
+    ...c,
+    sequences: seqByCompany.get(c.id) ?? [],
+  }));
 }
 
 export async function getCompany(
@@ -1475,7 +1600,10 @@ export async function listActivities(
 export async function getCompanyStats(
   client: SupabaseClient,
 ): Promise<{ total: number; byStatus: Record<string, number>; stale: number }> {
-  const companies = await listCompanies(client, { limit: 1000 });
+  const companies = await listCompanies(client, {
+    limit: 1000,
+    includeSequences: false,
+  });
   const byStatus: Record<string, number> = {};
   let stale = 0;
   for (const c of companies) {
@@ -1488,5 +1616,10 @@ export async function getCompanyStats(
 export async function getStaleCompanies(
   client: SupabaseClient,
 ): Promise<CompanyWithIdle[]> {
-  return listCompanies(client, { staleOnly: true, limit: 1000 });
+  // The idle cron's own list — it reads status and idleDays, never sequences.
+  return listCompanies(client, {
+    staleOnly: true,
+    limit: 1000,
+    includeSequences: false,
+  });
 }

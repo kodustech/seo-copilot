@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   ArrowUp,
   Check,
+  ChevronRight,
   Clock,
   Copy,
   ExternalLink,
@@ -17,6 +18,8 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Search,
+  Send,
   SkipForward,
   Trash2,
   Users,
@@ -637,6 +640,125 @@ function Segmented<T extends string>({
   );
 }
 
+// ── Sequences list: filters + row ──────────────────────────────────
+
+type SeqStatusFilter = "all" | "active" | "draft" | "paused" | "archived";
+
+/** Filter order is the working order: what is running, what could be turned
+ *  on, what was stopped, what is out of the way. Not alphabetical. */
+const SEQ_STATUS_ORDER: Exclude<SeqStatusFilter, "all">[] = [
+  "active",
+  "draft",
+  "paused",
+  "archived",
+];
+const SEQ_STATUS_LABEL: Record<Exclude<SeqStatusFilter, "all">, string> = {
+  active: "Running",
+  draft: "Draft",
+  paused: "Paused",
+  archived: "Archived",
+};
+
+/**
+ * One sequence, in one glance.
+ *
+ * The card this replaces spent five lines and a full-width description on
+ * every sequence, so eleven of them scrolled past three screens and a running
+ * cadence looked exactly like a draft nobody has finished. Here status carries
+ * the row: a running sequence gets the accent rail, full-contrast name and its
+ * live numbers; everything else recedes.
+ *
+ * Only counts that exist are rendered. A row saying "0 due · 0 sent" is two
+ * more zeros and no decision — the numbers appear when there is something to
+ * know.
+ */
+function SequenceRow({
+  sequence,
+  today,
+  onOpen,
+}: {
+  sequence: Sequence;
+  today?: DaySequenceStatus;
+  onOpen: () => void;
+}) {
+  const running = sequence.status === "active";
+  const due = (today?.readyLinkedin ?? 0) + (today?.readyEmail ?? 0);
+  const sent = today?.emailSentToday ?? 0;
+  const enrolled = sequence.enrollmentCount ?? 0;
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={cn(
+        "group flex w-full items-center gap-3 overflow-hidden rounded-lg border text-left transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        running
+          ? "border-emerald-500/25 bg-emerald-500/[0.04] hover:border-emerald-500/45"
+          : "border-border bg-card/40 hover:border-foreground/20 hover:bg-card",
+      )}
+    >
+      <span
+        aria-hidden
+        className={cn(
+          "h-full w-0.5 shrink-0 self-stretch",
+          running ? "bg-emerald-500/70" : "bg-transparent",
+        )}
+      />
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5 py-2.5">
+        <span className="flex min-w-0 items-center gap-2">
+          <StatusDot status={sequence.status} />
+          <span
+            className={cn(
+              "truncate text-sm",
+              running
+                ? "font-medium text-foreground"
+                : "text-foreground/80 group-hover:text-foreground",
+            )}
+          >
+            {sequence.name}
+          </span>
+          {!running && (
+            <span className="shrink-0 text-[11px] capitalize text-muted-foreground">
+              {sequence.status}
+            </span>
+          )}
+        </span>
+        {sequence.description ? (
+          <span className="truncate text-xs text-muted-foreground">
+            {sequence.description}
+          </span>
+        ) : null}
+      </span>
+
+      {/* Numbers in fixed slots so the eye can read down the column instead of
+          hunting for them at a different x-position on every row. */}
+      <span className="hidden shrink-0 items-center gap-4 text-xs tabular-nums text-muted-foreground sm:flex">
+        <span className="w-14 text-right" title={`${sequence.stepCount ?? 0} steps`}>
+          {sequence.stepCount ?? 0} steps
+        </span>
+        <span
+          className={cn("w-16 text-right", enrolled > 0 && "text-foreground")}
+          title={`${enrolled} people currently in this sequence`}
+        >
+          {enrolled} active
+        </span>
+        <span className="w-20 text-right">
+          {due > 0 ? (
+            <span className="text-amber-300" title="Steps waiting in today's queue">
+              {due} due today
+            </span>
+          ) : sent > 0 ? (
+            <span title="Emails auto-sent today">{sent} sent today</span>
+          ) : (
+            <span className="text-muted-foreground/40">—</span>
+          )}
+        </span>
+      </span>
+      <ChevronRight className="mr-3 size-4 shrink-0 text-muted-foreground/50 transition-colors group-hover:text-foreground" />
+    </button>
+  );
+}
+
 // ── Page ───────────────────────────────────────────────────────────
 
 export function SequencesPage() {
@@ -659,6 +781,11 @@ export function SequencesPage() {
   const [activityFilter, setActivityFilter] = useState<
     "all" | "linkedin" | "email"
   >("all");
+  // Sequences tab: eleven cadences of identical visual weight, one of them
+  // running. Search and a status filter are what make that list workable —
+  // without them the only way to find the live one is to read every card.
+  const [seqQuery, setSeqQuery] = useState("");
+  const [seqStatus, setSeqStatus] = useState<SeqStatusFilter>("all");
   const [tables, setTables] = useState<ResearchTable[]>([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
@@ -1274,6 +1401,37 @@ export function SequencesPage() {
     }
   };
 
+  /**
+   * Send the queued email from here, through the sequence's mailbox.
+   *
+   * "Open Gmail" stays for the cases it is actually right for — you want to
+   * edit the copy before it goes, or attach something — but it is no longer
+   * the only way out of the queue. A mail sent from the Gmail tab is invisible
+   * to this app: no message-id to thread the reply onto, no daily-cap
+   * accounting, and "Mark as done" then advances the cadence on your word
+   * alone.
+   */
+  const sendNow = async (taskId: string) => {
+    setBusyId(taskId);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch(
+        `/api/outreach/sequences/tasks/${taskId}/send`,
+        { method: "POST", headers: headers() },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error ?? "Could not send");
+        return;
+      }
+      setNotice("Sent — this person moves to the next step");
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const openEmailCompose = (t: QueueTask) => {
     const to = t.enrollment?.contactEmail ?? "";
     const subject = t.renderedSubject ?? "";
@@ -1305,6 +1463,53 @@ export function SequencesPage() {
       setActivityFilter("all");
     }
   }, [loading, activityFilter, stats, tasks.length]);
+
+  // Per-sequence counts for today, keyed for the row. The queue endpoint
+  // already computes them for the Today tab — the list was simply not reading
+  // them, which is why a running cadence and an empty one looked the same.
+  const todayBySequence = useMemo(() => {
+    const m = new Map<string, DaySequenceStatus>();
+    for (const s of stats?.sequences ?? []) m.set(s.id, s);
+    return m;
+  }, [stats]);
+
+  const seqCounts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const s of sequences) c[s.status] = (c[s.status] ?? 0) + 1;
+    return c;
+  }, [sequences]);
+
+  const visibleSequences = useMemo(() => {
+    const q = seqQuery.trim().toLowerCase();
+    return sequences.filter((s) => {
+      if (seqStatus !== "all" && s.status !== seqStatus) return false;
+      if (!q) return true;
+      return (
+        s.name.toLowerCase().includes(q) ||
+        (s.description ?? "").toLowerCase().includes(q)
+      );
+    });
+  }, [sequences, seqQuery, seqStatus]);
+
+  // Running first, then the rest in the order the API returned (most recently
+  // updated). Sorting the whole list by status would bury a draft you edited
+  // thirty seconds ago under ten you have not touched in weeks.
+  const [runningSequences, restSequences] = useMemo(
+    () => [
+      visibleSequences.filter((s) => s.status === "active"),
+      visibleSequences.filter((s) => s.status !== "active"),
+    ],
+    [visibleSequences],
+  );
+
+  // A filter that outlives the thing it filtered strands the user on an empty
+  // list — same failure the queue chips had. Drop it, not the way out of it.
+  useEffect(() => {
+    if (loading) return;
+    if (seqStatus !== "all" && (seqCounts[seqStatus] ?? 0) === 0) {
+      setSeqStatus("all");
+    }
+  }, [loading, seqStatus, seqCounts]);
 
   const activityLabel = (t: QueueTask) => {
     if (t.channel === "linkedin") {
@@ -3057,7 +3262,43 @@ export function SequencesPage() {
       </div>
 
       {view === "list" && (
-        <div className="min-h-0 flex-1 space-y-3 overflow-auto pb-8">
+        <div className="flex min-h-0 flex-1 flex-col gap-3">
+          {/* Toolbar. Search is the first control because with eleven cadences
+              named "t0 · … / t2 · … / t3 · …" the name is what you actually
+              remember; the status chips answer the other question, which is
+              what is live right now. Both hidden below four sequences — a
+              filter bar over three rows is furniture. */}
+          {sequences.length > 3 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative min-w-48 flex-1">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={seqQuery}
+                  onChange={(e) => setSeqQuery(e.target.value)}
+                  placeholder="Search sequences…"
+                  aria-label="Search sequences by name or description"
+                  className="h-8 pl-8 text-sm"
+                />
+              </div>
+              <Segmented
+                value={seqStatus}
+                onChange={setSeqStatus}
+                options={[
+                  { value: "all" as const, label: `All ${sequences.length}` },
+                  // Only statuses that exist get a chip: an "Archived 0" button
+                  // is a control that can only ever empty the list.
+                  ...SEQ_STATUS_ORDER.filter((s) => (seqCounts[s] ?? 0) > 0).map(
+                    (s) => ({
+                      value: s as SeqStatusFilter,
+                      label: `${SEQ_STATUS_LABEL[s]} ${seqCounts[s]}`,
+                    }),
+                  ),
+                ]}
+              />
+            </div>
+          )}
+
+          <div className="min-h-0 flex-1 space-y-1.5 overflow-auto pb-8">
           {loading && sequences.length === 0 ? (
             <div className="py-16 text-center text-sm text-muted-foreground">
               <Loader2 className="mr-2 inline size-4 animate-spin" />
@@ -3078,49 +3319,65 @@ export function SequencesPage() {
                 New sequence
               </Button>
             </div>
-          ) : (
-            sequences.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                onClick={() => void openEditor(s.id)}
-                className="group flex w-full items-stretch gap-0 overflow-hidden rounded-xl border border-border bg-card text-left transition-colors hover:border-foreground/20 hover:bg-card/80"
-              >
-                <div className="flex w-1 shrink-0 bg-border group-hover:bg-foreground/30" />
-                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-4 px-4 py-4 sm:px-5">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="truncate text-sm font-semibold">
-                        {s.name}
-                      </p>
-                      <span className="inline-flex items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-[11px] capitalize text-muted-foreground">
-                        <StatusDot status={s.status} />
-                        {s.status}
-                      </span>
-                    </div>
-                    {s.description && (
-                      <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                        {s.description}
-                      </p>
-                    )}
-                    <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                      <span className="inline-flex items-center gap-1">
-                        <Workflow className="size-3" />
-                        {s.stepCount ?? 0} steps
-                      </span>
-                      <span className="inline-flex items-center gap-1">
-                        <Users className="size-3" />
-                        {s.enrollmentCount ?? 0} active
-                      </span>
-                    </div>
-                  </div>
-                  <span className="text-xs font-medium text-muted-foreground group-hover:text-foreground">
-                    Open →
+          ) : visibleSequences.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border px-6 py-12 text-center">
+              <p className="text-sm text-muted-foreground">
+                No sequence matches{" "}
+                {seqQuery.trim() ? (
+                  <span className="text-foreground">
+                    &ldquo;{seqQuery.trim()}&rdquo;
                   </span>
-                </div>
-              </button>
-            ))
+                ) : (
+                  "this filter"
+                )}
+                .
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-3"
+                onClick={() => {
+                  setSeqQuery("");
+                  setSeqStatus("all");
+                }}
+              >
+                Clear filters
+              </Button>
+            </div>
+          ) : (
+            <>
+              {/* Grouped only when both groups exist and nothing is filtering:
+                  a heading over the single group you asked for is a label for
+                  a decision you already made. */}
+              {runningSequences.length > 0 && restSequences.length > 0 && (
+                <p className="px-0.5 pb-0.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Running
+                </p>
+              )}
+              {runningSequences.map((s) => (
+                <SequenceRow
+                  key={s.id}
+                  sequence={s}
+                  today={todayBySequence.get(s.id)}
+                  onOpen={() => void openEditor(s.id)}
+                />
+              ))}
+              {runningSequences.length > 0 && restSequences.length > 0 && (
+                <p className="px-0.5 pb-0.5 pt-4 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Not running · {restSequences.length}
+                </p>
+              )}
+              {restSequences.map((s) => (
+                <SequenceRow
+                  key={s.id}
+                  sequence={s}
+                  today={todayBySequence.get(s.id)}
+                  onOpen={() => void openEditor(s.id)}
+                />
+              ))}
+            </>
           )}
+          </div>
         </div>
       )}
 
@@ -3375,12 +3632,32 @@ export function SequencesPage() {
                           </p>
                         </div>
                       ) : (
-                        <div className="mt-4 flex flex-wrap gap-2">
+                        <div className="mt-4 flex flex-wrap items-center gap-2">
+                          {e?.contactEmail && (
+                            <Button
+                              size="sm"
+                              disabled={busyId === t.id || !mailboxConfigured}
+                              onClick={() => void sendNow(t.id)}
+                              title={
+                                mailboxConfigured
+                                  ? `Send now from the sequence's mailbox to ${e.contactEmail}`
+                                  : "Connect Gmail in Settings to send from here"
+                              }
+                            >
+                              {busyId === t.id ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                              ) : (
+                                <Send className="size-3.5" />
+                              )}
+                              Send now
+                            </Button>
+                          )}
                           {e?.contactEmail && (
                             <Button
                               size="sm"
                               variant="outline"
                               onClick={() => openEmailCompose(t)}
+                              title="Compose in Gmail instead — use this when you want to edit or attach something first"
                             >
                               <Mail className="size-3.5" />
                               Open Gmail
@@ -3405,10 +3682,16 @@ export function SequencesPage() {
                             <Copy className="size-3.5" />
                             Copy
                           </Button>
+                          {/* Demoted to ghost now that the app can send:
+                              this is the "I already sent it somewhere else"
+                              button, and it advances the cadence on your word
+                              alone — nothing here verifies a mail went out. */}
                           <Button
                             size="sm"
+                            variant="ghost"
                             disabled={busyId === t.id}
                             onClick={() => void complete(t.id, "sent")}
+                            title="Records the step as done without sending — use it after sending from Gmail"
                           >
                             {busyId === t.id ? (
                               <Loader2 className="size-3.5 animate-spin" />

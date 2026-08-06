@@ -87,6 +87,7 @@ import {
   listContacts,
   listComments,
   listActivities,
+  listCompanySequences,
   COMPANY_STATUSES,
   COMPANY_PRIORITIES,
   COMPANY_PREP_VALUES,
@@ -3321,7 +3322,7 @@ const listSocialMentions = tool({
 
 export const listCrmCompanies = tool({
   description:
-    "List/filter companies in the Company CRM. Filter by status, owner, outbound tier (t0=open decision window, t1=connected git recently, t2=signed up never connected, t3=older base, customer=paying), prep gate (only 'ready' accounts may be enrolled), search text, or only accounts that are idle past their status SLA (stale_only). Every row carries its trigger — the reason behind the tier, which is what decides the message.",
+    "List/filter companies in the Company CRM. Filter by status, owner, outbound tier (t0=open decision window, t1=connected git recently, t2=signed up never connected, t3=older base, customer=paying), prep gate (only 'ready' accounts may be enrolled), search text, or only accounts that are idle past their status SLA (stale_only). Every row carries its trigger — the reason behind the tier, which is what decides the message — and in_sequences, the cadences the account is in right now (empty = free to enrol; non-empty is why an enroll call would skip it).",
   inputSchema: z.object({
     status: z
       .enum(COMPANY_STATUSES as unknown as [string, ...string[]])
@@ -3404,6 +3405,18 @@ export const listCrmCompanies = tool({
           // no idea which message belongs to it.
           trigger: c.trigger,
           prep_status: c.prepStatus,
+          // Which cadences the account is in right now (active or paused).
+          // Empty means free to enrol; a non-empty list is why an enroll call
+          // would report this account as skipped. Without it a caller routing
+          // accounts into sequences is picking blind and reading the refusal
+          // afterwards.
+          in_sequences: c.sequences.map((s) => ({
+            sequence_id: s.sequenceId,
+            name: s.sequenceName,
+            status: s.status,
+            step_position: s.stepPosition,
+            next_run_at: s.nextRunAt,
+          })),
           deployment: c.deployment,
           channel: c.source,
           owner_email: c.ownerEmail,
@@ -3465,12 +3478,14 @@ export const getCrmCompany = tool({
       if (!company) {
         return { success: false as const, message: "Company not found" };
       }
-      const [contacts, comments, activities, fieldDefs] = await Promise.all([
-        listContacts(client, id),
-        listComments(client, id),
-        listActivities(client, id, 20),
-        listFieldDefs(client),
-      ]);
+      const [contacts, comments, activities, fieldDefs, seqByCompany] =
+        await Promise.all([
+          listContacts(client, id),
+          listComments(client, id),
+          listActivities(client, id, 20),
+          listFieldDefs(client),
+          listCompanySequences(client, [id]),
+        ]);
       let signals = null;
       if (company.orgId) {
         signals = await getProductSignals(company.orgId).catch(() => null);
@@ -3490,6 +3505,14 @@ export const getCrmCompany = tool({
           tier: company.tier,
           trigger: company.trigger,
           prep_status: company.prepStatus,
+          // Live cadences (active or paused). Empty = free to enrol.
+          in_sequences: (seqByCompany.get(id) ?? []).map((s) => ({
+            sequence_id: s.sequenceId,
+            name: s.sequenceName,
+            status: s.status,
+            step_position: s.stepPosition,
+            next_run_at: s.nextRunAt,
+          })),
           owner_email: company.ownerEmail,
           industry: company.industry,
           size: company.size,
@@ -5571,7 +5594,7 @@ export const sequenceEnrollResearch = tool({
 
 export const sequenceEnrollCrm = tool({
   description:
-    "Enroll CRM accounts (companies + their contacts with email) into an outreach sequence. This is the entry path for product-signal tiers: filter accounts with listCrmCompanies (e.g. tier=t0) then enroll their ids here. Suppression built in: customer/churned/lost accounts are skipped, and accounts already active in another sequence are skipped unless allow_parallel=true. Does NOT auto-activate the sequence.",
+    "Enroll CRM accounts (companies + their contacts with email) into an outreach sequence. This is the entry path for product-signal tiers: filter accounts with listCrmCompanies (e.g. tier=t0, prep_status='ready') then enroll their ids here. Suppression built in: ONLY accounts whose prep_status is 'ready' can be enrolled — every not_started/enriched/parked account is refused, so enrolling without that filter reports mostly skips. Customer/churned/lost accounts are skipped too, and accounts already active in another sequence are skipped unless allow_parallel=true. The prep gate lives on the CRM account (crm_companies.prep_status), not on research tables. Does NOT auto-activate the sequence.",
   inputSchema: z.object({
     sequence_id: z.string(),
     company_ids: z.array(z.string()).min(1).describe("CRM company ids from listCrmCompanies"),

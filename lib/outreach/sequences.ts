@@ -1721,6 +1721,94 @@ export async function getActivityStats(
   };
 }
 
+/**
+ * Send a queued email from inside the app.
+ *
+ * The human queue could open Gmail, copy the text, or claim the step was done
+ * — three ways to send a mail the product never sees. That gap is not
+ * cosmetic: a mail composed in Gmail has no RFC message-id recorded here, so
+ * the reply sync cannot thread it, "Mark as done" advances the cadence whether
+ * or not anything was actually sent, and the daily cap counts none of it.
+ *
+ * This is the same path the cron uses — same threading, same cap reservation,
+ * same bounce handling, same CRM record — pointed at a task a person picked.
+ */
+export async function sendTaskNow(
+  client: SupabaseClient,
+  taskId: string,
+  input: { sentByEmail?: string | null } = {},
+): Promise<{ ok: boolean; status: "sent" | "failed" | "skipped"; error?: string }> {
+  const { data: raw, error } = await client
+    .from("outreach_send_tasks")
+    .select("*")
+    .eq("id", taskId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!raw) throw new Error("Task not found");
+  const task = mapTask(raw as Record<string, unknown>);
+
+  if (task.channel !== "email") {
+    throw new Error(
+      "Only email steps can be sent from here — LinkedIn stays manual.",
+    );
+  }
+  if (task.status === "sent") {
+    return { ok: true, status: "sent" };
+  }
+  if (task.status !== "ready" && task.status !== "scheduled") {
+    throw new Error(`Task is ${task.status} — nothing to send.`);
+  }
+
+  // The mailbox is the sequence's, same as the cron resolves it: a manual send
+  // from a different address would break the thread the cadence is building.
+  const { data: enr } = await client
+    .from("outreach_enrollments")
+    .select("sequence_id")
+    .eq("id", task.enrollmentId)
+    .maybeSingle();
+  let mailboxId: string | null = null;
+  if (enr?.sequence_id) {
+    const { data: seq } = await client
+      .from("outreach_sequences")
+      .select("mailbox_id")
+      .eq("id", enr.sequence_id as string)
+      .maybeSingle();
+    mailboxId = (seq?.mailbox_id as string | null) ?? null;
+  }
+
+  const result = await sendDueEmailTask(client, task, mailboxId, {
+    claimFrom: ["ready", "scheduled"],
+    actorEmail: input.sentByEmail ?? null,
+  });
+
+  if (result === "sent") {
+    // sendDueEmailTask records the send but not who pressed it — that column is
+    // the queue's own record of a human action.
+    await client
+      .from("outreach_send_tasks")
+      .update({ sent_by_email: input.sentByEmail ?? null })
+      .eq("id", taskId);
+    return { ok: true, status: "sent" };
+  }
+
+  // Read the error the send path wrote, so the button can say what went wrong
+  // instead of "failed".
+  const { data: after } = await client
+    .from("outreach_send_tasks")
+    .select("error,status")
+    .eq("id", taskId)
+    .maybeSingle();
+  return {
+    ok: false,
+    status: result,
+    error:
+      (after?.error as string | null) ??
+      (result === "skipped"
+        ? "Nothing was sent — the task was already claimed, or the daily cap is full."
+        : "Send failed"),
+  };
+}
+
 export async function completeTask(
   client: SupabaseClient,
   taskId: string,
@@ -1740,6 +1828,13 @@ export async function completeTask(
   if (task.status === "sent" || task.status === "skipped") {
     return { task, enrollment: null };
   }
+  // A send is in flight on this task. Recording an outcome now would advance
+  // the enrollment and write the CRM activity, and sendDueEmailTask would do
+  // both again when it lands — the cadence skips a step and the timeline shows
+  // two touches for one real email.
+  if (task.status === "sending") {
+    throw new Error("This step is sending right now — wait for it to finish.");
+  }
 
   const now = new Date().toISOString();
   const { data: updated, error: uerr } = await client
@@ -1751,9 +1846,27 @@ export async function completeTask(
       updated_at: now,
     })
     .eq("id", taskId)
+    // The read above is not the guard: a send can claim the task between that
+    // select and this update. Excluding the claimed state here is what makes
+    // the check hold — the update matches nothing and we bail, rather than
+    // overwriting a send that is already on its way out.
+    .not("status", "in", "(sending,sent,skipped)")
     .select("*")
-    .single();
+    .maybeSingle();
   if (uerr) throw new Error(uerr.message);
+  if (!updated) {
+    // Someone (or something) got there first. Report the task as it actually
+    // is rather than the outcome we were asked to write.
+    const { data: fresh } = await client
+      .from("outreach_send_tasks")
+      .select("*")
+      .eq("id", taskId)
+      .maybeSingle();
+    return {
+      task: mapTask((fresh ?? raw) as Record<string, unknown>),
+      enrollment: null,
+    };
+  }
 
   const enrollment = await advanceEnrollment(client, task.enrollmentId);
 
@@ -2121,8 +2234,18 @@ async function sendDueEmailTask(
   client: SupabaseClient,
   task: OutreachSendTask,
   mailboxId: string | null,
+  opts?: {
+    /** Which status the claim may take the task from. The cron sends tasks it
+     *  finds 'scheduled'; a human pressing Send now sends one already promoted
+     *  to 'ready'. Claiming from the wrong status silently no-ops the guard —
+     *  the send still fires, with nothing stopping a second one. */
+    claimFrom?: readonly string[];
+    /** Who pressed send, for the CRM timeline. null = the cron did it. */
+    actorEmail?: string | null;
+  },
 ): Promise<"sent" | "failed" | "skipped"> {
   const now = new Date().toISOString();
+  const claimFrom = opts?.claimFrom ?? ["scheduled"];
 
   const { data: enrRaw } = await client
     .from("outreach_enrollments")
@@ -2167,12 +2290,16 @@ async function sendDueEmailTask(
     return "skipped";
   }
 
-  // claim
-  await client
+  // Claim. Checked, not fire-and-forget: this update is the only thing standing
+  // between "cron tick and a human both act on the same task" and two identical
+  // emails landing in a prospect's inbox.
+  const { data: claimed } = await client
     .from("outreach_send_tasks")
     .update({ status: "sending", updated_at: now })
     .eq("id", task.id)
-    .eq("status", "scheduled");
+    .in("status", claimFrom)
+    .select("id");
+  if (!claimed || claimed.length === 0) return "skipped";
 
   const { sendOutreachEmail } = await import("@/lib/outreach/send-email");
   let subject = task.renderedSubject ?? "";
@@ -2312,8 +2439,9 @@ async function sendDueEmailTask(
   await recordOutreachOnCrm(client, enrollment, {
     channel: task.channel,
     sentAt: now,
-    // Auto-sent: no human pressed anything, so the timeline says so.
-    actorEmail: null,
+    // Auto-sent: no human pressed anything, so the timeline says so. A send
+    // from the queue carries the person who pressed it.
+    actorEmail: opts?.actorEmail ?? null,
   });
 
   if (enrollment.outreachProspectId) {
