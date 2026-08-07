@@ -182,8 +182,32 @@ async function runNotificationsCron(): Promise<void> {
 
 async function runOutreachSequencesCron(): Promise<void> {
   const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
-  const { processDueSequenceTasks } = await import("@/lib/outreach/sequences");
-  const res = await processDueSequenceTasks(getSupabaseServiceClient(), {
+  const { processDueSequenceTasks, refreshCrmSignalVars } = await import(
+    "@/lib/outreach/sequences"
+  );
+  const client = getSupabaseServiceClient();
+
+  // This refresh also lives in app/api/cron/outreach-sequences/route.ts, which
+  // nothing schedules — so until now it never ran anywhere. Enrollments kept
+  // whatever template_vars they were frozen with at enrol time: every account
+  // enrolled before a token was added to the catalog could never resolve it,
+  // and the queue blocked those sends forever rather than for a tick.
+  //
+  // Refresh first, same as the route: an email held back for an unfilled
+  // {{token}} should go out on the tick the data lands, not the next one. A
+  // failure here costs freshness only and must not stop the sends.
+  try {
+    const refresh = await refreshCrmSignalVars(client);
+    if (refresh.enrollmentsUpdated || refresh.tasksRerendered) {
+      console.log(
+        `[cron] outreach-sequences: signal vars refreshed on ${refresh.enrollmentsUpdated} enrollment(s), ${refresh.tasksRerendered} task(s) re-rendered`,
+      );
+    }
+  } catch (err) {
+    console.error("[cron] outreach-sequences: signal var refresh failed", err);
+  }
+
+  const res = await processDueSequenceTasks(client, {
     reseedOrphans: true,
   });
   console.log(

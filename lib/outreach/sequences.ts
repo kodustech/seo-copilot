@@ -28,6 +28,13 @@ import { listPeople, listRows } from "@/lib/research/tables";
 import { resolveTable } from "@/lib/research/columns";
 import { getProspect, updateProspect } from "@/lib/outreach";
 
+/**
+ * What {{skip_reason}} says when the account has no skip logged. Shared by the
+ * enroll path and the refresh so a refreshed enrollment cannot end up phrased
+ * differently from a freshly enrolled one.
+ */
+const NO_SKIP_REASON_LOGGED = "no reason logged on our side";
+
 // ---------------------------------------------------------------------------
 // Mappers
 // ---------------------------------------------------------------------------
@@ -69,7 +76,7 @@ function mapStep(r: Record<string, unknown>): OutreachSequenceStep {
   };
 }
 
-function mapEnrollment(r: Record<string, unknown>): OutreachEnrollment {
+export function mapEnrollment(r: Record<string, unknown>): OutreachEnrollment {
   return {
     id: r.id as string,
     sequenceId: r.sequence_id as string,
@@ -1150,7 +1157,7 @@ export async function enrollFromCrm(
           if (topSkip) {
             templateVars.skip_reason = String(topSkip);
           } else if (usesSkipReason) {
-            templateVars.skip_reason = "no reason logged on our side";
+            templateVars.skip_reason = NO_SKIP_REASON_LOGGED;
           }
         }
       }
@@ -1309,19 +1316,62 @@ export async function enrollFromProspects(
  * Only unsent tasks are touched, and only when the frozen values actually
  * changed; a sent email is a record of what went out and is never rewritten.
  */
+/**
+ * Order-independent view of a template_vars map, for change detection.
+ * jsonb round-trips reorder keys, so raw JSON.stringify is not a fair test.
+ */
+function canonicalVars(vars: Record<string, string>): string {
+  return JSON.stringify(
+    Object.keys(vars)
+      .sort()
+      .map((k) => [k, vars[k]]),
+  );
+}
+
 export async function refreshCrmSignalVars(
   client: SupabaseClient,
   opts: { limit?: number } = {},
 ): Promise<{ enrollmentsUpdated: number; tasksRerendered: number }> {
-  const { data: rawEnrollments, error } = await client
-    .from("outreach_enrollments")
-    .select("*")
-    .eq("status", "active")
-    .not("crm_company_id", "is", null)
-    .limit(opts.limit ?? 500);
-  if (error) throw new Error(error.message);
+  // Keyset paging, not OFFSET. This is the only thing that unblocks a send
+  // held for a stale token, so a flat .limit() with no ORDER BY would leave
+  // the tail of the list permanently stale — the same "blocked forever" state
+  // this function exists to clear, moved to whichever rows the planner
+  // omitted. But an unbounded OFFSET walk is not the fix either: .range(from,
+  // to) makes the database skip `from` rows on every page, so a full scan
+  // costs O(N²/PAGE) and a 15-minute cron would spend more of each tick
+  // re-skipping than working. Seeking past the last id read is flat.
+  const PAGE = 500;
+  // Safety net for a runaway loop, not a product limit — hitting it is a bug,
+  // so it says so instead of silently returning a partial refresh.
+  const HARD_CAP = 50_000;
+  const maxRows = Math.min(opts.limit ?? HARD_CAP, HARD_CAP);
+  const rawEnrollments: Record<string, unknown>[] = [];
+  let afterId: string | null = null;
+  while (rawEnrollments.length < maxRows) {
+    let q = client
+      .from("outreach_enrollments")
+      .select("*")
+      .eq("status", "active")
+      .not("crm_company_id", "is", null)
+      // Stable order so pages cannot overlap or skip rows mid-scan.
+      .order("id", { ascending: true })
+      .limit(Math.min(PAGE, maxRows - rawEnrollments.length));
+    if (afterId) q = q.gt("id", afterId);
+    const { data, error } = await q;
+    if (error) throw new Error(error.message);
+    const page = (data ?? []) as Record<string, unknown>[];
+    if (page.length === 0) break;
+    rawEnrollments.push(...page);
+    afterId = String(page[page.length - 1].id);
+    if (page.length < PAGE) break;
+  }
+  if (rawEnrollments.length >= HARD_CAP) {
+    console.warn(
+      `[sequences] refreshCrmSignalVars hit the ${HARD_CAP} row cap — the tail was not refreshed`,
+    );
+  }
 
-  const enrollments = (rawEnrollments ?? []).map((r) =>
+  const enrollments = rawEnrollments.map((r) =>
     mapEnrollment(r as Record<string, unknown>),
   );
   if (enrollments.length === 0)
@@ -1369,14 +1419,42 @@ export async function refreshCrmSignalVars(
     const next = freezeSignalVars(sig);
     // skip_reason is copy-dependent (the enroll path only sets the "no reason
     // logged" fallback when a template asks for it), so a refresh must not
-    // drop the one the enrollment already carries.
+    // drop the one the enrollment already carries — dropping it would leave
+    // {{skip_reason}} unfilled and block a send that was fine.
+    //
+    // But carrying it forward verbatim is how it went stale, and a null
+    // top_skip_reason is not one situation — collect.ts produces it both when
+    // the account had no skipped run at all in 30 days and when it did skip
+    // but the most frequent errorMessage was empty ('(none)' → null). Those
+    // want opposite handling, and skips_30d is what tells them apart:
+    //
+    //   still skipping, message missing → "no reason logged on our side" is
+    //   literally what happened, and the sentence built around the token
+    //   stays true.
+    //
+    //   no skips at all → every available string is false. The old specific
+    //   reason no longer holds, and "no reason logged on our side" claims a
+    //   missing message when what is actually missing is the skipping. What
+    //   expired is the premise, not the reason, so the key is left unset:
+    //   {{skip_reason}} goes unfilled and the queue blocks the send until a
+    //   human looks. Nothing removes these accounts on its own —
+    //   unenrollFromSequence is only ever called by the UI route and the MCP
+    //   tool, and auto-enroll only adds — so leaving the copy alone here does
+    //   not mean nobody sends it. It means it goes out false.
+    const stillSkipping = Number(sig.skips_30d ?? 0) > 0;
     if (sig.top_skip_reason) {
       next.skip_reason = String(sig.top_skip_reason);
-    } else if (previous.skip_reason) {
-      next.skip_reason = previous.skip_reason;
+    } else if (previous.skip_reason && stillSkipping) {
+      next.skip_reason = NO_SKIP_REASON_LOGGED;
     }
 
-    if (JSON.stringify(next) === JSON.stringify(previous)) continue;
+    // Compare canonically. `previous` came back through a jsonb column, which
+    // does not preserve insertion order (Postgres stores keys by length then
+    // bytewise), while `next` is fresh freezeSignalVars output. Stringifying
+    // both directly reports "changed" for identical data — and with a
+    // 15-minute cron as the driver that means rewriting every active
+    // enrollment, and its updated_at, on every tick forever.
+    if (canonicalVars(next) === canonicalVars(previous)) continue;
 
     const { error: updateError } = await client
       .from("outreach_enrollments")
@@ -1415,10 +1493,25 @@ export async function refreshCrmSignalVars(
         .update({
           rendered_subject: subject,
           rendered_body: body,
-          // Clear the block once the data that caused it arrived.
+          // Clear the block once the data that caused it arrived — and state
+          // it when a refresh opens a new hole. A refresh can now remove a
+          // token (skip_reason on an account that stopped skipping), and
+          // leaving the old error in place meant the queue looked sendable
+          // until the send guard caught it at dispatch.
+          //
+          // But only where there is nothing better to say. A task can already
+          // be parked on a blocker the refresh knows nothing about — "Unipile
+          // is not configured", "No LinkedIn account connected" — and those
+          // name a fix, where the token message would send someone to edit
+          // copy that is not the problem. The hole still stops the send at
+          // dispatch either way, so the more specific error wins.
           error:
             stillUnfilled.length > 0
-              ? task.error
+              ? task.error && !task.error.startsWith("Unfilled variables:")
+                ? task.error
+                : `Unfilled variables: ${stillUnfilled
+                    .map((t) => `{{${t}}}`)
+                    .join(", ")} — edit the email or fix the account data before sending.`
               : task.error?.startsWith("Unfilled variables:")
                 ? null
                 : task.error,
