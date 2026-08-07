@@ -84,6 +84,16 @@ function packKey(prompt: string): string {
   return prompt.slice(0, 120);
 }
 
+/**
+ * Whether a snapshot failure is the "one request carrying the whole table was
+ * too big" kind — the only kind --no-snapshot is a legitimate answer to.
+ */
+export function looksLikeSizeLimit(message: string): boolean {
+  return /too large|entity too large|payload|body size|413|exceeds|out of memory|heap/i.test(
+    message,
+  );
+}
+
 export type Repair = {
   rowId: string;
   company: string;
@@ -319,12 +329,23 @@ async function main() {
           // here rather than halfway through the repair.
           const msg = err instanceof Error ? err.message : String(err);
           console.log(`   SKIPPED — snapshot failed: ${msg}`);
-          console.log(
-            `   ${scanned} row(s) scanned; a table this size may exceed the single-request snapshot payload.`,
-          );
-          console.log(
-            `   Re-run with --no-snapshot to repair it with no way back, or narrow the scope.`,
-          );
+          // Only recommend dropping the safety net when the cause is the one
+          // it cannot do anything about. For an auth error, schema drift or a
+          // transient fault, "run it again without the rollback path" is bad
+          // advice: it trades away the only way back for a reason that had
+          // nothing to do with the snapshot being too big.
+          if (looksLikeSizeLimit(msg)) {
+            console.log(
+              `   ${scanned} row(s) scanned — that payload looks too large for one request.`,
+            );
+            console.log(
+              `   Narrow the scope, or re-run with --no-snapshot to repair it with no way back.`,
+            );
+          } else {
+            console.log(
+              `   This does not look like a size limit. Fix the cause and re-run with the snapshot on.`,
+            );
+          }
           console.log();
           totalSkippedTables += 1;
           continue;
@@ -425,6 +446,10 @@ async function main() {
     console.log(
       `${totalSkippedTables} table(s) left untouched because their safety snapshot could not be taken.`,
     );
+    // Non-zero, or a run where every snapshot failed and nothing was repaired
+    // reports success to whoever called it. Set the code rather than exiting
+    // so the summary above still flushes.
+    process.exitCode = 1;
   }
 }
 
