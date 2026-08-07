@@ -35,6 +35,48 @@ export function isUnipileConfigured(): boolean {
   );
 }
 
+/**
+ * A non-2xx from Unipile, with the status kept so callers can tell a 4xx
+ * (our request is wrong, or the account lost access — stop) from a 5xx
+ * (their side — a retry would be defensible). Nothing in this file retries.
+ */
+export class UnipileHttpError extends Error {
+  readonly status: number;
+  readonly path: string;
+
+  constructor(message: string, status: number, path: string) {
+    super(message);
+    this.name = "UnipileHttpError";
+    this.status = status;
+    this.path = path;
+  }
+
+  get isClientError(): boolean {
+    return this.status >= 400 && this.status < 500;
+  }
+}
+
+/**
+ * Every call against the connected LinkedIn account, on one line. That
+ * account is the sender identity for the whole founder-voice motion, so the
+ * question "how much did we hit LinkedIn today, and with what" has to be
+ * answerable from the logs after the fact.
+ */
+function logUnipileCall(entry: {
+  method: string;
+  path: string;
+  status: number | "error";
+  ms: number;
+  note?: string;
+}): void {
+  const { method, path, status, ms, note } = entry;
+  // Strip the api key if a caller ever passes a full URL with query auth.
+  const safePath = path.replace(/([?&])(api_key|X-API-KEY)=[^&]*/gi, "$1$2=***");
+  console.info(
+    `[unipile] ${method} ${safePath} → ${status} (${ms}ms)${note ? ` ${note}` : ""}`,
+  );
+}
+
 export async function unipileFetch<T>(
   path: string,
   init: RequestInit = {},
@@ -57,7 +99,24 @@ export async function unipileFetch<T>(
   ) {
     headers.set("content-type", "application/json");
   }
-  const res = await fetch(url, { ...init, headers });
+  const method = (init.method ?? "GET").toUpperCase();
+  const startedAt = Date.now();
+  const logPath = path.startsWith("http") ? new URL(url).pathname : path;
+
+  let res: Response;
+  try {
+    res = await fetch(url, { ...init, headers });
+  } catch (err) {
+    logUnipileCall({
+      method,
+      path: logPath,
+      status: "error",
+      ms: Date.now() - startedAt,
+      note: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+
   const text = await res.text();
   let data: unknown = null;
   try {
@@ -65,6 +124,12 @@ export async function unipileFetch<T>(
   } catch {
     data = { raw: text };
   }
+  logUnipileCall({
+    method,
+    path: logPath,
+    status: res.status,
+    ms: Date.now() - startedAt,
+  });
   if (!res.ok) {
     const msg =
       data &&
@@ -80,7 +145,7 @@ export async function unipileFetch<T>(
             typeof (data as { title: unknown }).title === "string"
           ? (data as { title: string }).title
           : `Unipile ${res.status}`;
-    throw new Error(msg);
+    throw new UnipileHttpError(msg, res.status, logPath);
   }
   return data as T;
 }
@@ -344,6 +409,332 @@ export async function getUnipileUserProfile(opts: {
   } catch {
     return null;
   }
+}
+
+// ── Posts and comments (harvesting) ────────────────────────────────
+//
+// Read-only, but not free: these run against the same connected account that
+// sends every founder-voice message. Losing that account costs far more than
+// any list this builds, so the whole path is paced, capped, logged, and
+// refuses to retry a rejection.
+
+/** Milliseconds between two harvest calls. Conservative on purpose. */
+function harvestMinIntervalMs(): number {
+  const raw = Number(process.env.UNIPILE_HARVEST_MIN_INTERVAL_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 1500;
+}
+
+/** Ceiling on harvest calls within the rolling window. */
+function harvestMaxCalls(): number {
+  const raw = Number(process.env.UNIPILE_HARVEST_MAX_CALLS_PER_WINDOW);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 120;
+}
+
+/** Length of the rolling window, in minutes. */
+function harvestWindowMs(): number {
+  const raw = Number(process.env.UNIPILE_HARVEST_WINDOW_MINUTES);
+  return (Number.isFinite(raw) && raw > 0 ? raw : 60) * 60_000;
+}
+
+/**
+ * Serialize harvest reads and space them out. A promise chain rather than a
+ * token bucket: concurrent callers queue behind each other instead of all
+ * firing once the window opens, which is the behaviour that gets an account
+ * flagged.
+ */
+let harvestGate: Promise<void> = Promise.resolve();
+/** Timestamps of recent calls — a rolling window, not a per-run counter. */
+let harvestCalls: number[] = [];
+
+function pruneHarvestCalls(now: number): void {
+  const cutoff = now - harvestWindowMs();
+  harvestCalls = harvestCalls.filter((t) => t > cutoff);
+}
+
+export function unipileHarvestBudget(): {
+  used: number;
+  max: number;
+  windowMinutes: number;
+} {
+  pruneHarvestCalls(Date.now());
+  return {
+    used: harvestCalls.length,
+    max: harvestMaxCalls(),
+    windowMinutes: harvestWindowMs() / 60_000,
+  };
+}
+
+async function harvestFetch<T>(path: string): Promise<T> {
+  const now = Date.now();
+  pruneHarvestCalls(now);
+  const max = harvestMaxCalls();
+  // A rolling window rather than a counter someone resets: two harvests
+  // running at once cannot talk each other out of the limit, which is the
+  // whole point of having one.
+  if (harvestCalls.length >= max) {
+    throw new Error(
+      `Unipile harvest limit reached (${max} calls in ${harvestWindowMs() / 60_000}min). Raise UNIPILE_HARVEST_MAX_CALLS_PER_WINDOW or wait.`,
+    );
+  }
+  harvestCalls.push(now);
+
+  const wait = harvestMinIntervalMs();
+  const previous = harvestGate;
+  let release: () => void = () => {};
+  harvestGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await unipileFetch<T>(path);
+  } finally {
+    // Hold the next caller off for the interval even when this one threw —
+    // a 429 is exactly when backing off matters most.
+    setTimeout(release, wait);
+  }
+}
+
+/**
+ * The numeric activity id inside a LinkedIn post URL.
+ *
+ *   .../posts/miguel-verissimo_aiagents-activity-7462609441322926081-QQwC
+ *                                       └──────── this ────────┘
+ *
+ * Unipile does not take URLs — only the id, or the urn:li:activity /
+ * urn:li:ugcPost / urn:li:share forms. Returns null rather than guessing:
+ * a post we cannot identify is skipped, not approximated.
+ */
+export function extractLinkedInActivityId(
+  urlOrId: string | null | undefined,
+): string | null {
+  const raw = urlOrId?.trim();
+  if (!raw) return null;
+
+  // Bare id.
+  if (/^\d{15,25}$/.test(raw)) return raw;
+
+  // urn:li:activity:123 / urn:li:ugcPost:123 / urn:li:share:123
+  const urn = raw.match(/urn:li:(?:activity|ugcPost|share|comment):(\d{15,25})/i);
+  if (urn) return urn[1];
+
+  // The URL form. Both /posts/ and /feed/update/ carry it.
+  const activity = raw.match(/activity[-:](\d{15,25})/i);
+  if (activity) return activity[1];
+
+  return null;
+}
+
+export type UnipilePost = {
+  /** Unipile's own object id. NOT what the comments endpoint wants. */
+  id: string | null;
+  /**
+   * The LinkedIn-side id. The comments endpoint requires this one
+   * specifically — passing `id` returns nothing.
+   */
+  socialId: string | null;
+  activityId: string | null;
+  authorName: string | null;
+  authorProfileUrl: string | null;
+  text: string | null;
+  postedAt: string | null;
+  commentCount: number | null;
+  reactionCount: number | null;
+  raw: Record<string, unknown>;
+};
+
+function str(v: unknown): string | null {
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+function num(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+export async function getUnipilePost(opts: {
+  activityId: string;
+  accountId: string;
+}): Promise<UnipilePost> {
+  const params = new URLSearchParams({ account_id: opts.accountId });
+  const data = await harvestFetch<Record<string, unknown>>(
+    `/api/v1/posts/${encodeURIComponent(opts.activityId)}?${params.toString()}`,
+  );
+  const author = (data.author ?? {}) as Record<string, unknown>;
+  return {
+    id: str(data.id),
+    socialId: str(data.social_id) ?? str(data.share_url) ?? null,
+    activityId: opts.activityId,
+    authorName: str(author.name) ?? str(data.author_name),
+    authorProfileUrl:
+      str(author.public_profile_url) ??
+      str(author.profile_url) ??
+      (str(author.public_identifier)
+        ? `https://www.linkedin.com/in/${str(author.public_identifier)}`
+        : null),
+    text: str(data.text) ?? str(data.commentary),
+    postedAt: str(data.parsed_datetime) ?? str(data.posted_at) ?? str(data.date),
+    commentCount: num(data.comment_counter ?? data.comment_count),
+    reactionCount: num(data.reaction_counter ?? data.reaction_count),
+    raw: data,
+  };
+}
+
+export type UnipilePostComment = {
+  id: string;
+  /** Author's LinkedIn member id (ACoAA…), for sends. */
+  providerId: string | null;
+  /** Unipile messaging id, when the response carries one. */
+  messagingId: string | null;
+  name: string | null;
+  headline: string | null;
+  publicIdentifier: string | null;
+  profileUrl: string | null;
+  profilePictureUrl: string | null;
+  /** DISTANCE_1 | DISTANCE_2 | DISTANCE_3 | OUT_OF_NETWORK */
+  networkDistance: string | null;
+  text: string | null;
+  commentedAt: string | null;
+  reactionCount: number | null;
+  replyCount: number | null;
+  /** True when this came back as a reply to another comment. */
+  isReply: boolean;
+};
+
+function mapComment(
+  r: Record<string, unknown>,
+  isReply: boolean,
+): UnipilePostComment | null {
+  const id = str(r.id) ?? str(r.comment_id);
+  if (!id) return null;
+  const author = (r.author ?? {}) as Record<string, unknown>;
+  const publicIdentifier =
+    str(author.public_identifier) ?? str(r.author_public_identifier);
+  const profileUrl =
+    str(author.public_profile_url) ??
+    str(author.profile_url) ??
+    str(r.author_profile_url) ??
+    (publicIdentifier
+      ? `https://www.linkedin.com/in/${publicIdentifier}`
+      : null);
+
+  return {
+    id,
+    providerId: str(author.id) ?? str(r.author_id) ?? str(r.author_provider_id),
+    messagingId:
+      str(author.messaging_id) ??
+      str(r.messaging_id) ??
+      str(author.attendee_provider_id),
+    name: str(author.name) ?? str(r.author_name),
+    headline: str(author.headline) ?? str(r.author_headline),
+    publicIdentifier,
+    profileUrl,
+    profilePictureUrl:
+      str(author.profile_picture_url) ?? str(r.profile_picture_url),
+    networkDistance:
+      str(author.network_distance) ??
+      str(r.network_distance) ??
+      str(author.distance),
+    text: str(r.text) ?? str(r.comment) ?? str(r.body),
+    // parsed_datetime first: LinkedIn's `date` is often a relative string
+    // ("2mo", "3w"), which is useless as a trigger date and unstorable as a
+    // timestamp. The ISO field is the one worth having.
+    commentedAt:
+      str(r.parsed_datetime) ?? str(r.created_at) ?? str(r.timestamp) ?? str(r.date),
+    reactionCount: num(r.reaction_counter ?? r.reaction_count),
+    replyCount: num(r.reply_counter ?? r.reply_count),
+    isReply,
+  };
+}
+
+/**
+ * Comments on a post, paginated.
+ *
+ * The same endpoint serves replies: passing a comment id returns that
+ * comment's replies rather than the post's top-level comments. With
+ * includeReplies we walk into every comment that reports replies, still
+ * inside the same maxComments ceiling — replies are where the "I have this
+ * exact problem" answers usually live.
+ */
+export async function listUnipilePostComments(opts: {
+  socialId: string;
+  accountId: string;
+  maxComments?: number;
+  includeReplies?: boolean;
+}): Promise<UnipilePostComment[]> {
+  const max = Math.max(1, Math.min(500, opts.maxComments ?? 50));
+  const out: UnipilePostComment[] = [];
+  const seen = new Set<string>();
+
+  const fetchPage = async (
+    cursor: string | null,
+    commentId: string | null,
+  ): Promise<{ items: Record<string, unknown>[]; cursor: string | null }> => {
+    const params = new URLSearchParams({ account_id: opts.accountId });
+    if (cursor) params.set("cursor", cursor);
+    if (commentId) params.set("comment_id", commentId);
+    const data = await harvestFetch<{
+      items?: Record<string, unknown>[];
+      cursor?: string | null;
+    }>(
+      `/api/v1/posts/${encodeURIComponent(opts.socialId)}/comments?${params.toString()}`,
+    );
+    return {
+      items: data.items ?? [],
+      cursor: typeof data.cursor === "string" && data.cursor ? data.cursor : null,
+    };
+  };
+
+  // Top-level comments.
+  let cursor: string | null = null;
+  const withReplies: UnipilePostComment[] = [];
+  do {
+    const page = await fetchPage(cursor, null);
+    let fresh = 0;
+    for (const raw of page.items) {
+      const c = mapComment(raw, false);
+      if (!c || seen.has(c.id)) continue;
+      seen.add(c.id);
+      fresh += 1;
+      out.push(c);
+      if ((c.replyCount ?? 0) > 0) withReplies.push(c);
+      if (out.length >= max) break;
+    }
+    // A cursor that keeps returning nothing new would otherwise spin against
+    // the account forever. One unproductive page is where it stops.
+    if (fresh === 0) break;
+    cursor = page.cursor;
+  } while (cursor && out.length < max);
+
+  if (!opts.includeReplies) return out.slice(0, max);
+
+  for (const parent of withReplies) {
+    if (out.length >= max) break;
+    let replyCursor: string | null = null;
+    do {
+      const page = await fetchPage(replyCursor, parent.id);
+      let fresh = 0;
+      for (const raw of page.items) {
+        const c = mapComment(raw, true);
+        if (!c || seen.has(c.id)) continue;
+        seen.add(c.id);
+        fresh += 1;
+        out.push(c);
+        if (out.length >= max) break;
+      }
+      if (fresh === 0) break;
+      replyCursor = page.cursor;
+    } while (replyCursor && out.length < max);
+  }
+
+  return out.slice(0, max);
+}
+
+/** The LinkedIn account harvests run through, unless the caller names one. */
+export async function defaultLinkedInAccountId(): Promise<string | null> {
+  const configured = process.env.UNIPILE_LINKEDIN_ACCOUNT_ID?.trim();
+  if (configured) return configured;
+  const accounts = await listLinkedInAccounts();
+  return accounts[0]?.id ?? null;
 }
 
 // ── Sending ────────────────────────────────────────────────────────

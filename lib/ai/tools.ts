@@ -6417,6 +6417,292 @@ export const sequenceCompleteTask = tool({
   },
 });
 
+// ---------------------------------------------------------------------------
+// LinkedIn comment harvesting
+// ---------------------------------------------------------------------------
+
+export const linkedinFindPosts = tool({
+  description:
+    "Find LinkedIn posts about a topic via Exa and return their activity ids. Discovery only — makes no call against the connected LinkedIn account, so it is cheap and safe to run while exploring topics. Use it to see what conversations exist before spending account calls on linkedinListPostCommenters or linkedinHarvestCommenters. Posts whose URL carries no activity id come back with activityId=null and cannot be harvested.",
+  inputSchema: z.object({
+    queries: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Topic queries to search LinkedIn for, e.g. ['AI code review', 'PR review bottleneck']. Omit to use the standard Kodus monitoring topics.",
+      ),
+    daysBack: z
+      .number()
+      .int()
+      .min(1)
+      .max(365)
+      .optional()
+      .default(14)
+      .describe("How far back to search (default 14 days)."),
+    maxResults: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .default(25)
+      .describe("Max posts to return (default 25)."),
+  }),
+  execute: async ({
+    queries,
+    daysBack,
+    maxResults,
+  }: {
+    queries?: string[];
+    daysBack?: number;
+    maxResults?: number;
+  }) => {
+    try {
+      const { findLinkedInPosts } = await import("@/lib/linkedin-harvest");
+      const posts = await findLinkedInPosts({ queries, daysBack, maxResults });
+      return {
+        success: true as const,
+        count: posts.length,
+        harvestable: posts.filter((p) => p.activityId).length,
+        posts,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "LinkedIn post search failed",
+      };
+    }
+  },
+});
+
+export const linkedinListPostCommenters = tool({
+  description:
+    "List everyone who commented on one LinkedIn post, with their headline (role) and network distance. Runs against the connected LinkedIn account, so it is paced and capped — keep maxComments small. networkDistance decides routing: DISTANCE_1 is a first-degree connection and belongs in a direct message from the founder, DISTANCE_2/3 belong in the cold queue. Accepts a post URL or a bare activity id. Read-only — writes nothing.",
+  inputSchema: z.object({
+    postUrl: z
+      .string()
+      .optional()
+      .describe(
+        "Full LinkedIn post URL, e.g. https://www.linkedin.com/posts/name_slug-activity-7462609441322926081-QQwC",
+      ),
+    activityId: z
+      .string()
+      .optional()
+      .describe("Bare numeric activity id, if you already extracted it."),
+    accountId: z
+      .string()
+      .optional()
+      .describe(
+        "Unipile account id to read through. Defaults to the connected LinkedIn account.",
+      ),
+    includeReplies: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe(
+        "Also walk replies to comments (costs extra account calls). Default false.",
+      ),
+    maxComments: z
+      .number()
+      .int()
+      .min(1)
+      .max(200)
+      .optional()
+      .default(25)
+      .describe("Max commenters to return (default 25, deliberately small)."),
+  }),
+  execute: async ({
+    postUrl,
+    activityId,
+    accountId,
+    includeReplies,
+    maxComments,
+  }: {
+    postUrl?: string;
+    activityId?: string;
+    accountId?: string;
+    includeReplies?: boolean;
+    maxComments?: number;
+  }) => {
+    try {
+      const ref = postUrl?.trim() || activityId?.trim();
+      if (!ref) {
+        return {
+          success: false as const,
+          message: "Pass either postUrl or activityId.",
+        };
+      }
+      const { listPostCommenters } = await import("@/lib/linkedin-harvest");
+      const res = await listPostCommenters({
+        postUrlOrActivityId: ref,
+        accountId,
+        includeReplies,
+        maxComments,
+      });
+      return {
+        success: true as const,
+        post_url: res.postUrl,
+        activity_id: res.activityId,
+        social_id: res.socialId,
+        post_author: res.postAuthor,
+        count: res.commenters.length,
+        commenters: res.commenters.map((c) => ({
+          name: c.name,
+          profileUrl: c.profileUrl,
+          headline: c.headline,
+          networkDistance: c.networkDistance,
+          commentText: c.commentText,
+          commentedAt: c.commentedAt,
+          postUrl: c.postUrl,
+        })),
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "Failed to list commenters",
+      };
+    }
+  },
+});
+
+export const linkedinHarvestCommenters = tool({
+  description:
+    "Run the whole chain: find LinkedIn posts on a topic, then collect who commented on them with role and network distance. Returns summary counts plus the people. Use this to turn a topic into a dated, quotable trigger attached to a named human — strictly better than a company with a job opening. Writes nothing unless researchTableRef is passed; with it, people are deduped on profile URL and each comment is stored as a trigger carrying the post URL, comment text and comment date. Drives the real connected LinkedIn account: maxPosts and maxCommentsPerPost default small on purpose, raise them only deliberately.",
+  inputSchema: z.object({
+    queries: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Topic queries, e.g. ['AI code review', 'code review bottleneck']. Omit to use the standard Kodus monitoring topics.",
+      ),
+    daysBack: z
+      .number()
+      .int()
+      .min(1)
+      .max(365)
+      .optional()
+      .default(14)
+      .describe("How far back to search for posts (default 14 days)."),
+    maxPosts: z
+      .number()
+      .int()
+      .min(1)
+      .max(25)
+      .optional()
+      .default(3)
+      .describe(
+        "Max posts to harvest (default 3). Each post costs at least two account calls.",
+      ),
+    maxCommentsPerPost: z
+      .number()
+      .int()
+      .min(1)
+      .max(200)
+      .optional()
+      .default(25)
+      .describe("Max commenters per post (default 25)."),
+    includeReplies: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe("Also walk replies to comments. Default false."),
+    accountId: z
+      .string()
+      .optional()
+      .describe(
+        "Unipile account id. Defaults to the connected LinkedIn account.",
+      ),
+    researchTableRef: z
+      .string()
+      .optional()
+      .describe(
+        "Research table id, slug, or name to store the harvested people in. OMIT to preview without writing anything.",
+      ),
+  }),
+  execute: async ({
+    queries,
+    daysBack,
+    maxPosts,
+    maxCommentsPerPost,
+    includeReplies,
+    accountId,
+    researchTableRef,
+  }: {
+    queries?: string[];
+    daysBack?: number;
+    maxPosts?: number;
+    maxCommentsPerPost?: number;
+    includeReplies?: boolean;
+    accountId?: string;
+    researchTableRef?: string;
+  }) => {
+    try {
+      // Only reach for Supabase when there is something to write, so a
+      // preview run needs nothing but Exa and the LinkedIn account.
+      let client = null as ReturnType<typeof getSupabaseServiceClient> | null;
+      let researchTableId: string | null = null;
+      let tableSlug: string | null = null;
+      if (researchTableRef?.trim()) {
+        client = getSupabaseServiceClient();
+        const { resolveTable } = await import("@/lib/research/columns");
+        const table = await resolveTable(client, researchTableRef.trim());
+        researchTableId = table.id;
+        tableSlug = table.slug;
+      }
+
+      const { harvestCommenters } = await import("@/lib/linkedin-harvest");
+      const res = await harvestCommenters(client, {
+        queries,
+        daysBack,
+        maxPosts,
+        maxCommentsPerPost,
+        includeReplies,
+        accountId,
+        researchTableId,
+      });
+
+      return {
+        success: true as const,
+        wrote_to_table: researchTableId ? (tableSlug ?? researchTableId) : null,
+        summary: {
+          posts_found: res.postsFound,
+          posts_with_activity_id: res.postsWithActivityId,
+          posts_processed: res.postsProcessed,
+          posts_skipped: res.postsSkipped.length,
+          comments_seen: res.commentsSeen,
+          unique_people: res.uniquePeople,
+          by_network_distance: res.byNetworkDistance,
+          unipile_calls: res.unipileCalls,
+          ...(res.written
+            ? {
+                people_upserted: res.written.peopleUpserted,
+                people_new: res.written.peopleNew,
+                triggers_added: res.written.triggersAdded,
+              }
+            : {}),
+        },
+        skipped: res.postsSkipped,
+        people: res.people.map((c) => ({
+          name: c.name,
+          profileUrl: c.profileUrl,
+          headline: c.headline,
+          networkDistance: c.networkDistance,
+          commentText: c.commentText,
+          commentedAt: c.commentedAt,
+          postUrl: c.postUrl,
+        })),
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Harvest failed",
+      };
+    }
+  },
+});
+
 export function createAgentTools(userEmail?: string) {
   return {
     generateIdeas,
@@ -6519,6 +6805,9 @@ export function createAgentTools(userEmail?: string) {
     sequenceCompleteTask,
     outreachSendQueuedTask,
     outreachSendLinkedInMessage,
+    linkedinFindPosts,
+    linkedinListPostCommenters,
+    linkedinHarvestCommenters,
   };
 }
 
