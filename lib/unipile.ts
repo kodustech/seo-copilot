@@ -593,6 +593,11 @@ function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }
 
+/** Tolerates true / "true" / 1 / "1" from a JSON API that may not be typed. */
+function isTruthyFlag(v: unknown): boolean {
+  return v === true || v === "true" || v === 1 || v === "1";
+}
+
 function num(v: unknown): number | null {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
@@ -705,7 +710,10 @@ function mapComment(
       str(details.network_distance) ?? str(authorObj.network_distance),
     // A company page can comment. These lists are people, so the caller needs
     // to be able to tell them apart.
-    isCompany: details.is_company === true || authorObj.is_company === true,
+    // Observed as a real boolean on both the comments and replies endpoints,
+    // but normalised anyway: the cost is nothing and the failure it prevents
+    // is a brand account written into a table of people.
+    isCompany: isTruthyFlag(details.is_company) || isTruthyFlag(authorObj.is_company),
     text: str(r.text) ?? str(r.comment) ?? str(r.body),
     // parsed_datetime first where it exists: LinkedIn's `date` is sometimes a
     // relative string ("2mo"), useless as a trigger date and unstorable as a
@@ -803,10 +811,29 @@ export async function listUnipilePostComments(opts: {
 
 /** The LinkedIn account harvests run through, unless the caller names one. */
 export async function defaultLinkedInAccountId(): Promise<string | null> {
+  return (await linkedInAccountIdentity()).accountId;
+}
+
+/**
+ * The harvesting account plus its own member id.
+ *
+ * The member id is what lets a harvest recognise itself. Without it, the
+ * founder commenting on a post he is also harvesting lands in his own
+ * prospect list — a cold-outreach queue with the sender in it.
+ */
+export async function linkedInAccountIdentity(): Promise<{
+  accountId: string | null;
+  providerUserId: string | null;
+}> {
   const configured = process.env.UNIPILE_LINKEDIN_ACCOUNT_ID?.trim();
-  if (configured) return configured;
   const accounts = await listLinkedInAccounts();
-  return accounts[0]?.id ?? null;
+  const match = configured
+    ? (accounts.find((a) => a.id === configured) ?? null)
+    : (accounts[0] ?? null);
+  return {
+    accountId: configured || match?.id || null,
+    providerUserId: match?.providerUserId ?? null,
+  };
 }
 
 // ── Sending ────────────────────────────────────────────────────────

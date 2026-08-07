@@ -6502,7 +6502,7 @@ export const linkedinListPostCommenters = tool({
       .optional()
       .default(false)
       .describe(
-        "Also walk replies to comments (costs extra account calls). Default false.",
+        "Also walk replies to comments (costs extra account calls). Replies are collected only after top-level comments and share the same maxComments budget, so raise maxComments to reach them. Default false.",
       ),
     maxComments: z
       .number()
@@ -6556,6 +6556,9 @@ export const linkedinListPostCommenters = tool({
           commentText: c.commentText,
           commentedAt: c.commentedAt,
           postUrl: c.postUrl,
+          // A company page can comment. Shown rather than hidden, so a brand
+          // account is never mistaken for a person to contact.
+          isCompany: c.isCompany,
         })),
       };
     } catch (error) {
@@ -6674,6 +6677,8 @@ export const linkedinHarvestCommenters = tool({
           posts_processed: res.postsProcessed,
           posts_skipped: res.postsSkipped.length,
           comments_seen: res.commentsSeen,
+          excluded_companies: res.excludedCompanies,
+          excluded_no_identity: res.excludedNoIdentity,
           unique_people: res.uniquePeople,
           by_network_distance: res.byNetworkDistance,
           unipile_calls: res.unipileCalls,

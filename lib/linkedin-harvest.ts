@@ -21,10 +21,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { collectLinkedIn } from "@/lib/social-monitoring";
 import {
-  defaultLinkedInAccountId,
   extractLinkedInActivityId,
   getUnipilePost,
   isUnipileConfigured,
+  linkedInAccountIdentity,
   listUnipilePostComments,
   normalizeLinkedInIdentity,
   unipileHarvestBudget,
@@ -219,7 +219,8 @@ export async function listPostCommenters(opts: {
     throw new Error("Unipile is not configured (UNIPILE_API_KEY / UNIPILE_DSN)");
   }
 
-  const accountId = opts.accountId?.trim() || (await defaultLinkedInAccountId());
+  const identity = await linkedInAccountIdentity();
+  const accountId = opts.accountId?.trim() || identity.accountId;
   if (!accountId) {
     throw new Error(
       "No connected LinkedIn account in Unipile. Connect one in Settings first.",
@@ -249,9 +250,18 @@ export async function listPostCommenters(opts: {
     activityId,
     socialId: post.socialId,
     postAuthor: post.authorName,
-    commenters: comments.map((c) =>
-      toCommenter(c, { postUrl, activityId, postSocialId: post.socialId }),
-    ),
+    commenters: comments
+      // Never harvest the account doing the harvesting. Gabriel commenting on
+      // a post he is also collecting from would otherwise land in his own
+      // cold queue.
+      .filter(
+        (c) =>
+          !identity.providerUserId ||
+          c.providerId?.toLowerCase() !== identity.providerUserId.toLowerCase(),
+      )
+      .map((c) =>
+        toCommenter(c, { postUrl, activityId, postSocialId: post.socialId }),
+      ),
   };
 }
 
@@ -478,6 +488,10 @@ export type HarvestResult = {
   postsProcessed: number;
   postsSkipped: Array<{ url: string; reason: string }>;
   commentsSeen: number;
+  /** Brand accounts dropped: this list is people. */
+  excludedCompanies: number;
+  /** Comments with no resolvable name or profile — a shape-change canary. */
+  excludedNoIdentity: number;
   uniquePeople: number;
   byNetworkDistance: Record<string, number>;
   unipileCalls: number;
@@ -559,17 +573,45 @@ export async function harvestCommenters(
     }
   }
 
+  // Filter once, here, so the preview and the write cannot disagree. Doing it
+  // only at the write step meant `people` and the counts advertised brand
+  // accounts as contactable prospects that were then silently not stored —
+  // and anything consuming `people` would have aimed outreach at a logo.
+  const people: Commenter[] = [];
+  let excludedCompanies = 0;
+  let excludedNoIdentity = 0;
+  for (const c of all) {
+    if (c.isCompany) {
+      excludedCompanies += 1;
+      continue;
+    }
+    if (!c.profileUrl || !c.name) {
+      excludedNoIdentity += 1;
+      continue;
+    }
+    people.push(c);
+  }
+
   const byNetworkDistance: Record<string, number> = {};
   const uniqueProfiles = new Set<string>();
-  for (const c of all) {
-    if (c.profileUrl) uniqueProfiles.add(c.profileUrl);
+  for (const c of people) {
+    uniqueProfiles.add(c.profileUrl!);
     const key = c.networkDistance ?? "unknown";
     byNetworkDistance[key] = (byNetworkDistance[key] ?? 0) + 1;
   }
 
+  // A comment we could not attach a name and profile to means the response
+  // shape moved. Say so loudly — the alternative is a harvest that quietly
+  // returns fewer people than it saw and looks like it worked.
+  if (excludedNoIdentity > 0) {
+    console.warn(
+      `[linkedin-harvest] ${excludedNoIdentity} of ${all.length} comment(s) had no resolvable name or profile URL — check the Unipile response shape.`,
+    );
+  }
+
   let written: HarvestWriteResult | null = null;
   if (opts.researchTableId && client) {
-    written = await saveCommenters(client, opts.researchTableId, all);
+    written = await saveCommenters(client, opts.researchTableId, people);
   }
 
   return {
@@ -578,10 +620,12 @@ export async function harvestCommenters(
     postsProcessed: processed,
     postsSkipped: skipped,
     commentsSeen: all.length,
+    excludedCompanies,
+    excludedNoIdentity,
     uniquePeople: uniqueProfiles.size,
     byNetworkDistance,
     unipileCalls: unipileHarvestBudget().used - callsBefore,
     written,
-    people: all,
+    people,
   };
 }
