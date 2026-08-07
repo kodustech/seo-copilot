@@ -871,9 +871,25 @@ export async function linkedInAccountIdentity(
     throw err;
   }
 
-  const match = wanted
+  let match = wanted
     ? (accounts.find((a) => a.id === wanted) ?? null)
     : (accounts[0] ?? null);
+
+  // A named account missing from the list is most likely one connected inside
+  // the cache TTL. Refetch once before giving up: silently returning no member
+  // id would switch self-exclusion off, which is the one thing this function
+  // exists to guarantee.
+  if (wanted && !match) {
+    accountsCache = null;
+    accounts = await cachedLinkedInAccounts();
+    match = accounts.find((a) => a.id === wanted) ?? null;
+    if (!match) {
+      console.warn(
+        `[unipile] account "${wanted}" is not in the connected account list — self-exclusion is off for this run.`,
+      );
+    }
+  }
+
   return {
     accountId: wanted || match?.id || null,
     providerUserId: match?.providerUserId ?? null,

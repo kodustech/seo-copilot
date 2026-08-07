@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+import { resetUnipileAccountsCache } from "@/lib/unipile";
+
 /**
  * Unipile Hosted Auth notify_url callback.
  * Payload: { status, account_id, name }
@@ -13,8 +15,12 @@ export async function POST(req: Request) {
       account_id: (body as { account_id?: string }).account_id,
       name: (body as { name?: string }).name,
     });
+    // A connect or reconnect just changed the account list; drop the cache so
+    // a harvest started moments later can still recognise the new account.
+    resetUnipileAccountsCache();
   } catch (err) {
     console.warn("[unipile] account-notify parse failed:", err);
+    resetUnipileAccountsCache();
   }
   return NextResponse.json({ ok: true });
 }
