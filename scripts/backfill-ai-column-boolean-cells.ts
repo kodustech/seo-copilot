@@ -44,13 +44,24 @@ type Args = {
   snapshot: boolean;
 };
 
-function parseArgs(argv: string[]): Args {
+export function parseArgs(argv: string[]): Args {
   const out: Args = { tableSlug: null, apply: false, snapshot: true };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--apply") out.apply = true;
     else if (a === "--no-snapshot") out.snapshot = false;
-    else if (a === "--table") out.tableSlug = argv[++i] ?? null;
+    else if (a === "--table") {
+      // Without this, a trailing `--table` silently becomes "every table" —
+      // so `--apply --table` would repair the whole database instead of
+      // failing. A scoping flag has to mean scoping or nothing.
+      const value = argv[++i];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--table requires a slug argument");
+      }
+      out.tableSlug = value;
+    } else if (a.startsWith("--")) {
+      throw new Error(`Unknown flag: ${a}`);
+    }
   }
   return out;
 }
@@ -152,7 +163,11 @@ export function planRepairs(
         continue;
       }
 
-      next = next ?? { ...cells };
+      // Only the cells this backfill actually changes. Carrying the whole
+      // `cells` object forward to the write would mean writing back every
+      // other column exactly as it looked at scan time, reverting anything
+      // edited in between.
+      next = next ?? {};
       // Swap the value only. evidence/sources/status were never wrong.
       next[column.key] = { ...cell, value: answer.trim() };
       repairs.push({
@@ -200,18 +215,25 @@ async function main() {
     totalBooleanColumnsSkipped += aiColumns.length - target.length;
     if (target.length === 0) continue;
 
-    const { data: rows, error: rowsError } = await client
-      .from("research_rows")
-      .select("id, company_name, cells, pack_raw")
-      .eq("table_id", table.id as string);
-    if (rowsError) {
-      throw new Error(`Failed to read rows for ${table.slug}: ${rowsError.message}`);
+    // Paginate. PostgREST caps a single response at 1000 rows, and a silent
+    // partial scan is worse than no scan: the summary would read like a
+    // complete repair while every row past the cap stayed broken.
+    const rows: RowInput[] = [];
+    for (let start = 0; ; start += 1000) {
+      const { data, error } = await client
+        .from("research_rows")
+        .select("id, company_name, cells, pack_raw")
+        .eq("table_id", table.id as string)
+        .order("id", { ascending: true })
+        .range(start, start + 999);
+      if (error) {
+        throw new Error(`Failed to read rows for ${table.slug}: ${error.message}`);
+      }
+      rows.push(...((data ?? []) as RowInput[]));
+      if (!data || data.length < 1000) break;
     }
 
-    const { repairs, unrepairable, pending } = planRepairs(
-      columns,
-      (rows ?? []) as RowInput[],
-    );
+    const { repairs, unrepairable, pending } = planRepairs(columns, rows);
 
     if (repairs.length === 0 && unrepairable.length === 0) continue;
 
@@ -254,10 +276,38 @@ async function main() {
         console.log(`   snapshot ${snapshotId}`);
       }
       let written = 0;
-      for (const [rowId, cells] of pending) {
+      for (const [rowId, repairedCells] of pending) {
+        // Re-read immediately before writing and merge onto what is there
+        // now. The scan above may be minutes old by the time we get here, and
+        // anything edited in between — a manual fix, another column's
+        // enrichment through setCell — must survive this write.
+        const { data: fresh, error: readError } = await client
+          .from("research_rows")
+          .select("cells")
+          .eq("id", rowId)
+          .maybeSingle();
+        if (readError) {
+          throw new Error(`Failed to re-read row ${rowId}: ${readError.message}`);
+        }
+        if (!fresh) continue; // deleted since the scan
+        const freshCells =
+          (fresh.cells as Record<string, ResearchCell> | null) ?? {};
+
+        const merged = { ...freshCells };
+        let stillNeeded = 0;
+        for (const [key, repaired] of Object.entries(repairedCells)) {
+          const current = freshCells[key];
+          // Someone already fixed this cell, by hand or by re-running the
+          // column. Their value wins over our reconstruction.
+          if (!current || typeof current.value !== "boolean") continue;
+          merged[key] = { ...current, value: repaired.value };
+          stillNeeded += 1;
+        }
+        if (stillNeeded === 0) continue;
+
         const { error } = await client
           .from("research_rows")
-          .update({ cells, updated_at: new Date().toISOString() })
+          .update({ cells: merged, updated_at: new Date().toISOString() })
           .eq("id", rowId);
         if (error) {
           throw new Error(`Failed to write row ${rowId}: ${error.message}`);
