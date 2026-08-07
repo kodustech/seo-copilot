@@ -53,6 +53,11 @@ export const PRODUCT_TEMPLATE_VARS: TemplateVarSpec[] = [
   { token: "skips_30d", description: "Skipped reviews, last 30 days", source: "product" },
   { token: "last_review_date", description: "Date of the last review", source: "product" },
   { token: "days_since_last_review", description: "Whole days since the last review", source: "product" },
+  { token: "prs_reviewed_30d", description: "Distinct PRs reviewed, last 30 days (not reviews_30d, which counts re-reviews)", source: "product" },
+  { token: "suggestions_30d", description: "Suggestions delivered to developers, last 30 days", source: "product" },
+  { token: "suggestions_applied_30d", description: "Suggestions applied — implemented plus partially implemented", source: "product" },
+  { token: "suggestions_implemented_30d", description: "Suggestions fully implemented (stricter than applied)", source: "product" },
+  { token: "suggestions_applied_pct", description: 'Applied / delivered, e.g. "17%" (unset when nothing was delivered)', source: "product" },
 ];
 
 export const ALL_TEMPLATE_VARS: TemplateVarSpec[] = [
@@ -64,7 +69,7 @@ export const ALL_TEMPLATE_VARS: TemplateVarSpec[] = [
 export const TEMPLATE_TOKEN_HELP = [
   "Tokens: ",
   ALL_TEMPLATE_VARS.map((v) => `{{${v.token}}}`).join(" "),
-  ". Product tokens (tier … days_since_last_review) only resolve on CRM enrollments;",
+  ". Product tokens (tier … suggestions_applied_pct) only resolve on CRM enrollments;",
   " a token with no value blocks the send instead of leaving a hole, so never invent",
   " placeholders like [DATE] — use a token or drop the sentence.",
 ].join("");
@@ -124,6 +129,23 @@ export function deriveSignalTokens(
     if (days >= 0) out.days_since_last_review = String(days);
   }
 
+  // "Applied" is full plus partial. They are frozen apart because they are
+  // different facts and partial regularly outnumbers full, but no email has
+  // ever wanted to name them separately in the same breath.
+  const implemented = Number(frozen.suggestions_implemented_30d);
+  const partial = Number(frozen.suggestions_partial_30d);
+  if (Number.isFinite(implemented) && Number.isFinite(partial)) {
+    const applied = implemented + partial;
+    out.suggestions_applied_30d = String(applied);
+    const delivered = Number(frozen.suggestions_30d);
+    // No delivered suggestions means no rate — not 0%. An account we never sent
+    // anything to has not ignored us, and "you applied 0% of our suggestions"
+    // is the one sentence that must never leave over that state.
+    if (Number.isFinite(delivered) && delivered > 0) {
+      out.suggestions_applied_pct = `${Math.round((applied / delivered) * 100)}%`;
+    }
+  }
+
   const total = Number(frozen.seats_total);
   const used = Number(frozen.seats_used);
   if (Number.isFinite(total) && total > 0 && Number.isFinite(used)) {
@@ -137,7 +159,8 @@ export function deriveSignalTokens(
 export const PRODUCT_SIGNAL_COLUMNS =
   "tier,trigger,top_skip_reason,dev_count,reviews_7d,reviews_30d,skips_30d," +
   "signup_at,trial_end,last_review_at,plan_type,subscription_status," +
-  "connected_git,total_licenses,assigned_licenses";
+  "connected_git,total_licenses,assigned_licenses," +
+  "prs_reviewed_30d,suggestions_30d,suggestions_implemented_30d,suggestions_partial_30d";
 
 /**
  * Freeze a product-signals row into template_vars. Raw values only: dates stay
@@ -163,6 +186,10 @@ export function freezeSignalVars(
   put("reviews_7d", sig.reviews_7d);
   put("reviews_30d", sig.reviews_30d);
   put("skips_30d", sig.skips_30d);
+  put("prs_reviewed_30d", sig.prs_reviewed_30d);
+  put("suggestions_30d", sig.suggestions_30d);
+  put("suggestions_implemented_30d", sig.suggestions_implemented_30d);
+  put("suggestions_partial_30d", sig.suggestions_partial_30d);
   put("plan", sig.plan_type);
   put("subscription_status", sig.subscription_status);
   put("seats_total", sig.total_licenses);
