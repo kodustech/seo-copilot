@@ -3672,12 +3672,19 @@ export const updateCrmCompany = tool({
           ...(prep_status !== undefined
             ? { prepStatus: prep_status as CompanyPrep }
             : {}),
-          ownerEmail: owner_email,
-          orgId: org_id,
+          // updateCompany decides what to write with `"key" in updates`, not
+          // with a truthiness check, so a key that is present-but-undefined is
+          // a request to clear the column. Omitting a field here has to mean
+          // "leave it alone" — the agent routinely sends a partial patch (fix
+          // just the notes), and unconditional keys turned that into a wipe of
+          // owner, industry and dev_count with no timeline entry for two of
+          // the three.
+          ...(owner_email !== undefined ? { ownerEmail: owner_email } : {}),
+          ...(org_id !== undefined ? { orgId: org_id } : {}),
           ...(deployment !== undefined ? { deployment } : {}),
-          industry,
-          devCount: dev_count,
-          notes,
+          ...(industry !== undefined ? { industry } : {}),
+          ...(dev_count !== undefined ? { devCount: dev_count } : {}),
+          ...(notes !== undefined ? { notes } : {}),
           properties,
         },
         user_email,
