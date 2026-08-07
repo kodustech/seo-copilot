@@ -28,6 +28,13 @@ import { listPeople, listRows } from "@/lib/research/tables";
 import { resolveTable } from "@/lib/research/columns";
 import { getProspect, updateProspect } from "@/lib/outreach";
 
+/**
+ * What {{skip_reason}} says when the account has no skip logged. Shared by the
+ * enroll path and the refresh so a refreshed enrollment cannot end up phrased
+ * differently from a freshly enrolled one.
+ */
+const NO_SKIP_REASON_LOGGED = "no reason logged on our side";
+
 // ---------------------------------------------------------------------------
 // Mappers
 // ---------------------------------------------------------------------------
@@ -1150,7 +1157,7 @@ export async function enrollFromCrm(
           if (topSkip) {
             templateVars.skip_reason = String(topSkip);
           } else if (usesSkipReason) {
-            templateVars.skip_reason = "no reason logged on our side";
+            templateVars.skip_reason = NO_SKIP_REASON_LOGGED;
           }
         }
       }
@@ -1412,11 +1419,24 @@ export async function refreshCrmSignalVars(
     const next = freezeSignalVars(sig);
     // skip_reason is copy-dependent (the enroll path only sets the "no reason
     // logged" fallback when a template asks for it), so a refresh must not
-    // drop the one the enrollment already carries.
+    // drop the one the enrollment already carries — dropping it would leave
+    // {{skip_reason}} unfilled and block a send that was fine.
+    //
+    // But carrying the previous value forward verbatim is how it went stale:
+    // once the account stops skipping, top_skip_reason clears while the
+    // enrollment keeps asserting the old reason, and because that value lands
+    // in `next` the canonical comparison below sees no change and skips the
+    // write — so the obsolete reason could never correct itself. Telling a
+    // team that just fixed their setup "the reason we record is: BYOK
+    // Configuration Required" is worse than saying nothing specific.
+    //
+    // Substituting the fallback keeps the token filled (no newly blocked
+    // sends) and is exactly what the enroll path writes today for an account
+    // with no logged reason.
     if (sig.top_skip_reason) {
       next.skip_reason = String(sig.top_skip_reason);
     } else if (previous.skip_reason) {
-      next.skip_reason = previous.skip_reason;
+      next.skip_reason = NO_SKIP_REASON_LOGGED;
     }
 
     // Compare canonically. `previous` came back through a jsonb column, which
