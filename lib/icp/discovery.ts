@@ -621,9 +621,14 @@ export async function discoverCompanies(opts: {
   const map = new Map<string, CompanyAcc>();
 
   if (market === "brazil") {
-    // Multi-source Brazil: Gupy + Workable + Programathor + LinkedIn +
-    // Remotive + ATS URL harvest.
-    const [gupy, workable, programathor, remotive, linkedin, harvest] =
+    // Multi-source Brazil: Gupy + Workable (location=Brazil) + Programathor +
+    // LinkedIn (location=Brazil) + ATS URL harvest.
+    //
+    // Remotive is deliberately absent: it is a global remote-work board with no
+    // country filter, so every hit it contributed here was a non-Brazilian
+    // company (Lemon.io, Coalition Technologies, Creative Force…) imported
+    // under market=brazil. It still runs on the global path.
+    const [gupy, workable, programathor, linkedin, harvest] =
       await Promise.all([
         discoverFromGupy({ queries: keywords, maxCompanies }),
         discoverFromWorkable({
@@ -632,10 +637,6 @@ export async function discoverCompanies(opts: {
           maxCompanies,
         }),
         discoverFromProgramathor({ queries: keywords, maxCompanies }),
-        discoverFromRemotive({
-          queries: keywords.slice(0, 3),
-          maxCompanies,
-        }),
         discoverFromLinkedIn({
           queries: keywords.slice(0, 3),
           location: "Brazil",
@@ -655,13 +656,7 @@ export async function discoverCompanies(opts: {
         }),
       ]);
 
-    for (const c of [
-      ...gupy,
-      ...workable,
-      ...programathor,
-      ...remotive,
-      ...linkedin,
-    ]) {
+    for (const c of [...gupy, ...workable, ...programathor, ...linkedin]) {
       mergeCompany(map, c);
     }
     for (const c of harvest) {
