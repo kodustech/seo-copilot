@@ -260,6 +260,59 @@ type ResearchTableSnapshotRow = Record<string, unknown> & {
   evidence: Array<Record<string, unknown>>;
 };
 
+/** PostgREST returns at most this many rows per request. */
+const PAGE_SIZE = 1000;
+
+/**
+ * Read every matching row, keyset-paginated on `id`.
+ *
+ * Keyset rather than offset: a row deleted between two pages shifts every
+ * later offset down by one, so `.range()` silently skips exactly one row at
+ * each page boundary — the failure mode that looks like success.
+ */
+async function selectAllKeyset(
+  client: SupabaseClient,
+  table: string,
+  columns: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  narrow: (q: any) => any = (q) => q,
+): Promise<Array<Record<string, unknown>>> {
+  const out: Array<Record<string, unknown>> = [];
+  let lastId: string | null = null;
+  for (;;) {
+    let q = narrow(
+      client.from(table).select(columns).order("id", { ascending: true }),
+    ).limit(PAGE_SIZE);
+    if (lastId) q = q.gt("id", lastId);
+    const { data, error } = await q;
+    if (error) throw new Error(`Failed to read ${table}: ${error.message}`);
+    const page = (data ?? []) as Array<Record<string, unknown>>;
+    if (page.length === 0) break;
+    out.push(...page);
+    if (page.length < PAGE_SIZE) break;
+    lastId = page[page.length - 1].id as string;
+  }
+  return out;
+}
+
+/** Children of many rows, chunked so the IN list stays sane and paginated. */
+async function selectAllByRowIds(
+  client: SupabaseClient,
+  table: string,
+  rowIds: string[],
+): Promise<Array<Record<string, unknown>>> {
+  const out: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < rowIds.length; i += 200) {
+    const chunk = rowIds.slice(i, i + 200);
+    out.push(
+      ...(await selectAllKeyset(client, table, "*", (q) =>
+        q.in("row_id", chunk),
+      )),
+    );
+  }
+  return out;
+}
+
 /**
  * Save a complete, self-contained list version before a destructive action.
  * It intentionally has no FK to research_tables, so deleting a list cannot
@@ -278,38 +331,38 @@ export async function snapshotResearchTable(
   if (tableError) throw new Error(`Failed to read research list: ${tableError.message}`);
   if (!table) throw new Error("Research list not found");
 
-  const { data: rows, error: rowsError } = await client
-    .from("research_rows")
-    .select("*")
-    .eq("table_id", tableId);
-  if (rowsError) throw new Error(`Failed to read research rows: ${rowsError.message}`);
-  const rowIds = (rows ?? []).map((row) => row.id as string);
+  // Keyset-paginated, because PostgREST caps a single select at 1000 rows and
+  // a truncated snapshot is worse than none: restore deletes the table (which
+  // cascades to every row) and re-inserts only what was captured, so anything
+  // past the cap would be destroyed by the recovery it was meant to survive.
+  const rows = await selectAllKeyset(client, "research_rows", "*", (q) =>
+    q.eq("table_id", tableId),
+  );
+  const rowIds = rows.map((row) => row.id as string);
 
-  const [peopleResult, evidenceResult] = rowIds.length
+  const [people, evidence] = rowIds.length
     ? await Promise.all([
-        client.from("research_people").select("*").in("row_id", rowIds),
-        client.from("research_evidence").select("*").in("row_id", rowIds),
+        selectAllByRowIds(client, "research_people", rowIds),
+        selectAllByRowIds(client, "research_evidence", rowIds),
       ])
-    : [{ data: [], error: null }, { data: [], error: null }];
-  if (peopleResult.error) throw new Error(`Failed to read research people: ${peopleResult.error.message}`);
-  if (evidenceResult.error) throw new Error(`Failed to read research evidence: ${evidenceResult.error.message}`);
+    : [[], []];
 
   const peopleByRow = new Map<string, Array<Record<string, unknown>>>();
-  for (const person of peopleResult.data ?? []) {
+  for (const person of people) {
     const rowId = person.row_id as string;
     const values = peopleByRow.get(rowId) ?? [];
     values.push(person as Record<string, unknown>);
     peopleByRow.set(rowId, values);
   }
   const evidenceByRow = new Map<string, Array<Record<string, unknown>>>();
-  for (const evidence of evidenceResult.data ?? []) {
-    const rowId = evidence.row_id as string;
+  for (const item of evidence) {
+    const rowId = item.row_id as string;
     const values = evidenceByRow.get(rowId) ?? [];
-    values.push(evidence as Record<string, unknown>);
+    values.push(item as Record<string, unknown>);
     evidenceByRow.set(rowId, values);
   }
 
-  const rowsData: ResearchTableSnapshotRow[] = (rows ?? []).map((row) => ({
+  const rowsData: ResearchTableSnapshotRow[] = rows.map((row) => ({
     ...(row as Record<string, unknown>),
     people: peopleByRow.get(row.id as string) ?? [],
     evidence: evidenceByRow.get(row.id as string) ?? [],

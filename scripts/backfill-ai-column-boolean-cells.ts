@@ -119,6 +119,65 @@ export function targetColumns(columns: ResearchColumn[]): ResearchColumn[] {
  * lives here where it can be tested against fixtures rather than against
  * production rows.
  */
+export function planRowRepairs(
+  target: ResearchColumn[],
+  row: RowInput,
+): {
+  repairs: Repair[];
+  unrepairable: Unrepairable[];
+  cells: Record<string, ResearchCell> | null;
+} {
+  const cells = row.cells ?? {};
+  const packRaw = row.pack_raw ?? {};
+  const aiStore =
+    (packRaw.ai_columns as Record<string, { answer?: unknown }> | undefined) ??
+    {};
+  const company = row.company_name ?? "(unnamed)";
+  const repairs: Repair[] = [];
+  const unrepairable: Unrepairable[] = [];
+  let next: Record<string, ResearchCell> | null = null;
+
+  for (const column of target) {
+    const cell = cells[column.key];
+    // Only a boolean sitting in a non-boolean column is the bug.
+    if (!cell || typeof cell.value !== "boolean") continue;
+
+    const prompt = column.enrich.kind === "ai" ? column.enrich.prompt : "";
+    const stored = aiStore[packKey(prompt)];
+    const answer = stored?.answer;
+
+    if (typeof answer !== "string" || !answer.trim()) {
+      unrepairable.push({
+        rowId: row.id,
+        company,
+        columnKey: column.key,
+        value: cell.value,
+        reason: stored
+          ? "pack_raw entry has no string answer"
+          : "no pack_raw.ai_columns entry for this prompt",
+      });
+      continue;
+    }
+
+    // Only the cells this backfill actually changes. Carrying the whole
+    // `cells` object forward to the write would mean writing back every
+    // other column exactly as it looked at scan time, reverting anything
+    // edited in between.
+    next = next ?? {};
+    // Swap the value only. evidence/sources/status were never wrong.
+    next[column.key] = { ...cell, value: answer.trim() };
+    repairs.push({
+      rowId: row.id,
+      company,
+      columnKey: column.key,
+      from: cell.value,
+      to: answer.trim(),
+    });
+  }
+
+  return { repairs, unrepairable, cells: next };
+}
+
 export function planRepairs(
   columns: ResearchColumn[],
   rows: RowInput[],
@@ -133,53 +192,10 @@ export function planRepairs(
   const pending = new Map<string, Record<string, ResearchCell>>();
 
   for (const row of rows) {
-    const cells = row.cells ?? {};
-    const packRaw = row.pack_raw ?? {};
-    const aiStore =
-      (packRaw.ai_columns as Record<string, { answer?: unknown }> | undefined) ??
-      {};
-    const company = row.company_name ?? "(unnamed)";
-    let next: Record<string, ResearchCell> | null = null;
-
-    for (const column of target) {
-      const cell = cells[column.key];
-      // Only a boolean sitting in a non-boolean column is the bug.
-      if (!cell || typeof cell.value !== "boolean") continue;
-
-      const prompt = column.enrich.kind === "ai" ? column.enrich.prompt : "";
-      const stored = aiStore[packKey(prompt)];
-      const answer = stored?.answer;
-
-      if (typeof answer !== "string" || !answer.trim()) {
-        unrepairable.push({
-          rowId: row.id,
-          company,
-          columnKey: column.key,
-          value: cell.value,
-          reason: stored
-            ? "pack_raw entry has no string answer"
-            : "no pack_raw.ai_columns entry for this prompt",
-        });
-        continue;
-      }
-
-      // Only the cells this backfill actually changes. Carrying the whole
-      // `cells` object forward to the write would mean writing back every
-      // other column exactly as it looked at scan time, reverting anything
-      // edited in between.
-      next = next ?? {};
-      // Swap the value only. evidence/sources/status were never wrong.
-      next[column.key] = { ...cell, value: answer.trim() };
-      repairs.push({
-        rowId: row.id,
-        company,
-        columnKey: column.key,
-        from: cell.value,
-        to: answer.trim(),
-      });
-    }
-
-    if (next) pending.set(row.id, next);
+    const r = planRowRepairs(target, row);
+    repairs.push(...r.repairs);
+    unrepairable.push(...r.unrepairable);
+    if (r.cells) pending.set(row.id, r.cells);
   }
 
   return { repairs, unrepairable, pending };
@@ -215,31 +231,47 @@ async function main() {
     totalBooleanColumnsSkipped += aiColumns.length - target.length;
     if (target.length === 0) continue;
 
-    // Paginate. PostgREST caps a single response at 1000 rows, and a silent
-    // partial scan is worse than no scan: the summary would read like a
-    // complete repair while every row past the cap stayed broken.
-    const rows: RowInput[] = [];
-    for (let start = 0; ; start += 1000) {
-      const { data, error } = await client
+    // Keyset-paginated, and each page is planned and dropped rather than
+    // accumulated. Offset paging would skip exactly one row per boundary
+    // whenever a row is deleted mid-scan — the silent partial scan this loop
+    // exists to prevent — and holding every row would grow memory with the
+    // table, including its pack_raw blobs, on precisely the tables that need
+    // paging in the first place.
+    const repairs: Repair[] = [];
+    const unrepairable: Unrepairable[] = [];
+    const pending = new Map<string, Record<string, ResearchCell>>();
+    let scanned = 0;
+    let lastId: string | null = null;
+    for (;;) {
+      let q = client
         .from("research_rows")
         .select("id, company_name, cells, pack_raw")
         .eq("table_id", table.id as string)
         .order("id", { ascending: true })
-        .range(start, start + 999);
+        .limit(1000);
+      if (lastId) q = q.gt("id", lastId);
+      const { data, error } = await q;
       if (error) {
         throw new Error(`Failed to read rows for ${table.slug}: ${error.message}`);
       }
-      rows.push(...((data ?? []) as RowInput[]));
-      if (!data || data.length < 1000) break;
+      const page = (data ?? []) as RowInput[];
+      if (page.length === 0) break;
+      scanned += page.length;
+      for (const row of page) {
+        const r = planRowRepairs(target, row);
+        repairs.push(...r.repairs);
+        unrepairable.push(...r.unrepairable);
+        if (r.cells) pending.set(row.id, r.cells);
+      }
+      if (page.length < 1000) break;
+      lastId = page[page.length - 1].id;
     }
-
-    const { repairs, unrepairable, pending } = planRepairs(columns, rows);
 
     if (repairs.length === 0 && unrepairable.length === 0) continue;
 
     console.log(`── ${table.name} (${table.slug}) ──`);
     console.log(
-      `   ${repairs.length} cell(s) repairable across ${pending.size} row(s), ${unrepairable.length} not`,
+      `   scanned ${scanned} row(s); ${repairs.length} cell(s) repairable across ${pending.size} row(s), ${unrepairable.length} not`,
     );
     for (const r of repairs.slice(0, 12)) {
       console.log(
@@ -276,45 +308,72 @@ async function main() {
         console.log(`   snapshot ${snapshotId}`);
       }
       let written = 0;
-      for (const [rowId, repairedCells] of pending) {
-        // Re-read immediately before writing and merge onto what is there
-        // now. The scan above may be minutes old by the time we get here, and
-        // anything edited in between — a manual fix, another column's
-        // enrichment through setCell — must survive this write.
-        const { data: fresh, error: readError } = await client
-          .from("research_rows")
-          .select("cells")
-          .eq("id", rowId)
-          .maybeSingle();
-        if (readError) {
-          throw new Error(`Failed to re-read row ${rowId}: ${readError.message}`);
-        }
-        if (!fresh) continue; // deleted since the scan
-        const freshCells =
-          (fresh.cells as Record<string, ResearchCell> | null) ?? {};
+      let skippedAlreadyFixed = 0;
+      let conflicted = 0;
+      for (const rowId of pending.keys()) {
+        // Re-read, recompute and write under an optimistic lock, retrying on
+        // conflict. Re-reading alone only narrows the window where a
+        // concurrent setCell gets clobbered; guarding the update on the
+        // updated_at we observed closes it, because any write that lands in
+        // between moves that timestamp and our update then matches no row.
+        let outcome: "written" | "skipped" | "conflict" = "conflict";
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const { data: fresh, error: readError } = await client
+            .from("research_rows")
+            .select("id, company_name, cells, pack_raw, updated_at")
+            .eq("id", rowId)
+            .maybeSingle();
+          if (readError) {
+            throw new Error(`Failed to re-read row ${rowId}: ${readError.message}`);
+          }
+          if (!fresh) {
+            outcome = "skipped"; // deleted since the scan
+            break;
+          }
 
-        const merged = { ...freshCells };
-        let stillNeeded = 0;
-        for (const [key, repaired] of Object.entries(repairedCells)) {
-          const current = freshCells[key];
-          // Someone already fixed this cell, by hand or by re-running the
-          // column. Their value wins over our reconstruction.
-          if (!current || typeof current.value !== "boolean") continue;
-          merged[key] = { ...current, value: repaired.value };
-          stillNeeded += 1;
-        }
-        if (stillNeeded === 0) continue;
+          // Recompute from the row as it is now rather than replaying the
+          // scan-time answer: whatever is in pack_raw today is the truth we
+          // are copying from.
+          const replan = planRowRepairs(target, fresh as RowInput);
+          if (!replan.cells) {
+            outcome = "skipped"; // already fixed, by hand or by a re-run
+            break;
+          }
+          const merged = {
+            ...((fresh.cells as Record<string, ResearchCell> | null) ?? {}),
+            ...replan.cells,
+          };
 
-        const { error } = await client
-          .from("research_rows")
-          .update({ cells: merged, updated_at: new Date().toISOString() })
-          .eq("id", rowId);
-        if (error) {
-          throw new Error(`Failed to write row ${rowId}: ${error.message}`);
+          const { data: updated, error } = await client
+            .from("research_rows")
+            .update({ cells: merged, updated_at: new Date().toISOString() })
+            .eq("id", rowId)
+            .eq("updated_at", fresh.updated_at as string)
+            .select("id");
+          if (error) {
+            throw new Error(`Failed to write row ${rowId}: ${error.message}`);
+          }
+          if (updated && updated.length > 0) {
+            outcome = "written";
+            break;
+          }
+          // Someone wrote first. Loop and rebuild on their version.
         }
-        written += 1;
+        if (outcome === "written") written += 1;
+        else if (outcome === "skipped") skippedAlreadyFixed += 1;
+        else conflicted += 1;
       }
       console.log(`   wrote ${written} row(s)`);
+      if (skippedAlreadyFixed > 0) {
+        console.log(
+          `   skipped ${skippedAlreadyFixed} row(s) already fixed or deleted since the scan`,
+        );
+      }
+      if (conflicted > 0) {
+        console.log(
+          `   WARNING: ${conflicted} row(s) lost the write race 4x and were left alone — re-run to pick them up`,
+        );
+      }
     }
     console.log();
 
