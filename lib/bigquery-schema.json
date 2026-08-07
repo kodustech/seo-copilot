@@ -1706,6 +1706,49 @@
         "suggestion_embedded.organization_id = organizations.uuid"
       ]
     },
+    "suggestions_mv": {
+      "name": "kody-408918.kodus_mongo.suggestions_mv",
+      "description": "View materializada de sugestões, uma linha por sugestão. Fonte da taxa de adoção: diz se a sugestão chegou ao dev e o que ele fez com ela.",
+      "columns": [
+        {
+          "name": "organizationId",
+          "type": "STRING",
+          "description": "ID da organização"
+        },
+        {
+          "name": "suggestionId",
+          "type": "STRING",
+          "description": "Identificador único da sugestão"
+        },
+        {
+          "name": "suggestionDeliveryStatus",
+          "type": "STRING",
+          "description": "Se a sugestão foi entregue ao dev ou descartada antes disso"
+        },
+        {
+          "name": "suggestionImplementationStatus",
+          "type": "STRING",
+          "description": "O que o dev fez com a sugestão"
+        },
+        {
+          "name": "suggestionCreatedAt",
+          "type": "STRING",
+          "description": "Data de criação da sugestão"
+        }
+      ],
+      "enums": {
+        "suggestionDeliveryStatus": ["sent", "not-sent", "failed", "failed-lines-mismatch"],
+        "suggestionImplementationStatus": ["implemented", "partially_implemented", "not_implemented"]
+      },
+      "relations": [
+        "suggestions_mv.organizationId = organizations.uuid"
+      ],
+      "notes": [
+        "Datas são STRING em formato ISO 8601 — use SAFE_CAST(suggestionCreatedAt AS TIMESTAMP).",
+        "Filtre suggestionDeliveryStatus = 'sent' nos dois lados de qualquer taxa de adoção: ~28% das sugestões são descartadas antes da entrega e nunca estiveram na frente de um dev, então incluí-las mede a nossa filtragem e não a adoção deles (17,4% viram 12,3%).",
+        "'partially_implemented' costuma superar 'implemented'. Some os dois para 'aplicadas'; use só 'implemented' quando a copy disser 'implementadas'."
+      ]
+    },
     "team_automations": {
       "name": "kody-408918.kodus_postgres.team_automations",
       "description": "Relaciona automações com times. Define quais automações estão habilitadas para cada time.",

@@ -24,6 +24,24 @@ export type CollectedOrg = OrgFacts & {
   derivedDomain: string | null;
   /** Up to 5 member emails (corporate first) for CRM contact creation. */
   contacts: OrgContact[];
+  /** Distinct PRs with at least one delivered review in the last 30d.
+   *
+   *  Deliberately not `reviews30d`: that counts successful executions, and a PR
+   *  re-reviewed on every push produces several. Copy that says "Kody reviewed
+   *  N pull requests" must not quote a count of runs.
+   *
+   *  Lives here rather than on OrgFacts because the classifier does not tier on
+   *  it — these four are collected for copy, not for the playbook. */
+  prsReviewed30d: number;
+  /** Suggestions actually delivered (deliveryStatus = 'sent') in the last 30d.
+   *  The ~28% discarded before delivery were never in front of a developer, so
+   *  counting them would measure our filtering rather than their adoption —
+   *  same rule as lib/crm-signals.ts. */
+  suggestions30d: number;
+  suggestionsImplemented30d: number;
+  /** Kept apart from implemented on purpose: partial routinely outnumbers full,
+   *  and a caller that wants the stricter number should not have to re-query. */
+  suggestionsPartial30d: number;
 };
 
 function asIso(v: unknown): string | null {
@@ -117,10 +135,39 @@ export async function collectOrgFacts(): Promise<CollectedOrg[]> {
              MAX(IF(ae.status = 'success', ae.createdAt, NULL)) AS last_review_at,
              COUNTIF(ae.status = 'skipped'
                      AND ae.createdAt >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 30 DAY)) AS skips_30d,
-             MAX(IF(ae.status = 'skipped', ae.createdAt, NULL)) AS last_skip_at
+             MAX(IF(ae.status = 'skipped', ae.createdAt, NULL)) AS last_skip_at,
+             -- Distinct PRs, not executions: the same PR is re-reviewed on every
+             -- push, so reviews_30d runs several times ahead of "PRs reviewed".
+             -- The key is repositoryId+number because pullRequestNumber alone
+             -- repeats across repos. Rows missing either side collapse to NULL
+             -- and drop out of COUNT(DISTINCT) — an execution we cannot pin to a
+             -- PR should not become one, and FORMAT() would have bucketed them
+             -- all under the literal string "NULL" instead.
+             COUNT(DISTINCT IF(
+               ae.status = 'success'
+                 AND ae.createdAt >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 30 DAY)
+                 AND ae.repositoryId IS NOT NULL
+                 AND ae.pullRequestNumber IS NOT NULL,
+               CONCAT(ae.repositoryId, '#', CAST(ae.pullRequestNumber AS STRING)),
+               NULL
+             )) AS prs_reviewed_30d
       FROM \`kody-408918.kodus_postgres.automation_execution\` ae
       JOIN \`kody-408918.kodus_postgres.team_automations\` ta ON ae.team_automation_id = ta.uuid
       JOIN \`kody-408918.kodus_postgres.teams\` t ON ta.teamUuid = t.uuid
+      GROUP BY 1
+    ),
+    suggestions AS (
+      -- deliveryStatus = 'sent' gates every one of these, numerator and
+      -- denominator alike: a suggestion the product discarded before delivery
+      -- was never in front of a developer, so counting it measures our
+      -- filtering, not their adoption (org-wide it drags 17.4% down to 12.3%).
+      SELECT s.organizationId AS org_id,
+             COUNT(*) AS suggestions_30d,
+             COUNTIF(s.suggestionImplementationStatus = 'implemented') AS suggestions_implemented_30d,
+             COUNTIF(s.suggestionImplementationStatus = 'partially_implemented') AS suggestions_partial_30d
+      FROM \`kody-408918.kodus_mongo.suggestions_mv\` s
+      WHERE s.suggestionDeliveryStatus = 'sent'
+        AND SAFE_CAST(s.suggestionCreatedAt AS TIMESTAMP) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
       GROUP BY 1
     ),
     pr_authors AS (
@@ -189,7 +236,11 @@ export async function collectOrgFacts(): Promise<CollectedOrg[]> {
       top_skips.top_skip_reason AS top_skip_reason,
       o.code_host_member_count AS code_host_member_count,
       o.code_host_member_count_updated_at AS code_host_member_count_at,
-      pr_authors.pr_author_count AS pr_author_count
+      pr_authors.pr_author_count AS pr_author_count,
+      COALESCE(execs.prs_reviewed_30d, 0) AS prs_reviewed_30d,
+      COALESCE(suggestions.suggestions_30d, 0) AS suggestions_30d,
+      COALESCE(suggestions.suggestions_implemented_30d, 0) AS suggestions_implemented_30d,
+      COALESCE(suggestions.suggestions_partial_30d, 0) AS suggestions_partial_30d
     FROM \`kody-408918.kodus_postgres.organizations\` o
     LEFT JOIN latest_lic lic ON lic.organizationId = o.uuid
     LEFT JOIN git ON git.organization_id = o.uuid
@@ -197,6 +248,7 @@ export async function collectOrgFacts(): Promise<CollectedOrg[]> {
     LEFT JOIN execs ON execs.org_id = o.uuid
     LEFT JOIN top_skips ON top_skips.org_id = o.uuid
     LEFT JOIN pr_authors ON pr_authors.org_id = o.uuid
+    LEFT JOIN suggestions ON suggestions.org_id = o.uuid
     LIMIT ${MAX_ORGS}
   `;
 
@@ -257,6 +309,10 @@ export async function collectOrgFacts(): Promise<CollectedOrg[]> {
       codeHostMemberCount: asNumberOrNull(r.code_host_member_count),
       codeHostMemberCountAt: asIso(r.code_host_member_count_at),
       prAuthorCount: asNumberOrNull(r.pr_author_count),
+      prsReviewed30d: asNumber(r.prs_reviewed_30d),
+      suggestions30d: asNumber(r.suggestions_30d),
+      suggestionsImplemented30d: asNumber(r.suggestions_implemented_30d),
+      suggestionsPartial30d: asNumber(r.suggestions_partial_30d),
       derivedDomain,
       contacts: contacts.slice(0, 5),
     };
