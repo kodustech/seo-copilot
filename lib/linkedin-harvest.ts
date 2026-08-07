@@ -28,6 +28,7 @@ import {
   listUnipilePostComments,
   normalizeLinkedInIdentity,
   unipileHarvestBudget,
+  UnipileHarvestLimitError,
   UnipileHttpError,
   type UnipilePostComment,
 } from "@/lib/unipile";
@@ -45,6 +46,15 @@ export type DiscoveredPost = {
   publishedDate: string | null;
 };
 
+/**
+ * Ceiling on topic queries per call.
+ *
+ * Every query is a paid Exa search, and the default sweep only ever uses 13.
+ * Enforced here rather than only in the tool schema so no caller — MCP, cron
+ * or future code — can turn one invocation into hundreds of billed searches.
+ */
+export const MAX_QUERIES = 10;
+
 export async function findLinkedInPosts(opts: {
   queries?: string[];
   daysBack?: number;
@@ -59,9 +69,16 @@ export async function findLinkedInPosts(opts: {
       "EXA_API_KEY is not configured. Add the environment variable to search LinkedIn posts.",
     );
   }
+  const queries = opts.queries?.map((q) => q.trim()).filter(Boolean);
+  if (queries && queries.length > MAX_QUERIES) {
+    throw new Error(
+      `Too many queries: ${queries.length}. Each one is a paid Exa search — pass at most ${MAX_QUERIES}.`,
+    );
+  }
+
   const maxResults = Math.max(1, Math.min(100, opts.maxResults ?? 25));
   const raw = await collectLinkedIn({
-    queries: opts.queries,
+    queries,
     daysBack: opts.daysBack,
     // Ask Exa for more than we need: /pulse articles and activity-less URLs
     // get filtered out below, so the yield is always under the request.
@@ -127,7 +144,13 @@ export function canonicalProfileUrl(
   const fromUrl = raw.match(/linkedin\.com\/(?:in|pub)\/(ACoAA[^/?#]*)/i);
   if (fromUrl) return `https://www.linkedin.com/in/${fromUrl[1]}`;
   const slug = normalizeLinkedInIdentity(raw);
-  if (!slug) return null;
+  // normalizeLinkedInIdentity falls back to splitting the raw string on
+  // [/?#], so anything that is not an /in/ or /pub/ URL — a company page, a
+  // non-LinkedIn link — comes back as the scheme, "https:". Building a key
+  // from that gave every such commenter the SAME profile URL and merged
+  // distinct people into one row. Only a plausible vanity slug is an
+  // identity; anything else means we could not identify this person.
+  if (!slug || !/^[\p{L}\p{N}][\p{L}\p{N}_-]{2,}$/u.test(slug)) return null;
   return `https://www.linkedin.com/in/${slug}`;
 }
 
@@ -288,90 +311,111 @@ export async function saveCommenters(
     };
   }
 
-  for (const { person, triggers } of byProfile.values()) {
-    const { data: existing, error: readError } = await client
+  const profileUrls = [...byProfile.keys()];
+  if (profileUrls.length === 0) {
+    return { peopleUpserted: 0, peopleNew: 0, triggersAdded: 0 };
+  }
+
+  // One read for everyone, not one per person. At the permitted maxima
+  // (25 posts x 200 commenters) the per-person round trip was thousands of
+  // sequential calls — long enough to time out the function that made them.
+  const existingByProfile = new Map<string, Record<string, unknown>>();
+  for (let i = 0; i < profileUrls.length; i += 200) {
+    const chunk = profileUrls.slice(i, i + 200);
+    const { data, error } = await client
       .from("linkedin_commenters")
-      .select("id")
+      .select(
+        "id, profile_url, headline, network_distance, provider_id, public_identifier, profile_picture_url",
+      )
       .eq("research_table_id", researchTableId)
-      .eq("profile_url", person.profileUrl!)
-      .maybeSingle();
-    if (readError) {
-      throw new Error(`Failed to read linkedin_commenters: ${readError.message}`);
+      .in("profile_url", chunk);
+    if (error) {
+      throw new Error(`Failed to read linkedin_commenters: ${error.message}`);
     }
-
-    let commenterId: string;
-    if (existing?.id) {
-      commenterId = existing.id as string;
-      const { error } = await client
-        .from("linkedin_commenters")
-        .update({
-          name: person.name,
-          // Never overwrite a known value with a null from a thinner payload.
-          ...(person.headline ? { headline: person.headline } : {}),
-          ...(person.networkDistance
-            ? { network_distance: person.networkDistance }
-            : {}),
-          ...(person.providerId ? { provider_id: person.providerId } : {}),
-          ...(person.publicIdentifier
-            ? { public_identifier: person.publicIdentifier }
-            : {}),
-          ...(person.profilePictureUrl
-            ? { profile_picture_url: person.profilePictureUrl }
-            : {}),
-          last_seen_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", commenterId);
-      if (error) {
-        throw new Error(`Failed to update commenter: ${error.message}`);
-      }
-    } else {
-      const { data, error } = await client
-        .from("linkedin_commenters")
-        .insert({
-          research_table_id: researchTableId,
-          profile_url: person.profileUrl,
-          name: person.name,
-          headline: person.headline,
-          network_distance: person.networkDistance,
-          provider_id: person.providerId,
-          public_identifier: person.publicIdentifier,
-          profile_picture_url: person.profilePictureUrl,
-        })
-        .select("id")
-        .single();
-      if (error) {
-        throw new Error(`Failed to insert commenter: ${error.message}`);
-      }
-      commenterId = data.id as string;
-      peopleNew += 1;
+    for (const row of data ?? []) {
+      existingByProfile.set(row.profile_url as string, row);
     }
-    peopleUpserted += 1;
+  }
 
-    // Triggers are append-only and keyed on (commenter, comment) so a re-run
-    // over the same post is a no-op rather than a pile of duplicates.
+  const now = new Date().toISOString();
+  // Upsert rather than insert: two harvests running at once would both read
+  // "no such row" and both insert, and the loser of that race got a unique
+  // violation that failed the whole harvest. Conflict now resolves instead
+  // of throwing.
+  const personRows = [...byProfile.values()].map(({ person }) => {
+    const prior = existingByProfile.get(person.profileUrl!);
+    // Coalesce against what is already stored so a thinner sighting cannot
+    // blank a headline or a network distance we already knew.
+    const keep = (fresh: string | null, column: string) =>
+      fresh ?? ((prior?.[column] as string | null) ?? null);
+    return {
+      research_table_id: researchTableId,
+      profile_url: person.profileUrl,
+      name: person.name,
+      headline: keep(person.headline, "headline"),
+      network_distance: keep(person.networkDistance, "network_distance"),
+      provider_id: keep(person.providerId, "provider_id"),
+      public_identifier: keep(person.publicIdentifier, "public_identifier"),
+      profile_picture_url: keep(person.profilePictureUrl, "profile_picture_url"),
+      last_seen_at: now,
+      updated_at: now,
+    };
+  });
+
+  const idByProfile = new Map<string, string>();
+  for (let i = 0; i < personRows.length; i += 200) {
+    const chunk = personRows.slice(i, i + 200);
+    const { data, error } = await client
+      .from("linkedin_commenters")
+      .upsert(chunk, { onConflict: "research_table_id,profile_url" })
+      .select("id, profile_url");
+    if (error) {
+      throw new Error(`Failed to upsert commenters: ${error.message}`);
+    }
+    for (const row of data ?? []) {
+      idByProfile.set(row.profile_url as string, row.id as string);
+    }
+  }
+  peopleUpserted = idByProfile.size;
+  peopleNew = profileUrls.filter((u) => !existingByProfile.has(u)).length;
+
+  // Triggers are append-only and keyed on (commenter, comment) so a re-run
+  // over the same post is a no-op rather than a pile of duplicates.
+  const triggerRows: Array<Record<string, unknown>> = [];
+  for (const [profileUrl, { triggers }] of byProfile) {
+    const commenterId = idByProfile.get(profileUrl);
+    if (!commenterId) continue;
     const byCommentId = new Map<string, Commenter>();
     for (const t of triggers) byCommentId.set(t.commentId, t);
-    const rows = [...byCommentId.values()].map((t) => ({
-      commenter_id: commenterId,
-      comment_id: t.commentId,
-      post_url: t.postUrl,
-      activity_id: t.activityId,
-      post_social_id: t.postSocialId,
-      comment_text: t.commentText,
-      commented_at: toIsoOrNull(t.commentedAt),
-      is_reply: t.isReply,
-      reaction_count: t.reactionCount,
-      reply_count: t.replyCount,
-    }));
-    const { data: inserted, error: triggerError } = await client
-      .from("linkedin_commenter_triggers")
-      .upsert(rows, { onConflict: "commenter_id,comment_id", ignoreDuplicates: true })
-      .select("id");
-    if (triggerError) {
-      throw new Error(`Failed to insert trigger: ${triggerError.message}`);
+    for (const t of byCommentId.values()) {
+      triggerRows.push({
+        commenter_id: commenterId,
+        comment_id: t.commentId,
+        post_url: t.postUrl,
+        activity_id: t.activityId,
+        post_social_id: t.postSocialId,
+        comment_text: t.commentText,
+        commented_at: toIsoOrNull(t.commentedAt),
+        is_reply: t.isReply,
+        reaction_count: t.reactionCount,
+        reply_count: t.replyCount,
+      });
     }
-    triggersAdded += inserted?.length ?? 0;
+  }
+
+  for (let i = 0; i < triggerRows.length; i += 500) {
+    const chunk = triggerRows.slice(i, i + 500);
+    const { data, error } = await client
+      .from("linkedin_commenter_triggers")
+      .upsert(chunk, {
+        onConflict: "commenter_id,comment_id",
+        ignoreDuplicates: true,
+      })
+      .select("id");
+    if (error) {
+      throw new Error(`Failed to insert triggers: ${error.message}`);
+    }
+    triggersAdded += data?.length ?? 0;
   }
 
   return { peopleUpserted, peopleNew, triggersAdded };
@@ -452,10 +496,12 @@ export async function harvestCommenters(
             ? err.message
             : String(err);
       skipped.push({ url: post.url, reason });
-      // A budget or auth failure will hit every remaining post identically.
+      // A budget or auth failure will hit every remaining post identically,
+      // so carrying on just fills `skipped` with the same sentence N times.
       if (
-        err instanceof UnipileHttpError &&
-        (err.status === 401 || err.status === 403 || err.status === 429)
+        err instanceof UnipileHarvestLimitError ||
+        (err instanceof UnipileHttpError &&
+          (err.status === 401 || err.status === 403 || err.status === 429))
       ) {
         break;
       }

@@ -6427,9 +6427,10 @@ export const linkedinFindPosts = tool({
   inputSchema: z.object({
     queries: z
       .array(z.string())
+      .max(10)
       .optional()
       .describe(
-        "Topic queries to search LinkedIn for, e.g. ['AI code review', 'PR review bottleneck']. Omit to use the standard Kodus monitoring topics.",
+        "Topic queries to search LinkedIn for, e.g. ['AI code review', 'PR review bottleneck']. Each one is a paid Exa search, so at most 10. Omit to use the standard Kodus monitoring topics.",
       ),
     daysBack: z
       .number()
@@ -6573,9 +6574,10 @@ export const linkedinHarvestCommenters = tool({
   inputSchema: z.object({
     queries: z
       .array(z.string())
+      .max(10)
       .optional()
       .describe(
-        "Topic queries, e.g. ['AI code review', 'code review bottleneck']. Omit to use the standard Kodus monitoring topics.",
+        "Topic queries, e.g. ['AI code review', 'code review bottleneck']. Each one is a paid Exa search, so at most 10. Omit to use the standard Kodus monitoring topics.",
       ),
     daysBack: z
       .number()

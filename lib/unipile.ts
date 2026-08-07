@@ -57,6 +57,18 @@ export class UnipileHttpError extends Error {
 }
 
 /**
+ * The harvest rate limit refused the call. Typed because callers need to tell
+ * it apart from a per-post failure: once the window is full every remaining
+ * post fails identically, so the right move is to stop, not to keep asking.
+ */
+export class UnipileHarvestLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnipileHarvestLimitError";
+  }
+}
+
+/**
  * Every call against the connected LinkedIn account, on one line. That
  * account is the sender identity for the whole founder-voice motion, so the
  * question "how much did we hit LinkedIn today, and with what" has to be
@@ -436,6 +448,12 @@ function harvestWindowMs(): number {
   return (Number.isFinite(raw) && raw > 0 ? raw : 60) * 60_000;
 }
 
+/** Hard ceiling on a single harvest request, so nothing can hang the queue. */
+function harvestTimeoutMs(): number {
+  const raw = Number(process.env.UNIPILE_HARVEST_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 30_000;
+}
+
 /**
  * Serialize harvest reads and space them out. A promise chain rather than a
  * token bucket: concurrent callers queue behind each other instead of all
@@ -472,7 +490,7 @@ async function harvestFetch<T>(path: string): Promise<T> {
   // running at once cannot talk each other out of the limit, which is the
   // whole point of having one.
   if (harvestCalls.length >= max) {
-    throw new Error(
+    throw new UnipileHarvestLimitError(
       `Unipile harvest limit reached (${max} calls in ${harvestWindowMs() / 60_000}min). Raise UNIPILE_HARVEST_MAX_CALLS_PER_WINDOW or wait.`,
     );
   }
@@ -486,7 +504,13 @@ async function harvestFetch<T>(path: string): Promise<T> {
   });
   await previous;
   try {
-    return await unipileFetch<T>(path);
+    // Every harvest call is bounded. The gate only advances once this settles,
+    // so one request that hangs forever would wedge every later call behind
+    // it — the queue that protects the account would become the thing that
+    // stops it working.
+    return await unipileFetch<T>(path, {
+      signal: AbortSignal.timeout(harvestTimeoutMs()),
+    });
   } finally {
     // Hold the next caller off for the interval even when this one threw —
     // a 429 is exactly when backing off matters most.
