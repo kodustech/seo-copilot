@@ -531,6 +531,7 @@ export async function addRows(
   // actually in the list. Clearing the whole batch up front would drop the
   // protection for companies a mid-batch failure never got to.
   const landed: Array<{ companyName: string; domain: string | null }> = [];
+  let primaryError: unknown = null;
 
   try {
     for (const r of rows) {
@@ -604,11 +605,20 @@ export async function addRows(
       landed.push({ companyName, domain });
       out.push(mapRow(data as DataRow));
     }
+  } catch (err) {
+    primaryError = err;
   } finally {
+    // An await that throws inside `finally` replaces the pending exception, so
+    // a hiccup clearing exclusions would hide the insert error that caused it.
     if (!respectExclusions && landed.length > 0) {
-      await removeExclusions(client, tableId, landed);
+      try {
+        await removeExclusions(client, tableId, landed);
+      } catch (cleanupErr) {
+        primaryError ??= cleanupErr;
+      }
     }
   }
+  if (primaryError) throw primaryError;
 
   return { added, skipped, excluded, rows: out };
 }

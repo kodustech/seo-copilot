@@ -39,6 +39,16 @@ export function normalizeCompanyKey(name: string): string {
     .replace(/[^a-z0-9]+/g, "");
 }
 
+/**
+ * Key a domain's first label would produce: "acme.com" → "acme". A discovery
+ * row often has no domain, so its exclusion is keyed on the bare company name
+ * ("Acme" → "acme"); re-adding the same company as a pasted domain would
+ * otherwise compute "acmecom" and miss it.
+ */
+function domainRootKey(domain: string): string {
+  return normalizeCompanyKey(domain.split(".")[0] ?? "");
+}
+
 function mapExclusion(r: Record<string, unknown>): ResearchExclusion {
   return {
     id: r.id as string,
@@ -73,7 +83,8 @@ export async function addExclusions(
   tableId: string,
   items: ExclusionInput[],
 ): Promise<number> {
-  const seen = new Set<string>();
+  const seenKeys = new Set<string>();
+  const seenDomains = new Set<string>();
   const rows = items
     .map((item) => {
       const companyName = item.companyName?.trim() || "";
@@ -90,12 +101,16 @@ export async function addExclusions(
       };
     })
     .filter((r): r is NonNullable<typeof r> => r !== null)
-    // Both unique indexes are per (table, key), so an in-batch repeat would
-    // make the whole insert fail on itself.
+    // Drop in-batch repeats at the same granularity as the two unique indexes
+    // — company_key alone, and domain alone. A composite key would let two
+    // rows sharing only one of them through, and the whole insert would then
+    // fail on itself and fall back to the slow path. Deleting several rows of
+    // the same company at once is the normal case, so that matters.
     .filter((r) => {
-      const dedupeKey = `${r.company_key}|${r.domain ?? ""}`;
-      if (seen.has(dedupeKey)) return false;
-      seen.add(dedupeKey);
+      if (seenKeys.has(r.company_key)) return false;
+      if (r.domain && seenDomains.has(r.domain)) return false;
+      seenKeys.add(r.company_key);
+      if (r.domain) seenDomains.add(r.domain);
       return true;
     });
   if (rows.length === 0) return 0;
@@ -153,6 +168,14 @@ export async function removeExclusions(
     if (domain) domains.add(domain);
     const key = normalizeCompanyKey(item.companyName?.trim() || domain || "");
     if (key) keys.add(key);
+    // "acme.com" pasted with no company name also lifts the exclusion of the
+    // domainless "Acme" row it stands for. Only when the name adds nothing
+    // beyond the domain — a caller that passed a real name is taken at its
+    // word, since lifting the wrong exclusion silently re-opens the import.
+    if (domain && key === normalizeCompanyKey(domain)) {
+      const rootKey = domainRootKey(domain);
+      if (rootKey) keys.add(rootKey);
+    }
   }
   if (keys.size === 0 && domains.size === 0) return 0;
 
