@@ -5672,9 +5672,28 @@ export const sequencePreview = tool({
       };
       let person_source = "sample_pt";
 
-      if (enrollment_id && sequence_id) {
-        const people = await listEnrollments(client, sequence_id);
-        const e = people.find((p) => p.id === enrollment_id);
+      // enrollment_id used to require sequence_id alongside it, so previewing
+      // draft steps for a real person — steps + enrollment_id, no sequence yet
+      // — silently fell through to the sample contact below. The preview then
+      // showed every product token unfilled and read as proof the tokens were
+      // broken, when nothing had looked the enrollment up at all.
+      if (enrollment_id) {
+        let e = null as Awaited<ReturnType<typeof listEnrollments>>[number] | null;
+        if (sequence_id) {
+          const people = await listEnrollments(client, sequence_id);
+          e = people.find((p) => p.id === enrollment_id) ?? null;
+        }
+        if (!e) {
+          const { data: row } = await client
+            .from("outreach_enrollments")
+            .select("*")
+            .eq("id", enrollment_id)
+            .maybeSingle();
+          if (row) {
+            const { mapEnrollment } = await import("@/lib/outreach/sequences");
+            e = mapEnrollment(row as Record<string, unknown>);
+          }
+        }
         if (e) {
           person = {
             companyName: e.companyName,

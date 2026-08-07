@@ -69,7 +69,7 @@ function mapStep(r: Record<string, unknown>): OutreachSequenceStep {
   };
 }
 
-function mapEnrollment(r: Record<string, unknown>): OutreachEnrollment {
+export function mapEnrollment(r: Record<string, unknown>): OutreachEnrollment {
   return {
     id: r.id as string,
     sequenceId: r.sequence_id as string,

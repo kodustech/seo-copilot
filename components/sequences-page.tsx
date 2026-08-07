@@ -352,6 +352,10 @@ type EnrollmentRow = {
   lastError: string | null;
   source: string;
   createdAt: string;
+  /** Frozen product-signal values behind the product tokens. The API has
+   *  always sent these; the type omitted them, so the preview could not
+   *  reach them. */
+  templateVars?: Record<string, string> | null;
 };
 
 type SequenceStepProgress = {
@@ -2702,6 +2706,13 @@ export function SequencesPage() {
                                 contactEmail: e.contactEmail,
                                 contactLinkedin: e.contactLinkedin,
                                 contactRole: e.contactRole,
+                                // Every product token — signup date, tier,
+                                // dev_count — is backed by this. Without it the
+                                // preview showed a real person's name beside
+                                // raw {{signup_date}}, which reads as "the
+                                // token is broken" rather than "the preview
+                                // dropped it".
+                                templateVars: e.templateVars,
                               }
                             : {
                                 companyName: "Acme QA",
