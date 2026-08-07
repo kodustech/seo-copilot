@@ -1497,13 +1497,21 @@ export async function refreshCrmSignalVars(
           // it when a refresh opens a new hole. A refresh can now remove a
           // token (skip_reason on an account that stopped skipping), and
           // leaving the old error in place meant the queue looked sendable
-          // until the send guard caught it at dispatch. Say it where someone
-          // can act on it.
+          // until the send guard caught it at dispatch.
+          //
+          // But only where there is nothing better to say. A task can already
+          // be parked on a blocker the refresh knows nothing about — "Unipile
+          // is not configured", "No LinkedIn account connected" — and those
+          // name a fix, where the token message would send someone to edit
+          // copy that is not the problem. The hole still stops the send at
+          // dispatch either way, so the more specific error wins.
           error:
             stillUnfilled.length > 0
-              ? `Unfilled variables: ${stillUnfilled
-                  .map((t) => `{{${t}}}`)
-                  .join(", ")} — edit the email or fix the account data before sending.`
+              ? task.error && !task.error.startsWith("Unfilled variables:")
+                ? task.error
+                : `Unfilled variables: ${stillUnfilled
+                    .map((t) => `{{${t}}}`)
+                    .join(", ")} — edit the email or fix the account data before sending.`
               : task.error?.startsWith("Unfilled variables:")
                 ? null
                 : task.error,
