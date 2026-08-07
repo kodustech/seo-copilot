@@ -21,7 +21,10 @@ export async function POST(req: Request) {
     // /accounts traffic against the rate-limited account.
     const status = String((body as { status?: string }).status ?? "");
     const accountId = (body as { account_id?: string }).account_id;
-    if (accountId && /success|created|connected|reconnect/i.test(status)) {
+    // Anchored: an unanchored alternation matches "disconnected" because it
+    // contains "connected", so a session dropping would have been read as a
+    // session arriving.
+    if (accountId && /^(success|created|connected|reconnect(ed)?)$/i.test(status)) {
       requestUnipileAccountsRefresh();
     }
   } catch (err) {

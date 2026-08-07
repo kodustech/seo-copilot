@@ -839,24 +839,40 @@ export function resetUnipileAccountsCache(): void {
   accountsCache = null;
 }
 
-let lastForcedRefreshAt = 0;
+// Two throttles, deliberately not one. Sharing a counter would let the public
+// notify endpoint consume the budget the identity retry depends on: a spammer
+// POSTing once per window — or even a legitimate connect notification — would
+// starve the retry that keeps the harvesting account out of its own prospect
+// list. An untrusted trigger must never be able to exhaust a trusted path.
+let lastPublicRefreshAt = 0;
+let lastIdentityRetryAt = 0;
 
 /**
- * Ask for a refresh, at most once per TTL window.
+ * Untrusted callers asking for a refresh, at most once per TTL window.
  *
- * Two callers need this rather than the hard reset: the public notify
- * endpoint, which anyone can POST to and could otherwise keep the shared
- * cache permanently cold — turning an unauthenticated request into unbounded
- * /accounts traffic against a rate-limited account — and the account-miss
- * path, where a permanently absent id would re-miss on every post and rebuild
- * the N+1 the cache exists to remove.
- *
- * Returns whether the cache was actually dropped.
+ * For the public notify endpoint, which anyone can POST to and could
+ * otherwise keep the shared cache permanently cold — turning an
+ * unauthenticated request into unbounded /accounts traffic against a
+ * rate-limited account.
  */
 export function requestUnipileAccountsRefresh(): boolean {
   const now = Date.now();
-  if (now - lastForcedRefreshAt < ACCOUNTS_TTL_MS) return false;
-  lastForcedRefreshAt = now;
+  if (now - lastPublicRefreshAt < ACCOUNTS_TTL_MS) return false;
+  lastPublicRefreshAt = now;
+  accountsCache = null;
+  return true;
+}
+
+/**
+ * The identity path's own budget: a named account missing from the cache is
+ * most likely one connected inside the TTL, and re-reading once is what keeps
+ * self-exclusion working. Separate from the public counter so nothing
+ * external can spend it.
+ */
+function requestUnipileIdentityRetry(): boolean {
+  const now = Date.now();
+  if (now - lastIdentityRetryAt < ACCOUNTS_TTL_MS) return false;
+  lastIdentityRetryAt = now;
   accountsCache = null;
   return true;
 }
@@ -901,7 +917,7 @@ export async function linkedInAccountIdentity(
   // the cache TTL. Refetch once before giving up: silently returning no member
   // id would switch self-exclusion off, which is the one thing this function
   // exists to guarantee.
-  if (wanted && !match && requestUnipileAccountsRefresh()) {
+  if (wanted && !match && requestUnipileIdentityRetry()) {
     try {
       accounts = await cachedLinkedInAccounts();
       match = accounts.find((a) => a.id === wanted) ?? null;
