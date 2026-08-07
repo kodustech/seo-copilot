@@ -87,9 +87,17 @@ function packKey(prompt: string): string {
 /**
  * Whether a snapshot failure is the "one request carrying the whole table was
  * too big" kind — the only kind --no-snapshot is a legitimate answer to.
+ *
+ * Deliberately narrow, and biased toward saying no. Getting this wrong in the
+ * permissive direction tells an operator to drop their rollback path over an
+ * error that had nothing to do with size, so only unambiguous payload phrases
+ * count. Generic words like "exceeds", "heap" or "out of memory" show up in
+ * constraint violations and server-side OOMs too, and an ambiguous message
+ * falls through to "fix the cause and re-run with the snapshot on" — the
+ * branch that cannot cost anything.
  */
 export function looksLikeSizeLimit(message: string): boolean {
-  return /too large|entity too large|payload|body size|413|exceeds|out of memory|heap/i.test(
+  return /too large|entity too large|payload too|body size|request body.*(too|limit)|\b413\b/i.test(
     message,
   );
 }
