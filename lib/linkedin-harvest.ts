@@ -60,6 +60,15 @@ export async function findLinkedInPosts(opts: {
   daysBack?: number;
   maxResults?: number;
 }): Promise<DiscoveredPost[]> {
+  // Validate the input before complaining about configuration — a caller who
+  // passed 40 topics should be told that, not sent to check their API keys.
+  const queries = opts.queries?.map((q) => q.trim()).filter(Boolean);
+  if (queries && queries.length > MAX_QUERIES) {
+    throw new Error(
+      `Too many queries: ${queries.length}. Each one is a paid Exa search — pass at most ${MAX_QUERIES}.`,
+    );
+  }
+
   // collectLinkedIn is the shared monitoring sweep and swallows per-query
   // errors by design, so a missing key would come back as "no posts found"
   // — indistinguishable from a topic nobody is posting about. Check up front
@@ -67,12 +76,6 @@ export async function findLinkedInPosts(opts: {
   if (!process.env.EXA_API_KEY?.trim()) {
     throw new Error(
       "EXA_API_KEY is not configured. Add the environment variable to search LinkedIn posts.",
-    );
-  }
-  const queries = opts.queries?.map((q) => q.trim()).filter(Boolean);
-  if (queries && queries.length > MAX_QUERIES) {
-    throw new Error(
-      `Too many queries: ${queries.length}. Each one is a paid Exa search — pass at most ${MAX_QUERIES}.`,
     );
   }
 
