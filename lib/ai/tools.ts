@@ -6020,6 +6020,346 @@ export const sequenceListQueue = tool({
   },
 });
 
+/**
+ * Sending is outward-facing and has no undo, so both send tools preview by
+ * default and only fire when the caller passes dry_run: false. An ambiguous
+ * instruction mid-conversation should cost a preview, not a message in a
+ * prospect's inbox.
+ */
+const DRY_RUN_HELP =
+  "Preview only — returns exactly what would be sent, sends nothing. Default true. Pass false to actually send.";
+
+export const outreachSendQueuedTask = tool({
+  description:
+    "Send a queued outreach step for real, on either channel — email via Gmail, LinkedIn via Unipile. Goes through the same path the cron and the Today-queue button use: checked claim against double-send, unfilled-{{token}} guard, threading, daily cap, CRM timeline, reply-inbox linkage. Optionally replaces the copy for this one send without touching the step template. Previews by default; pass dry_run: false to send. Use sequenceListQueue first to pick a task_id.",
+  inputSchema: z.object({
+    task_id: z.string().describe("Task id from sequenceListQueue"),
+    subject: z
+      .string()
+      .optional()
+      .describe("Email only: replace the subject for this send"),
+    body: z
+      .string()
+      .optional()
+      .describe("Replace the body for this send (this task only)"),
+    dry_run: z.boolean().optional().describe(DRY_RUN_HELP),
+    user_email: z
+      .string()
+      .optional()
+      .describe("Who is sending, for the CRM timeline"),
+  }),
+  execute: async ({ task_id, subject, body, dry_run, user_email }) => {
+    try {
+      const client = getSupabaseServiceClient();
+
+      const { data: taskRow } = await client
+        .from("outreach_send_tasks")
+        .select(
+          "id, channel, status, scheduled_for, rendered_subject, rendered_body, enrollment_id, step_id, error",
+        )
+        .eq("id", task_id)
+        .maybeSingle();
+      if (!taskRow) {
+        return { success: false as const, message: "Task not found" };
+      }
+
+      const { data: enr } = await client
+        .from("outreach_enrollments")
+        .select("company_name, contact_name, contact_email, contact_linkedin, status")
+        .eq("id", taskRow.enrollment_id as string)
+        .maybeSingle();
+
+      const channel = taskRow.channel as string;
+      const finalSubject = subject ?? (taskRow.rendered_subject as string | null);
+      const finalBody = body ?? (taskRow.rendered_body as string | null);
+      const recipient =
+        channel === "linkedin"
+          ? (enr?.contact_linkedin as string | null)
+          : (enr?.contact_email as string | null);
+
+      // The preview is the whole safety story here — it must show the copy
+      // that would actually leave, edits included, not the stored template.
+      const preview = {
+        task_id,
+        channel,
+        task_status: taskRow.status,
+        enrollment_status: enr?.status ?? null,
+        to: recipient,
+        contact_name: (enr?.contact_name as string | null) ?? null,
+        company: (enr?.company_name as string | null) ?? null,
+        subject: finalSubject,
+        body: finalBody,
+        edited: Boolean(subject !== undefined || body !== undefined),
+        blocked_reason: (taskRow.error as string | null) ?? null,
+      };
+
+      // A preview that ends in "call again to send this" is a lie when the
+      // send path would refuse the task outright. Say so before the caller
+      // confirms, not after.
+      const refusal =
+        taskRow.status === "sent"
+          ? "already sent"
+          : taskRow.status !== "ready" && taskRow.status !== "scheduled"
+            ? `task is ${taskRow.status}`
+            : enr && enr.status !== "active"
+              ? `enrollment is ${enr.status}`
+              : null;
+
+      if (dry_run !== false) {
+        return {
+          success: true as const,
+          dry_run: true as const,
+          sent: false as const,
+          message: refusal
+            ? `Nothing sent — and a real send would be refused: ${refusal}.`
+            : "Nothing sent. Call again with dry_run: false to send this.",
+          would_send: !refusal,
+          refusal,
+          preview,
+        };
+      }
+
+      if (!recipient) {
+        return {
+          success: false as const,
+          message:
+            channel === "linkedin"
+              ? "This enrollment has no contact LinkedIn"
+              : "This enrollment has no contact email",
+          preview,
+        };
+      }
+
+      const { sendTaskNow } = await import("@/lib/outreach/sequences");
+      const result = await sendTaskNow(client, task_id, {
+        sentByEmail: user_email ?? null,
+        subject,
+        body,
+      });
+
+      return {
+        success: result.ok,
+        dry_run: false as const,
+        sent: result.ok,
+        status: result.status,
+        message: result.ok
+          ? `Sent on ${channel} to ${recipient}`
+          : (result.error ?? "Send failed"),
+        preview,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        sent: false as const,
+        message: error instanceof Error ? error.message : "Failed to send",
+      };
+    }
+  },
+});
+
+export const outreachSendLinkedInMessage = tool({
+  description:
+    "Send a one-off LinkedIn message or connection request through the connected Unipile account, outside any sequence. Replies in the existing conversation with that person when there is one, otherwise opens a new chat. Previews by default; pass dry_run: false to send. For a step that is already queued, use outreachSendQueuedTask instead — it records the send against the cadence, which this does not.",
+  inputSchema: z.object({
+    linkedin: z
+      .string()
+      .optional()
+      .describe(
+        "Profile URL, vanity slug, or ACoAA… member id. Omit only when passing chat_id.",
+      ),
+    chat_id: z
+      .string()
+      .optional()
+      .describe("Unipile chat id, to reply in a known conversation"),
+    text: z.string().describe("Message body (the note, for connect_note)"),
+    action: z
+      .enum(["message", "connect_note"])
+      .optional()
+      .describe(
+        "message = DM (default); connect_note = connection request with a note. A DM to a non-connection is often rejected by LinkedIn.",
+      ),
+    account_id: z
+      .string()
+      .optional()
+      .describe("Unipile account id; defaults to the first LinkedIn account"),
+    dry_run: z.boolean().optional().describe(DRY_RUN_HELP),
+  }),
+  execute: async ({ linkedin, chat_id, text, action, account_id, dry_run }) => {
+    try {
+      if (!text?.trim()) {
+        return { success: false as const, message: "text is empty" };
+      }
+      if (!linkedin?.trim() && !chat_id?.trim()) {
+        return {
+          success: false as const,
+          message: "Pass linkedin (profile URL or slug) or chat_id",
+        };
+      }
+
+      const {
+        isUnipileConfigured,
+        listLinkedInAccounts,
+        normalizeLinkedInIdentity,
+        isLinkedInProviderId,
+        getUnipileUserProfile,
+        findUnipileChatByAttendee,
+        sendUnipileChatMessage,
+        startUnipileChat,
+        sendLinkedInInvitation,
+      } = await import("@/lib/unipile");
+
+      if (!isUnipileConfigured()) {
+        return {
+          success: false as const,
+          message: "Unipile is not configured (UNIPILE_API_KEY / UNIPILE_DSN)",
+        };
+      }
+
+      let accountId = account_id?.trim() || null;
+      if (!accountId) {
+        const accounts = await listLinkedInAccounts();
+        if (!accounts.length) {
+          return {
+            success: false as const,
+            message: "No LinkedIn account connected in Unipile",
+          };
+        }
+        accountId = accounts[0].id;
+      }
+
+      const mode = action ?? "message";
+
+      // Resolve the recipient before the dry-run answer: "who would this go
+      // to" is the question the preview exists to answer, and a slug that
+      // resolves to nobody must surface now, not after the caller confirms.
+      let providerId: string | null = null;
+      let profileUrl: string | null = null;
+      let name: string | null = null;
+      if (linkedin?.trim()) {
+        const slug = normalizeLinkedInIdentity(linkedin);
+        if (!slug) {
+          return {
+            success: false as const,
+            message: `Unreadable LinkedIn identity: ${linkedin}`,
+          };
+        }
+        if (isLinkedInProviderId(slug)) {
+          providerId = slug;
+        } else {
+          const profile = await getUnipileUserProfile({
+            accountId,
+            identifier: slug,
+          });
+          providerId = profile?.providerId ?? null;
+          profileUrl = profile?.profileUrl ?? null;
+          name = [profile?.firstName, profile?.lastName]
+            .filter(Boolean)
+            .join(" ") || null;
+        }
+        if (!providerId) {
+          return {
+            success: false as const,
+            message: `Could not resolve a LinkedIn member id for ${slug}`,
+          };
+        }
+      }
+
+      let targetChatId = chat_id?.trim() || null;
+      if (!targetChatId && providerId && mode === "message") {
+        targetChatId = await findUnipileChatByAttendee({
+          accountId,
+          providerId,
+        });
+      }
+
+      const preview = {
+        action: mode,
+        account_id: accountId,
+        provider_id: providerId,
+        profile_url: profileUrl,
+        name,
+        // Which of the three sends this becomes — a new chat with a stranger
+        // reads very differently from a reply, and the caller should see which.
+        resolves_to:
+          mode === "connect_note"
+            ? "connection request with note"
+            : targetChatId
+              ? "reply in existing conversation"
+              : "new conversation",
+        chat_id: targetChatId,
+        text,
+      };
+
+      if (dry_run !== false) {
+        return {
+          success: true as const,
+          dry_run: true as const,
+          sent: false as const,
+          message: "Nothing sent. Call again with dry_run: false to send this.",
+          preview,
+        };
+      }
+
+      if (mode === "connect_note") {
+        if (!providerId) {
+          return {
+            success: false as const,
+            message: "A connection request needs linkedin, not chat_id",
+          };
+        }
+        const invite = await sendLinkedInInvitation({
+          accountId,
+          providerId,
+          message: text,
+        });
+        return {
+          success: true as const,
+          dry_run: false as const,
+          sent: true as const,
+          invitation_id: invite.invitationId,
+          preview,
+        };
+      }
+
+      if (targetChatId) {
+        const sent = await sendUnipileChatMessage({
+          chatId: targetChatId,
+          text,
+          accountId,
+        });
+        return {
+          success: true as const,
+          dry_run: false as const,
+          sent: true as const,
+          chat_id: targetChatId,
+          message_id: sent.messageId,
+          preview,
+        };
+      }
+
+      const started = await startUnipileChat({
+        accountId,
+        attendeeProviderIds: [providerId!],
+        text,
+      });
+      return {
+        success: true as const,
+        dry_run: false as const,
+        sent: true as const,
+        chat_id: started.chatId,
+        message_id: started.messageId,
+        preview,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        sent: false as const,
+        message: error instanceof Error ? error.message : "LinkedIn send failed",
+      };
+    }
+  },
+});
+
 export const sequenceCompleteTask = tool({
   description:
     "Mark a Today-queue task as sent or skipped after the human (or agent-assisted) send. Advances enrollment to the next step.",
@@ -6151,6 +6491,8 @@ export function createAgentTools(userEmail?: string) {
     sequenceUnenroll,
     sequenceListQueue,
     sequenceCompleteTask,
+    outreachSendQueuedTask,
+    outreachSendLinkedInMessage,
   };
 }
 

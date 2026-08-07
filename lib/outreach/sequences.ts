@@ -1860,6 +1860,260 @@ export async function getActivityStats(
 }
 
 /**
+ * Send a queued LinkedIn step through Unipile.
+ *
+ * Mirrors sendDueEmailTask's discipline — same token guard, same checked
+ * claim, same recording — because the failure it prevents is the same one:
+ * a cron tick and a human acting on one task put two identical messages in
+ * a prospect's LinkedIn inbox, and there is no unsend there either.
+ *
+ * What differs is the recipient. Email has an address on the enrollment;
+ * LinkedIn needs a member provider id (ACoAA…), which a vanity slug only
+ * becomes after a lookup against the connected account.
+ */
+async function sendDueLinkedInTask(
+  client: SupabaseClient,
+  task: OutreachSendTask,
+  opts?: {
+    claimFrom?: readonly string[];
+    actorEmail?: string | null;
+    override?: { body?: string };
+  },
+): Promise<"sent" | "failed" | "skipped"> {
+  const now = new Date().toISOString();
+  const claimFrom = opts?.claimFrom ?? ["ready", "scheduled"];
+
+  const fail = async (error: string, status = "failed") => {
+    await client
+      .from("outreach_send_tasks")
+      .update({ status, error, provider: "linkedin", updated_at: now })
+      .eq("id", task.id);
+  };
+
+  const { data: enrRaw } = await client
+    .from("outreach_enrollments")
+    .select("*")
+    .eq("id", task.enrollmentId)
+    .maybeSingle();
+  if (!enrRaw) {
+    await fail("Enrollment missing");
+    return "failed";
+  }
+  const enrollment = mapEnrollment(enrRaw as Record<string, unknown>);
+  if (enrollment.status !== "active") {
+    await client
+      .from("outreach_send_tasks")
+      .update({
+        status: "cancelled",
+        error: `Enrollment ${enrollment.status}`,
+        updated_at: now,
+      })
+      .eq("id", task.id);
+    return "skipped";
+  }
+
+  const body = (opts?.override?.body ?? task.renderedBody ?? "").trim();
+  if (!body) {
+    await fail("Empty message body");
+    return "failed";
+  }
+
+  // Same reasoning as email: a message with a visible {{token}} in it is worse
+  // than a late one, and on LinkedIn it is public in the thread forever.
+  const unresolved = findUnresolvedTokens(null, body);
+  if (unresolved.length > 0) {
+    await client
+      .from("outreach_send_tasks")
+      .update({
+        status: "ready",
+        error: `Unfilled variables: ${unresolved
+          .map((t) => `{{${t}}}`)
+          .join(", ")} — edit the message or fix the account data before sending.`,
+        updated_at: now,
+      })
+      .eq("id", task.id)
+      .in("status", claimFrom);
+    return "skipped";
+  }
+
+  const identity = enrollment.contactLinkedin?.trim();
+  if (!identity) {
+    await client
+      .from("outreach_send_tasks")
+      .update({
+        status: "skipped",
+        error: "No contact LinkedIn on the enrollment",
+        updated_at: now,
+      })
+      .eq("id", task.id);
+    await advanceEnrollment(client, enrollment.id);
+    return "skipped";
+  }
+
+  const {
+    listLinkedInAccounts,
+    normalizeLinkedInIdentity,
+    isLinkedInProviderId,
+    getUnipileUserProfile,
+    findUnipileChatByAttendee,
+    sendUnipileChatMessage,
+    startUnipileChat,
+    sendLinkedInInvitation,
+    isUnipileConfigured,
+  } = await import("@/lib/unipile");
+
+  if (!isUnipileConfigured()) {
+    // Config, not copy: leave it queued so it goes out once Unipile is set up,
+    // rather than burning the step.
+    await client
+      .from("outreach_send_tasks")
+      .update({
+        status: "ready",
+        error: "Unipile is not configured (UNIPILE_API_KEY / UNIPILE_DSN)",
+        updated_at: now,
+      })
+      .eq("id", task.id)
+      .in("status", claimFrom);
+    return "skipped";
+  }
+
+  let accountId: string;
+  try {
+    const accounts = await listLinkedInAccounts();
+    if (!accounts.length) {
+      await client
+        .from("outreach_send_tasks")
+        .update({
+          status: "ready",
+          error: "No LinkedIn account connected in Unipile",
+          updated_at: now,
+        })
+        .eq("id", task.id)
+        .in("status", claimFrom);
+      return "skipped";
+    }
+    accountId = accounts[0].id;
+  } catch (err) {
+    await fail(err instanceof Error ? err.message : "Unipile account lookup failed");
+    return "failed";
+  }
+
+  // The step decides connect-note vs message; a stored task has no copy of it.
+  const { data: stepRow } = await client
+    .from("outreach_sequence_steps")
+    .select("linkedin_action")
+    .eq("id", task.stepId)
+    .maybeSingle();
+  const action =
+    (stepRow?.linkedin_action as string | null) === "message"
+      ? "message"
+      : "connect_note";
+
+  // Claim before the network call, from the exact status we were told to take
+  // it from. Claiming from the wrong one silently no-ops the guard and the
+  // send still fires — with nothing stopping a second.
+  const { data: claimed } = await client
+    .from("outreach_send_tasks")
+    .update({ status: "sending", updated_at: now })
+    .eq("id", task.id)
+    .in("status", claimFrom)
+    .select("id");
+  if (!claimed || claimed.length === 0) return "skipped";
+
+  try {
+    const slug = normalizeLinkedInIdentity(identity);
+    if (!slug) throw new Error(`Unreadable LinkedIn identity: ${identity}`);
+
+    let providerId: string | null = isLinkedInProviderId(slug) ? slug : null;
+    if (!providerId) {
+      const profile = await getUnipileUserProfile({ accountId, identifier: slug });
+      providerId = profile?.providerId ?? null;
+    }
+    if (!providerId) {
+      throw new Error(`Could not resolve a LinkedIn member id for ${slug}`);
+    }
+
+    let messageId: string | null = null;
+    let chatId: string | null = null;
+
+    if (action === "connect_note") {
+      const invite = await sendLinkedInInvitation({
+        accountId,
+        providerId,
+        message: body,
+      });
+      messageId = invite.invitationId;
+    } else {
+      chatId = await findUnipileChatByAttendee({ accountId, providerId });
+      if (chatId) {
+        const sent = await sendUnipileChatMessage({ chatId, text: body, accountId });
+        messageId = sent.messageId;
+      } else {
+        const started = await startUnipileChat({
+          accountId,
+          attendeeProviderIds: [providerId],
+          text: body,
+        });
+        chatId = started.chatId;
+        messageId = started.messageId;
+      }
+    }
+
+    await client
+      .from("outreach_send_tasks")
+      .update({
+        status: "sent",
+        // Only on an edit, and only on success — same rule as email: this row
+        // is the app's record of what actually left.
+        ...(opts?.override?.body ? { rendered_body: body } : {}),
+        sent_at: now,
+        sent_by_email: opts?.actorEmail ?? null,
+        provider: "linkedin",
+        provider_message_id: messageId,
+        error: null,
+        updated_at: now,
+        meta: {
+          ...(task.meta ?? {}),
+          unipile_account_id: accountId,
+          linkedin_action: action,
+          linkedin_provider_id: providerId,
+          // The reply inbox keys LinkedIn threads on chat_id, so recording it
+          // is what lets an answer land back on this enrollment.
+          chat_id: chatId,
+        },
+      })
+      .eq("id", task.id);
+
+    await advanceEnrollment(client, enrollment.id);
+    await recordOutreachOnCrm(client, enrollment, {
+      channel: task.channel,
+      sentAt: now,
+      actorEmail: opts?.actorEmail ?? null,
+    });
+    return "sent";
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "LinkedIn send failed";
+    // Back to 'ready', not 'failed': LinkedIn rejects for transient reasons
+    // (rate limit, checkpoint) far more often than for bad copy, and the step
+    // should stay sendable once the account settles.
+    await client
+      .from("outreach_send_tasks")
+      .update({
+        status: "ready",
+        error: message,
+        provider: "linkedin",
+        updated_at: now,
+      })
+      .eq("id", task.id);
+    await client
+      .from("outreach_enrollments")
+      .update({ last_error: message, updated_at: now })
+      .eq("id", enrollment.id);
+    return "failed";
+  }
+}
+
+/**
  * Send a queued email from inside the app.
  *
  * The human queue could open Gmail, copy the text, or claim the step was done
@@ -1892,16 +2146,42 @@ export async function sendTaskNow(
   if (!raw) throw new Error("Task not found");
   const task = mapTask(raw as Record<string, unknown>);
 
-  if (task.channel !== "email") {
-    throw new Error(
-      "Only email steps can be sent from here — LinkedIn stays manual.",
-    );
-  }
   if (task.status === "sent") {
     return { ok: true, status: "sent" };
   }
   if (task.status !== "ready" && task.status !== "scheduled") {
     throw new Error(`Task is ${task.status} — nothing to send.`);
+  }
+
+  // LinkedIn used to be barred here and marked done by hand, which recorded a
+  // touch whether or not anything was sent. It now goes out through Unipile on
+  // the same claim-and-record path as email.
+  if (task.channel === "linkedin") {
+    const editedBody =
+      typeof input.body === "string" ? input.body.trim() : undefined;
+    if (editedBody !== undefined && !editedBody) {
+      throw new Error("The message body is empty — nothing to send.");
+    }
+    const result = await sendDueLinkedInTask(client, task, {
+      claimFrom: ["ready", "scheduled"],
+      actorEmail: input.sentByEmail ?? null,
+      override: editedBody !== undefined ? { body: editedBody } : undefined,
+    });
+    if (result === "sent") return { ok: true, status: "sent" };
+    const { data: after } = await client
+      .from("outreach_send_tasks")
+      .select("error")
+      .eq("id", taskId)
+      .maybeSingle();
+    return {
+      ok: false,
+      status: result,
+      error:
+        (after?.error as string | null) ??
+        (result === "skipped"
+          ? "Nothing was sent — the task was already claimed."
+          : "LinkedIn send failed"),
+    };
   }
 
   // The mailbox is the sequence's, same as the cron resolves it: a manual send

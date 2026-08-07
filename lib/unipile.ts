@@ -46,7 +46,15 @@ export async function unipileFetch<T>(
   const headers = new Headers(init.headers);
   headers.set("X-API-KEY", apiKey);
   headers.set("accept", "application/json");
-  if (init.body && !headers.has("content-type")) {
+  // FormData must keep the content-type fetch generates for it — the header
+  // carries the multipart boundary, and forcing application/json here would
+  // ship a body no parser on the other side can read. Unipile's send
+  // endpoints are all multipart.
+  if (
+    init.body &&
+    !headers.has("content-type") &&
+    !(init.body instanceof FormData)
+  ) {
     headers.set("content-type", "application/json");
   }
   const res = await fetch(url, { ...init, headers });
@@ -336,6 +344,125 @@ export async function getUnipileUserProfile(opts: {
   } catch {
     return null;
   }
+}
+
+// ── Sending ────────────────────────────────────────────────────────
+//
+// Everything above this line reads. These three write, and LinkedIn is the
+// one channel here where the platform — not our schema — is the strict
+// party: invitations and cold DMs from a young or quiet account are what
+// gets a profile restricted. Callers are expected to come through the
+// sequence queue, which paces them.
+
+/** Send into an existing conversation. */
+export async function sendUnipileChatMessage(opts: {
+  chatId: string;
+  text: string;
+  /** Refuses the send if the chat belongs to another connected account. */
+  accountId?: string | null;
+}): Promise<{ messageId: string | null }> {
+  const form = new FormData();
+  form.set("text", opts.text);
+  if (opts.accountId) form.set("account_id", opts.accountId);
+  const data = await unipileFetch<Record<string, unknown>>(
+    `/api/v1/chats/${encodeURIComponent(opts.chatId)}/messages`,
+    { method: "POST", body: form },
+  );
+  return {
+    messageId:
+      typeof data.message_id === "string"
+        ? data.message_id
+        : typeof data.id === "string"
+          ? data.id
+          : null,
+  };
+}
+
+/** Open a new conversation with one or more members. */
+export async function startUnipileChat(opts: {
+  accountId: string;
+  /** LinkedIn member provider ids (ACoAA…), not vanity slugs. */
+  attendeeProviderIds: string[];
+  text: string;
+}): Promise<{ chatId: string | null; messageId: string | null }> {
+  if (!opts.attendeeProviderIds.length) {
+    throw new Error("No recipient — attendeeProviderIds is empty");
+  }
+  const form = new FormData();
+  form.set("account_id", opts.accountId);
+  for (const id of opts.attendeeProviderIds) {
+    // Repeated key, not a JSON array: the endpoint takes attendees_ids as a
+    // multipart repeated field.
+    form.append("attendees_ids", id);
+  }
+  form.set("text", opts.text);
+  const data = await unipileFetch<Record<string, unknown>>("/api/v1/chats", {
+    method: "POST",
+    body: form,
+  });
+  return {
+    chatId: typeof data.chat_id === "string" ? data.chat_id : null,
+    messageId: typeof data.message_id === "string" ? data.message_id : null,
+  };
+}
+
+/** Connection request, with an optional note. JSON, unlike the chat sends. */
+export async function sendLinkedInInvitation(opts: {
+  accountId: string;
+  providerId: string;
+  message?: string | null;
+}): Promise<{ invitationId: string | null }> {
+  const body: Record<string, string> = {
+    account_id: opts.accountId,
+    provider_id: opts.providerId,
+  };
+  if (opts.message?.trim()) body.message = opts.message.trim();
+  const data = await unipileFetch<Record<string, unknown>>(
+    "/api/v1/users/invite",
+    { method: "POST", body: JSON.stringify(body) },
+  );
+  return {
+    invitationId:
+      typeof data.invitation_id === "string"
+        ? data.invitation_id
+        : typeof data.id === "string"
+          ? data.id
+          : null,
+  };
+}
+
+/**
+ * Existing 1:1 chat with a member, or null.
+ *
+ * Worth the paging: replying in the thread we already have keeps the
+ * conversation in one place, where starting a second chat with the same
+ * person reads as a stranger opening a duplicate.
+ */
+export async function findUnipileChatByAttendee(opts: {
+  accountId: string;
+  providerId: string;
+  /** Pages of 100. Older chats past this are treated as "no chat". */
+  maxPages?: number;
+}): Promise<string | null> {
+  const target = opts.providerId.trim().toLowerCase();
+  if (!target) return null;
+  let cursor: string | null = null;
+  const maxPages = Math.max(1, opts.maxPages ?? 5);
+  for (let page = 0; page < maxPages; page++) {
+    const res: { items: UnipileChat[]; cursor: string | null } =
+      await listUnipileChats({
+        accountId: opts.accountId,
+        limit: 100,
+        cursor,
+      });
+    const hit = res.items.find(
+      (c) => c.attendeeProviderId?.trim().toLowerCase() === target,
+    );
+    if (hit) return hit.id;
+    if (!res.cursor) break;
+    cursor = res.cursor;
+  }
+  return null;
 }
 
 export type UnipileWebhookPayload = {
