@@ -134,16 +134,23 @@ export function deriveSignalTokens(
   // ever wanted to name them separately in the same breath.
   const implemented = Number(frozen.suggestions_implemented_30d);
   const partial = Number(frozen.suggestions_partial_30d);
-  if (Number.isFinite(implemented) && Number.isFinite(partial)) {
+  const delivered = Number(frozen.suggestions_30d);
+  // Both tokens need something delivered. With nothing sent, "applied 0" is
+  // true of nothing and "0%" is worse — an account we never sent a suggestion
+  // to has not ignored us, and that is the one sentence that must not go out.
+  //
+  // A real zero still renders: broken-activation copy ("we left 40 suggestions,
+  // your team applied 0") has delivered = 40 and passes this gate untouched.
+  // That case was the whole reason for emitting a zero at all.
+  if (
+    Number.isFinite(implemented) &&
+    Number.isFinite(partial) &&
+    Number.isFinite(delivered) &&
+    delivered > 0
+  ) {
     const applied = implemented + partial;
     out.suggestions_applied_30d = String(applied);
-    const delivered = Number(frozen.suggestions_30d);
-    // No delivered suggestions means no rate — not 0%. An account we never sent
-    // anything to has not ignored us, and "you applied 0% of our suggestions"
-    // is the one sentence that must never leave over that state.
-    if (Number.isFinite(delivered) && delivered > 0) {
-      out.suggestions_applied_pct = `${Math.round((applied / delivered) * 100)}%`;
-    }
+    out.suggestions_applied_pct = `${Math.round((applied / delivered) * 100)}%`;
   }
 
   const total = Number(frozen.seats_total);
