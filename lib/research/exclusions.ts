@@ -39,19 +39,38 @@ export function normalizeCompanyKey(name: string): string {
     .replace(/[^a-z0-9]+/g, "");
 }
 
-/** Suffixes whose registrable name sits one label further left. */
-const COMPOUND_TLDS = new Set([
-  "com.br",
-  "net.br",
-  "com.ar",
-  "com.mx",
-  "co.uk",
-  "org.uk",
-  "co.jp",
-  "com.au",
-  "co.za",
-  "com.co",
+/**
+ * Second-level labels that are part of a country's suffix rather than a
+ * company name: the "com" in acme.com.br, the "co" in acme.co.uk.
+ */
+const SECOND_LEVEL_SUFFIX_LABELS = new Set([
+  "com",
+  "net",
+  "org",
+  "co",
+  "edu",
+  "gov",
+  "gob",
+  "ac",
+  "ne",
+  "or",
+  "in",
+  "mil",
 ]);
+
+/**
+ * True for "acme.com.br", "acme.co.uk", "acme.com.sg" — a compound suffix is a
+ * generic label followed by a two-letter country code. Stated as a rule rather
+ * than a list of suffixes, which is always missing the next country.
+ * "s3.amazonaws.com" fails it: "com" is not a country code.
+ */
+function hasCompoundSuffix(parts: string[]): boolean {
+  const [secondLevel, tld] = parts.slice(-2);
+  return (
+    /^[a-z]{2}$/.test(tld ?? "") &&
+    SECOND_LEVEL_SUFFIX_LABELS.has(secondLevel ?? "")
+  );
+}
 
 /**
  * Key a domain's own name would produce: "acme.com" and "acme.com.br" → "acme".
@@ -66,8 +85,7 @@ const COMPOUND_TLDS = new Set([
 function domainRootKey(domain: string): string {
   const parts = domain.split(".").filter(Boolean);
   const isRegistrable =
-    parts.length === 2 ||
-    (parts.length === 3 && COMPOUND_TLDS.has(parts.slice(-2).join(".")));
+    parts.length === 2 || (parts.length === 3 && hasCompoundSuffix(parts));
   if (!isRegistrable) return "";
   return normalizeCompanyKey(parts[0]);
 }
