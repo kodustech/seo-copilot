@@ -1013,6 +1013,12 @@ export function SequencesPage() {
         lastError: (e.lastError ?? e.last_error ?? null) as string | null,
         source: String(e.source ?? "research"),
         createdAt: String(e.createdAt ?? e.created_at ?? ""),
+        // Dropping this here is invisible: the field is optional, so the
+        // preview compiles and silently renders every product token raw.
+        templateVars: (e.templateVars ?? e.template_vars ?? null) as Record<
+          string,
+          string
+        > | null,
       }));
       setEnrollments(enrMapped);
       setEnrollmentCount(enrMapped.length);
@@ -1063,6 +1069,10 @@ export function SequencesPage() {
       lastError: (e.lastError ?? e.last_error ?? null) as string | null,
       source: String(e.source ?? "research"),
       createdAt: String(e.createdAt ?? e.created_at ?? ""),
+      templateVars: (e.templateVars ?? e.template_vars ?? null) as Record<
+        string,
+        string
+      > | null,
     }));
     setEnrollments(enrMapped);
     setEnrollmentCount(enrMapped.length);

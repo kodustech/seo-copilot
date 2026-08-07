@@ -1313,15 +1313,32 @@ export async function refreshCrmSignalVars(
   client: SupabaseClient,
   opts: { limit?: number } = {},
 ): Promise<{ enrollmentsUpdated: number; tasksRerendered: number }> {
-  const { data: rawEnrollments, error } = await client
-    .from("outreach_enrollments")
-    .select("*")
-    .eq("status", "active")
-    .not("crm_company_id", "is", null)
-    .limit(opts.limit ?? 500);
-  if (error) throw new Error(error.message);
+  // Paged, not capped. This is the only thing that unblocks a send held for a
+  // stale token, and it is now driven by a cron that runs every 15 minutes —
+  // so a flat .limit() with no ORDER BY would hand back an arbitrary slice
+  // each tick and leave the tail of the list permanently stale. That is the
+  // same "blocked forever" state this function exists to clear, just moved to
+  // whichever enrollments the planner happened to omit.
+  const PAGE = 500;
+  const maxRows = opts.limit ?? Infinity;
+  const rawEnrollments: Record<string, unknown>[] = [];
+  for (let from = 0; from < maxRows; from += PAGE) {
+    const to = Math.min(from + PAGE, maxRows) - 1;
+    const { data, error } = await client
+      .from("outreach_enrollments")
+      .select("*")
+      .eq("status", "active")
+      .not("crm_company_id", "is", null)
+      // Stable order so pages cannot overlap or skip rows mid-scan.
+      .order("id", { ascending: true })
+      .range(from, to);
+    if (error) throw new Error(error.message);
+    const page = (data ?? []) as Record<string, unknown>[];
+    rawEnrollments.push(...page);
+    if (page.length < to - from + 1) break;
+  }
 
-  const enrollments = (rawEnrollments ?? []).map((r) =>
+  const enrollments = rawEnrollments.map((r) =>
     mapEnrollment(r as Record<string, unknown>),
   );
   if (enrollments.length === 0)
