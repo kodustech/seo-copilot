@@ -88,6 +88,28 @@ const cases: Case[] = [
     auto: true,
   },
   {
+    name: "X-Auto-Response-Suppress alone on a human reply (Outlook sets it)",
+    signals: {
+      fromEmail: "tim@example.com",
+      subject: "Re: quick question",
+      snippet: "Yes — Thursday works, send an invite.",
+      headers: toHeaderMap([{ name: "X-Auto-Response-Suppress", value: "DR, OOF, AutoReply" }]),
+    },
+    bounce: false,
+    auto: false,
+  },
+  {
+    name: "X-Auto-Response-Suppress + OOO wording, no RFC 3834 header",
+    signals: {
+      fromEmail: "tim@example.com",
+      subject: "Re: quick question",
+      snippet: "I am currently out of the office and will reply on my return.",
+      headers: toHeaderMap([{ name: "X-Auto-Response-Suppress", value: "All" }]),
+    },
+    bounce: false,
+    auto: true,
+  },
+  {
     name: "Brazilian OOO",
     signals: {
       fromEmail: "joao@exemplo.com.br",

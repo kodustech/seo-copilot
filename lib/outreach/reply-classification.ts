@@ -265,6 +265,7 @@ export async function reconcileClassifiedReplyThreads(
       .eq("direction", "inbound");
 
     const ok = await reconcileEnrollmentForReplyClass(client, {
+      threadId: thread.id,
       enrollmentId: thread.enrollment_id,
       label: thread.reply_class,
       inboundCount: count ?? 1,
@@ -274,6 +275,48 @@ export async function reconcileClassifiedReplyThreads(
   }
 
   return { scanned: threads.length, reconciled };
+}
+
+/** CRM demotion is a side effect of reconciling — never a reason to fail it. */
+async function demoteQuietly(
+  client: SupabaseClient,
+  enrollmentId: string,
+  reason: "auto_reply" | "bounce",
+): Promise<void> {
+  try {
+    const { demoteReplyPromotion } = await import("@/lib/crm");
+    await demoteReplyPromotion(client, enrollmentId, { reason });
+  } catch (err) {
+    console.warn("[reply-classification] CRM demote failed", enrollmentId, err);
+  }
+}
+
+/**
+ * Does any *other* thread on this enrollment carry inbound mail?
+ *
+ * The guard in front of reverting a `replied` enrollment. `replied` records
+ * that somebody answered, not which thread they answered on, so an
+ * autoresponder cannot be read as "the reply was fake" unless it is the only
+ * inbound conversation the enrollment has. Deliberately blunt: any other thread
+ * with inbound mail blocks the revert, including one not yet classified. Being
+ * left stopped is recoverable by hand; a cadence resuming into a live
+ * conversation is not.
+ */
+async function enrollmentHasOtherInboundThread(
+  client: SupabaseClient,
+  enrollmentId: string,
+  threadId: string,
+): Promise<boolean> {
+  const { data, error } = await client
+    .from("outreach_reply_threads")
+    .select("id")
+    .eq("enrollment_id", enrollmentId)
+    .neq("id", threadId)
+    .not("last_inbound_at", "is", null)
+    .limit(1);
+  // On a read failure, assume the risky case and leave the enrollment stopped.
+  if (error) return true;
+  return (data ?? []).length > 0;
 }
 
 /**
@@ -291,13 +334,14 @@ export async function reconcileClassifiedReplyThreads(
 async function reconcileEnrollmentForReplyClass(
   client: SupabaseClient,
   input: {
+    threadId: string;
     enrollmentId: string | null;
     label: ReplyClass;
     inboundCount: number;
     reason: string;
   },
 ): Promise<boolean> {
-  const { enrollmentId, label, inboundCount, reason } = input;
+  const { threadId, enrollmentId, label, inboundCount, reason } = input;
   if (!enrollmentId) return false;
 
   try {
@@ -312,7 +356,13 @@ async function reconcileEnrollmentForReplyClass(
         source: "reply_classifier",
         reason,
       });
-      return marked.updated;
+      if (!marked.updated) return false;
+      // A DSN the sync's detector missed took the reply path first, so the
+      // account was promoted to engaged/high on a message from a mail server.
+      // Marking the enrollment bounced without this leaves that promotion
+      // standing.
+      await demoteQuietly(client, enrollmentId, "bounce");
+      return true;
     }
 
     if (label === "auto_reply") {
@@ -320,18 +370,20 @@ async function reconcileEnrollmentForReplyClass(
       // earlier in the thread, the enrollment stopped for that reply and the
       // out-of-office arriving later changes nothing.
       if (inboundCount > 1) return false;
+      // ...and only when it is the whole conversation on *every* thread. An
+      // enrollment can have several: the human answers on one and sets an
+      // out-of-office that lands on another, and reverting on the strength of
+      // the second would restart a cadence into somebody who already replied.
+      if (await enrollmentHasOtherInboundThread(client, enrollmentId, threadId)) {
+        return false;
+      }
       const deferred = await deferEnrollmentForAutoReply(client, enrollmentId, {
         source: "reply_classifier",
         reason,
         revertReplied: true,
       });
       if (!deferred.updated) return false;
-      try {
-        const { demoteAutoReplyPromotion } = await import("@/lib/crm");
-        await demoteAutoReplyPromotion(client, enrollmentId);
-      } catch (err) {
-        console.warn("[reply-classification] CRM demote failed", err);
-      }
+      await demoteQuietly(client, enrollmentId, "auto_reply");
       return true;
     }
 
@@ -464,6 +516,7 @@ async function classifyOne(
     // this thread before anyone knew what it said; now that we know, make the
     // enrollment agree.
     const reconciled = await reconcileEnrollmentForReplyClass(client, {
+      threadId: thread.id,
       enrollmentId: thread.enrollment_id,
       label,
       inboundCount: inbound.length,

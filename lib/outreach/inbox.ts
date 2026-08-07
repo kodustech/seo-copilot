@@ -143,7 +143,7 @@ export function isBounceInbound(opts: InboundSignals): boolean {
 }
 
 const OOO_TEXT_RE =
-  /out of office|out-of-office|outofoffice|automatic reply|auto-?reply|autoresponder|auto-?respond|resposta autom[aá]tica|fora do escrit[oó]rio|estou de f[eé]rias|estarei ausente|de licen[cç]a|on annual leave|on parental leave|on vacation|currently away|away from (?:my|the) (?:desk|office)|respuesta autom[aá]tica/i;
+  /out of (?:the |my )?office|out-of-office|outofoffice|automatic reply|auto-?reply|autoresponder|auto-?respond|resposta autom[aá]tica|fora do escrit[oó]rio|estou de f[eé]rias|estarei ausente|de licen[cç]a|on annual leave|on parental leave|on vacation|currently away|away from (?:my|the) (?:desk|office)|respuesta autom[aá]tica/i;
 
 /**
  * Out-of-office / autoresponder / ticket acknowledgement. Nobody read the
@@ -156,8 +156,6 @@ export function isAutoReplyInbound(opts: InboundSignals): boolean {
     // program, and vacation agents are the canonical producer.
     const autoSubmitted = head(h, "auto-submitted");
     if (autoSubmitted && autoSubmitted !== "no") return true;
-    // Microsoft sets this on Exchange/Office 365 automatic replies.
-    if (h["x-auto-response-suppress"]) return true;
     if (h["x-autoreply"] || h["x-autorespond"] || h["x-autoreply-from"]) {
       return true;
     }
@@ -168,6 +166,15 @@ export function isAutoReplyInbound(opts: InboundSignals): boolean {
       return true;
     }
     if (head(h, "x-mailer").includes("vacation")) return true;
+
+    // X-Auto-Response-Suppress is corroborating, never decisive. It asks the
+    // recipient not to auto-reply — Outlook and Exchange set it on ordinary
+    // human mail too, so on its own it would defer the cadence for a real
+    // reply. Paired with out-of-office wording it settles the Office 365 case
+    // where no RFC 3834 header is present.
+    if (h["x-auto-response-suppress"] && OOO_TEXT_RE.test(blobOf(opts))) {
+      return true;
+    }
   }
   return OOO_TEXT_RE.test(blobOf(opts));
 }

@@ -1048,8 +1048,10 @@ export async function upsertAccountByDomain(
 }
 
 /**
- * Undo the engagement half of a reply promotion when the "reply" turns out to
- * have been an autoresponder.
+ * Undo the engagement half of a reply promotion when the "reply" turns out not
+ * to have been one — an autoresponder, or a bounce the sync's detector missed.
+ * Both leave the account sitting at engaged/high with an outbound-reply tag on
+ * the strength of a message nobody wrote.
  *
  * Deliberately narrow. It only touches an account that is still exactly where
  * the promotion left it — engaged + high, promoted by this enrollment. If a
@@ -1059,10 +1061,12 @@ export async function upsertAccountByDomain(
  * unclassified reply, so there is no exclusion to restore, and deleting a row
  * somebody may already be working is worse than a stale-looking lead.
  */
-export async function demoteAutoReplyPromotion(
+export async function demoteReplyPromotion(
   client: SupabaseClient,
   enrollmentId: string,
+  opts?: { reason?: "auto_reply" | "bounce" },
 ): Promise<{ demoted: boolean; companyId: string | null }> {
+  const reason = opts?.reason ?? "auto_reply";
   const { data, error } = await client
     .from("crm_companies")
     .select("*")
@@ -1085,13 +1089,13 @@ export async function demoteAutoReplyPromotion(
     priority: "medium",
     tags: [
       ...company.tags.filter((t) => t !== "outbound-reply"),
-      "outbound-auto-reply",
+      reason === "bounce" ? "outbound-bounce" : "outbound-auto-reply",
     ],
     enrichment: {
       ...company.enrichment,
       sequence: {
         ...((company.enrichment?.sequence as Record<string, unknown>) ?? {}),
-        promoted_via: "auto_reply_reverted",
+        promoted_via: `${reason}_reverted`,
         reverted_at: new Date().toISOString(),
       },
     },

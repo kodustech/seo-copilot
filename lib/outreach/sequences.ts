@@ -3567,15 +3567,10 @@ export async function deferEnrollmentForAutoReply(
   if (reverting) {
     // markEnrollmentReplied cancelled these with exactly this error string.
     // Only those come back: a step cancelled for any other reason was cancelled
-    // on purpose.
+    // on purpose. Dates are left alone here and set with everything else below.
     const { data: restored, error: restoreErr } = await client
       .from("outreach_send_tasks")
-      .update({
-        status: "scheduled",
-        scheduled_for: resumeAt,
-        error: null,
-        updated_at: nowIso,
-      })
+      .update({ status: "scheduled", error: null, updated_at: nowIso })
       .eq("enrollment_id", enrollmentId)
       .eq("status", "cancelled")
       .like("error", "Stopped on reply%")
@@ -3584,17 +3579,53 @@ export async function deferEnrollmentForAutoReply(
     tasksRestored = restored?.length ?? 0;
   }
 
-  // Push anything still pending that would otherwise fire during the absence.
-  // Later steps keep their own dates — the stagger between steps is intact.
-  const { data: pushed, error: pushErr } = await client
+  // Shift the pending steps by one common offset instead of stacking them on
+  // resumeAt. Writing resumeAt to every task would deliver the whole remaining
+  // cadence — follow-up 2, 3 and 4 — on the same day the person gets back,
+  // which reads worse than the original bug. The offset is measured from the
+  // earliest pending step rather than being a flat +days so that a step already
+  // overdue when the autoresponder arrived does not stay overdue after it.
+  const { data: pendingRows, error: pendingErr } = await client
     .from("outreach_send_tasks")
-    .update({ status: "scheduled", scheduled_for: resumeAt, updated_at: nowIso })
+    .select("id, scheduled_for")
     .eq("enrollment_id", enrollmentId)
     .in("status", ["scheduled", "ready"])
-    .lt("scheduled_for", resumeAt)
-    .select("id");
-  if (pushErr) throw new Error(pushErr.message);
-  const tasksRescheduled = pushed?.length ?? 0;
+    .order("scheduled_for", { ascending: true });
+  if (pendingErr) throw new Error(pendingErr.message);
+
+  const pending = (pendingRows ?? []) as { id: string; scheduled_for: string }[];
+  const resumeMs = new Date(resumeAt).getTime();
+  const earliestMs = pending.length
+    ? new Date(pending[0].scheduled_for).getTime()
+    : resumeMs;
+  const offsetMs = Math.max(0, resumeMs - earliestMs);
+
+  let tasksRescheduled = 0;
+  let firstDue: string | null = null;
+  if (offsetMs > 0) {
+    for (const task of pending) {
+      const shifted = new Date(
+        new Date(task.scheduled_for).getTime() + offsetMs,
+      );
+      const due = nextSendingSlotAfter(shifted, now, sendingWindow);
+      const { error: shiftErr } = await client
+        .from("outreach_send_tasks")
+        .update({
+          status: "scheduled",
+          scheduled_for: due.toISOString(),
+          updated_at: nowIso,
+        })
+        .eq("id", task.id)
+        .in("status", ["scheduled", "ready"]);
+      if (shiftErr) throw new Error(shiftErr.message);
+      if (!firstDue || due.toISOString() < firstDue) firstDue = due.toISOString();
+      tasksRescheduled++;
+    }
+  }
+
+  // The enrollment wakes with its earliest step, not at the nominal resume
+  // date: the sending window can push the first step past it.
+  const nextRunAt = firstDue ?? pending[0]?.scheduled_for ?? resumeAt;
 
   const { data: updated, error: enrollError } = await client
     .from("outreach_enrollments")
@@ -3603,7 +3634,7 @@ export async function deferEnrollmentForAutoReply(
       // person who paused it did not ask for it back, and an autoresponder is
       // not a reason to resume anything.
       ...(reverting ? { status: "active" } : {}),
-      next_run_at: resumeAt,
+      next_run_at: nextRunAt,
       last_error: `Auto-reply from recipient (${source}): ${reason}`.slice(0, 240),
       updated_at: nowIso,
     })
