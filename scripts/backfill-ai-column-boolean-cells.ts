@@ -223,6 +223,7 @@ async function main() {
   let totalRepairs = 0;
   let totalUnrepairable = 0;
   let totalBooleanColumnsSkipped = 0;
+  let totalSkippedTables = 0;
 
   for (const table of tables) {
     const columns = (table.columns as ResearchColumn[] | null) ?? [];
@@ -299,13 +300,35 @@ async function main() {
 
     if (args.apply && pending.size > 0) {
       if (args.snapshot) {
-        const { snapshotResearchTable } = await import("@/lib/research/tables");
-        const snapshotId = await snapshotResearchTable(
-          client,
-          table.id as string,
-          { reason: "backfill_ai_column_boolean_cells" },
-        );
-        console.log(`   snapshot ${snapshotId}`);
+        try {
+          const { snapshotResearchTable } = await import(
+            "@/lib/research/tables"
+          );
+          const snapshotId = await snapshotResearchTable(
+            client,
+            table.id as string,
+            { reason: "backfill_ai_column_boolean_cells" },
+          );
+          console.log(`   snapshot ${snapshotId}`);
+        } catch (err) {
+          // The snapshot is the only way back from this write. Failing to
+          // take one is a reason to leave this table alone — not to repair it
+          // unprotected, and not to abandon the tables after it either. A
+          // snapshot is one request carrying the whole table, so a large
+          // enough table can exceed the request body limit; that surfaces
+          // here rather than halfway through the repair.
+          const msg = err instanceof Error ? err.message : String(err);
+          console.log(`   SKIPPED — snapshot failed: ${msg}`);
+          console.log(
+            `   ${scanned} row(s) scanned; a table this size may exceed the single-request snapshot payload.`,
+          );
+          console.log(
+            `   Re-run with --no-snapshot to repair it with no way back, or narrow the scope.`,
+          );
+          console.log();
+          totalSkippedTables += 1;
+          continue;
+        }
       }
       let written = 0;
       let skippedAlreadyFixed = 0;
@@ -396,6 +419,11 @@ async function main() {
   if (totalUnrepairable > 0) {
     console.log(
       "Unrepairable cells need the enrichment re-run — pack_raw has no answer to copy.",
+    );
+  }
+  if (totalSkippedTables > 0) {
+    console.log(
+      `${totalSkippedTables} table(s) left untouched because their safety snapshot could not be taken.`,
     );
   }
 }
