@@ -815,23 +815,67 @@ export async function defaultLinkedInAccountId(): Promise<string | null> {
 }
 
 /**
+ * The account list, cached briefly.
+ *
+ * listPostCommenters runs once per post, so a 25-post harvest was making 25
+ * identical /accounts calls against the very account the rate limiter exists
+ * to protect. Connected accounts do not change mid-harvest.
+ */
+let accountsCache: { at: number; accounts: UnipileAccount[] } | null = null;
+const ACCOUNTS_TTL_MS = 5 * 60_000;
+
+async function cachedLinkedInAccounts(): Promise<UnipileAccount[]> {
+  const now = Date.now();
+  if (accountsCache && now - accountsCache.at < ACCOUNTS_TTL_MS) {
+    return accountsCache.accounts;
+  }
+  const accounts = await listLinkedInAccounts();
+  accountsCache = { at: now, accounts };
+  return accounts;
+}
+
+/** Forget the cached account list (tests, or after connecting an account). */
+export function resetUnipileAccountsCache(): void {
+  accountsCache = null;
+}
+
+/**
  * The harvesting account plus its own member id.
  *
  * The member id is what lets a harvest recognise itself. Without it, the
  * founder commenting on a post he is also harvesting lands in his own
  * prospect list — a cold-outreach queue with the sender in it.
+ *
+ * Resolves the member id for the account actually being used. Resolving the
+ * default account's id instead would be wrong in both directions at once:
+ * the real harvester's comments kept, and an innocent person dropped for
+ * looking like an account that is not even in play.
  */
-export async function linkedInAccountIdentity(): Promise<{
-  accountId: string | null;
-  providerUserId: string | null;
-}> {
-  const configured = process.env.UNIPILE_LINKEDIN_ACCOUNT_ID?.trim();
-  const accounts = await listLinkedInAccounts();
-  const match = configured
-    ? (accounts.find((a) => a.id === configured) ?? null)
+export async function linkedInAccountIdentity(
+  accountId?: string | null,
+): Promise<{ accountId: string | null; providerUserId: string | null }> {
+  const wanted = accountId?.trim() || process.env.UNIPILE_LINKEDIN_ACCOUNT_ID?.trim() || null;
+
+  let accounts: UnipileAccount[] = [];
+  try {
+    accounts = await cachedLinkedInAccounts();
+  } catch (err) {
+    // With an explicit account we can still harvest; we just cannot recognise
+    // ourselves. Degrade loudly rather than failing the whole run.
+    if (wanted) {
+      console.warn(
+        `[unipile] could not list accounts to resolve self-identity (${err instanceof Error ? err.message : String(err)}); self-exclusion is off for this run.`,
+      );
+      return { accountId: wanted, providerUserId: null };
+    }
+    throw err;
+  }
+
+  const match = wanted
+    ? (accounts.find((a) => a.id === wanted) ?? null)
     : (accounts[0] ?? null);
   return {
-    accountId: configured || match?.id || null,
+    accountId: wanted || match?.id || null,
     providerUserId: match?.providerUserId ?? null,
   };
 }

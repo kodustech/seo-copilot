@@ -219,7 +219,8 @@ export async function listPostCommenters(opts: {
     throw new Error("Unipile is not configured (UNIPILE_API_KEY / UNIPILE_DSN)");
   }
 
-  const identity = await linkedInAccountIdentity();
+  // Resolve the identity of the account actually in use, not the default one.
+  const identity = await linkedInAccountIdentity(opts.accountId);
   const accountId = opts.accountId?.trim() || identity.accountId;
   if (!accountId) {
     throw new Error(
