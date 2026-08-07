@@ -269,13 +269,11 @@ export async function deleteResearchRows(
     );
   }
 
-  const { data: deletedRows, error: deleteError } = await client
-    .from("research_rows")
-    .delete()
-    .in("id", rows.map((row) => row.id as string))
-    .select("id");
-  if (deleteError) throw new Error(`Failed to remove companies from list: ${deleteError.message}`);
-
+  // Exclusions are recorded before the delete, so the destructive step is last:
+  // a failure here leaves the rows in place and the whole call retryable,
+  // instead of committing the delete with no exclusion to show for it. The
+  // reverse order loses the exclusion for good — the retry finds no rows left
+  // to read the company names from.
   let excluded = 0;
   if (opts.exclude !== false) {
     const byTable = new Map<string, ExclusionInput[]>();
@@ -294,6 +292,13 @@ export async function deleteResearchRows(
       excluded += await addExclusions(client, tableId, items);
     }
   }
+
+  const { data: deletedRows, error: deleteError } = await client
+    .from("research_rows")
+    .delete()
+    .in("id", rows.map((row) => row.id as string))
+    .select("id");
+  if (deleteError) throw new Error(`Failed to remove companies from list: ${deleteError.message}`);
 
   return {
     deleted: deletedRows?.length ?? 0,
@@ -522,80 +527,87 @@ export async function addRows(
   const exclusions = respectExclusions
     ? await loadExclusionIndex(client, tableId)
     : null;
-  if (!respectExclusions) {
-    await removeExclusions(
-      client,
-      tableId,
-      rows.map((r) => ({ companyName: r.companyName, domain: r.domain })),
-    );
-  }
+  // On a deliberate re-add, an exclusion is lifted only once that company is
+  // actually in the list. Clearing the whole batch up front would drop the
+  // protection for companies a mid-batch failure never got to.
+  const landed: Array<{ companyName: string; domain: string | null }> = [];
 
-  for (const r of rows) {
-    const domain = normalizeDomain(r.domain ?? null);
-    const companyName = r.companyName.trim() || domain || "Unknown";
-    if (!companyName && !domain) {
-      skipped += 1;
-      continue;
-    }
+  try {
+    for (const r of rows) {
+      const domain = normalizeDomain(r.domain ?? null);
+      const companyName = r.companyName.trim() || domain || "Unknown";
+      if (!companyName && !domain) {
+        skipped += 1;
+        continue;
+      }
 
-    if (exclusions?.isExcluded({ companyName, domain })) {
-      excluded += 1;
-      skipped += 1;
-      continue;
-    }
+      if (exclusions?.isExcluded({ companyName, domain })) {
+        excluded += 1;
+        skipped += 1;
+        continue;
+      }
 
-    // Skip duplicate domain in same table.
-    if (domain) {
-      const { data: existing } = await client
+      // Skip duplicate domain in same table.
+      if (domain) {
+        const { data: existing } = await client
+          .from("research_rows")
+          .select("id")
+          .eq("table_id", tableId)
+          .ilike("domain", domain)
+          .maybeSingle();
+        if (existing) {
+          skipped += 1;
+          landed.push({ companyName, domain });
+          continue;
+        }
+      } else {
+        // No domain (common for discovery rows): dedupe by company name across
+        // the whole table — an earlier research run may have filled in the
+        // domain on a row that started domainless.
+        const { data: existing } = await client
+          .from("research_rows")
+          .select("id")
+          .eq("table_id", tableId)
+          .ilike("company_name", companyName)
+          .limit(1)
+          .maybeSingle();
+        if (existing) {
+          skipped += 1;
+          landed.push({ companyName, domain });
+          continue;
+        }
+      }
+
+      const { data, error } = await client
         .from("research_rows")
-        .select("id")
-        .eq("table_id", tableId)
-        .ilike("domain", domain)
-        .maybeSingle();
-      if (existing) {
-        skipped += 1;
-        continue;
-      }
-    } else {
-      // No domain (common for discovery rows): dedupe by company name across
-      // the whole table — an earlier research run may have filled in the
-      // domain on a row that started domainless.
-      const { data: existing } = await client
-        .from("research_rows")
-        .select("id")
-        .eq("table_id", tableId)
-        .ilike("company_name", companyName)
-        .limit(1)
-        .maybeSingle();
-      if (existing) {
-        skipped += 1;
-        continue;
-      }
-    }
+        .insert({
+          table_id: tableId,
+          company_name: companyName,
+          domain,
+          source: r.source ?? "manual",
+          status: "pending",
+          pack_raw: r.packRaw ?? {},
+        })
+        .select("*")
+        .single();
 
-    const { data, error } = await client
-      .from("research_rows")
-      .insert({
-        table_id: tableId,
-        company_name: companyName,
-        domain,
-        source: r.source ?? "manual",
-        status: "pending",
-        pack_raw: r.packRaw ?? {},
-      })
-      .select("*")
-      .single();
-
-    if (error) {
-      // unique race
-      if (error.code === "23505") {
-        skipped += 1;
-        continue;
+      if (error) {
+        // unique race
+        if (error.code === "23505") {
+          skipped += 1;
+          landed.push({ companyName, domain });
+          continue;
+        }
+        throw new Error(`Failed to add row: ${error.message}`);
       }
-      throw new Error(`Failed to add row: ${error.message}`);
+      added += 1;
+      landed.push({ companyName, domain });
+      out.push(mapRow(data as DataRow));
     }
-    added += 1;
-    out.push(mapRow(data as DataRow));
+  } finally {
+    if (!respectExclusions && landed.length > 0) {
+      await removeExclusions(client, tableId, landed);
+    }
   }
 
   return { added, skipped, excluded, rows: out };

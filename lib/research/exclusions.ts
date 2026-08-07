@@ -73,6 +73,7 @@ export async function addExclusions(
   tableId: string,
   items: ExclusionInput[],
 ): Promise<number> {
+  const seen = new Set<string>();
   const rows = items
     .map((item) => {
       const companyName = item.companyName?.trim() || "";
@@ -88,20 +89,48 @@ export async function addExclusions(
         created_by: item.createdBy ?? null,
       };
     })
-    .filter((r): r is NonNullable<typeof r> => r !== null);
+    .filter((r): r is NonNullable<typeof r> => r !== null)
+    // Both unique indexes are per (table, key), so an in-batch repeat would
+    // make the whole insert fail on itself.
+    .filter((r) => {
+      const dedupeKey = `${r.company_key}|${r.domain ?? ""}`;
+      if (seen.has(dedupeKey)) return false;
+      seen.add(dedupeKey);
+      return true;
+    });
   if (rows.length === 0) return 0;
 
-  // One row at a time: the two unique indexes (domain, company_key) mean a
-  // batch upsert cannot name a single conflict target, and a conflict on
-  // either one is a no-op we simply want to ignore.
+  // Drop what is already excluded, so the common case is one SELECT + one
+  // INSERT rather than a round trip per company. `insert` has no
+  // ignoreDuplicates option (that is upsert-only, and upsert can name just one
+  // conflict target while this table has two unique indexes), so a race still
+  // has to be caught per row below.
+  const existing = await loadExclusionIndex(client, tableId);
+  const fresh = rows.filter(
+    (r) =>
+      !existing.isExcluded({ companyName: r.company_name, domain: r.domain }),
+  );
+  if (fresh.length === 0) return 0;
+
+  const { data, error } = await client
+    .from("research_excluded_companies")
+    .insert(fresh)
+    .select("id");
+  if (!error) return data?.length ?? 0;
+  if (error.code !== "23505") {
+    throw new Error(`Failed to exclude company: ${error.message}`);
+  }
+
+  // Someone excluded one of these between the read and the write: the batch
+  // rolled back whole, so retry row by row and let the duplicates fall out.
   let written = 0;
-  for (const row of rows) {
-    const { error } = await client
+  for (const row of fresh) {
+    const { error: rowError } = await client
       .from("research_excluded_companies")
       .insert(row);
-    if (error) {
-      if (error.code === "23505") continue; // already excluded
-      throw new Error(`Failed to exclude company: ${error.message}`);
+    if (rowError) {
+      if (rowError.code === "23505") continue; // already excluded
+      throw new Error(`Failed to exclude company: ${rowError.message}`);
     }
     written += 1;
   }
