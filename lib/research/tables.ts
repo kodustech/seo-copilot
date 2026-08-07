@@ -14,6 +14,13 @@ import type {
   ScoreResult,
 } from "@/lib/research/types";
 import { normalizeDomain } from "@/lib/crm";
+import {
+  addExclusions,
+  clearExclusionsForTable,
+  loadExclusionIndex,
+  removeExclusions,
+  type ExclusionInput,
+} from "@/lib/research/exclusions";
 
 type TableRow = {
   id: string;
@@ -193,6 +200,9 @@ export async function deleteTable(
   await snapshotResearchTable(client, id, { reason: "delete" });
   const { error } = await client.from("research_tables").delete().eq("id", id);
   if (error) throw new Error(`Failed to delete research table: ${error.message}`);
+  // research_excluded_companies has no FK (see its migration), so it needs an
+  // explicit sweep here.
+  await clearExclusionsForTable(client, id);
 }
 
 /**
@@ -203,15 +213,31 @@ export async function deleteTable(
 export async function deleteResearchRows(
   client: SupabaseClient,
   rowIds: string[],
-): Promise<{ deleted: number; cancelledEnrollments: number }> {
+  opts: {
+    /**
+     * Remember these companies so later imports into the same list skip them
+     * (default true). Without this, deleting had no lasting effect: the next
+     * findIcpCompanies run re-imported them with new ids.
+     */
+    exclude?: boolean;
+    reason?: string | null;
+    createdBy?: string | null;
+  } = {},
+): Promise<{
+  deleted: number;
+  cancelledEnrollments: number;
+  excluded: number;
+}> {
   const ids = [...new Set(rowIds.filter(Boolean))];
   if (ids.length === 0) throw new Error("rowIds required");
   const { data: rows, error: rowsError } = await client
     .from("research_rows")
-    .select("id, table_id")
+    .select("id, table_id, company_name, domain")
     .in("id", ids);
   if (rowsError) throw new Error(`Failed to read research rows: ${rowsError.message}`);
-  if (!rows?.length) return { deleted: 0, cancelledEnrollments: 0 };
+  if (!rows?.length) {
+    return { deleted: 0, cancelledEnrollments: 0, excluded: 0 };
+  }
 
   const tableIds = [...new Set(rows.map((row) => row.table_id as string))];
   await Promise.all(
@@ -249,9 +275,30 @@ export async function deleteResearchRows(
     .in("id", rows.map((row) => row.id as string))
     .select("id");
   if (deleteError) throw new Error(`Failed to remove companies from list: ${deleteError.message}`);
+
+  let excluded = 0;
+  if (opts.exclude !== false) {
+    const byTable = new Map<string, ExclusionInput[]>();
+    for (const row of rows) {
+      const tableId = row.table_id as string;
+      const items = byTable.get(tableId) ?? [];
+      items.push({
+        companyName: (row.company_name as string) ?? "",
+        domain: (row.domain as string | null) ?? null,
+        reason: opts.reason ?? "deleted_from_list",
+        createdBy: opts.createdBy ?? null,
+      });
+      byTable.set(tableId, items);
+    }
+    for (const [tableId, items] of byTable) {
+      excluded += await addExclusions(client, tableId, items);
+    }
+  }
+
   return {
     deleted: deletedRows?.length ?? 0,
     cancelledEnrollments: activeEnrollments?.length ?? 0,
+    excluded,
   };
 }
 
@@ -407,6 +454,17 @@ export async function restoreResearchTableSnapshot(
   if (rawRows.length > 0) {
     const { error: rowInsertError } = await client.from("research_rows").insert(rawRows);
     if (rowInsertError) throw new Error(`Failed to restore research rows: ${rowInsertError.message}`);
+    // Restoring is the undo of a delete, so it must also undo the exclusion the
+    // delete recorded — otherwise the row is back but future imports of it are
+    // still blocked.
+    await removeExclusions(
+      client,
+      tableId,
+      rawRows.map((row) => ({
+        companyName: (row.company_name as string) ?? null,
+        domain: (row.domain as string | null) ?? null,
+      })),
+    );
   }
   const people = rows.flatMap((row) => row.people ?? []);
   if (people.length > 0) {
@@ -440,15 +498,48 @@ export async function addRows(
     source?: RowSource | string;
     packRaw?: Record<string, unknown>;
   }>,
-): Promise<{ added: number; skipped: number; rows: ResearchRow[] }> {
+  opts: {
+    /**
+     * Skip companies on the list's exclusion list (default true). Discovery and
+     * bulk imports must respect it, or a cleaned list refills itself on the next
+     * run. Pass false for a deliberate re-add — that also clears the exclusion,
+     * so removing a company is never a one-way door.
+     */
+    respectExclusions?: boolean;
+  } = {},
+): Promise<{
+  added: number;
+  skipped: number;
+  excluded: number;
+  rows: ResearchRow[];
+}> {
   let added = 0;
   let skipped = 0;
+  let excluded = 0;
   const out: ResearchRow[] = [];
+
+  const respectExclusions = opts.respectExclusions !== false;
+  const exclusions = respectExclusions
+    ? await loadExclusionIndex(client, tableId)
+    : null;
+  if (!respectExclusions) {
+    await removeExclusions(
+      client,
+      tableId,
+      rows.map((r) => ({ companyName: r.companyName, domain: r.domain })),
+    );
+  }
 
   for (const r of rows) {
     const domain = normalizeDomain(r.domain ?? null);
     const companyName = r.companyName.trim() || domain || "Unknown";
     if (!companyName && !domain) {
+      skipped += 1;
+      continue;
+    }
+
+    if (exclusions?.isExcluded({ companyName, domain })) {
+      excluded += 1;
       skipped += 1;
       continue;
     }
@@ -507,7 +598,7 @@ export async function addRows(
     out.push(mapRow(data as DataRow));
   }
 
-  return { added, skipped, rows: out };
+  return { added, skipped, excluded, rows: out };
 }
 
 export async function listRows(

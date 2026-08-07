@@ -80,7 +80,11 @@ export async function POST(
       );
     }
 
-    const result = await addRows(client, id, rows);
+    // Someone typed/pasted these companies at this list: a deliberate re-add
+    // overrides (and clears) an earlier exclusion.
+    const result = await addRows(client, id, rows, {
+      respectExclusions: false,
+    });
     return NextResponse.json(result, { status: 201 });
   } catch (err) {
     return NextResponse.json(
