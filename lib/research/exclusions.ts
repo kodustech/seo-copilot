@@ -39,14 +39,37 @@ export function normalizeCompanyKey(name: string): string {
     .replace(/[^a-z0-9]+/g, "");
 }
 
+/** Suffixes whose registrable name sits one label further left. */
+const COMPOUND_TLDS = new Set([
+  "com.br",
+  "net.br",
+  "com.ar",
+  "com.mx",
+  "co.uk",
+  "org.uk",
+  "co.jp",
+  "com.au",
+  "co.za",
+  "com.co",
+]);
+
 /**
- * Key a domain's first label would produce: "acme.com" → "acme". A discovery
- * row often has no domain, so its exclusion is keyed on the bare company name
- * ("Acme" → "acme"); re-adding the same company as a pasted domain would
- * otherwise compute "acmecom" and miss it.
+ * Key a domain's own name would produce: "acme.com" and "acme.com.br" → "acme".
+ * A discovery row often has no domain, so its exclusion is keyed on the bare
+ * company name ("Acme" → "acme"); re-adding the same company as a pasted
+ * domain would otherwise compute "acmecom" and miss it.
+ *
+ * Empty for anything with a label to the left of the registrable name —
+ * "s3.amazonaws.com" must not resolve to "s3" and lift the exclusion of an
+ * unrelated domainless company called S3.
  */
 function domainRootKey(domain: string): string {
-  return normalizeCompanyKey(domain.split(".")[0] ?? "");
+  const parts = domain.split(".").filter(Boolean);
+  const isRegistrable =
+    parts.length === 2 ||
+    (parts.length === 3 && COMPOUND_TLDS.has(parts.slice(-2).join(".")));
+  if (!isRegistrable) return "";
+  return normalizeCompanyKey(parts[0]);
 }
 
 function mapExclusion(r: Record<string, unknown>): ResearchExclusion {
