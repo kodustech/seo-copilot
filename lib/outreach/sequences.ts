@@ -1309,33 +1309,59 @@ export async function enrollFromProspects(
  * Only unsent tasks are touched, and only when the frozen values actually
  * changed; a sent email is a record of what went out and is never rewritten.
  */
+/**
+ * Order-independent view of a template_vars map, for change detection.
+ * jsonb round-trips reorder keys, so raw JSON.stringify is not a fair test.
+ */
+function canonicalVars(vars: Record<string, string>): string {
+  return JSON.stringify(
+    Object.keys(vars)
+      .sort()
+      .map((k) => [k, vars[k]]),
+  );
+}
+
 export async function refreshCrmSignalVars(
   client: SupabaseClient,
   opts: { limit?: number } = {},
 ): Promise<{ enrollmentsUpdated: number; tasksRerendered: number }> {
-  // Paged, not capped. This is the only thing that unblocks a send held for a
-  // stale token, and it is now driven by a cron that runs every 15 minutes —
-  // so a flat .limit() with no ORDER BY would hand back an arbitrary slice
-  // each tick and leave the tail of the list permanently stale. That is the
-  // same "blocked forever" state this function exists to clear, just moved to
-  // whichever enrollments the planner happened to omit.
+  // Keyset paging, not OFFSET. This is the only thing that unblocks a send
+  // held for a stale token, so a flat .limit() with no ORDER BY would leave
+  // the tail of the list permanently stale — the same "blocked forever" state
+  // this function exists to clear, moved to whichever rows the planner
+  // omitted. But an unbounded OFFSET walk is not the fix either: .range(from,
+  // to) makes the database skip `from` rows on every page, so a full scan
+  // costs O(N²/PAGE) and a 15-minute cron would spend more of each tick
+  // re-skipping than working. Seeking past the last id read is flat.
   const PAGE = 500;
-  const maxRows = opts.limit ?? Infinity;
+  // Safety net for a runaway loop, not a product limit — hitting it is a bug,
+  // so it says so instead of silently returning a partial refresh.
+  const HARD_CAP = 50_000;
+  const maxRows = Math.min(opts.limit ?? HARD_CAP, HARD_CAP);
   const rawEnrollments: Record<string, unknown>[] = [];
-  for (let from = 0; from < maxRows; from += PAGE) {
-    const to = Math.min(from + PAGE, maxRows) - 1;
-    const { data, error } = await client
+  let afterId: string | null = null;
+  while (rawEnrollments.length < maxRows) {
+    let q = client
       .from("outreach_enrollments")
       .select("*")
       .eq("status", "active")
       .not("crm_company_id", "is", null)
       // Stable order so pages cannot overlap or skip rows mid-scan.
       .order("id", { ascending: true })
-      .range(from, to);
+      .limit(Math.min(PAGE, maxRows - rawEnrollments.length));
+    if (afterId) q = q.gt("id", afterId);
+    const { data, error } = await q;
     if (error) throw new Error(error.message);
     const page = (data ?? []) as Record<string, unknown>[];
+    if (page.length === 0) break;
     rawEnrollments.push(...page);
-    if (page.length < to - from + 1) break;
+    afterId = String(page[page.length - 1].id);
+    if (page.length < PAGE) break;
+  }
+  if (rawEnrollments.length >= HARD_CAP) {
+    console.warn(
+      `[sequences] refreshCrmSignalVars hit the ${HARD_CAP} row cap — the tail was not refreshed`,
+    );
   }
 
   const enrollments = rawEnrollments.map((r) =>
@@ -1393,7 +1419,13 @@ export async function refreshCrmSignalVars(
       next.skip_reason = previous.skip_reason;
     }
 
-    if (JSON.stringify(next) === JSON.stringify(previous)) continue;
+    // Compare canonically. `previous` came back through a jsonb column, which
+    // does not preserve insertion order (Postgres stores keys by length then
+    // bytewise), while `next` is fresh freezeSignalVars output. Stringifying
+    // both directly reports "changed" for identical data — and with a
+    // 15-minute cron as the driver that means rewriting every active
+    // enrollment, and its updated_at, on every tick forever.
+    if (canonicalVars(next) === canonicalVars(previous)) continue;
 
     const { error: updateError } = await client
       .from("outreach_enrollments")
