@@ -440,6 +440,10 @@ export async function handleUnipileMessageReceived(
 
   for (const enr of stoppable) {
     const result = await markEnrollmentReplied(client, enr.id, {
+      // Same rule as the Gmail sync: stop the cadence now, but leave an
+      // excluded account excluded until the classifier confirms a human wrote
+      // this. reconcileEnrollmentForReplyClass applies the revive after.
+      revive: false,
       source: "unipile_linkedin",
     });
     matchedEnrollmentIds.push(enr.id);
@@ -679,6 +683,7 @@ export async function syncUnipileLinkedInInbox(
           }
           try {
             await markEnrollmentReplied(client, enr.id, {
+              revive: false,
               source: "unipile_linkedin_sync",
             });
             enrollmentsStopped.add(enr.id);

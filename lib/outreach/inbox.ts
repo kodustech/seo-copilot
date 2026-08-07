@@ -17,30 +17,166 @@ import {
   type OutreachMailboxSecrets,
 } from "@/lib/outreach/mailbox";
 import {
+  deferEnrollmentForAutoReply,
   markEnrollmentBounced,
   markEnrollmentReplied,
 } from "@/lib/outreach/sequences";
 import { scopesIncludeGmailReadonly } from "@/lib/outreach/google-oauth";
 
-/** Bounce / DSN / mailer-daemon — not a human reply. */
-const BOUNCE_INBOUND_RE =
-  /address not found|endere[cç]o n[aã]o encontrado|delivery status notification|could not be delivered|wasn't delivered|wasn&#39;t delivered|mailbox unavailable|user unknown|550\s*5\.1\.1|does not exist|undeliverable|mail delivery failed|recipient rejected|no such user|unknown user/i;
+/**
+ * Machine-generated inbound: bounces and autoresponders.
+ *
+ * Both are detected from headers first and text second. Text is a losing game —
+ * it is per-provider, per-locale, and per-apostrophe (Office 365 writes
+ * "couldn't be delivered" with a typographic quote) — while the headers below
+ * are what the RFCs and the big providers actually set. Text stays as the
+ * fallback for callers that read a stored message instead of a live Gmail
+ * payload, and for senders that set no headers at all.
+ */
 
-const MAILER_DAEMON_RE =
-  /mailer-daemon|postmaster|mail-delivery|mail delivery subsystem/i;
+/** Lowercased header name → value. */
+export type InboundHeaderMap = Record<string, string>;
 
-export function isBounceInbound(opts: {
+export type InboundSignals = {
   subject?: string | null;
   snippet?: string | null;
   fromEmail?: string | null;
   bodyText?: string | null;
-}): boolean {
+  /** Absent for callers reading from the DB — they fall back to text. */
+  headers?: InboundHeaderMap | null;
+};
+
+/** Apostrophe variants: ASCII, typographic, and the HTML entity Gmail leaks. */
+const APOS = "(?:'|’|&#39;|&rsquo;)";
+
+const BOUNCE_INBOUND_RE = new RegExp(
+  [
+    "address not found",
+    "endere[cç]o n[aã]o encontrado",
+    "delivery status notification",
+    "could ?not be delivered",
+    `couldn${APOS}t be delivered`,
+    `wasn${APOS}t be delivered`,
+    `wasn${APOS}t delivered`,
+    "was not delivered",
+    "delivery (?:has )?failed",
+    "mail delivery failed",
+    "mailbox (?:unavailable|full|is full)",
+    "quota exceeded",
+    "user unknown",
+    "unknown user",
+    "no such user",
+    "does not exist",
+    "undeliverable",
+    "recipient rejected",
+    "relay access denied",
+    // pt-BR / es
+    "n[aã]o p[oô]de ser entregue",
+    "falha na entrega",
+    "no se pudo entregar",
+  ].join("|"),
+  "i",
+);
+
+const MAILER_DAEMON_RE =
+  /mailer-daemon|postmaster|mail-delivery|mail delivery subsystem|no-?reply@.*(bounce|delivery)/i;
+
+/**
+ * RFC 3463 enhanced status code. 5.x.y is a permanent failure — the old regex
+ * only knew 5.1.1, which matched 5.1.10 by luck and missed 5.1.3, 5.2.2, 5.4.x
+ * and 5.7.x outright. On its own a dotted triple could be a version number, so
+ * it only counts next to delivery vocabulary.
+ */
+const DSN_STATUS_RE = /\b5\.\d{1,3}\.\d{1,3}\b/;
+const DELIVERY_CONTEXT_RE =
+  /deliver|recipient|mailbox|smtp|remote server|rejected|status code|55[0-9]|entrega|destinat[aá]rio/i;
+
+function blobOf(opts: InboundSignals): string {
+  return [opts.subject, opts.snippet, opts.bodyText].filter(Boolean).join("\n");
+}
+
+function head(headers: InboundHeaderMap | null | undefined, name: string): string {
+  return (headers?.[name] ?? "").toLowerCase();
+}
+
+/** Build the map `isBounceInbound`/`isAutoReplyInbound` expect. */
+export function toHeaderMap(
+  headers: { name?: string; value?: string }[] | undefined,
+): InboundHeaderMap {
+  const map: InboundHeaderMap = {};
+  for (const h of headers ?? []) {
+    const key = h.name?.trim().toLowerCase();
+    if (key && h.value != null && !(key in map)) map[key] = h.value.trim();
+  }
+  return map;
+}
+
+/** Bounce / DSN / mailer-daemon — not a human reply. */
+export function isBounceInbound(opts: InboundSignals): boolean {
+  const h = opts.headers;
+  if (h) {
+    // A report/delivery-status part (RFC 6522) is what a DSN *is*.
+    const ctype = head(h, "content-type");
+    if (ctype.includes("multipart/report") && ctype.includes("delivery-status")) {
+      return true;
+    }
+    // Null envelope sender (RFC 5321 §4.5.5): only bounces are sent with one,
+    // precisely so they cannot themselves bounce.
+    const returnPath = head(h, "return-path").replace(/\s/g, "");
+    if (returnPath === "<>") return true;
+    if (h["x-failed-recipients"]) return true;
+    if (head(h, "auto-submitted").startsWith("auto-generated")) {
+      // auto-generated covers DSNs; auto-replied is the out-of-office case and
+      // is left to isAutoReplyInbound.
+      if (DSN_STATUS_RE.test(blobOf(opts)) || MAILER_DAEMON_RE.test(head(h, "from"))) {
+        return true;
+      }
+    }
+  }
+
   const from = (opts.fromEmail || "").toLowerCase();
   if (MAILER_DAEMON_RE.test(from)) return true;
-  const blob = [opts.subject, opts.snippet, opts.bodyText]
-    .filter(Boolean)
-    .join("\n");
-  return BOUNCE_INBOUND_RE.test(blob);
+
+  const blob = blobOf(opts);
+  if (BOUNCE_INBOUND_RE.test(blob)) return true;
+  return DSN_STATUS_RE.test(blob) && DELIVERY_CONTEXT_RE.test(blob);
+}
+
+const OOO_TEXT_RE =
+  /out of (?:the |my )?office|out-of-office|outofoffice|automatic reply|auto-?reply|autoresponder|auto-?respond|resposta autom[aá]tica|fora do escrit[oó]rio|estou de f[eé]rias|estarei ausente|de licen[cç]a|on annual leave|on parental leave|on vacation|currently away|away from (?:my|the) (?:desk|office)|respuesta autom[aá]tica/i;
+
+/**
+ * Out-of-office / autoresponder / ticket acknowledgement. Nobody read the
+ * pitch, so this must not stop the cadence or promote the account.
+ */
+export function isAutoReplyInbound(opts: InboundSignals): boolean {
+  const h = opts.headers;
+  if (h) {
+    // RFC 3834. Any value other than "no" means the message was generated by a
+    // program, and vacation agents are the canonical producer.
+    const autoSubmitted = head(h, "auto-submitted");
+    if (autoSubmitted && autoSubmitted !== "no") return true;
+    if (h["x-autoreply"] || h["x-autorespond"] || h["x-autoreply-from"]) {
+      return true;
+    }
+    // Convention predating RFC 3834; a reply inside a thread we started is
+    // never a legitimate bulk mailing.
+    const precedence = head(h, "precedence");
+    if (precedence === "bulk" || precedence === "auto_reply" || precedence === "junk") {
+      return true;
+    }
+    if (head(h, "x-mailer").includes("vacation")) return true;
+
+    // X-Auto-Response-Suppress is corroborating, never decisive. It asks the
+    // recipient not to auto-reply — Outlook and Exchange set it on ordinary
+    // human mail too, so on its own it would defer the cadence for a real
+    // reply. Paired with out-of-office wording it settles the Office 365 case
+    // where no RFC 3834 header is present.
+    if (h["x-auto-response-suppress"] && OOO_TEXT_RE.test(blobOf(opts))) {
+      return true;
+    }
+  }
+  return OOO_TEXT_RE.test(blobOf(opts));
 }
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -106,6 +242,8 @@ export type InboxSyncResult = {
   threadsTouched: number;
   messagesUpserted: number;
   enrollmentsMarkedReplied: number;
+  /** Cadences pushed past an out-of-office instead of being stopped. */
+  enrollmentsDeferred?: number;
   error?: string;
 };
 
@@ -847,7 +985,12 @@ async function processGmailThread(
   mailbox: OutreachMailboxSecrets,
   index: SentThreadIndex,
   gmailThreadId: string,
-  counters: { threadsTouched: number; messagesUpserted: number; enrollmentsMarkedReplied: number },
+  counters: {
+    threadsTouched: number;
+    messagesUpserted: number;
+    enrollmentsMarkedReplied: number;
+    enrollmentsDeferred: number;
+  },
 ): Promise<void> {
   const thread = await fetchGmailThread(accessToken, gmailThreadId);
   const messages = thread.messages ?? [];
@@ -906,9 +1049,15 @@ async function processGmailThread(
     result.strongMatch &&
     result.enrollmentId
   ) {
-    // Classify bounce/DSN vs human reply before stopping the cadence.
+    // Classify bounce / autoresponder / human reply before stopping the
+    // cadence. All three used to collapse into "replied", so an out-of-office
+    // cancelled the sequence and promoted the account as engaged.
     let bounce = false;
     let bounceReason: string | null = null;
+    let autoReply = false;
+    let autoReplyReason: string | null = null;
+    let humanReply = false;
+
     for (const msg of messages) {
       const headers = msg.payload?.headers;
       const from = extractEmail(headerValue(headers, "From"));
@@ -920,17 +1069,28 @@ async function processGmailThread(
         mailbox.fromEmail,
       );
       if (direction !== "inbound") continue;
-      if (
-        isBounceInbound({
-          fromEmail: from,
-          subject,
-          snippet: msg.snippet ?? null,
-        })
-      ) {
+
+      const signals = {
+        fromEmail: from,
+        subject,
+        snippet: msg.snippet ?? null,
+        headers: toHeaderMap(headers),
+      };
+
+      if (isBounceInbound(signals)) {
         bounce = true;
-        bounceReason = (subject || msg.snippet || "Hard bounce").slice(0, 200);
-        break;
+        bounceReason ??= (subject || msg.snippet || "Hard bounce").slice(0, 200);
+        continue;
       }
+      if (isAutoReplyInbound(signals)) {
+        autoReply = true;
+        autoReplyReason ??= (subject || msg.snippet || "Automatic reply").slice(
+          0,
+          200,
+        );
+        continue;
+      }
+      humanReply = true;
     }
 
     if (bounce) {
@@ -939,9 +1099,24 @@ async function processGmailThread(
         reason: bounceReason,
       });
       if (marked.updated) counters.enrollmentsMarkedReplied++;
+    } else if (autoReply && !humanReply) {
+      // Nobody read the pitch. Push the cadence past the absence instead of
+      // ending it — the person is coming back.
+      const deferred = await deferEnrollmentForAutoReply(
+        client,
+        result.enrollmentId,
+        { source: "gmail_sync", reason: autoReplyReason },
+      );
+      if (deferred.updated) counters.enrollmentsDeferred++;
     } else {
       const marked = await markEnrollmentReplied(client, result.enrollmentId, {
         source: "gmail_sync",
+        // The class is unknown until the classifier runs (it needs an LLM call
+        // and this path must not depend on one). Reviving an account a human
+        // excluded is irreversible enough to wait for that confirmation:
+        // reconcileEnrollmentForReplyClass applies it once the reply is known
+        // to be human.
+        revive: false,
       });
       if (marked.updated) counters.enrollmentsMarkedReplied++;
     }
@@ -1009,6 +1184,7 @@ export async function syncMailboxInbox(
     threadsTouched: 0,
     messagesUpserted: 0,
     enrollmentsMarkedReplied: 0,
+    enrollmentsDeferred: 0,
   };
 
   try {

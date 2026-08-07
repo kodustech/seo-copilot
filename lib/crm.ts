@@ -1047,6 +1047,63 @@ export async function upsertAccountByDomain(
   return { company, created, contactCreated };
 }
 
+/**
+ * Undo the engagement half of a reply promotion when the "reply" turns out not
+ * to have been one — an autoresponder, or a bounce the sync's detector missed.
+ * Both leave the account sitting at engaged/high with an outbound-reply tag on
+ * the strength of a message nobody wrote.
+ *
+ * Deliberately narrow. It only touches an account that is still exactly where
+ * the promotion left it — engaged + high, promoted by this enrollment. If a
+ * human has since moved it (qualified, lost, anything), they read the thread
+ * and their call stands; if the priority was changed by hand, same. The account
+ * itself is never deleted or re-archived: the sync no longer revives on an
+ * unclassified reply, so there is no exclusion to restore, and deleting a row
+ * somebody may already be working is worse than a stale-looking lead.
+ */
+export async function demoteReplyPromotion(
+  client: SupabaseClient,
+  enrollmentId: string,
+  opts?: { reason?: "auto_reply" | "bounce" },
+): Promise<{ demoted: boolean; companyId: string | null }> {
+  const reason = opts?.reason ?? "auto_reply";
+  const { data, error } = await client
+    .from("crm_companies")
+    .select("*")
+    .eq("enrichment->sequence->>enrollment_id", enrollmentId)
+    .limit(2);
+  if (error) throw new Error(error.message);
+
+  const rows = (data ?? []) as CompanyRow[];
+  // More than one account claiming the same enrollment means the enrichment is
+  // ambiguous; guessing which to demote is worse than leaving both alone.
+  if (rows.length !== 1) return { demoted: false, companyId: null };
+
+  const company = rowToCompany(rows[0]);
+  if (company.status !== "engaged" || company.priority !== "high") {
+    return { demoted: false, companyId: company.id };
+  }
+
+  await updateCompany(client, company.id, {
+    status: "lead",
+    priority: "medium",
+    tags: [
+      ...company.tags.filter((t) => t !== "outbound-reply"),
+      reason === "bounce" ? "outbound-bounce" : "outbound-auto-reply",
+    ],
+    enrichment: {
+      ...company.enrichment,
+      sequence: {
+        ...((company.enrichment?.sequence as Record<string, unknown>) ?? {}),
+        promoted_via: `${reason}_reverted`,
+        reverted_at: new Date().toISOString(),
+      },
+    },
+  });
+
+  return { demoted: true, companyId: company.id };
+}
+
 export type PromoteEnrollmentInput = {
   id: string;
   sequenceId: string;
@@ -1081,6 +1138,10 @@ export async function promoteEnrollmentToCrm(
   opts?: {
     reason?: "reply" | "manual_promote";
     actorEmail?: string | null;
+    /** Override the revive decision. The Gmail sync passes false because at
+     *  that point the reply could still be an autoresponder; the reply
+     *  classifier passes true once it has confirmed a human wrote it. */
+    revive?: boolean;
   },
 ): Promise<{
   company: CrmCompany | null;
@@ -1138,7 +1199,12 @@ export async function promoteEnrollmentToCrm(
     // account answered, which is better evidence than whatever made us drop it.
     // A manual promote does not — the person promoting can restore it, and
     // should have to see that the account was excluded on purpose.
-    revive: reason === "reply",
+    //
+    // "Somebody answered" has to mean a person. An out-of-office is not
+    // evidence of anything, and undoing an exclusion is the least reversible
+    // thing this function does, so callers that cannot yet tell a human reply
+    // from a machine one pass revive: false and come back after classifying.
+    revive: opts?.revive ?? reason === "reply",
     // A reply is engagement; a manual promote is not (nobody has answered yet).
     status: reason === "reply" ? "engaged" : "lead",
     priority: reason === "reply" ? "high" : "medium",
