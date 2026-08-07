@@ -292,17 +292,22 @@ async function demoteQuietly(
 }
 
 /**
- * Does any *other* thread on this enrollment carry inbound mail?
+ * Does any *other* thread on this enrollment carry inbound mail that might be
+ * from a person?
  *
- * The guard in front of reverting a `replied` enrollment. `replied` records
- * that somebody answered, not which thread they answered on, so an
- * autoresponder cannot be read as "the reply was fake" unless it is the only
- * inbound conversation the enrollment has. Deliberately blunt: any other thread
- * with inbound mail blocks the revert, including one not yet classified. Being
- * left stopped is recoverable by hand; a cadence resuming into a live
- * conversation is not.
+ * The guard in front of undoing a stop. `replied` records that somebody
+ * answered, not which thread they answered on, so neither an autoresponder nor
+ * a bounce can be read as "the reply was fake" while another conversation on
+ * the enrollment could be the real one — the person answers on one thread and
+ * their vacation agent, or a DSN for a second address, lands on another.
+ *
+ * Threads already classified as bounce or auto_reply do not count: they are
+ * known to be machine-generated, and counting them would make two bounces on
+ * one enrollment block each other forever. Everything else counts, including
+ * unclassified — being left stopped is recoverable by hand, and a cadence
+ * resuming into a live conversation is not.
  */
-async function enrollmentHasOtherInboundThread(
+async function enrollmentHasOtherLiveThread(
   client: SupabaseClient,
   enrollmentId: string,
   threadId: string,
@@ -313,8 +318,9 @@ async function enrollmentHasOtherInboundThread(
     .eq("enrollment_id", enrollmentId)
     .neq("id", threadId)
     .not("last_inbound_at", "is", null)
+    .or("reply_class.is.null,reply_class.not.in.(bounce,auto_reply)")
     .limit(1);
-  // On a read failure, assume the risky case and leave the enrollment stopped.
+  // On a read failure, assume the risky case and leave the enrollment alone.
   if (error) return true;
   return (data ?? []).length > 0;
 }
@@ -352,6 +358,13 @@ async function reconcileEnrollmentForReplyClass(
     } = await import("@/lib/outreach/sequences");
 
     if (label === "bounce") {
+      // markEnrollmentBounced overwrites `replied`, and the demote below drops
+      // the account back to lead. Both are wrong if the reply that set that
+      // state came from a different thread — a DSN for one address does not
+      // undo a person answering on another.
+      if (await enrollmentHasOtherLiveThread(client, enrollmentId, threadId)) {
+        return false;
+      }
       const marked = await markEnrollmentBounced(client, enrollmentId, {
         source: "reply_classifier",
         reason,
@@ -370,11 +383,8 @@ async function reconcileEnrollmentForReplyClass(
       // earlier in the thread, the enrollment stopped for that reply and the
       // out-of-office arriving later changes nothing.
       if (inboundCount > 1) return false;
-      // ...and only when it is the whole conversation on *every* thread. An
-      // enrollment can have several: the human answers on one and sets an
-      // out-of-office that lands on another, and reverting on the strength of
-      // the second would restart a cadence into somebody who already replied.
-      if (await enrollmentHasOtherInboundThread(client, enrollmentId, threadId)) {
+      // ...and only when it is the whole conversation on *every* thread.
+      if (await enrollmentHasOtherLiveThread(client, enrollmentId, threadId)) {
         return false;
       }
       const deferred = await deferEnrollmentForAutoReply(client, enrollmentId, {
