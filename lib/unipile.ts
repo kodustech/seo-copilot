@@ -69,6 +69,19 @@ export class UnipileHarvestLimitError extends Error {
 }
 
 /**
+ * A harvest call exceeded its deadline. Typed for the same reason as the
+ * limit error: one slow post is bad luck, but a degraded Unipile means every
+ * remaining post will also burn the full timeout, and a harvest that takes
+ * half an hour to fail is worse than one that stops.
+ */
+export class UnipileTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnipileTimeoutError";
+  }
+}
+
+/**
  * Every call against the connected LinkedIn account, on one line. That
  * account is the sender identity for the whole founder-voice motion, so the
  * question "how much did we hit LinkedIn today, and with what" has to be
@@ -511,6 +524,16 @@ async function harvestFetch<T>(path: string): Promise<T> {
     return await unipileFetch<T>(path, {
       signal: AbortSignal.timeout(harvestTimeoutMs()),
     });
+  } catch (err) {
+    // AbortSignal.timeout rejects with a DOMException named TimeoutError,
+    // which callers have no reason to know about. Translate it so a harvest
+    // can recognise "this is systemic, stop" without importing DOM types.
+    if (err instanceof DOMException && err.name === "TimeoutError") {
+      throw new UnipileTimeoutError(
+        `Unipile call timed out after ${harvestTimeoutMs()}ms: ${path}`,
+      );
+    }
+    throw err;
   } finally {
     // Hold the next caller off for the interval even when this one threw —
     // a 429 is exactly when backing off matters most.

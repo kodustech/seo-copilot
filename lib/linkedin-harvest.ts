@@ -30,6 +30,7 @@ import {
   unipileHarvestBudget,
   UnipileHarvestLimitError,
   UnipileHttpError,
+  UnipileTimeoutError,
   type UnipilePostComment,
 } from "@/lib/unipile";
 
@@ -263,6 +264,49 @@ export type HarvestWriteResult = {
 };
 
 /**
+ * Build the commenter upsert payloads, grouped by which optional columns they
+ * carry.
+ *
+ * Two invariants live here, both load-bearing:
+ *
+ * 1. A null optional field is OMITTED, never sent as null. A column absent
+ *    from the payload is absent from the ON CONFLICT SET list, so a thin
+ *    sighting cannot blank a headline or network distance that another
+ *    harvest just wrote. Coalescing in memory against a pre-read only held
+ *    single-threaded; this holds in any order.
+ * 2. Rows are grouped by key set, because PostgREST rejects a bulk upsert
+ *    whose objects have differing keys (PGRST102).
+ */
+export function commenterUpsertGroups(
+  researchTableId: string,
+  people: Commenter[],
+  now: string,
+): Map<string, Array<Record<string, unknown>>> {
+  const groups = new Map<string, Array<Record<string, unknown>>>();
+  for (const person of people) {
+    const row: Record<string, unknown> = {
+      research_table_id: researchTableId,
+      profile_url: person.profileUrl,
+      name: person.name,
+      last_seen_at: now,
+      updated_at: now,
+    };
+    if (person.headline) row.headline = person.headline;
+    if (person.networkDistance) row.network_distance = person.networkDistance;
+    if (person.providerId) row.provider_id = person.providerId;
+    if (person.publicIdentifier) row.public_identifier = person.publicIdentifier;
+    if (person.profilePictureUrl) {
+      row.profile_picture_url = person.profilePictureUrl;
+    }
+    const shape = Object.keys(row).sort().join(",");
+    const group = groups.get(shape) ?? [];
+    group.push(row);
+    groups.set(shape, group);
+  }
+  return groups;
+}
+
+/**
  * A storable timestamp, or null.
  *
  * LinkedIn sometimes hands back a relative date ("2mo") where an ISO string
@@ -319,68 +363,64 @@ export async function saveCommenters(
     return { peopleUpserted: 0, peopleNew: 0, triggersAdded: 0 };
   }
 
-  // One read for everyone, not one per person. At the permitted maxima
-  // (25 posts x 200 commenters) the per-person round trip was thousands of
-  // sequential calls — long enough to time out the function that made them.
-  const existingByProfile = new Map<string, Record<string, unknown>>();
+  // One read for everyone, not one per person. This is only used to report
+  // how many people are new — the writes below do not depend on it, because
+  // a pre-read is stale the moment another harvest writes. Under concurrency
+  // the count can be off by the rows the other run created; the data cannot.
+  const existingProfiles = new Set<string>();
   for (let i = 0; i < profileUrls.length; i += 200) {
     const chunk = profileUrls.slice(i, i + 200);
     const { data, error } = await client
       .from("linkedin_commenters")
-      .select(
-        "id, profile_url, headline, network_distance, provider_id, public_identifier, profile_picture_url",
-      )
+      .select("profile_url")
       .eq("research_table_id", researchTableId)
       .in("profile_url", chunk);
     if (error) {
       throw new Error(`Failed to read linkedin_commenters: ${error.message}`);
     }
-    for (const row of data ?? []) {
-      existingByProfile.set(row.profile_url as string, row);
-    }
+    for (const row of data ?? []) existingProfiles.add(row.profile_url as string);
   }
 
   const now = new Date().toISOString();
-  // Upsert rather than insert: two harvests running at once would both read
-  // "no such row" and both insert, and the loser of that race got a unique
-  // violation that failed the whole harvest. Conflict now resolves instead
-  // of throwing.
-  const personRows = [...byProfile.values()].map(({ person }) => {
-    const prior = existingByProfile.get(person.profileUrl!);
-    // Coalesce against what is already stored so a thinner sighting cannot
-    // blank a headline or a network distance we already knew.
-    const keep = (fresh: string | null, column: string) =>
-      fresh ?? ((prior?.[column] as string | null) ?? null);
-    return {
-      research_table_id: researchTableId,
-      profile_url: person.profileUrl,
-      name: person.name,
-      headline: keep(person.headline, "headline"),
-      network_distance: keep(person.networkDistance, "network_distance"),
-      provider_id: keep(person.providerId, "provider_id"),
-      public_identifier: keep(person.publicIdentifier, "public_identifier"),
-      profile_picture_url: keep(person.profilePictureUrl, "profile_picture_url"),
-      last_seen_at: now,
-      updated_at: now,
-    };
-  });
+
+  // Upsert rather than insert, because two harvests running at once would
+  // both read "no such row" and both insert, and the loser of that race took
+  // a unique violation that failed the whole harvest.
+  //
+  // Null columns are omitted rather than coalesced in memory. A value merged
+  // against the pre-read is merged against a snapshot that a concurrent
+  // harvest may already have replaced, so the "a thinner sighting cannot
+  // blank a headline we know" guarantee only held single-threaded. A column
+  // that is absent from the payload is absent from the ON CONFLICT SET list,
+  // so it cannot be blanked by anyone, in any order.
+  //
+  // Rows are grouped by which optional columns they carry: PostgREST rejects
+  // a bulk upsert whose objects have differing key sets (PGRST102), so one
+  // request per shape rather than one big heterogeneous batch.
+  const groups = commenterUpsertGroups(
+    researchTableId,
+    [...byProfile.values()].map((e) => e.person),
+    now,
+  );
 
   const idByProfile = new Map<string, string>();
-  for (let i = 0; i < personRows.length; i += 200) {
-    const chunk = personRows.slice(i, i + 200);
-    const { data, error } = await client
-      .from("linkedin_commenters")
-      .upsert(chunk, { onConflict: "research_table_id,profile_url" })
-      .select("id, profile_url");
-    if (error) {
-      throw new Error(`Failed to upsert commenters: ${error.message}`);
-    }
-    for (const row of data ?? []) {
-      idByProfile.set(row.profile_url as string, row.id as string);
+  for (const group of groups.values()) {
+    for (let i = 0; i < group.length; i += 200) {
+      const chunk = group.slice(i, i + 200);
+      const { data, error } = await client
+        .from("linkedin_commenters")
+        .upsert(chunk, { onConflict: "research_table_id,profile_url" })
+        .select("id, profile_url");
+      if (error) {
+        throw new Error(`Failed to upsert commenters: ${error.message}`);
+      }
+      for (const row of data ?? []) {
+        idByProfile.set(row.profile_url as string, row.id as string);
+      }
     }
   }
   peopleUpserted = idByProfile.size;
-  peopleNew = profileUrls.filter((u) => !existingByProfile.has(u)).length;
+  peopleNew = profileUrls.filter((u) => !existingProfiles.has(u)).length;
 
   // Triggers are append-only and keyed on (commenter, comment) so a re-run
   // over the same post is a no-op rather than a pile of duplicates.
@@ -503,6 +543,10 @@ export async function harvestCommenters(
       // so carrying on just fills `skipped` with the same sentence N times.
       if (
         err instanceof UnipileHarvestLimitError ||
+        // A degraded Unipile times out every call, so continuing means
+        // burning the full deadline once per remaining post — 25 posts at
+        // 30s is a harvest that takes 12 minutes to fail.
+        err instanceof UnipileTimeoutError ||
         (err instanceof UnipileHttpError &&
           (err.status === 401 || err.status === 403 || err.status === 429))
       ) {
