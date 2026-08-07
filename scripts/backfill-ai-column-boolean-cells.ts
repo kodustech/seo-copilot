@@ -1,0 +1,304 @@
+// ---------------------------------------------------------------------------
+// Repair AI column cells that stored a boolean instead of the real answer.
+//
+// runAiFieldCell used to prefer result.booleanAnswer over result.answer without
+// consulting the column's declared type. The model fills `boolean` in on open
+// questions too ("did I find the domain? yes" → true), so every AI-enriched
+// text column ended up holding true/false: useless for filtering, sorting and
+// export. Filtering for "unknown" in the UI matched nothing, because the stored
+// value was `false`.
+//
+// No LLM is re-run. runAiColumn already wrote the correct string to
+// research_rows.pack_raw.ai_columns[<prompt truncated to 120 chars>].answer
+// before returning, and that write was never affected by the bug — so the fix
+// is a lookup and a value swap. Re-enriching instead would cost ~15s and one
+// LLM call per cell to reproduce data we already have.
+//
+// Only `value` changes. evidence, sources, status and updatedAt are left
+// exactly as they were — the evidence is the part that was always correct.
+//
+// Dry run by default. --apply is the only thing that writes.
+//
+//   npx tsx scripts/backfill-ai-column-boolean-cells.ts
+//   npx tsx scripts/backfill-ai-column-boolean-cells.ts --table outbound-cold-thesis-2026-q3-brazil
+//   npx tsx scripts/backfill-ai-column-boolean-cells.ts --apply
+//
+// Flags:
+//   --table <slug>   restrict to one table (default: every table)
+//   --apply          take a snapshot, then write the repaired values
+//   --no-snapshot    skip the pre-write snapshot (not recommended)
+// ---------------------------------------------------------------------------
+
+import { pathToFileURL } from "node:url";
+
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { config } from "dotenv";
+
+import type { ResearchCell, ResearchColumn } from "@/lib/research/types";
+
+config({ path: ".env" });
+
+type Args = {
+  tableSlug: string | null;
+  apply: boolean;
+  snapshot: boolean;
+};
+
+function parseArgs(argv: string[]): Args {
+  const out: Args = { tableSlug: null, apply: false, snapshot: true };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--apply") out.apply = true;
+    else if (a === "--no-snapshot") out.snapshot = false;
+    else if (a === "--table") out.tableSlug = argv[++i] ?? null;
+  }
+  return out;
+}
+
+function getClient(): SupabaseClient {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    throw new Error(
+      "Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in .env",
+    );
+  }
+  return createClient(url, key, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
+
+/** The pack_raw.ai_columns key runAiColumn writes under. */
+function packKey(prompt: string): string {
+  return prompt.slice(0, 120);
+}
+
+export type Repair = {
+  rowId: string;
+  company: string;
+  columnKey: string;
+  from: boolean;
+  to: string;
+};
+
+export type Unrepairable = {
+  rowId: string;
+  company: string;
+  columnKey: string;
+  value: boolean;
+  reason: string;
+};
+
+export type RowInput = {
+  id: string;
+  company_name: string | null;
+  cells: Record<string, ResearchCell> | null;
+  pack_raw: Record<string, unknown> | null;
+};
+
+/** AI columns that could have hit the bug — boolean ones were always correct. */
+export function targetColumns(columns: ResearchColumn[]): ResearchColumn[] {
+  return columns.filter((c) => c.enrich?.kind === "ai" && c.type !== "boolean");
+}
+
+/**
+ * Decide what to repair, without touching a database.
+ *
+ * The whole risk of this backfill is picking the wrong cells, so the choice
+ * lives here where it can be tested against fixtures rather than against
+ * production rows.
+ */
+export function planRepairs(
+  columns: ResearchColumn[],
+  rows: RowInput[],
+): {
+  repairs: Repair[];
+  unrepairable: Unrepairable[];
+  pending: Map<string, Record<string, ResearchCell>>;
+} {
+  const target = targetColumns(columns);
+  const repairs: Repair[] = [];
+  const unrepairable: Unrepairable[] = [];
+  const pending = new Map<string, Record<string, ResearchCell>>();
+
+  for (const row of rows) {
+    const cells = row.cells ?? {};
+    const packRaw = row.pack_raw ?? {};
+    const aiStore =
+      (packRaw.ai_columns as Record<string, { answer?: unknown }> | undefined) ??
+      {};
+    const company = row.company_name ?? "(unnamed)";
+    let next: Record<string, ResearchCell> | null = null;
+
+    for (const column of target) {
+      const cell = cells[column.key];
+      // Only a boolean sitting in a non-boolean column is the bug.
+      if (!cell || typeof cell.value !== "boolean") continue;
+
+      const prompt = column.enrich.kind === "ai" ? column.enrich.prompt : "";
+      const stored = aiStore[packKey(prompt)];
+      const answer = stored?.answer;
+
+      if (typeof answer !== "string" || !answer.trim()) {
+        unrepairable.push({
+          rowId: row.id,
+          company,
+          columnKey: column.key,
+          value: cell.value,
+          reason: stored
+            ? "pack_raw entry has no string answer"
+            : "no pack_raw.ai_columns entry for this prompt",
+        });
+        continue;
+      }
+
+      next = next ?? { ...cells };
+      // Swap the value only. evidence/sources/status were never wrong.
+      next[column.key] = { ...cell, value: answer.trim() };
+      repairs.push({
+        rowId: row.id,
+        company,
+        columnKey: column.key,
+        from: cell.value,
+        to: answer.trim(),
+      });
+    }
+
+    if (next) pending.set(row.id, next);
+  }
+
+  return { repairs, unrepairable, pending };
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const client = getClient();
+
+  let q = client.from("research_tables").select("id, name, slug, columns");
+  if (args.tableSlug) q = q.eq("slug", args.tableSlug.toLowerCase());
+  const { data: tables, error: tablesError } = await q;
+  if (tablesError) throw new Error(`Failed to list tables: ${tablesError.message}`);
+  if (!tables?.length) {
+    console.log(
+      args.tableSlug ? `No table with slug "${args.tableSlug}".` : "No tables.",
+    );
+    return;
+  }
+
+  console.log(
+    `${args.apply ? "APPLY" : "DRY RUN"} — scanning ${tables.length} table(s)\n`,
+  );
+
+  let totalRepairs = 0;
+  let totalUnrepairable = 0;
+  let totalBooleanColumnsSkipped = 0;
+
+  for (const table of tables) {
+    const columns = (table.columns as ResearchColumn[] | null) ?? [];
+    const aiColumns = columns.filter((c) => c.enrich?.kind === "ai");
+    const target = targetColumns(columns);
+    totalBooleanColumnsSkipped += aiColumns.length - target.length;
+    if (target.length === 0) continue;
+
+    const { data: rows, error: rowsError } = await client
+      .from("research_rows")
+      .select("id, company_name, cells, pack_raw")
+      .eq("table_id", table.id as string);
+    if (rowsError) {
+      throw new Error(`Failed to read rows for ${table.slug}: ${rowsError.message}`);
+    }
+
+    const { repairs, unrepairable, pending } = planRepairs(
+      columns,
+      (rows ?? []) as RowInput[],
+    );
+
+    if (repairs.length === 0 && unrepairable.length === 0) continue;
+
+    console.log(`── ${table.name} (${table.slug}) ──`);
+    console.log(
+      `   ${repairs.length} cell(s) repairable across ${pending.size} row(s), ${unrepairable.length} not`,
+    );
+    for (const r of repairs.slice(0, 12)) {
+      console.log(
+        `   ${r.columnKey.padEnd(20)} ${r.company.slice(0, 24).padEnd(26)} ${r.from} → "${r.to.slice(0, 60)}"`,
+      );
+    }
+    if (repairs.length > 12) console.log(`   … ${repairs.length - 12} more`);
+    for (const u of unrepairable.slice(0, 8)) {
+      console.log(
+        `   SKIP ${u.columnKey.padEnd(18)} ${u.company.slice(0, 24).padEnd(26)} ${u.value} — ${u.reason}`,
+      );
+    }
+    if (unrepairable.length > 8) {
+      console.log(`   … ${unrepairable.length - 8} more skipped`);
+    }
+
+    // A cell whose answer is literally "true"/"false" is the model's own text,
+    // not the bug — worth flagging so it is not read as a failed repair.
+    const literal = repairs.filter((r) => /^(true|false)$/i.test(r.to));
+    if (literal.length) {
+      console.log(
+        `   note: ${literal.length} repaired value(s) are the string "true"/"false" — that is what the model answered`,
+      );
+    }
+
+    if (args.apply && pending.size > 0) {
+      if (args.snapshot) {
+        const { snapshotResearchTable } = await import("@/lib/research/tables");
+        const snapshotId = await snapshotResearchTable(
+          client,
+          table.id as string,
+          { reason: "backfill_ai_column_boolean_cells" },
+        );
+        console.log(`   snapshot ${snapshotId}`);
+      }
+      let written = 0;
+      for (const [rowId, cells] of pending) {
+        const { error } = await client
+          .from("research_rows")
+          .update({ cells, updated_at: new Date().toISOString() })
+          .eq("id", rowId);
+        if (error) {
+          throw new Error(`Failed to write row ${rowId}: ${error.message}`);
+        }
+        written += 1;
+      }
+      console.log(`   wrote ${written} row(s)`);
+    }
+    console.log();
+
+    totalRepairs += repairs.length;
+    totalUnrepairable += unrepairable.length;
+  }
+
+  console.log("─".repeat(60));
+  console.log(
+    `${args.apply ? "Repaired" : "Would repair"} ${totalRepairs} cell(s); ${totalUnrepairable} could not be repaired from pack_raw.`,
+  );
+  if (totalBooleanColumnsSkipped > 0) {
+    console.log(
+      `Left ${totalBooleanColumnsSkipped} genuinely-boolean AI column(s) untouched.`,
+    );
+  }
+  if (!args.apply && totalRepairs > 0) {
+    console.log("Re-run with --apply to write.");
+  }
+  if (totalUnrepairable > 0) {
+    console.log(
+      "Unrepairable cells need the enrichment re-run — pack_raw has no answer to copy.",
+    );
+  }
+}
+
+// Only run when invoked directly — planRepairs is imported by its test.
+const invokedDirectly =
+  Boolean(process.argv[1]) &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}

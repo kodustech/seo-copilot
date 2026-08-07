@@ -453,9 +453,14 @@ async function runAiFieldCell(
 ): Promise<ResearchCell> {
   if (column.enrich.kind !== "ai") throw new Error("Not an ai column");
   const result = await runAiColumn(client, rowId, column.enrich.prompt);
-  // Also write into cells (runAiColumn still writes pack_raw for compat)
+  // Also write into cells (runAiColumn still writes pack_raw for compat).
+  //
+  // The column's declared type decides, not whether the model happened to
+  // fill in `boolean`. It fills it in on open questions too ("did I find it?
+  // yes" → true), so preferring it here threw away the real answer and left
+  // text columns holding true/false — unfilterable, unsortable, unexportable.
   const value =
-    result.booleanAnswer != null
+    column.type === "boolean" && result.booleanAnswer != null
       ? result.booleanAnswer
       : result.answer;
   return {
