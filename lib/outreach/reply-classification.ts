@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { getModel } from "@/lib/ai/provider";
-import { isBounceInbound } from "@/lib/outreach/inbox";
+import { isAutoReplyInbound, isBounceInbound } from "@/lib/outreach/inbox";
 
 /**
  * Reply classification.
@@ -69,6 +69,7 @@ Rules:
 
 type ThreadRow = {
   id: string;
+  enrollment_id: string | null;
   subject: string | null;
   snippet: string | null;
   contact_name: string | null;
@@ -110,24 +111,16 @@ function ruleClassify(
   const subject = lastInbound?.subject ?? thread.subject ?? null;
   const snippet = lastInbound?.snippet ?? thread.snippet ?? null;
 
-  if (isBounceInbound({ fromEmail: from, subject, snippet })) {
+  const signals = { fromEmail: from, subject, snippet };
+
+  if (isBounceInbound(signals)) {
     return { reply_class: "bounce", reason: "Matched bounce/DSN heuristics." };
   }
 
-  const haystack = `${subject ?? ""} ${snippet ?? ""}`.toLowerCase();
-  const OOO = [
-    "out of office",
-    "outofoffice",
-    "automatic reply",
-    "auto-reply",
-    "autoreply",
-    "resposta automática",
-    "fora do escritório",
-    "estou de férias",
-    "on annual leave",
-    "on parental leave",
-  ];
-  if (OOO.some((k) => haystack.includes(k))) {
+  // Same predicate the sync stops on, so a thread cannot be an autoresponder
+  // here and a reply there. Headers are unavailable on a stored message, so
+  // this is the text fallback of that check.
+  if (isAutoReplyInbound(signals)) {
     return { reply_class: "auto_reply", reason: "Out-of-office autoresponder." };
   }
 
@@ -139,6 +132,8 @@ export type ClassifyResult = {
   classified: number;
   byRule: number;
   byModel: number;
+  /** Enrollments whose state was corrected once the class was known. */
+  reconciled: number;
   /** New inbound landed mid-classification; the label was dropped, not saved. */
   skippedStale: number;
   failed: number;
@@ -159,6 +154,7 @@ export async function classifyPendingReplyThreads(
     classified: 0,
     byRule: 0,
     byModel: 0,
+    reconciled: 0,
     skippedStale: 0,
     failed: 0,
     errors: [],
@@ -170,7 +166,7 @@ export async function classifyPendingReplyThreads(
   let query = client
     .from("outreach_reply_threads")
     .select(
-      "id, subject, snippet, contact_name, company_name, last_inbound_at, channel",
+      "id, enrollment_id, subject, snippet, contact_name, company_name, last_inbound_at, channel",
     )
     .not("last_inbound_at", "is", null)
     .order("last_inbound_at", { ascending: false })
@@ -205,6 +201,168 @@ export async function classifyPendingReplyThreads(
   );
 
   return result;
+}
+
+/**
+ * Reconcile threads that were classified before the class had any effect.
+ *
+ * The queue in `classifyPendingReplyThreads` is "reply_class IS NULL", so a
+ * thread already labelled auto_reply never comes back through it — including
+ * every out-of-office that stopped a cadence and promoted an account while the
+ * label was write-only. This walks those labels and applies them.
+ *
+ * Self-limiting: each pass only finds enrollments still in the wrong state, so
+ * once the backlog is drained it costs one query per cron tick and does
+ * nothing. Left in place rather than run as a one-off script because the same
+ * drift reappears whenever a label changes.
+ */
+export async function reconcileClassifiedReplyThreads(
+  client: SupabaseClient,
+  opts?: { limit?: number },
+): Promise<{ scanned: number; reconciled: number }> {
+  const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 500);
+
+  const { data, error } = await client
+    .from("outreach_reply_threads")
+    .select("id, enrollment_id, reply_class, reply_class_reason")
+    .in("reply_class", ["auto_reply", "bounce"])
+    .not("enrollment_id", "is", null)
+    .order("last_inbound_at", { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(error.message);
+
+  const threads = (data ?? []) as {
+    id: string;
+    enrollment_id: string;
+    reply_class: ReplyClass;
+    reply_class_reason: string | null;
+  }[];
+  if (!threads.length) return { scanned: 0, reconciled: 0 };
+
+  // Only enrollments still marked `replied` are wrong. Everything else either
+  // never got there or has already been corrected.
+  const { data: stale, error: enrollErr } = await client
+    .from("outreach_enrollments")
+    .select("id")
+    .eq("status", "replied")
+    .in(
+      "id",
+      threads.map((t) => t.enrollment_id),
+    );
+  if (enrollErr) throw new Error(enrollErr.message);
+
+  const staleIds = new Set((stale ?? []).map((r) => r.id as string));
+  if (!staleIds.size) return { scanned: threads.length, reconciled: 0 };
+
+  let reconciled = 0;
+  for (const thread of threads) {
+    if (!staleIds.has(thread.enrollment_id)) continue;
+
+    const { count } = await client
+      .from("outreach_reply_messages")
+      .select("id", { count: "exact", head: true })
+      .eq("thread_id", thread.id)
+      .eq("direction", "inbound");
+
+    const ok = await reconcileEnrollmentForReplyClass(client, {
+      enrollmentId: thread.enrollment_id,
+      label: thread.reply_class,
+      inboundCount: count ?? 1,
+      reason: thread.reply_class_reason ?? "Reconciled from stored class",
+    });
+    if (ok) reconciled++;
+  }
+
+  return { scanned: threads.length, reconciled };
+}
+
+/**
+ * Apply a freshly decided class to the enrollment behind the thread.
+ *
+ * The sync has to act on an inbound message the moment it lands — it cannot
+ * wait for an LLM call, and a cadence that keeps sending into a real reply is
+ * worse than one that stops early. So it takes the cautious reading and this
+ * runs afterwards to correct it. No detector is going to be perfect; what makes
+ * that survivable is that the decision is reversible.
+ *
+ * Imports are dynamic to keep the cycle (inbox → sequences → crm → this) out of
+ * module init, matching how sequences.ts reaches for crm.
+ */
+async function reconcileEnrollmentForReplyClass(
+  client: SupabaseClient,
+  input: {
+    enrollmentId: string | null;
+    label: ReplyClass;
+    inboundCount: number;
+    reason: string;
+  },
+): Promise<boolean> {
+  const { enrollmentId, label, inboundCount, reason } = input;
+  if (!enrollmentId) return false;
+
+  try {
+    const {
+      deferEnrollmentForAutoReply,
+      markEnrollmentBounced,
+      markEnrollmentReplied,
+    } = await import("@/lib/outreach/sequences");
+
+    if (label === "bounce") {
+      const marked = await markEnrollmentBounced(client, enrollmentId, {
+        source: "reply_classifier",
+        reason,
+      });
+      return marked.updated;
+    }
+
+    if (label === "auto_reply") {
+      // Only when the autoresponder is the whole conversation. If a human wrote
+      // earlier in the thread, the enrollment stopped for that reply and the
+      // out-of-office arriving later changes nothing.
+      if (inboundCount > 1) return false;
+      const deferred = await deferEnrollmentForAutoReply(client, enrollmentId, {
+        source: "reply_classifier",
+        reason,
+        revertReplied: true,
+      });
+      if (!deferred.updated) return false;
+      try {
+        const { demoteAutoReplyPromotion } = await import("@/lib/crm");
+        await demoteAutoReplyPromotion(client, enrollmentId);
+      } catch (err) {
+        console.warn("[reply-classification] CRM demote failed", err);
+      }
+      return true;
+    }
+
+    if (HUMAN_REPLY_CLASSES.includes(label)) {
+      // Idempotent: the enrollment is almost always already `replied`. What
+      // this adds is the revive the sync withheld — now that a human is known
+      // to have answered, an excluded account may come back.
+      const marked = await markEnrollmentReplied(client, enrollmentId, {
+        source: "reply_classifier",
+        revive: true,
+      });
+      return marked.updated;
+    }
+
+    // unsubscribe: the cadence must stop, but nobody engaged and an excluded
+    // account being asked to be left alone stays excluded.
+    if (label === "unsubscribe") {
+      const marked = await markEnrollmentReplied(client, enrollmentId, {
+        source: "reply_classifier",
+        revive: false,
+      });
+      return marked.updated;
+    }
+
+    return false;
+  } catch (err) {
+    // Never fail classification over reconciliation: the label is saved, and
+    // the thread should not come back through the queue for this.
+    console.warn("[reply-classification] reconcile failed", enrollmentId, err);
+    return false;
+  }
 }
 
 async function classifyOne(
@@ -301,6 +459,17 @@ async function classifyOne(
       return;
     }
     result.classified++;
+
+    // The label is not just a metric. The sync had to decide what to do with
+    // this thread before anyone knew what it said; now that we know, make the
+    // enrollment agree.
+    const reconciled = await reconcileEnrollmentForReplyClass(client, {
+      enrollmentId: thread.enrollment_id,
+      label,
+      inboundCount: inbound.length,
+      reason,
+    });
+    if (reconciled) result.reconciled++;
   } catch (err) {
     result.failed++;
     const msg = err instanceof Error ? err.message : String(err);

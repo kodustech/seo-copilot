@@ -3248,7 +3248,15 @@ export async function unenrollFromSequence(
 export async function markEnrollmentReplied(
   client: SupabaseClient,
   enrollmentId: string,
-  opts?: { source?: string },
+  opts?: {
+    source?: string;
+    /** Whether this reply may bring an excluded account back. Defaults to true
+     *  for callers who already know a human answered (a person clicking "mark
+     *  replied"). The Gmail sync passes false and lets the classifier confirm:
+     *  undoing a human's exclusion on a guess is not worth the round trip
+     *  saved. */
+    revive?: boolean;
+  },
 ): Promise<{
   updated: boolean;
   alreadyTerminal: boolean;
@@ -3354,6 +3362,7 @@ export async function markEnrollmentReplied(
     const { promoteEnrollmentToCrm } = await import("@/lib/crm");
     const promoted = await promoteEnrollmentToCrm(client, finalEnrollment, {
       reason: "reply",
+      revive: opts?.revive ?? true,
     });
     crm = {
       companyId: promoted.company?.id ?? null,
@@ -3475,6 +3484,139 @@ export async function markEnrollmentBounced(
     updated: true,
     alreadyTerminal: terminal.has(enrollment.status),
     pendingTasksCancelled: cancelledTasks?.length ?? 0,
+    enrollment: mapEnrollment(updated as Record<string, unknown>),
+  };
+}
+
+/** How long an out-of-office pushes the cadence out when it names no date. */
+const AUTO_REPLY_DEFER_DAYS = 7;
+
+/**
+ * Out-of-office / autoresponder: push the cadence out instead of ending it.
+ *
+ * An autoresponder is the absence of an answer, not an answer. Treating it as a
+ * reply cancelled the remaining steps and promoted the account as engaged, so a
+ * vacation message ended the sequence for the one person most likely to still
+ * read it.
+ *
+ * `revertReplied` handles the case the sync could not: the rule pass missed the
+ * autoresponder, the enrollment was already marked replied, and the classifier
+ * only worked it out afterwards. It puts the cancelled steps back.
+ *
+ * The resume date is deliberately a fixed offset rather than the date parsed out
+ * of the message ("back on 8/10"). Parsing free-text dates across locales is the
+ * same fragility this whole change is removing from bounce detection, and being
+ * a few days late costs far less than being wrong.
+ */
+export async function deferEnrollmentForAutoReply(
+  client: SupabaseClient,
+  enrollmentId: string,
+  opts?: {
+    source?: string;
+    reason?: string | null;
+    days?: number;
+    revertReplied?: boolean;
+  },
+): Promise<{
+  updated: boolean;
+  resumeAt: string | null;
+  tasksRescheduled: number;
+  tasksRestored: number;
+  enrollment: OutreachEnrollment | null;
+}> {
+  const empty = {
+    updated: false,
+    resumeAt: null,
+    tasksRescheduled: 0,
+    tasksRestored: 0,
+  };
+
+  const { data: raw, error } = await client
+    .from("outreach_enrollments")
+    .select("*")
+    .eq("id", enrollmentId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!raw) return { ...empty, enrollment: null };
+
+  const enrollment = mapEnrollment(raw as Record<string, unknown>);
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const source = opts?.source?.trim() || "auto_reply";
+  const reason = (opts?.reason ?? "Automatic reply").slice(0, 240);
+
+  const reverting = enrollment.status === "replied" && opts?.revertReplied;
+
+  // Anything else terminal was decided by a stronger signal (a bounce, a human
+  // cancelling, the sequence finishing). An autoresponder does not reopen it.
+  if (
+    !reverting &&
+    ["replied", "completed", "cancelled", "bounced", "failed"].includes(
+      enrollment.status,
+    )
+  ) {
+    return { ...empty, enrollment };
+  }
+
+  const days = Math.max(1, opts?.days ?? AUTO_REPLY_DEFER_DAYS);
+  const target = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+  const sendingWindow = await getSendingWindow(client);
+  const resumeAt = nextSendingSlotAfter(target, now, sendingWindow).toISOString();
+
+  let tasksRestored = 0;
+  if (reverting) {
+    // markEnrollmentReplied cancelled these with exactly this error string.
+    // Only those come back: a step cancelled for any other reason was cancelled
+    // on purpose.
+    const { data: restored, error: restoreErr } = await client
+      .from("outreach_send_tasks")
+      .update({
+        status: "scheduled",
+        scheduled_for: resumeAt,
+        error: null,
+        updated_at: nowIso,
+      })
+      .eq("enrollment_id", enrollmentId)
+      .eq("status", "cancelled")
+      .like("error", "Stopped on reply%")
+      .select("id");
+    if (restoreErr) throw new Error(restoreErr.message);
+    tasksRestored = restored?.length ?? 0;
+  }
+
+  // Push anything still pending that would otherwise fire during the absence.
+  // Later steps keep their own dates — the stagger between steps is intact.
+  const { data: pushed, error: pushErr } = await client
+    .from("outreach_send_tasks")
+    .update({ status: "scheduled", scheduled_for: resumeAt, updated_at: nowIso })
+    .eq("enrollment_id", enrollmentId)
+    .in("status", ["scheduled", "ready"])
+    .lt("scheduled_for", resumeAt)
+    .select("id");
+  if (pushErr) throw new Error(pushErr.message);
+  const tasksRescheduled = pushed?.length ?? 0;
+
+  const { data: updated, error: enrollError } = await client
+    .from("outreach_enrollments")
+    .update({
+      // Only the revert changes status. A paused enrollment stays paused: the
+      // person who paused it did not ask for it back, and an autoresponder is
+      // not a reason to resume anything.
+      ...(reverting ? { status: "active" } : {}),
+      next_run_at: resumeAt,
+      last_error: `Auto-reply from recipient (${source}): ${reason}`.slice(0, 240),
+      updated_at: nowIso,
+    })
+    .eq("id", enrollmentId)
+    .select("*")
+    .single();
+  if (enrollError) throw new Error(enrollError.message);
+
+  return {
+    updated: true,
+    resumeAt,
+    tasksRescheduled,
+    tasksRestored,
     enrollment: mapEnrollment(updated as Record<string, unknown>),
   };
 }

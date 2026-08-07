@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 
 import { syncAllMailboxesInbox } from "@/lib/outreach/inbox";
-import { classifyPendingReplyThreads } from "@/lib/outreach/reply-classification";
+import {
+  classifyPendingReplyThreads,
+  reconcileClassifiedReplyThreads,
+} from "@/lib/outreach/reply-classification";
 import { syncUnipileLinkedInInbox } from "@/lib/unipile-replies";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 
@@ -33,12 +36,27 @@ export async function POST(req: Request) {
       console.error("[cron/outreach-inbox] classification failed", err);
     }
 
+    // Catch up on labels written before the class drove anything — chiefly the
+    // out-of-office threads that stopped a cadence. Drains to a no-op.
+    let reconciliation: unknown = null;
+    try {
+      reconciliation = await reconcileClassifiedReplyThreads(client, {
+        limit: 50,
+      });
+    } catch (err) {
+      reconciliation = {
+        error: err instanceof Error ? err.message : "reconciliation failed",
+      };
+      console.error("[cron/outreach-inbox] reconciliation failed", err);
+    }
+
     return NextResponse.json({
       ok: true,
       mailboxes: results.length,
       results,
       linkedin,
       classification,
+      reconciliation,
     });
   } catch (err) {
     return NextResponse.json(
