@@ -1432,19 +1432,20 @@ export async function refreshCrmSignalVars(
     //   literally what happened, and the sentence built around the token
     //   stays true.
     //
-    //   no skips at all → nothing this function can write makes the copy
-    //   honest, because the premise ("we skipped your PRs") is what expired,
-    //   not the reason. Overwriting with the fallback would state something
-    //   false and destroy the last true reason we held, so the truthful value
-    //   stays. An account that stopped skipping belongs out of the cadence —
-    //   a targeting decision, not a token one.
+    //   no skips at all → every available string is false. The old specific
+    //   reason no longer holds, and "no reason logged on our side" claims a
+    //   missing message when what is actually missing is the skipping. What
+    //   expired is the premise, not the reason, so the key is left unset:
+    //   {{skip_reason}} goes unfilled and the queue blocks the send until a
+    //   human looks. Nothing removes these accounts on its own —
+    //   unenrollFromSequence is only ever called by the UI route and the MCP
+    //   tool, and auto-enroll only adds — so leaving the copy alone here does
+    //   not mean nobody sends it. It means it goes out false.
     const stillSkipping = Number(sig.skips_30d ?? 0) > 0;
     if (sig.top_skip_reason) {
       next.skip_reason = String(sig.top_skip_reason);
-    } else if (previous.skip_reason) {
-      next.skip_reason = stillSkipping
-        ? NO_SKIP_REASON_LOGGED
-        : previous.skip_reason;
+    } else if (previous.skip_reason && stillSkipping) {
+      next.skip_reason = NO_SKIP_REASON_LOGGED;
     }
 
     // Compare canonically. `previous` came back through a jsonb column, which
@@ -1492,10 +1493,17 @@ export async function refreshCrmSignalVars(
         .update({
           rendered_subject: subject,
           rendered_body: body,
-          // Clear the block once the data that caused it arrived.
+          // Clear the block once the data that caused it arrived — and state
+          // it when a refresh opens a new hole. A refresh can now remove a
+          // token (skip_reason on an account that stopped skipping), and
+          // leaving the old error in place meant the queue looked sendable
+          // until the send guard caught it at dispatch. Say it where someone
+          // can act on it.
           error:
             stillUnfilled.length > 0
-              ? task.error
+              ? `Unfilled variables: ${stillUnfilled
+                  .map((t) => `{{${t}}}`)
+                  .join(", ")} — edit the email or fix the account data before sending.`
               : task.error?.startsWith("Unfilled variables:")
                 ? null
                 : task.error,
