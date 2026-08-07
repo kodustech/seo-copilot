@@ -1422,21 +1422,29 @@ export async function refreshCrmSignalVars(
     // drop the one the enrollment already carries — dropping it would leave
     // {{skip_reason}} unfilled and block a send that was fine.
     //
-    // But carrying the previous value forward verbatim is how it went stale:
-    // once the account stops skipping, top_skip_reason clears while the
-    // enrollment keeps asserting the old reason, and because that value lands
-    // in `next` the canonical comparison below sees no change and skips the
-    // write — so the obsolete reason could never correct itself. Telling a
-    // team that just fixed their setup "the reason we record is: BYOK
-    // Configuration Required" is worse than saying nothing specific.
+    // But carrying it forward verbatim is how it went stale, and a null
+    // top_skip_reason is not one situation — collect.ts produces it both when
+    // the account had no skipped run at all in 30 days and when it did skip
+    // but the most frequent errorMessage was empty ('(none)' → null). Those
+    // want opposite handling, and skips_30d is what tells them apart:
     //
-    // Substituting the fallback keeps the token filled (no newly blocked
-    // sends) and is exactly what the enroll path writes today for an account
-    // with no logged reason.
+    //   still skipping, message missing → "no reason logged on our side" is
+    //   literally what happened, and the sentence built around the token
+    //   stays true.
+    //
+    //   no skips at all → nothing this function can write makes the copy
+    //   honest, because the premise ("we skipped your PRs") is what expired,
+    //   not the reason. Overwriting with the fallback would state something
+    //   false and destroy the last true reason we held, so the truthful value
+    //   stays. An account that stopped skipping belongs out of the cadence —
+    //   a targeting decision, not a token one.
+    const stillSkipping = Number(sig.skips_30d ?? 0) > 0;
     if (sig.top_skip_reason) {
       next.skip_reason = String(sig.top_skip_reason);
     } else if (previous.skip_reason) {
-      next.skip_reason = NO_SKIP_REASON_LOGGED;
+      next.skip_reason = stillSkipping
+        ? NO_SKIP_REASON_LOGGED
+        : previous.skip_reason;
     }
 
     // Compare canonically. `previous` came back through a jsonb column, which
