@@ -639,6 +639,8 @@ export type UnipilePostComment = {
   profilePictureUrl: string | null;
   /** DISTANCE_1 | DISTANCE_2 | DISTANCE_3 | OUT_OF_NETWORK */
   networkDistance: string | null;
+  /** A company page commented, not a person. */
+  isCompany: boolean;
   text: string | null;
   commentedAt: string | null;
   reactionCount: number | null;
@@ -647,44 +649,67 @@ export type UnipilePostComment = {
   isReply: boolean;
 };
 
+/**
+ * Map one comment as Unipile actually returns it.
+ *
+ * The shape is not what a `post.author` object would suggest: on a comment,
+ * `author` is the display NAME as a plain string, and every identity field
+ * lives in `author_details`. Reading `author.name` yields undefined, which is
+ * how a first pass produced commenters whose name, profile and degree were
+ * all null while the comment text came through fine. Object fallbacks are
+ * kept in case the shape differs by endpoint or version.
+ */
 function mapComment(
   r: Record<string, unknown>,
   isReply: boolean,
 ): UnipilePostComment | null {
   const id = str(r.id) ?? str(r.comment_id);
   if (!id) return null;
-  const author = (r.author ?? {}) as Record<string, unknown>;
-  const publicIdentifier =
-    str(author.public_identifier) ?? str(r.author_public_identifier);
+  const details = (r.author_details ?? {}) as Record<string, unknown>;
+  const authorObj =
+    r.author && typeof r.author === "object"
+      ? (r.author as Record<string, unknown>)
+      : {};
+
   const profileUrl =
-    str(author.public_profile_url) ??
-    str(author.profile_url) ??
-    str(r.author_profile_url) ??
-    (publicIdentifier
-      ? `https://www.linkedin.com/in/${publicIdentifier}`
+    str(details.profile_url) ??
+    str(details.public_profile_url) ??
+    str(authorObj.public_profile_url) ??
+    str(authorObj.profile_url) ??
+    str(r.author_profile_url);
+  // Unipile gives the full profile URL but no slug; derive it for matching
+  // against identities stored elsewhere.
+  const publicIdentifier =
+    str(details.public_identifier) ??
+    str(authorObj.public_identifier) ??
+    (profileUrl
+      ? (profileUrl.match(/linkedin\.com\/in\/([^/?#]+)/i)?.[1] ?? null)
       : null);
 
   return {
     id,
-    providerId: str(author.id) ?? str(r.author_id) ?? str(r.author_provider_id),
+    providerId:
+      str(details.id) ?? str(authorObj.id) ?? str(r.author_id),
     messagingId:
-      str(author.messaging_id) ??
-      str(r.messaging_id) ??
-      str(author.attendee_provider_id),
-    name: str(author.name) ?? str(r.author_name),
-    headline: str(author.headline) ?? str(r.author_headline),
+      str(details.messaging_id) ??
+      str(authorObj.messaging_id) ??
+      str(r.messaging_id),
+    // `author` is the name itself on comments; the object form is a fallback.
+    name: str(r.author) ?? str(authorObj.name) ?? str(r.author_name),
+    headline: str(details.headline) ?? str(authorObj.headline),
     publicIdentifier,
     profileUrl,
     profilePictureUrl:
-      str(author.profile_picture_url) ?? str(r.profile_picture_url),
+      str(details.profile_picture_url) ?? str(authorObj.profile_picture_url),
     networkDistance:
-      str(author.network_distance) ??
-      str(r.network_distance) ??
-      str(author.distance),
+      str(details.network_distance) ?? str(authorObj.network_distance),
+    // A company page can comment. These lists are people, so the caller needs
+    // to be able to tell them apart.
+    isCompany: details.is_company === true || authorObj.is_company === true,
     text: str(r.text) ?? str(r.comment) ?? str(r.body),
-    // parsed_datetime first: LinkedIn's `date` is often a relative string
-    // ("2mo", "3w"), which is useless as a trigger date and unstorable as a
-    // timestamp. The ISO field is the one worth having.
+    // parsed_datetime first where it exists: LinkedIn's `date` is sometimes a
+    // relative string ("2mo"), useless as a trigger date and unstorable as a
+    // timestamp. On this endpoint `date` is ISO, so it is a fine fallback.
     commentedAt:
       str(r.parsed_datetime) ?? str(r.created_at) ?? str(r.timestamp) ?? str(r.date),
     reactionCount: num(r.reaction_counter ?? r.reaction_count),

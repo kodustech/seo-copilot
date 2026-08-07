@@ -127,6 +127,7 @@ export type Commenter = {
   publicIdentifier: string | null;
   profilePictureUrl: string | null;
   isReply: boolean;
+  isCompany: boolean;
   reactionCount: number | null;
   replyCount: number | null;
 };
@@ -179,6 +180,7 @@ function toCommenter(
     publicIdentifier: c.publicIdentifier,
     profilePictureUrl: c.profilePictureUrl,
     isReply: c.isReply,
+    isCompany: c.isCompany,
     reactionCount: c.reactionCount,
     replyCount: c.replyCount,
   };
@@ -340,7 +342,9 @@ export async function saveCommenters(
   // the richest identity fields and every distinct comment.
   const byProfile = new Map<string, { person: Commenter; triggers: Commenter[] }>();
   for (const c of commenters) {
-    if (!c.profileUrl || !c.name) continue;
+    // A company page can comment. This table is people — a brand account has
+    // no role, no degree worth routing on, and nobody to message.
+    if (!c.profileUrl || !c.name || c.isCompany) continue;
     const entry = byProfile.get(c.profileUrl);
     if (!entry) {
       byProfile.set(c.profileUrl, { person: c, triggers: [c] });
