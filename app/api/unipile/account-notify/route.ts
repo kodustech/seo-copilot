@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { resetUnipileAccountsCache } from "@/lib/unipile";
+import { requestUnipileAccountsRefresh } from "@/lib/unipile";
 
 /**
  * Unipile Hosted Auth notify_url callback.
@@ -15,12 +15,17 @@ export async function POST(req: Request) {
       account_id: (body as { account_id?: string }).account_id,
       name: (body as { name?: string }).name,
     });
-    // A connect or reconnect just changed the account list; drop the cache so
-    // a harvest started moments later can still recognise the new account.
-    resetUnipileAccountsCache();
+    // This endpoint is public and unauthenticated, so the payload only gets
+    // to invalidate the shared cache when it looks like a real connect — and
+    // the refresh is throttled, so spamming it cannot turn into unbounded
+    // /accounts traffic against the rate-limited account.
+    const status = String((body as { status?: string }).status ?? "");
+    const accountId = (body as { account_id?: string }).account_id;
+    if (accountId && /success|created|connected|reconnect/i.test(status)) {
+      requestUnipileAccountsRefresh();
+    }
   } catch (err) {
     console.warn("[unipile] account-notify parse failed:", err);
-    resetUnipileAccountsCache();
   }
   return NextResponse.json({ ok: true });
 }

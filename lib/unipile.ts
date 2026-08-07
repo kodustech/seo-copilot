@@ -834,9 +834,31 @@ async function cachedLinkedInAccounts(): Promise<UnipileAccount[]> {
   return accounts;
 }
 
-/** Forget the cached account list (tests, or after connecting an account). */
+/** Forget the cached account list. For trusted callers only — see below. */
 export function resetUnipileAccountsCache(): void {
   accountsCache = null;
+}
+
+let lastForcedRefreshAt = 0;
+
+/**
+ * Ask for a refresh, at most once per TTL window.
+ *
+ * Two callers need this rather than the hard reset: the public notify
+ * endpoint, which anyone can POST to and could otherwise keep the shared
+ * cache permanently cold — turning an unauthenticated request into unbounded
+ * /accounts traffic against a rate-limited account — and the account-miss
+ * path, where a permanently absent id would re-miss on every post and rebuild
+ * the N+1 the cache exists to remove.
+ *
+ * Returns whether the cache was actually dropped.
+ */
+export function requestUnipileAccountsRefresh(): boolean {
+  const now = Date.now();
+  if (now - lastForcedRefreshAt < ACCOUNTS_TTL_MS) return false;
+  lastForcedRefreshAt = now;
+  accountsCache = null;
+  return true;
 }
 
 /**
@@ -879,15 +901,24 @@ export async function linkedInAccountIdentity(
   // the cache TTL. Refetch once before giving up: silently returning no member
   // id would switch self-exclusion off, which is the one thing this function
   // exists to guarantee.
-  if (wanted && !match) {
-    accountsCache = null;
-    accounts = await cachedLinkedInAccounts();
-    match = accounts.find((a) => a.id === wanted) ?? null;
-    if (!match) {
+  if (wanted && !match && requestUnipileAccountsRefresh()) {
+    try {
+      accounts = await cachedLinkedInAccounts();
+      match = accounts.find((a) => a.id === wanted) ?? null;
+    } catch (err) {
+      // Same contract as the first fetch: not recognising ourselves is worth
+      // less than not harvesting at all, and throwing here would break the
+      // caller's whole post loop.
       console.warn(
-        `[unipile] account "${wanted}" is not in the connected account list — self-exclusion is off for this run.`,
+        `[unipile] could not refresh accounts to resolve self-identity (${err instanceof Error ? err.message : String(err)}); self-exclusion is off for this run.`,
       );
+      return { accountId: wanted, providerUserId: null };
     }
+  }
+  if (wanted && !match) {
+    console.warn(
+      `[unipile] account "${wanted}" is not in the connected account list — self-exclusion is off for this run.`,
+    );
   }
 
   return {
