@@ -85,6 +85,9 @@ import {
   updateCompany,
   createComment,
   listContacts,
+  createContact,
+  updateContact,
+  archiveContact,
   listComments,
   listActivities,
   listCompanySequences,
@@ -3535,10 +3538,17 @@ export const getCrmCompany = tool({
           type: f.type,
           options: f.options,
         })),
+        // `id` is what updateCrmContact/archiveCrmContact take, and this is the
+        // only tool that hands one out — without it those two are unreachable.
+        // linkedin and is_primary are here for the same reason: they are
+        // writable now, and gap-filling needs to see which are already set.
         contacts: contacts.map((c) => ({
+          id: c.id,
           name: c.name,
           email: c.email,
           role: c.role,
+          linkedin: c.linkedin,
+          is_primary: c.isPrimary,
         })),
         comments: comments.slice(0, 10).map((c) => ({
           author: c.authorEmail,
@@ -3853,6 +3863,150 @@ export const addCrmComment = tool({
       return {
         success: false as const,
         message: error instanceof Error ? error.message : "Failed to add comment",
+      };
+    }
+  },
+});
+
+export const createCrmContact = tool({
+  description:
+    "Add one known person to a CRM account by hand. This is the deliberate counterpart to enrichCrmCompanyContacts, which pays a data provider to guess who works there — use this one when you already know the person (they replied, they commented on a post, someone named them on a call). Two fields decide whether the contact is usable downstream: without an email sequenceEnrollCrm skips them, and without a linkedin URL LinkedIn steps have no profile to open. Does not deduplicate: check getCrmCompany's contacts first, and update the existing row instead of adding a second one for the same person.",
+  inputSchema: z.object({
+    company_id: z.string().describe("CRM company id"),
+    name: z.string().describe("Full name (required)"),
+    email: z.string().optional().describe("Work email — required for email sequence steps"),
+    role: z.string().optional().describe("Job title, e.g. 'VP of Engineering'"),
+    phone: z.string().optional(),
+    linkedin: z
+      .string()
+      .optional()
+      .describe("LinkedIn profile URL — required for LinkedIn sequence steps"),
+    is_primary: z
+      .boolean()
+      .optional()
+      .describe(
+        "Make this the account's lead contact. Enrollment sorts contacts primary-first and by default takes only the first with an email, so this picks who gets written to. Defaults to false. Note it does not demote the current primary — clear that one with updateCrmContact if you are replacing it.",
+      ),
+  }),
+  execute: async ({ company_id, name, email, role, phone, linkedin, is_primary }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const contact = await createContact(client, company_id, {
+        name,
+        email,
+        role,
+        phone,
+        linkedin,
+        isPrimary: is_primary,
+      });
+      return {
+        success: true as const,
+        id: contact.id,
+        contact: {
+          id: contact.id,
+          name: contact.name,
+          email: contact.email,
+          role: contact.role,
+          linkedin: contact.linkedin,
+          is_primary: contact.isPrimary,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to create contact",
+      };
+    }
+  },
+});
+
+/**
+ * Treat an all-whitespace string as "field not supplied".
+ *
+ * `updateContact` runs every text field through `trimOrNull`, which turns ""
+ * into null — so passing an empty string through would clear the column, and
+ * a model that fills an unknown field with "" instead of omitting it would
+ * wipe a contact's email or LinkedIn with no error and no way back. Clearing
+ * a field stays possible, but only by saying so with an explicit null.
+ */
+function blankToUndefined<T extends string | null | undefined>(
+  v: T,
+): T | undefined {
+  return typeof v === "string" && v.trim() === "" ? undefined : v;
+}
+
+export const updateCrmContact = tool({
+  description:
+    "Fix or fill in one existing contact — add the email you just learned, correct a job title, attach a LinkedIn URL, hand the lead-contact flag to someone else. Get the id from getCrmCompany's contacts. A field you omit is left alone, and so is one you send blank, so a field you have nothing for is never destructive; clearing a field takes an explicit null. 'name' is the exception that cannot be cleared at all — it takes no null, and a blank one is ignored like any other.",
+  inputSchema: z.object({
+    id: z.string().describe("Contact id (from getCrmCompany's contacts)"),
+    name: z.string().optional().describe("New full name; cannot be blank"),
+    email: z.string().nullable().optional(),
+    role: z.string().nullable().optional().describe("Job title"),
+    phone: z.string().nullable().optional(),
+    linkedin: z.string().nullable().optional().describe("LinkedIn profile URL"),
+    is_primary: z
+      .boolean()
+      .optional()
+      .describe(
+        "Lead contact flag — who enrollment writes to first. Setting it here does not demote the current primary; clear that one in a second call.",
+      ),
+  }),
+  execute: async ({ id, name, email, role, phone, linkedin, is_primary }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      // updateContact skips any key that is undefined, so passing the args
+      // straight through already means "omitted → leave the column alone".
+      // blankToUndefined extends that to "" so a blank cannot clear a column.
+      //
+      // `name` gets the same treatment for a different reason: it cannot be
+      // cleared at all (the schema has no null for it), so a blank name is
+      // never a request, only noise — and letting it through meant
+      // updateContact threw before the UPDATE ran, throwing away the fields
+      // the caller did set alongside it.
+      const contact = await updateContact(client, id, {
+        name: blankToUndefined(name),
+        email: blankToUndefined(email),
+        role: blankToUndefined(role),
+        phone: blankToUndefined(phone),
+        linkedin: blankToUndefined(linkedin),
+        isPrimary: is_primary,
+      });
+      return {
+        success: true as const,
+        contact: {
+          id: contact.id,
+          name: contact.name,
+          email: contact.email,
+          role: contact.role,
+          linkedin: contact.linkedin,
+          is_primary: contact.isPrimary,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to update contact",
+      };
+    }
+  },
+});
+
+export const archiveCrmContact = tool({
+  description:
+    "Remove a person from an account — they left the company, they are the wrong buyer, they asked not to be contacted. Archives rather than deletes, on purpose: enrichCrmCompanyContacts matches discovered people against the contacts it can see, so a hard-deleted person came back on the next lookup while an archived one is matched and skipped. The contact disappears from the account, from getCrmCompany and from enrollment, and loses the lead-contact flag if it had it. There is no un-archive tool — undo it in the CRM UI.",
+  inputSchema: z.object({
+    id: z.string().describe("Contact id (from getCrmCompany's contacts)"),
+  }),
+  execute: async ({ id }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      await archiveContact(client, id);
+      return { success: true as const, id, archived: true as const };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to archive contact",
       };
     }
   },
@@ -6853,6 +7007,9 @@ export function createAgentTools(userEmail?: string) {
     listCrmCompanies,
     getCrmCompany,
     enrichCrmCompanyContacts,
+    createCrmContact,
+    updateCrmContact,
+    archiveCrmContact,
     createCrmCompany,
     updateCrmCompany,
     listCrmFields,
