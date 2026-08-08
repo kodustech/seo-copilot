@@ -33,6 +33,8 @@ export type FindIcpResult = {
   discovered: number;
   added: number;
   skipped: number;
+  /** Subset of `skipped` that was previously deleted from this list. */
+  excluded: number;
   rowIds: string[];
   rows: ResearchRow[];
   market: DiscoveryMarket;
@@ -174,6 +176,7 @@ export async function findIcpCompanies(
     discovered: huntCandidates.length + discovered.length,
     added: result.added,
     skipped: result.skipped,
+    excluded: result.excluded,
     rowIds: result.rows.map((r) => r.id),
     rows: result.rows,
     market: input.market,

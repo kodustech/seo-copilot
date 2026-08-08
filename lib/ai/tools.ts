@@ -3964,6 +3964,9 @@ export const researchAddDomains = tool({
           domain: d.domain,
           source: source ?? "agent",
         })),
+        // Named companies, not a discovery sweep: a deliberate re-add clears
+        // any earlier exclusion for them.
+        { respectExclusions: false },
       );
       return {
         success: true as const,
@@ -4170,12 +4173,23 @@ export const researchMoveRows = tool({
 
 export const researchDeleteRows = tool({
   description:
-    "Permanently remove selected companies from their research lists. A full list snapshot is saved first. Any active/paused enrollments for those companies are cancelled, while sent history stays intact. Confirm before calling.",
+    "Permanently remove selected companies from their research lists. A full list snapshot is saved first. Any active/paused enrollments for those companies are cancelled, while sent history stays intact. Removed companies are added to the list's exclusion list, so researchFindIcp will not re-import them; use researchExclusions to review or undo that. Confirm before calling.",
   inputSchema: z.object({
     row_ids: z.array(z.string()).min(1),
     confirm: z.boolean().describe("Must be true to delete the selected companies"),
+    reason: z
+      .string()
+      .optional()
+      .describe("Why they were removed — stored on the exclusion entry"),
+    exclude: z
+      .boolean()
+      .optional()
+      .describe(
+        "Remember them so future imports skip them (default true). Set false for a one-off cleanup you want re-sourced later.",
+      ),
+    user_email: z.string().optional(),
   }),
-  execute: async ({ row_ids, confirm }) => {
+  execute: async ({ row_ids, confirm, reason, exclude, user_email }) => {
     if (!confirm) {
       return {
         success: false as const,
@@ -4185,16 +4199,89 @@ export const researchDeleteRows = tool({
     try {
       const client = getSupabaseServiceClient();
       const { deleteResearchRows } = await import("@/lib/research/tables");
-      const result = await deleteResearchRows(client, row_ids);
+      const result = await deleteResearchRows(client, row_ids, {
+        exclude,
+        reason,
+        createdBy: user_email,
+      });
       return {
         success: true as const,
         ...result,
-        message: `Removed ${result.deleted} compan${result.deleted === 1 ? "y" : "ies"} and cancelled ${result.cancelledEnrollments} active enrollment(s).`,
+        message: `Removed ${result.deleted} compan${result.deleted === 1 ? "y" : "ies"} and cancelled ${result.cancelledEnrollments} active enrollment(s).${
+          result.excluded > 0
+            ? ` ${result.excluded} added to the list's exclusion list — future finds will skip them.`
+            : ""
+        }`,
       };
     } catch (error) {
       return {
         success: false as const,
         message: error instanceof Error ? error.message : "Delete failed",
+      };
+    }
+  },
+});
+
+export const researchExclusions = tool({
+  description:
+    "Review or undo a research list's exclusion list — the companies removed from it that future researchFindIcp / import runs skip. action=list shows them with the reason they were excluded; action=remove un-excludes named companies so they can be sourced again (it does not re-add the rows — run researchFindIcp or researchAddDomains after).",
+  inputSchema: z.object({
+    table_ref: z.string().describe("Table id, slug, or unique name"),
+    action: z.enum(["list", "remove"]).optional(),
+    companies: z
+      .array(
+        z.object({
+          company_name: z.string().optional(),
+          domain: z.string().optional(),
+        }),
+      )
+      .optional()
+      .describe("Required for action=remove: which exclusions to lift"),
+  }),
+  execute: async ({ table_ref, action, companies }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { resolveTable } = await import("@/lib/research/columns");
+      const { listExclusions, removeExclusions } = await import(
+        "@/lib/research/exclusions"
+      );
+      const table = await resolveTable(client, table_ref);
+
+      if (action === "remove") {
+        if (!companies?.length) {
+          return {
+            success: false as const,
+            message: "Pass companies[] to un-exclude.",
+          };
+        }
+        const removed = await removeExclusions(
+          client,
+          table.id,
+          companies.map((c) => ({
+            companyName: c.company_name ?? null,
+            domain: c.domain ?? null,
+          })),
+        );
+        return {
+          success: true as const,
+          table_id: table.id,
+          removed,
+          message: `Lifted ${removed} exclusion(s) on "${table.name}". They can be sourced into the list again.`,
+        };
+      }
+
+      const exclusions = await listExclusions(client, table.id);
+      return {
+        success: true as const,
+        table_id: table.id,
+        table_slug: table.slug,
+        count: exclusions.length,
+        exclusions,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Exclusions failed",
       };
     }
   },
@@ -4409,7 +4496,7 @@ export const researchCreateFromIcp = tool({
 
 export const researchFindIcp = tool({
   description:
-    "Find companies matching the QE ICP: market=brazil (Gupy) or global (Greenhouse/Lever/Ashby), optional size band, then score each with the research rubric. Long-running — prefer UI for large runs; agent use max 6.",
+    "Find companies matching the QE ICP, then score each with the research rubric. market=brazil sources from Gupy, Programathor, and Workable/LinkedIn filtered to Brazil, then tops up the remaining slots from the global ATS harvest (Greenhouse/Lever/Ashby) using Brazilian signal phrases — so a brazil run can still return non-Brazilian companies from that top-up; market=global adds Remotive and drops the Brazil location filters. Each row records its source board at pack_raw.discovery.ats, so results can be filtered by it. Companies previously deleted from the list are skipped (see researchExclusions). Long-running — prefer UI for large runs; agent use max 6.",
   inputSchema: z.object({
     table_id: z.string().describe("Research table id"),
     market: z.enum(["global", "brazil"]).optional(),
@@ -4452,6 +4539,8 @@ export const researchFindIcp = tool({
         success: true as const,
         discovered: found.discovered,
         added: found.added,
+        skipped: found.skipped,
+        excluded: found.excluded,
         market: found.market,
         size: found.size,
         research,
@@ -6487,6 +6576,7 @@ export function createAgentTools(userEmail?: string) {
     researchListRows,
     researchMoveRows,
     researchDeleteRows,
+    researchExclusions,
     researchListHistory,
     researchRestoreListSnapshot,
     // researchSplitByRules kept in codebase for rare advanced use but NOT
