@@ -3929,13 +3929,15 @@ export const createCrmContact = tool({
  * wipe a contact's email or LinkedIn with no error and no way back. Clearing
  * a field stays possible, but only by saying so with an explicit null.
  */
-function blankToUndefined(v: string | null | undefined) {
+function blankToUndefined<T extends string | null | undefined>(
+  v: T,
+): T | undefined {
   return typeof v === "string" && v.trim() === "" ? undefined : v;
 }
 
 export const updateCrmContact = tool({
   description:
-    "Fix or fill in one existing contact — add the email you just learned, correct a job title, attach a LinkedIn URL, hand the lead-contact flag to someone else. Get the id from getCrmCompany's contacts. A field you omit is left alone, and so is one you send as an empty string; clearing a field takes an explicit null. Only 'name' cannot be cleared.",
+    "Fix or fill in one existing contact — add the email you just learned, correct a job title, attach a LinkedIn URL, hand the lead-contact flag to someone else. Get the id from getCrmCompany's contacts. A field you omit is left alone, and so is one you send blank, so a field you have nothing for is never destructive; clearing a field takes an explicit null. 'name' is the exception that cannot be cleared at all — it takes no null, and a blank one is ignored like any other.",
   inputSchema: z.object({
     id: z.string().describe("Contact id (from getCrmCompany's contacts)"),
     name: z.string().optional().describe("New full name; cannot be blank"),
@@ -3956,8 +3958,14 @@ export const updateCrmContact = tool({
       // updateContact skips any key that is undefined, so passing the args
       // straight through already means "omitted → leave the column alone".
       // blankToUndefined extends that to "" so a blank cannot clear a column.
+      //
+      // `name` gets the same treatment for a different reason: it cannot be
+      // cleared at all (the schema has no null for it), so a blank name is
+      // never a request, only noise — and letting it through meant
+      // updateContact threw before the UPDATE ran, throwing away the fields
+      // the caller did set alongside it.
       const contact = await updateContact(client, id, {
-        name,
+        name: blankToUndefined(name),
         email: blankToUndefined(email),
         role: blankToUndefined(role),
         phone: blankToUndefined(phone),
