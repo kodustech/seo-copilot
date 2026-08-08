@@ -470,6 +470,11 @@ export async function logActivity(
     meta?: Record<string, unknown>;
     actorEmail?: string | null;
     touch?: boolean; // update company.last_activity_at (default true)
+    /** Treat a unique-violation as success. For activities the database
+     *  deduplicates (see crm_activities_promote_note_uq), losing that race
+     *  means the row this call wanted is already there — written moments ago by
+     *  the pass that won, which touched last_activity_at on its way. */
+    dedupe?: boolean;
   } = {},
 ): Promise<void> {
   const { error } = await client.from("crm_activities").insert({
@@ -479,7 +484,10 @@ export async function logActivity(
     meta: opts.meta ?? {},
     actor_email: trimOrNull(opts.actorEmail),
   });
-  if (error) throw new Error(`Failed to log activity: ${error.message}`);
+  if (error) {
+    if (opts.dedupe && error.code === "23505") return;
+    throw new Error(`Failed to log activity: ${error.message}`);
+  }
 
   if (opts.touch !== false) {
     await client
@@ -1104,33 +1112,6 @@ export async function demoteReplyPromotion(
   return { demoted: true, companyId: company.id };
 }
 
-/**
- * Has this enrollment already logged its promote note on this account?
- *
- * A failed check reads as "no": the promote itself succeeded either way, and
- * losing a note is worse than the duplicate this guards against.
- */
-async function hasPromoteNote(
-  client: SupabaseClient,
-  companyId: string,
-  enrollmentId: string,
-  reason: string,
-): Promise<boolean> {
-  const { data, error } = await client
-    .from("crm_activities")
-    .select("id")
-    .eq("company_id", companyId)
-    .eq("kind", "note")
-    .eq("meta->>enrollment_id", enrollmentId)
-    .eq("meta->>reason", reason)
-    .limit(1);
-  if (error) {
-    console.warn("[crm] promote-note dedupe check failed:", error.message);
-    return false;
-  }
-  return (data?.length ?? 0) > 0;
-}
-
 export type PromoteEnrollmentInput = {
   id: string;
   sequenceId: string;
@@ -1278,33 +1259,31 @@ export async function promoteEnrollmentToCrm(
   // insert was not, so a single answer stacked "Replied to sequence" notes on
   // the timeline. The note records that this enrollment replied, so one per
   // (enrollment, reason) is all there is to say.
-  const alreadyNoted = await hasPromoteNote(
-    client,
-    result.company.id,
-    enrollment.id,
-    reason,
-  );
-
-  if (!alreadyNoted) {
-    try {
-      await logActivity(client, result.company.id, "note", {
-        summary:
-          reason === "reply"
-            ? `Replied to sequence${sequenceName ? ` “${sequenceName}”` : ""}`
-            : `Promoted from sequence${sequenceName ? ` “${sequenceName}”` : ""}`,
-        meta: {
-          enrollment_id: enrollment.id,
-          sequence_id: enrollment.sequenceId,
-          sequence_name: sequenceName,
-          reason,
-          company_created: result.created,
-          contact_created: result.contactCreated,
-        },
-        actorEmail: opts?.actorEmail ?? null,
-      });
-    } catch (err) {
-      console.warn("[crm] logActivity on promote failed:", err);
-    }
+  //
+  // crm_activities_promote_note_uq says that in the schema, and `dedupe` makes
+  // the insert itself the check. Reading first and inserting after would leave
+  // the two passes a window to both read "no note yet" — small, since a cron
+  // run awaits sync before classifying, but the in-process scheduler runs its
+  // own sync on a 10-minute tick that nothing coordinates with that run.
+  try {
+    await logActivity(client, result.company.id, "note", {
+      summary:
+        reason === "reply"
+          ? `Replied to sequence${sequenceName ? ` “${sequenceName}”` : ""}`
+          : `Promoted from sequence${sequenceName ? ` “${sequenceName}”` : ""}`,
+      meta: {
+        enrollment_id: enrollment.id,
+        sequence_id: enrollment.sequenceId,
+        sequence_name: sequenceName,
+        reason,
+        company_created: result.created,
+        contact_created: result.contactCreated,
+      },
+      actorEmail: opts?.actorEmail ?? null,
+      dedupe: true,
+    });
+  } catch (err) {
+    console.warn("[crm] logActivity on promote failed:", err);
   }
 
   return {
