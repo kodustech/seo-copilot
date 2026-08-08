@@ -470,6 +470,11 @@ export async function logActivity(
     meta?: Record<string, unknown>;
     actorEmail?: string | null;
     touch?: boolean; // update company.last_activity_at (default true)
+    /** Treat a unique-violation as success. For activities the database
+     *  deduplicates (see crm_activities_promote_note_uq), losing that race
+     *  means the row this call wanted is already there — written moments ago by
+     *  the pass that won, which touched last_activity_at on its way. */
+    dedupe?: boolean;
   } = {},
 ): Promise<void> {
   const { error } = await client.from("crm_activities").insert({
@@ -479,7 +484,10 @@ export async function logActivity(
     meta: opts.meta ?? {},
     actor_email: trimOrNull(opts.actorEmail),
   });
-  if (error) throw new Error(`Failed to log activity: ${error.message}`);
+  if (error) {
+    if (opts.dedupe && error.code === "23505") return;
+    throw new Error(`Failed to log activity: ${error.message}`);
+  }
 
   if (opts.touch !== false) {
     await client
@@ -1243,6 +1251,20 @@ export async function promoteEnrollmentToCrm(
     };
   }
 
+  // One reply reaches this function more than once. The inbox sync promotes the
+  // moment the message lands, and the reply classifier promotes again once it
+  // knows a human wrote it — that second pass exists to carry the revive the
+  // sync withheld, and a later inbound on the same thread runs the whole thing
+  // again. Every one of those is idempotent against the account; the activity
+  // insert was not, so a single answer stacked "Replied to sequence" notes on
+  // the timeline. The note records that this enrollment replied, so one per
+  // (enrollment, reason) is all there is to say.
+  //
+  // crm_activities_promote_note_uq says that in the schema, and `dedupe` makes
+  // the insert itself the check. Reading first and inserting after would leave
+  // the two passes a window to both read "no note yet" — small, since a cron
+  // run awaits sync before classifying, but the in-process scheduler runs its
+  // own sync on a 10-minute tick that nothing coordinates with that run.
   try {
     await logActivity(client, result.company.id, "note", {
       summary:
@@ -1258,6 +1280,7 @@ export async function promoteEnrollmentToCrm(
         contact_created: result.contactCreated,
       },
       actorEmail: opts?.actorEmail ?? null,
+      dedupe: true,
     });
   } catch (err) {
     console.warn("[crm] logActivity on promote failed:", err);
