@@ -28,30 +28,44 @@ export async function runAiColumn(
   const sources: Array<{ url: string; title?: string | null }> = [];
   const blobs: string[] = [];
 
-  if (row.domain && process.env.EXA_API_KEY?.trim()) {
-    try {
-      const page = await scrapePageContent({
-        url: `https://${row.domain}`,
-        maxCharacters: 5000,
-        includeSummary: true,
-      });
-      sources.push({ url: page.url, title: page.title });
-      blobs.push(`Homepage: ${page.summary ?? ""}\n${page.text ?? ""}`);
-    } catch {
-      // ignore
+  if (process.env.EXA_API_KEY?.trim()) {
+    // Only the homepage scrape needs a domain; the web search keys off the
+    // company name, so it must run for domain-less rows too — otherwise the
+    // model answers "unknown" because nobody went looking.
+    if (row.domain) {
+      try {
+        const page = await scrapePageContent({
+          url: `https://${row.domain}`,
+          maxCharacters: 5000,
+          includeSummary: true,
+        });
+        sources.push({ url: page.url, title: page.title });
+        blobs.push(
+          `Homepage (${page.url}): ${page.summary ?? ""}\n${page.text ?? ""}`,
+        );
+      } catch {
+        // ignore
+      }
     }
 
     try {
       const web = await searchWebContent({
         query: `"${row.companyName}" ${prompt}`,
         numResults: 5,
-        daysBack: 730,
+        // No date filter. Research questions are about durable facts — who
+        // regulates the company, what its corporate domain is — and the pages
+        // carrying those facts (registry entries, homepages) publish no date,
+        // so any startPublishedDate drops them and leaves only recent chatter.
+        daysBack: 0,
         textMaxCharacters: 1500,
       });
       for (const r of web.results) {
         sources.push({ url: r.url, title: r.title });
+        // The URL and date belong in the evidence, not just in `sources`:
+        // these prompts ask the model to answer "<fact> | <source URL> |
+        // <date>", and it cannot cite what it was never shown.
         blobs.push(
-          `${r.title}: ${r.summary ?? ""}\n${(r.highlights ?? []).join(" ")}`,
+          `${r.title} (${r.url}${r.publishedDate ? `, published ${r.publishedDate.slice(0, 10)}` : ""}): ${r.summary ?? ""}\n${(r.highlights ?? []).join(" ")}`,
         );
       }
     } catch {
