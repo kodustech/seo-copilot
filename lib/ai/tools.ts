@@ -3920,9 +3920,22 @@ export const createCrmContact = tool({
   },
 });
 
+/**
+ * Treat an all-whitespace string as "field not supplied".
+ *
+ * `updateContact` runs every text field through `trimOrNull`, which turns ""
+ * into null — so passing an empty string through would clear the column, and
+ * a model that fills an unknown field with "" instead of omitting it would
+ * wipe a contact's email or LinkedIn with no error and no way back. Clearing
+ * a field stays possible, but only by saying so with an explicit null.
+ */
+function blankToUndefined(v: string | null | undefined) {
+  return typeof v === "string" && v.trim() === "" ? undefined : v;
+}
+
 export const updateCrmContact = tool({
   description:
-    "Fix or fill in one existing contact — add the email you just learned, correct a job title, attach a LinkedIn URL, hand the lead-contact flag to someone else. Get the id from getCrmCompany's contacts. A field you omit is left alone; an explicit null clears it. Only 'name' cannot be cleared.",
+    "Fix or fill in one existing contact — add the email you just learned, correct a job title, attach a LinkedIn URL, hand the lead-contact flag to someone else. Get the id from getCrmCompany's contacts. A field you omit is left alone, and so is one you send as an empty string; clearing a field takes an explicit null. Only 'name' cannot be cleared.",
   inputSchema: z.object({
     id: z.string().describe("Contact id (from getCrmCompany's contacts)"),
     name: z.string().optional().describe("New full name; cannot be blank"),
@@ -3942,12 +3955,13 @@ export const updateCrmContact = tool({
       const client = getSupabaseServiceClient();
       // updateContact skips any key that is undefined, so passing the args
       // straight through already means "omitted → leave the column alone".
+      // blankToUndefined extends that to "" so a blank cannot clear a column.
       const contact = await updateContact(client, id, {
         name,
-        email,
-        role,
-        phone,
-        linkedin,
+        email: blankToUndefined(email),
+        role: blankToUndefined(role),
+        phone: blankToUndefined(phone),
+        linkedin: blankToUndefined(linkedin),
         isPrimary: is_primary,
       });
       return {
