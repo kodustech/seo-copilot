@@ -8,6 +8,12 @@ on:
     paths:
       - "supabase/migrations/**"
       - ".github/workflows/db-migrate.yml"
+  # Same check on PRs, so a colliding version is caught before it is merged —
+  # on main it is already too late to rename without rewriting history.
+  pull_request:
+    paths:
+      - "supabase/migrations/**"
+      - ".github/workflows/db-migrate.yml"
   workflow_dispatch:
 
 concurrency:
@@ -15,8 +21,53 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  check:
+    name: migration filenames
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Two branches authored on the same day pick the same midnight timestamp
+      # unless one of them looks. The history table is keyed on the version and
+      # not on the file name, so the second file at a given version is never
+      # applied and never reported — `db push` says success and `migration
+      # list` says clean. This has now happened twice (#124/#125, then the
+      # linkedin-commenters merge), and both times it was found only because
+      # someone went looking for a column that did not exist.
+      - name: Reject duplicate or malformed migration versions
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in supabase/migrations/*.sql; do
+            base=$(basename "$f")
+            if ! printf '%s' "$base" | grep -qE '^[0-9]{14}_[a-z0-9_]+\.sql$'; then
+              echo "::error file=$f::Malformed migration name '$base' (expected <14-digit version>_<snake_case>.sql)"
+              fail=1
+            fi
+          done
+          dupes=$(
+            for f in supabase/migrations/*.sql; do
+              basename "$f" | cut -c1-14
+            done | sort | uniq -d
+          )
+          if [ -n "$dupes" ]; then
+            for v in $dupes; do
+              echo "::error::Duplicate migration version $v:"
+              ls supabase/migrations/"$v"_*.sql | sed 's/^/    /'
+            done
+            echo "Renumber one of them — the history table keys on the version,"
+            echo "so only the first file at a version is ever applied."
+            fail=1
+          fi
+          [ "$fail" = "0" ] || exit 1
+          echo "Migration filenames OK ($(ls supabase/migrations/*.sql | wc -l | tr -d ' ') files, no duplicate versions)."
+
   migrate:
     name: supabase db push
+    needs: check
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
