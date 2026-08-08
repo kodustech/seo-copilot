@@ -1104,6 +1104,33 @@ export async function demoteReplyPromotion(
   return { demoted: true, companyId: company.id };
 }
 
+/**
+ * Has this enrollment already logged its promote note on this account?
+ *
+ * A failed check reads as "no": the promote itself succeeded either way, and
+ * losing a note is worse than the duplicate this guards against.
+ */
+async function hasPromoteNote(
+  client: SupabaseClient,
+  companyId: string,
+  enrollmentId: string,
+  reason: string,
+): Promise<boolean> {
+  const { data, error } = await client
+    .from("crm_activities")
+    .select("id")
+    .eq("company_id", companyId)
+    .eq("kind", "note")
+    .eq("meta->>enrollment_id", enrollmentId)
+    .eq("meta->>reason", reason)
+    .limit(1);
+  if (error) {
+    console.warn("[crm] promote-note dedupe check failed:", error.message);
+    return false;
+  }
+  return (data?.length ?? 0) > 0;
+}
+
 export type PromoteEnrollmentInput = {
   id: string;
   sequenceId: string;
@@ -1243,24 +1270,41 @@ export async function promoteEnrollmentToCrm(
     };
   }
 
-  try {
-    await logActivity(client, result.company.id, "note", {
-      summary:
-        reason === "reply"
-          ? `Replied to sequence${sequenceName ? ` “${sequenceName}”` : ""}`
-          : `Promoted from sequence${sequenceName ? ` “${sequenceName}”` : ""}`,
-      meta: {
-        enrollment_id: enrollment.id,
-        sequence_id: enrollment.sequenceId,
-        sequence_name: sequenceName,
-        reason,
-        company_created: result.created,
-        contact_created: result.contactCreated,
-      },
-      actorEmail: opts?.actorEmail ?? null,
-    });
-  } catch (err) {
-    console.warn("[crm] logActivity on promote failed:", err);
+  // One reply reaches this function more than once. The inbox sync promotes the
+  // moment the message lands, and the reply classifier promotes again once it
+  // knows a human wrote it — that second pass exists to carry the revive the
+  // sync withheld, and a later inbound on the same thread runs the whole thing
+  // again. Every one of those is idempotent against the account; the activity
+  // insert was not, so a single answer stacked "Replied to sequence" notes on
+  // the timeline. The note records that this enrollment replied, so one per
+  // (enrollment, reason) is all there is to say.
+  const alreadyNoted = await hasPromoteNote(
+    client,
+    result.company.id,
+    enrollment.id,
+    reason,
+  );
+
+  if (!alreadyNoted) {
+    try {
+      await logActivity(client, result.company.id, "note", {
+        summary:
+          reason === "reply"
+            ? `Replied to sequence${sequenceName ? ` “${sequenceName}”` : ""}`
+            : `Promoted from sequence${sequenceName ? ` “${sequenceName}”` : ""}`,
+        meta: {
+          enrollment_id: enrollment.id,
+          sequence_id: enrollment.sequenceId,
+          sequence_name: sequenceName,
+          reason,
+          company_created: result.created,
+          contact_created: result.contactCreated,
+        },
+        actorEmail: opts?.actorEmail ?? null,
+      });
+    } catch (err) {
+      console.warn("[crm] logActivity on promote failed:", err);
+    }
   }
 
   return {
