@@ -377,7 +377,13 @@ export async function collectTwitter(): Promise<RawSocialResult[]> {
 // ---------------------------------------------------------------------------
 
 // Only accept actual LinkedIn posts, not company pages, articles, job listings, etc.
-const LINKEDIN_POST_PATTERN = /^https?:\/\/(www\.)?linkedin\.com\/(posts|feed|pulse)\//;
+//
+// The subdomain is a locale, not a different site: Exa routinely returns
+// pt./br./es./de. variants of the same post, and anchoring on `www.` silently
+// dropped them. Matching any subdomain is what makes a Brazilian post
+// discoverable at all.
+const LINKEDIN_POST_PATTERN =
+  /^https?:\/\/([a-z0-9-]+\.)*linkedin\.com\/(posts|feed|pulse)\//i;
 
 function isLinkedInPostUrl(url: string): boolean {
   return LINKEDIN_POST_PATTERN.test(url);
@@ -400,19 +406,42 @@ const LINKEDIN_EXA_QUERIES = [
   "code review culture engineering",
 ];
 
-export async function collectLinkedIn(): Promise<RawSocialResult[]> {
+export { LINKEDIN_EXA_QUERIES };
+
+/**
+ * Find LinkedIn posts through Exa.
+ *
+ * Called with no arguments this is the social-monitor sweep it has always
+ * been: the hardcoded topic list, 14 days, 15 results each. Callers that
+ * know what they are looking for — comment harvesting, a one-off topic —
+ * pass their own queries instead.
+ */
+export async function collectLinkedIn(
+  opts: {
+    queries?: string[];
+    daysBack?: number;
+    /** Exa results requested per query, before post-URL filtering. */
+    numResults?: number;
+  } = {},
+): Promise<RawSocialResult[]> {
   const results: RawSocialResult[] = [];
   const seen = new Set<string>();
 
+  const queries = opts.queries?.map((q) => q.trim()).filter(Boolean).length
+    ? opts.queries!.map((q) => q.trim()).filter(Boolean)
+    : LINKEDIN_EXA_QUERIES;
+  const daysBack = opts.daysBack ?? 14;
+  const numResults = Math.max(1, Math.min(50, opts.numResults ?? 15));
+
   await batchParallel(
-    LINKEDIN_EXA_QUERIES,
+    queries,
     async (keyword) => {
       try {
         const { results: exaResults } = await searchWebContent({
           query: keyword,
           domains: ["linkedin.com"],
-          numResults: 15,
-          daysBack: 14,
+          numResults,
+          daysBack,
           textMaxCharacters: 1500,
         });
 

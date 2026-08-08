@@ -4,6 +4,7 @@ import { getSupabaseUserClient } from "@/lib/supabase-server";
 import {
   createHostedAuthLink,
   deleteUnipileAccount,
+  resetUnipileAccountsCache,
   ensureMessageWebhook,
   isUnipileConfigured,
   listLinkedInAccounts,
@@ -102,6 +103,9 @@ export async function POST(req: Request) {
         );
       }
       await deleteUnipileAccount(body.accountId);
+      // The cached account list would otherwise keep serving the account we
+      // just removed for up to its TTL.
+      resetUnipileAccountsCache();
       return NextResponse.json({ ok: true });
     }
 

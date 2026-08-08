@@ -35,6 +35,73 @@ export function isUnipileConfigured(): boolean {
   );
 }
 
+/**
+ * A non-2xx from Unipile, with the status kept so callers can tell a 4xx
+ * (our request is wrong, or the account lost access — stop) from a 5xx
+ * (their side — a retry would be defensible). Nothing in this file retries.
+ */
+export class UnipileHttpError extends Error {
+  readonly status: number;
+  readonly path: string;
+
+  constructor(message: string, status: number, path: string) {
+    super(message);
+    this.name = "UnipileHttpError";
+    this.status = status;
+    this.path = path;
+  }
+
+  get isClientError(): boolean {
+    return this.status >= 400 && this.status < 500;
+  }
+}
+
+/**
+ * The harvest rate limit refused the call. Typed because callers need to tell
+ * it apart from a per-post failure: once the window is full every remaining
+ * post fails identically, so the right move is to stop, not to keep asking.
+ */
+export class UnipileHarvestLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnipileHarvestLimitError";
+  }
+}
+
+/**
+ * A harvest call exceeded its deadline. Typed for the same reason as the
+ * limit error: one slow post is bad luck, but a degraded Unipile means every
+ * remaining post will also burn the full timeout, and a harvest that takes
+ * half an hour to fail is worse than one that stops.
+ */
+export class UnipileTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnipileTimeoutError";
+  }
+}
+
+/**
+ * Every call against the connected LinkedIn account, on one line. That
+ * account is the sender identity for the whole founder-voice motion, so the
+ * question "how much did we hit LinkedIn today, and with what" has to be
+ * answerable from the logs after the fact.
+ */
+function logUnipileCall(entry: {
+  method: string;
+  path: string;
+  status: number | "error";
+  ms: number;
+  note?: string;
+}): void {
+  const { method, path, status, ms, note } = entry;
+  // Strip the api key if a caller ever passes a full URL with query auth.
+  const safePath = path.replace(/([?&])(api_key|X-API-KEY)=[^&]*/gi, "$1$2=***");
+  console.info(
+    `[unipile] ${method} ${safePath} → ${status} (${ms}ms)${note ? ` ${note}` : ""}`,
+  );
+}
+
 export async function unipileFetch<T>(
   path: string,
   init: RequestInit = {},
@@ -57,7 +124,24 @@ export async function unipileFetch<T>(
   ) {
     headers.set("content-type", "application/json");
   }
-  const res = await fetch(url, { ...init, headers });
+  const method = (init.method ?? "GET").toUpperCase();
+  const startedAt = Date.now();
+  const logPath = path.startsWith("http") ? new URL(url).pathname : path;
+
+  let res: Response;
+  try {
+    res = await fetch(url, { ...init, headers });
+  } catch (err) {
+    logUnipileCall({
+      method,
+      path: logPath,
+      status: "error",
+      ms: Date.now() - startedAt,
+      note: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+
   const text = await res.text();
   let data: unknown = null;
   try {
@@ -65,6 +149,12 @@ export async function unipileFetch<T>(
   } catch {
     data = { raw: text };
   }
+  logUnipileCall({
+    method,
+    path: logPath,
+    status: res.status,
+    ms: Date.now() - startedAt,
+  });
   if (!res.ok) {
     const msg =
       data &&
@@ -80,7 +170,7 @@ export async function unipileFetch<T>(
             typeof (data as { title: unknown }).title === "string"
           ? (data as { title: string }).title
           : `Unipile ${res.status}`;
-    throw new Error(msg);
+    throw new UnipileHttpError(msg, res.status, logPath);
   }
   return data as T;
 }
@@ -344,6 +434,513 @@ export async function getUnipileUserProfile(opts: {
   } catch {
     return null;
   }
+}
+
+// ── Posts and comments (harvesting) ────────────────────────────────
+//
+// Read-only, but not free: these run against the same connected account that
+// sends every founder-voice message. Losing that account costs far more than
+// any list this builds, so the whole path is paced, capped, logged, and
+// refuses to retry a rejection.
+
+/** Milliseconds between two harvest calls. Conservative on purpose. */
+function harvestMinIntervalMs(): number {
+  const raw = Number(process.env.UNIPILE_HARVEST_MIN_INTERVAL_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 1500;
+}
+
+/** Ceiling on harvest calls within the rolling window. */
+function harvestMaxCalls(): number {
+  const raw = Number(process.env.UNIPILE_HARVEST_MAX_CALLS_PER_WINDOW);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 120;
+}
+
+/** Length of the rolling window, in minutes. */
+function harvestWindowMs(): number {
+  const raw = Number(process.env.UNIPILE_HARVEST_WINDOW_MINUTES);
+  return (Number.isFinite(raw) && raw > 0 ? raw : 60) * 60_000;
+}
+
+/** Hard ceiling on a single harvest request, so nothing can hang the queue. */
+function harvestTimeoutMs(): number {
+  const raw = Number(process.env.UNIPILE_HARVEST_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 30_000;
+}
+
+/**
+ * Serialize harvest reads and space them out. A promise chain rather than a
+ * token bucket: concurrent callers queue behind each other instead of all
+ * firing once the window opens, which is the behaviour that gets an account
+ * flagged.
+ */
+let harvestGate: Promise<void> = Promise.resolve();
+/** Timestamps of recent calls — a rolling window, not a per-run counter. */
+let harvestCalls: number[] = [];
+
+function pruneHarvestCalls(now: number): void {
+  const cutoff = now - harvestWindowMs();
+  harvestCalls = harvestCalls.filter((t) => t > cutoff);
+}
+
+export function unipileHarvestBudget(): {
+  used: number;
+  max: number;
+  windowMinutes: number;
+} {
+  pruneHarvestCalls(Date.now());
+  return {
+    used: harvestCalls.length,
+    max: harvestMaxCalls(),
+    windowMinutes: harvestWindowMs() / 60_000,
+  };
+}
+
+async function harvestFetch<T>(path: string): Promise<T> {
+  const now = Date.now();
+  pruneHarvestCalls(now);
+  const max = harvestMaxCalls();
+  // A rolling window rather than a counter someone resets: two harvests
+  // running at once cannot talk each other out of the limit, which is the
+  // whole point of having one.
+  if (harvestCalls.length >= max) {
+    throw new UnipileHarvestLimitError(
+      `Unipile harvest limit reached (${max} calls in ${harvestWindowMs() / 60_000}min). Raise UNIPILE_HARVEST_MAX_CALLS_PER_WINDOW or wait.`,
+    );
+  }
+  harvestCalls.push(now);
+
+  const wait = harvestMinIntervalMs();
+  const previous = harvestGate;
+  let release: () => void = () => {};
+  harvestGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    // Every harvest call is bounded. The gate only advances once this settles,
+    // so one request that hangs forever would wedge every later call behind
+    // it — the queue that protects the account would become the thing that
+    // stops it working.
+    return await unipileFetch<T>(path, {
+      signal: AbortSignal.timeout(harvestTimeoutMs()),
+    });
+  } catch (err) {
+    // AbortSignal.timeout rejects with a DOMException named TimeoutError,
+    // which callers have no reason to know about. Translate it so a harvest
+    // can recognise "this is systemic, stop" without importing DOM types.
+    if (err instanceof DOMException && err.name === "TimeoutError") {
+      throw new UnipileTimeoutError(
+        `Unipile call timed out after ${harvestTimeoutMs()}ms: ${path}`,
+      );
+    }
+    throw err;
+  } finally {
+    // Hold the next caller off for the interval even when this one threw —
+    // a 429 is exactly when backing off matters most.
+    setTimeout(release, wait);
+  }
+}
+
+/**
+ * The numeric activity id inside a LinkedIn post URL.
+ *
+ *   .../posts/miguel-verissimo_aiagents-activity-7462609441322926081-QQwC
+ *                                       └──────── this ────────┘
+ *
+ * Unipile does not take URLs — only the id, or the urn:li:activity /
+ * urn:li:ugcPost / urn:li:share forms. Returns null rather than guessing:
+ * a post we cannot identify is skipped, not approximated.
+ */
+export function extractLinkedInActivityId(
+  urlOrId: string | null | undefined,
+): string | null {
+  const raw = urlOrId?.trim();
+  if (!raw) return null;
+
+  // Bare id.
+  if (/^\d{15,25}$/.test(raw)) return raw;
+
+  // urn:li:activity:123 / urn:li:ugcPost:123 / urn:li:share:123
+  const urn = raw.match(/urn:li:(?:activity|ugcPost|share|comment):(\d{15,25})/i);
+  if (urn) return urn[1];
+
+  // The URL form. Both /posts/ and /feed/update/ carry it.
+  const activity = raw.match(/activity[-:](\d{15,25})/i);
+  if (activity) return activity[1];
+
+  return null;
+}
+
+export type UnipilePost = {
+  /** Unipile's own object id. NOT what the comments endpoint wants. */
+  id: string | null;
+  /**
+   * The LinkedIn-side id. The comments endpoint requires this one
+   * specifically — passing `id` returns nothing.
+   */
+  socialId: string | null;
+  activityId: string | null;
+  authorName: string | null;
+  authorProfileUrl: string | null;
+  text: string | null;
+  postedAt: string | null;
+  commentCount: number | null;
+  reactionCount: number | null;
+  raw: Record<string, unknown>;
+};
+
+function str(v: unknown): string | null {
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+/** Tolerates true / "true" / 1 / "1" from a JSON API that may not be typed. */
+function isTruthyFlag(v: unknown): boolean {
+  return v === true || v === "true" || v === 1 || v === "1";
+}
+
+function num(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+export async function getUnipilePost(opts: {
+  activityId: string;
+  accountId: string;
+}): Promise<UnipilePost> {
+  const params = new URLSearchParams({ account_id: opts.accountId });
+  const data = await harvestFetch<Record<string, unknown>>(
+    `/api/v1/posts/${encodeURIComponent(opts.activityId)}?${params.toString()}`,
+  );
+  const author = (data.author ?? {}) as Record<string, unknown>;
+  return {
+    id: str(data.id),
+    socialId: str(data.social_id) ?? str(data.share_url) ?? null,
+    activityId: opts.activityId,
+    authorName: str(author.name) ?? str(data.author_name),
+    authorProfileUrl:
+      str(author.public_profile_url) ??
+      str(author.profile_url) ??
+      (str(author.public_identifier)
+        ? `https://www.linkedin.com/in/${str(author.public_identifier)}`
+        : null),
+    text: str(data.text) ?? str(data.commentary),
+    postedAt: str(data.parsed_datetime) ?? str(data.posted_at) ?? str(data.date),
+    commentCount: num(data.comment_counter ?? data.comment_count),
+    reactionCount: num(data.reaction_counter ?? data.reaction_count),
+    raw: data,
+  };
+}
+
+export type UnipilePostComment = {
+  id: string;
+  /** Author's LinkedIn member id (ACoAA…), for sends. */
+  providerId: string | null;
+  /** Unipile messaging id, when the response carries one. */
+  messagingId: string | null;
+  name: string | null;
+  headline: string | null;
+  publicIdentifier: string | null;
+  profileUrl: string | null;
+  profilePictureUrl: string | null;
+  /** DISTANCE_1 | DISTANCE_2 | DISTANCE_3 | OUT_OF_NETWORK */
+  networkDistance: string | null;
+  /** A company page commented, not a person. */
+  isCompany: boolean;
+  text: string | null;
+  commentedAt: string | null;
+  reactionCount: number | null;
+  replyCount: number | null;
+  /** True when this came back as a reply to another comment. */
+  isReply: boolean;
+};
+
+/**
+ * Map one comment as Unipile actually returns it.
+ *
+ * The shape is not what a `post.author` object would suggest: on a comment,
+ * `author` is the display NAME as a plain string, and every identity field
+ * lives in `author_details`. Reading `author.name` yields undefined, which is
+ * how a first pass produced commenters whose name, profile and degree were
+ * all null while the comment text came through fine. Object fallbacks are
+ * kept in case the shape differs by endpoint or version.
+ */
+function mapComment(
+  r: Record<string, unknown>,
+  isReply: boolean,
+): UnipilePostComment | null {
+  const id = str(r.id) ?? str(r.comment_id);
+  if (!id) return null;
+  const details = (r.author_details ?? {}) as Record<string, unknown>;
+  const authorObj =
+    r.author && typeof r.author === "object"
+      ? (r.author as Record<string, unknown>)
+      : {};
+
+  const profileUrl =
+    str(details.profile_url) ??
+    str(details.public_profile_url) ??
+    str(authorObj.public_profile_url) ??
+    str(authorObj.profile_url) ??
+    str(r.author_profile_url);
+  // Unipile gives the full profile URL but no slug; derive it for matching
+  // against identities stored elsewhere.
+  const publicIdentifier =
+    str(details.public_identifier) ??
+    str(authorObj.public_identifier) ??
+    (profileUrl
+      ? (profileUrl.match(/linkedin\.com\/in\/([^/?#]+)/i)?.[1] ?? null)
+      : null);
+
+  return {
+    id,
+    providerId:
+      str(details.id) ?? str(authorObj.id) ?? str(r.author_id),
+    messagingId:
+      str(details.messaging_id) ??
+      str(authorObj.messaging_id) ??
+      str(r.messaging_id),
+    // `author` is the name itself on comments; the object form is a fallback.
+    name: str(r.author) ?? str(authorObj.name) ?? str(r.author_name),
+    headline: str(details.headline) ?? str(authorObj.headline),
+    publicIdentifier,
+    profileUrl,
+    profilePictureUrl:
+      str(details.profile_picture_url) ?? str(authorObj.profile_picture_url),
+    networkDistance:
+      str(details.network_distance) ?? str(authorObj.network_distance),
+    // A company page can comment. These lists are people, so the caller needs
+    // to be able to tell them apart.
+    // Observed as a real boolean on both the comments and replies endpoints,
+    // but normalised anyway: the cost is nothing and the failure it prevents
+    // is a brand account written into a table of people.
+    isCompany: isTruthyFlag(details.is_company) || isTruthyFlag(authorObj.is_company),
+    text: str(r.text) ?? str(r.comment) ?? str(r.body),
+    // parsed_datetime first where it exists: LinkedIn's `date` is sometimes a
+    // relative string ("2mo"), useless as a trigger date and unstorable as a
+    // timestamp. On this endpoint `date` is ISO, so it is a fine fallback.
+    commentedAt:
+      str(r.parsed_datetime) ?? str(r.created_at) ?? str(r.timestamp) ?? str(r.date),
+    reactionCount: num(r.reaction_counter ?? r.reaction_count),
+    replyCount: num(r.reply_counter ?? r.reply_count),
+    isReply,
+  };
+}
+
+/**
+ * Comments on a post, paginated.
+ *
+ * The same endpoint serves replies: passing a comment id returns that
+ * comment's replies rather than the post's top-level comments. With
+ * includeReplies we walk into every comment that reports replies, still
+ * inside the same maxComments ceiling — replies are where the "I have this
+ * exact problem" answers usually live.
+ */
+export async function listUnipilePostComments(opts: {
+  socialId: string;
+  accountId: string;
+  maxComments?: number;
+  includeReplies?: boolean;
+}): Promise<UnipilePostComment[]> {
+  const max = Math.max(1, Math.min(500, opts.maxComments ?? 50));
+  const out: UnipilePostComment[] = [];
+  const seen = new Set<string>();
+
+  const fetchPage = async (
+    cursor: string | null,
+    commentId: string | null,
+  ): Promise<{ items: Record<string, unknown>[]; cursor: string | null }> => {
+    const params = new URLSearchParams({ account_id: opts.accountId });
+    if (cursor) params.set("cursor", cursor);
+    if (commentId) params.set("comment_id", commentId);
+    const data = await harvestFetch<{
+      items?: Record<string, unknown>[];
+      cursor?: string | null;
+    }>(
+      `/api/v1/posts/${encodeURIComponent(opts.socialId)}/comments?${params.toString()}`,
+    );
+    return {
+      items: data.items ?? [],
+      cursor: typeof data.cursor === "string" && data.cursor ? data.cursor : null,
+    };
+  };
+
+  // Top-level comments.
+  let cursor: string | null = null;
+  const withReplies: UnipilePostComment[] = [];
+  do {
+    const page = await fetchPage(cursor, null);
+    let fresh = 0;
+    for (const raw of page.items) {
+      const c = mapComment(raw, false);
+      if (!c || seen.has(c.id)) continue;
+      seen.add(c.id);
+      fresh += 1;
+      out.push(c);
+      if ((c.replyCount ?? 0) > 0) withReplies.push(c);
+      if (out.length >= max) break;
+    }
+    // A cursor that keeps returning nothing new would otherwise spin against
+    // the account forever. One unproductive page is where it stops.
+    if (fresh === 0) break;
+    cursor = page.cursor;
+  } while (cursor && out.length < max);
+
+  if (!opts.includeReplies) return out.slice(0, max);
+
+  for (const parent of withReplies) {
+    if (out.length >= max) break;
+    let replyCursor: string | null = null;
+    do {
+      const page = await fetchPage(replyCursor, parent.id);
+      let fresh = 0;
+      for (const raw of page.items) {
+        const c = mapComment(raw, true);
+        if (!c || seen.has(c.id)) continue;
+        seen.add(c.id);
+        fresh += 1;
+        out.push(c);
+        if (out.length >= max) break;
+      }
+      if (fresh === 0) break;
+      replyCursor = page.cursor;
+    } while (replyCursor && out.length < max);
+  }
+
+  return out.slice(0, max);
+}
+
+/** The LinkedIn account harvests run through, unless the caller names one. */
+export async function defaultLinkedInAccountId(): Promise<string | null> {
+  return (await linkedInAccountIdentity()).accountId;
+}
+
+/**
+ * The account list, cached briefly.
+ *
+ * listPostCommenters runs once per post, so a 25-post harvest was making 25
+ * identical /accounts calls against the very account the rate limiter exists
+ * to protect. Connected accounts do not change mid-harvest.
+ */
+let accountsCache: { at: number; accounts: UnipileAccount[] } | null = null;
+const ACCOUNTS_TTL_MS = 5 * 60_000;
+
+async function cachedLinkedInAccounts(): Promise<UnipileAccount[]> {
+  const now = Date.now();
+  if (accountsCache && now - accountsCache.at < ACCOUNTS_TTL_MS) {
+    return accountsCache.accounts;
+  }
+  const accounts = await listLinkedInAccounts();
+  accountsCache = { at: now, accounts };
+  return accounts;
+}
+
+/** Forget the cached account list. For trusted callers only — see below. */
+export function resetUnipileAccountsCache(): void {
+  accountsCache = null;
+}
+
+// Two throttles, deliberately not one. Sharing a counter would let the public
+// notify endpoint consume the budget the identity retry depends on: a spammer
+// POSTing once per window — or even a legitimate connect notification — would
+// starve the retry that keeps the harvesting account out of its own prospect
+// list. An untrusted trigger must never be able to exhaust a trusted path.
+let lastPublicRefreshAt = 0;
+let lastIdentityRetryAt = 0;
+
+/**
+ * Untrusted callers asking for a refresh, at most once per TTL window.
+ *
+ * For the public notify endpoint, which anyone can POST to and could
+ * otherwise keep the shared cache permanently cold — turning an
+ * unauthenticated request into unbounded /accounts traffic against a
+ * rate-limited account.
+ */
+export function requestUnipileAccountsRefresh(): boolean {
+  const now = Date.now();
+  if (now - lastPublicRefreshAt < ACCOUNTS_TTL_MS) return false;
+  lastPublicRefreshAt = now;
+  accountsCache = null;
+  return true;
+}
+
+/**
+ * The identity path's own budget: a named account missing from the cache is
+ * most likely one connected inside the TTL, and re-reading once is what keeps
+ * self-exclusion working. Separate from the public counter so nothing
+ * external can spend it.
+ */
+function requestUnipileIdentityRetry(): boolean {
+  const now = Date.now();
+  if (now - lastIdentityRetryAt < ACCOUNTS_TTL_MS) return false;
+  lastIdentityRetryAt = now;
+  accountsCache = null;
+  return true;
+}
+
+/**
+ * The harvesting account plus its own member id.
+ *
+ * The member id is what lets a harvest recognise itself. Without it, the
+ * founder commenting on a post he is also harvesting lands in his own
+ * prospect list — a cold-outreach queue with the sender in it.
+ *
+ * Resolves the member id for the account actually being used. Resolving the
+ * default account's id instead would be wrong in both directions at once:
+ * the real harvester's comments kept, and an innocent person dropped for
+ * looking like an account that is not even in play.
+ */
+export async function linkedInAccountIdentity(
+  accountId?: string | null,
+): Promise<{ accountId: string | null; providerUserId: string | null }> {
+  const wanted = accountId?.trim() || process.env.UNIPILE_LINKEDIN_ACCOUNT_ID?.trim() || null;
+
+  let accounts: UnipileAccount[] = [];
+  try {
+    accounts = await cachedLinkedInAccounts();
+  } catch (err) {
+    // With an explicit account we can still harvest; we just cannot recognise
+    // ourselves. Degrade loudly rather than failing the whole run.
+    if (wanted) {
+      console.warn(
+        `[unipile] could not list accounts to resolve self-identity (${err instanceof Error ? err.message : String(err)}); self-exclusion is off for this run.`,
+      );
+      return { accountId: wanted, providerUserId: null };
+    }
+    throw err;
+  }
+
+  let match = wanted
+    ? (accounts.find((a) => a.id === wanted) ?? null)
+    : (accounts[0] ?? null);
+
+  // A named account missing from the list is most likely one connected inside
+  // the cache TTL. Refetch once before giving up: silently returning no member
+  // id would switch self-exclusion off, which is the one thing this function
+  // exists to guarantee.
+  if (wanted && !match && requestUnipileIdentityRetry()) {
+    try {
+      accounts = await cachedLinkedInAccounts();
+      match = accounts.find((a) => a.id === wanted) ?? null;
+    } catch (err) {
+      // Same contract as the first fetch: not recognising ourselves is worth
+      // less than not harvesting at all, and throwing here would break the
+      // caller's whole post loop.
+      console.warn(
+        `[unipile] could not refresh accounts to resolve self-identity (${err instanceof Error ? err.message : String(err)}); self-exclusion is off for this run.`,
+      );
+      return { accountId: wanted, providerUserId: null };
+    }
+  }
+  if (wanted && !match) {
+    console.warn(
+      `[unipile] account "${wanted}" is not in the connected account list — self-exclusion is off for this run.`,
+    );
+  }
+
+  return {
+    accountId: wanted || match?.id || null,
+    providerUserId: match?.providerUserId ?? null,
+  };
 }
 
 // ── Sending ────────────────────────────────────────────────────────
