@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
+  AlertTriangle,
   Building2,
   Check,
   Columns3,
@@ -399,6 +400,13 @@ export function ResearchPage() {
 
   const [token, setToken] = useState<string | null>(null);
   const [tables, setTables] = useState<ResearchTable[]>([]);
+  // Distinct from `loading`, which tracks rows. Without this, a failed fetch is
+  // indistinguishable from a workspace that genuinely has no lists.
+  const [tablesStatus, setTablesStatus] = useState<"loading" | "ready" | "error">(
+    "loading",
+  );
+  const [tablesError, setTablesError] = useState<string | null>(null);
+  const [rowsError, setRowsError] = useState<string | null>(null);
   const [rubrics, setRubrics] = useState<Rubric[]>([]);
   const [tableId, setTableId] = useState<string | null>(null);
   const [rows, setRows] = useState<ResearchRow[]>([]);
@@ -489,7 +497,14 @@ export function ResearchPage() {
   };
 
   useEffect(() => {
-    supabase?.auth.getSession().then(({ data }) => {
+    if (!supabase) {
+      setTablesError(
+        "Auth unavailable — check NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.",
+      );
+      setTablesStatus("error");
+      return;
+    }
+    supabase.auth.getSession().then(({ data }) => {
       setToken(data.session?.access_token ?? null);
     });
   }, [supabase]);
@@ -550,14 +565,30 @@ export function ResearchPage() {
 
   const loadTables = useCallback(async () => {
     if (!token) return;
-    const res = await fetch("/api/research/tables", { headers: headers() });
+    let res: Response;
+    try {
+      res = await fetch("/api/research/tables", { headers: headers() });
+    } catch {
+      // Server unreachable. Surfacing this matters more than it looks: without
+      // it the grid falls through to the "no lists yet" empty state and tells
+      // the user their workspace is empty when it is merely unreachable.
+      setTablesError("Can't reach the server. Check your connection.");
+      setTablesStatus("error");
+      return;
+    }
     if (!res.ok) {
-      setNotice((await res.json()).error ?? "Failed to load lists");
+      const message =
+        (await res.json().catch(() => ({}))).error ?? "Failed to load lists";
+      setTablesError(message);
+      setTablesStatus("error");
+      setNotice(message);
       return;
     }
     const data = await res.json();
     const nextTables = (data.tables ?? []) as ResearchTable[];
     setTables(nextTables);
+    setTablesError(null);
+    setTablesStatus("ready");
     setRubrics(data.rubrics ?? []);
     setTableId((current) => {
       // URL ?table=slug|id wins when valid
@@ -597,15 +628,28 @@ export function ResearchPage() {
       // quiet = no full-table spinner (in-place updates, background refresh)
       if (!opts?.quiet) setLoading(true);
       try {
-        const res = await fetch(`/api/research/tables/${tableId}`, {
-          headers: headers(),
-        });
+        let res: Response;
+        try {
+          res = await fetch(`/api/research/tables/${tableId}`, {
+            headers: headers(),
+          });
+        } catch {
+          setRowsError("Can't reach the server. Check your connection.");
+          return;
+        }
         if (!res.ok) {
-          setNotice((await res.json()).error ?? "Failed to load companies");
+          const message =
+            (await res.json().catch(() => ({}))).error ??
+            "Failed to load companies";
+          // Same reason as the tables fetch: an unflagged failure renders as
+          // "empty list", which is a different claim than "load failed".
+          setRowsError(message);
+          setNotice(message);
           return;
         }
         const data = await res.json();
         setRows(data.rows ?? []);
+        setRowsError(null);
         // Keep column schema in sync (MCP may add columns)
         if (data.table) {
           setTables((prev) =>
@@ -1882,7 +1926,34 @@ export function ResearchPage() {
 
       {/* Spreadsheet */}
       <div className="min-h-0 flex-1 overflow-auto">
-        {!activeTable && !loading ? (
+        {!activeTable && tablesStatus === "error" ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
+            <AlertTriangle className="size-5 text-muted-foreground" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium">Couldn&apos;t load your lists</p>
+              <p className="max-w-md text-pretty text-sm text-muted-foreground">
+                {tablesError ?? "Something went wrong."}
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setTablesStatus("loading");
+                setTablesError(null);
+                void loadTables();
+              }}
+            >
+              <RotateCcw className="size-3.5" />
+              Retry
+            </Button>
+          </div>
+        ) : !activeTable && tablesStatus === "loading" ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+            <Loader2 className="size-5 animate-spin text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">Loading lists…</p>
+          </div>
+        ) : !activeTable && !loading ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
             <p className="text-sm text-muted-foreground">
               No lists yet. Create one and import companies, or find ICP leads.
@@ -1990,7 +2061,24 @@ export function ResearchPage() {
                     colSpan={tableColSpan}
                     className="h-32 text-center text-sm text-muted-foreground"
                   >
-                    {rows.length === 0 ? (
+                    {rowsError ? (
+                      <div className="space-y-2">
+                        <p className="font-medium text-foreground">
+                          Couldn&apos;t load people
+                        </p>
+                        <p className="mx-auto max-w-md text-pretty">
+                          {rowsError}
+                        </p>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => void loadRows()}
+                        >
+                          <RotateCcw className="size-3.5" />
+                          Retry
+                        </Button>
+                      </div>
+                    ) : rows.length === 0 ? (
                       <div className="space-y-2">
                         <p>Empty list. Import companies first.</p>
                         <Button
@@ -2342,7 +2430,24 @@ export function ResearchPage() {
                     colSpan={tableColSpan}
                     className="h-32 text-center text-sm text-muted-foreground"
                   >
-                    {rows.length === 0 ? (
+                    {rowsError ? (
+                      <div className="space-y-2">
+                        <p className="font-medium text-foreground">
+                          Couldn&apos;t load companies
+                        </p>
+                        <p className="mx-auto max-w-md text-pretty">
+                          {rowsError}
+                        </p>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => void loadRows()}
+                        >
+                          <RotateCcw className="size-3.5" />
+                          Retry
+                        </Button>
+                      </div>
+                    ) : rows.length === 0 ? (
                       <div className="space-y-2">
                         <p>Empty list. Import domains or find ICP companies.</p>
                         <div className="flex justify-center gap-2">

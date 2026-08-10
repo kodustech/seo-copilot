@@ -97,6 +97,40 @@ function mapRow(r: DataRow): ResearchRow {
 
 export { listRubrics, getRubric, getDefaultRubricId };
 
+/**
+ * Row count per table in a single round trip. PostgREST aggregates are disabled
+ * on this project, so the grouping happens here rather than as a `group by`.
+ * If PostgREST caps the response we fall back to one exact count per table —
+ * a truncated response would otherwise report silently-low counts.
+ */
+async function rowCountsByTable(
+  client: SupabaseClient,
+  tableIds: string[],
+): Promise<Map<string, number>> {
+  const { data, count, error } = await client
+    .from("research_rows")
+    .select("table_id", { count: "exact" });
+
+  if (!error && data && (count == null || data.length === count)) {
+    const counts = new Map<string, number>();
+    for (const r of data as { table_id: string }[]) {
+      counts.set(r.table_id, (counts.get(r.table_id) ?? 0) + 1);
+    }
+    return counts;
+  }
+
+  const pairs = await Promise.all(
+    tableIds.map(async (id) => {
+      const { count: n } = await client
+        .from("research_rows")
+        .select("id", { count: "exact", head: true })
+        .eq("table_id", id);
+      return [id, n ?? 0] as const;
+    }),
+  );
+  return new Map(pairs);
+}
+
 export async function listTables(
   client: SupabaseClient,
 ): Promise<ResearchTable[]> {
@@ -107,16 +141,13 @@ export async function listTables(
   if (error) throw new Error(`Failed to list research tables: ${error.message}`);
 
   const tables = (data ?? []) as TableRow[];
-  const withCounts = await Promise.all(
-    tables.map(async (t) => {
-      const { count } = await client
-        .from("research_rows")
-        .select("id", { count: "exact", head: true })
-        .eq("table_id", t.id);
-      return mapTable(t, count ?? 0);
-    }),
+  if (tables.length === 0) return [];
+
+  const counts = await rowCountsByTable(
+    client,
+    tables.map((t) => t.id),
   );
-  return withCounts;
+  return tables.map((t) => mapTable(t, counts.get(t.id) ?? 0));
 }
 
 export async function createTable(
