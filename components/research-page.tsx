@@ -1042,6 +1042,8 @@ export function ResearchPage() {
 
   const saveContacts = async () => {
     if (!token || !drawerRowId) return;
+    // Full list from the drawer editor. Must replace (not merge): merge is
+    // additive and would bring back anyone the user removed.
     const cleaned = editPeople
       .map((p) => ({
         name: p.name.trim(),
@@ -1062,6 +1064,7 @@ export function ResearchPage() {
         body: JSON.stringify({
           action: "upsert_people",
           people: cleaned,
+          replace: true,
         }),
       });
       const data = await res.json();
