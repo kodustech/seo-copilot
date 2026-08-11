@@ -258,6 +258,28 @@ async function runProductSignalsCron(): Promise<void> {
   );
 }
 
+async function runPersonaContentCron(): Promise<void> {
+  const { runInfluencerContentCron } = await import("@/lib/influencer/generation");
+  const results = await runInfluencerContentCron();
+  const generated = results.reduce((n, r) => n + r.generated, 0);
+  const failed = results.filter((r) => r.error).length;
+  console.log(
+    `[cron] persona-content: ${results.length} personas, ${generated} drafts` +
+      (failed ? `, ${failed} failed` : ""),
+  );
+}
+
+async function runPersonaPublishCron(): Promise<void> {
+  const { runInfluencerPublishCron } = await import("@/lib/influencer/publish");
+  const res = await runInfluencerPublishCron();
+  if (res.examined > 0) {
+    console.log(
+      `[cron] persona-publish: examined ${res.examined}, published ${res.published}, ` +
+        `deferred ${res.deferred}, rejected ${res.rejected}, failed ${res.failed}, skipped ${res.skipped}`,
+    );
+  }
+}
+
 const JOBS: JobDefinition[] = [
   {
     name: "scheduled-jobs",
@@ -324,6 +346,22 @@ const JOBS: JobDefinition[] = [
     name: "notifications",
     schedule: "0 */3 * * *",
     run: runNotificationsCron,
+  },
+  {
+    // Daily 10:00 UTC: one batch of drafts per active influencer persona.
+    // Drafts only — the review screen at /influencers is where they get
+    // approved; persona-publish is the only thing that touches the wire.
+    name: "persona-content",
+    schedule: "0 10 * * *",
+    run: runPersonaContentCron,
+  },
+  {
+    // Every 15 min: publish approved persona activities within the per-channel
+    // daily caps. All hard walls (automation level, caps, fleet-amplification
+    // block, forbidden topics) are enforced here, outside the model.
+    name: "persona-publish",
+    schedule: "*/15 * * * *",
+    run: runPersonaPublishCron,
   },
 ];
 
