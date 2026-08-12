@@ -5,6 +5,17 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Pool } from "pg";
 
+// Match the proxy hostname, not a substring (mirrors lib/db/index.ts —
+// standalone copy because importing lib/db creates pools from process.env).
+function isRailwayProxyUrl(connectionString: string): boolean {
+  try {
+    const host = new URL(connectionString).hostname;
+    return host === "rlwy.net" || host.endsWith(".rlwy.net");
+  } catch {
+    return connectionString.includes("rlwy.net");
+  }
+}
+
 function readEnvVar(name: string): string | undefined {
   const env = readFileSync(resolve(process.cwd(), ".env"), "utf8");
   for (const line of env.split("\n")) {
@@ -29,7 +40,7 @@ async function main() {
 
   const pool = new Pool({
     connectionString: url,
-    ssl: url.includes("rlwy.net") ? { rejectUnauthorized: false } : undefined,
+    ssl: isRailwayProxyUrl(url) ? { rejectUnauthorized: false } : undefined,
   });
 
   const sql = readFileSync(resolve(process.cwd(), "docs/influencer.sql"), "utf8");

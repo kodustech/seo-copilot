@@ -31,13 +31,27 @@ const globalForDb = globalThis as unknown as {
   __pgAdminPool?: Pool;
 };
 
+/**
+ * Railway's TCP proxy terminates TLS with its own certificate. Match on the
+ * actual hostname (not a substring — CodeQL: a URL like rlwy.net.evil.com
+ * must not disable verification), falling back to the substring check only
+ * when the connection string doesn't parse as a URL.
+ */
+export function isRailwayProxyUrl(connectionString: string): boolean {
+  try {
+    const host = new URL(connectionString).hostname;
+    return host === "rlwy.net" || host.endsWith(".rlwy.net");
+  } catch {
+    return connectionString.includes("rlwy.net");
+  }
+}
+
 function createPool(connectionString: string | undefined, label: string): Pool {
   if (!connectionString) throw new Error(`Missing ${label}`);
 
   return new Pool({
     connectionString,
-    // Railway's TCP proxy terminates TLS with its own certificate.
-    ssl: connectionString.includes("rlwy.net")
+    ssl: isRailwayProxyUrl(connectionString)
       ? { rejectUnauthorized: false }
       : undefined,
     max: Number(process.env.PGPOOL_MAX ?? 10),
