@@ -13,6 +13,11 @@ import { getExecutor } from "@/lib/influencer/executor";
 import { getModelForPersona } from "@/lib/influencer/model";
 import { listChannelsForPersona } from "@/lib/influencer/personas";
 import {
+  SOCIAL_ANTI_AI_GUARDRAILS,
+  SOCIAL_STYLE_GUIDE,
+  platformRules,
+} from "@/lib/social-writing-style";
+import {
   createSession,
   finishSession,
   recordStep,
@@ -104,18 +109,31 @@ async function fetchText(url: string): Promise<string> {
   return text.slice(0, MAX_FETCH_CHARS);
 }
 
-function buildAgentSystem(persona: Persona): string {
+function buildAgentSystem(persona: Persona, platforms?: string[]): string {
   const voice = buildPersonaVoicePolicy(persona);
+  const configs = (platforms ?? []).map((p) => ({
+    platform: p,
+    maxLength: p === "x" ? 280 : undefined,
+  }));
   return [
     voice.prompt,
     "",
     "OPERATING MODE",
     "You are an autonomous agent working on behalf of this persona. You have tools to research and to produce work.",
     "Do real work first (read sources, gather specifics), then produce something worth posting.",
-    "When you have something genuinely worth posting — a tweet, an article, a reply — call queue_draft to put it in the human review queue.",
-    "You NEVER publish directly. queue_draft only drafts; a human approves before anything goes live.",
+    "When you have something genuinely worth posting — a tweet, an article, a reply — call queue_draft.",
+    "You NEVER publish directly. queue_draft only queues; the system publishes on its own rules (some channels auto-publish, others wait for human approval).",
     "Quality over output: if after researching nothing meets the bar, finish without drafting. Never post filler to have posted.",
     "Stay in character and honor every boundary in your voice policy.",
+    "",
+    "HOW TO WRITE (this is not a corporate blog — write like a real person):",
+    SOCIAL_STYLE_GUIDE,
+    "",
+    SOCIAL_ANTI_AI_GUARDRAILS,
+    "",
+    "PLATFORM FORMAT — match the channel exactly:",
+    platformRules(configs),
+    "For X specifically: one post is ONE idea in ≤280 characters. A thread is a sequence — queue each tweet as its own draft, never one long blob in a single tweet.",
   ].join("\n");
 }
 
@@ -331,13 +349,22 @@ export async function runInfluencerAgentSession({
           await step({ kind: "tool_result", tool: "queue_draft", payload: { error: msg } });
           return msg;
         }
+        // Hard platform limit: an X post is one tweet. A thread is many drafts.
+        if (normalizedPlatform === "x" && content.length > 280) {
+          const msg = `That's ${content.length} chars — an X post must be ≤280. Tighten it to one idea, or if it's a thread, queue each tweet as its own draft.`;
+          await step({ kind: "tool_result", tool: "queue_draft", payload: { too_long: content.length } });
+          return msg;
+        }
+        // Honor the channel's automation level: an `auto` channel publishes
+        // without review; everything else waits in the queue for a human.
+        const autoPublish = channel.automation_level === "auto";
         try {
           const [activity] = await insertActivities(client, [
             {
               persona_id: persona.id,
               channel_id: channel.id,
               kind: normalizedKind,
-              status: "draft",
+              status: autoPublish ? "approved" : "draft",
               title: title ?? null,
               content,
               content_meta: { session_id: session.id },
@@ -349,9 +376,11 @@ export async function runInfluencerAgentSession({
           await step({
             kind: "tool_result",
             tool: "queue_draft",
-            payload: { activity_id: activity?.id, platform, kind },
+            payload: { activity_id: activity?.id, platform, kind, auto: autoPublish },
           });
-          return `Queued for review (${platform} ${kind}). A human will approve it before it goes live.`;
+          return autoPublish
+            ? `Queued to publish (${platform} ${kind}). This channel is on auto — it goes out on the next publish cycle.`
+            : `Queued for review (${platform} ${kind}). A human approves it before it goes live.`;
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           await step({ kind: "tool_result", tool: "queue_draft", payload: { error: message } });
@@ -364,7 +393,7 @@ export async function runInfluencerAgentSession({
   try {
     const result = await generateText({
       model,
-      system: buildAgentSystem(persona),
+      system: buildAgentSystem(persona, allowedPlatforms),
       prompt: goal,
       tools,
       stopWhen: stepCountIs(maxSteps ?? MAX_STEPS),
