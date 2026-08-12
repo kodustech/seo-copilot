@@ -107,9 +107,9 @@ export async function POST(req: Request) {
         { status: 400 },
       );
     }
-    if (!text("backstory") || !text("beat") || !text("disclosure")) {
+    if (!text("backstory") || !text("beat")) {
       return NextResponse.json(
-        { error: "backstory, beat and disclosure are required." },
+        { error: "backstory and beat are required." },
         { status: 400 },
       );
     }

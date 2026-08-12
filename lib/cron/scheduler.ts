@@ -280,14 +280,23 @@ async function runPersonaPublishCron(): Promise<void> {
   }
 }
 
-async function runPersonaAgentCron(): Promise<void> {
-  const { runInfluencerAgentCron } = await import("@/lib/influencer/agent-cron");
-  const results = await runInfluencerAgentCron();
-  const ran = results.filter((r) => r.ran);
-  if (ran.length) {
-    const drafts = ran.reduce((n, r) => n + (r.result?.drafts ?? 0), 0);
+async function runPersonaPlannerCron(): Promise<void> {
+  const { runInfluencerPlannerCron } = await import("@/lib/influencer/planner");
+  const results = await runInfluencerPlannerCron();
+  const planned = results.reduce((n, r) => n + r.planned, 0);
+  if (planned) {
     console.log(
-      `[cron] persona-agent: ${ran.length} personas ran autonomous sessions, ${drafts} drafts queued`,
+      `[cron] persona-planner: ${planned} tasks planned across ${results.filter((r) => r.planned > 0).length} personas`,
+    );
+  }
+}
+
+async function runPersonaWorkerCron(): Promise<void> {
+  const { runInfluencerWorkerCron } = await import("@/lib/influencer/worker-cron");
+  const res = await runInfluencerWorkerCron();
+  if (res.examined > 0) {
+    console.log(
+      `[cron] persona-worker: examined ${res.examined}, done ${res.done}, failed ${res.failed}, skipped ${res.skipped}`,
     );
   }
 }
@@ -376,12 +385,18 @@ const JOBS: JobDefinition[] = [
     run: runPersonaPublishCron,
   },
   {
-    // Daily 09:00 UTC: autonomous agent sessions for personas that opted into
-    // a cadence (content_config.agent_cadence). The persona researches on its
-    // own model, does the work, and queues drafts — it never publishes.
-    name: "persona-agent",
-    schedule: "0 9 * * *",
-    run: runPersonaAgentCron,
+    // Daily 08:00 UTC: personas that opted into a cadence plan their own week
+    // of work into persona_tasks (posts, articles, research, email, …).
+    name: "persona-planner",
+    schedule: "0 8 * * *",
+    run: runPersonaPlannerCron,
+  },
+  {
+    // Every 30 min: execute due planned tasks — one agent session per task,
+    // drafts to the review queue, an operator alert on failure. Never publishes.
+    name: "persona-worker",
+    schedule: "*/30 * * * *",
+    run: runPersonaWorkerCron,
   },
 ];
 
