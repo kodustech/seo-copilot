@@ -34,7 +34,7 @@ export type PersonaTask = {
   updated_at: string;
 };
 
-const TASK_KINDS: TaskKind[] = [
+const TASK_KINDS: ReadonlySet<TaskKind> = new Set([
   "post",
   "article",
   "reply",
@@ -43,10 +43,10 @@ const TASK_KINDS: TaskKind[] = [
   "email",
   "research",
   "other",
-];
+]);
 
 export function normalizeTaskKind(value: unknown): TaskKind {
-  return TASK_KINDS.includes(value as TaskKind) ? (value as TaskKind) : "other";
+  return TASK_KINDS.has(value as TaskKind) ? (value as TaskKind) : "other";
 }
 
 type Row = Record<string, unknown>;

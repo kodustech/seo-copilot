@@ -228,6 +228,17 @@ export async function runInfluencerAgentSession({
       }),
       execute: async ({ to, subject, body }) => {
         await step({ kind: "tool_call", tool: "send_email", payload: { to, subject } });
+        // Require an explicitly linked mailbox. Without this guard
+        // sendOutreachEmail silently falls back to the workspace default
+        // mailbox, so the persona would send as someone else.
+        if (!persona.mailbox_id) {
+          await step({
+            kind: "tool_result",
+            tool: "send_email",
+            payload: { error: "no_mailbox" },
+          });
+          return "Could not send — no mailbox is linked to this persona.";
+        }
         const r = await sendOutreachEmail(client, {
           to,
           subject,
@@ -251,9 +262,16 @@ export async function runInfluencerAgentSession({
       inputSchema: z.object({ limit: z.number().optional() }),
       execute: async ({ limit }) => {
         await step({ kind: "tool_call", tool: "read_inbox", payload: {} });
+        // Require an explicitly linked mailbox. The worker runs on the service
+        // client (RLS bypassed), so an unfiltered listReplyThreads would return
+        // every mailbox's threads across the whole workspace — never do that.
+        if (!persona.mailbox_id) {
+          await step({ kind: "tool_result", tool: "read_inbox", payload: { count: 0 } });
+          return "No mailbox is linked to this persona.";
+        }
         try {
           const { threads } = await listReplyThreads(client, {
-            mailboxId: persona.mailbox_id ?? undefined,
+            mailboxId: persona.mailbox_id,
             channel: "email",
             limit: Math.min(limit ?? 10, 25),
           });

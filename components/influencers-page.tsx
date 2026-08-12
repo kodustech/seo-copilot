@@ -1762,12 +1762,23 @@ function PlanTab({ token, persona }: { token: string; persona: Persona }) {
   }, [load]);
 
   async function setCadenceRemote(next: "off" | "daily" | "weekly") {
-    setCadence(next);
-    await fetch(`/api/influencers/${persona.id}/tasks`, {
-      method: "POST",
-      headers: authHeaders(token),
-      body: JSON.stringify({ action: "set_cadence", cadence: next }),
-    });
+    const previous = cadence;
+    setCadence(next); // optimistic
+    setError(null);
+    try {
+      const res = await fetch(`/api/influencers/${persona.id}/tasks`, {
+        method: "POST",
+        headers: authHeaders(token),
+        body: JSON.stringify({ action: "set_cadence", cadence: next }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to update the cadence");
+      }
+    } catch (err) {
+      setCadence(previous); // revert so the UI matches the server
+      setError(err instanceof Error ? err.message : "Failed to update the cadence");
+    }
   }
 
   async function planNow() {
