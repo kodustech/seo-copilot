@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildFleetHandles,
   dayStartUtcIso,
+  isAllowedDevtoEnvName,
   nextDayStartUtcIso,
   resolvePublishDecision,
 } from "@/lib/influencer/publish";
@@ -205,6 +206,20 @@ describe("buildFleetHandles", () => {
       [makeChannel({ external_handle: "@NoobZero_X" })],
     );
     expect(handles).toEqual(new Set(["noobzero", "bytebender", "noobzero_x"]));
+  });
+});
+
+describe("isAllowedDevtoEnvName", () => {
+  it("accepts the default key and per-persona suffixed keys", () => {
+    expect(isAllowedDevtoEnvName("DEVTO_API_KEY")).toBe(true);
+    expect(isAllowedDevtoEnvName("DEVTO_API_KEY_NOOBZERO")).toBe(true);
+  });
+
+  it("rejects arbitrary env names — credentials_ref is user-editable data", () => {
+    expect(isAllowedDevtoEnvName("ANTHROPIC_API_KEY")).toBe(false);
+    expect(isAllowedDevtoEnvName("DATABASE_ADMIN_URL")).toBe(false);
+    expect(isAllowedDevtoEnvName("DEVTO_API_KEYX")).toBe(false);
+    expect(isAllowedDevtoEnvName("devto_api_key")).toBe(false);
   });
 });
 

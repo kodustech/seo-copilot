@@ -357,6 +357,7 @@ function ReviewQueue({
 }) {
   const [activities, setActivities] = useState<Activity[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [personaFilter, setPersonaFilter] = useState<string>("all");
   const personaById = useMemo(
     () => new Map(personas.map((p) => [p.id, p])),
@@ -372,7 +373,12 @@ function ReviewQueue({
         headers: authHeaders(token),
       });
       const body = await res.json();
-      if (res.ok) setActivities(body.activities ?? []);
+      if (!res.ok) throw new Error(body.error || "Failed to load the queue");
+      setActivities(body.activities ?? []);
+      setError(null);
+    } catch (err) {
+      setActivities([]);
+      setError(err instanceof Error ? err.message : "Failed to load the queue");
     } finally {
       setLoading(false);
     }
@@ -392,10 +398,12 @@ function ReviewQueue({
       headers: authHeaders(token),
       body: JSON.stringify({ action, ...(content ? { content } : {}) }),
     });
-    if (res.ok) {
-      setActivities((prev) => prev.filter((a) => a.id !== id));
-      onChanged();
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `Failed to ${action} (${res.status})`);
     }
+    setActivities((prev) => prev.filter((a) => a.id !== id));
+    onChanged();
   }
 
   return (
@@ -417,7 +425,13 @@ function ReviewQueue({
         {loading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
       </div>
 
-      {!loading && activities.length === 0 ? (
+      {error && (
+        <div className="text-sm text-red-600 border border-red-200 rounded-md p-3">
+          {error}
+        </div>
+      )}
+
+      {!loading && !error && activities.length === 0 ? (
         <Card>
           <CardContent className="py-10 text-center text-sm text-muted-foreground">
             Queue is clear. New drafts land daily at 10:00 UTC for every active
@@ -455,6 +469,7 @@ function QueueItem({
 }) {
   const [content, setContent] = useState(activity.content);
   const [busy, setBusy] = useState<"approve" | "discard" | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const edited = content.trim() !== activity.content;
   const lane =
     typeof activity.content_meta.lane === "string"
@@ -463,8 +478,13 @@ function QueueItem({
 
   async function act(action: "approve" | "discard") {
     setBusy(action);
+    setActionError(null);
     try {
       await onReview(activity.id, action, edited ? content.trim() : undefined);
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : `Failed to ${action}`,
+      );
     } finally {
       setBusy(null);
     }
@@ -497,6 +517,7 @@ function QueueItem({
         {activity.error && (
           <p className="text-xs text-red-600">{activity.error}</p>
         )}
+        {actionError && <p className="text-xs text-red-600">{actionError}</p>}
 
         <Textarea
           value={content}
@@ -558,6 +579,7 @@ function PersonaDetail({
   const [activities, setActivities] = useState<Activity[]>([]);
   const [loadingActivities, setLoadingActivities] = useState(true);
   const [togglingStatus, setTogglingStatus] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   const loadActivities = useCallback(async () => {
     setLoadingActivities(true);
@@ -567,7 +589,14 @@ function PersonaDetail({
         { headers: authHeaders(token) },
       );
       const body = await res.json();
-      if (res.ok) setActivities(body.activities ?? []);
+      if (!res.ok) throw new Error(body.error || "Failed to load the timeline");
+      setActivities(body.activities ?? []);
+      setDetailError(null);
+    } catch (err) {
+      setActivities([]);
+      setDetailError(
+        err instanceof Error ? err.message : "Failed to load the timeline",
+      );
     } finally {
       setLoadingActivities(false);
     }
@@ -580,14 +609,23 @@ function PersonaDetail({
   async function toggleStatus() {
     setTogglingStatus(true);
     try {
-      await fetch(`/api/influencers/${persona.id}`, {
+      const res = await fetch(`/api/influencers/${persona.id}`, {
         method: "PATCH",
         headers: authHeaders(token),
         body: JSON.stringify({
           status: persona.status === "active" ? "paused" : "active",
         }),
       });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `Failed to update status (${res.status})`);
+      }
+      setDetailError(null);
       onChanged();
+    } catch (err) {
+      setDetailError(
+        err instanceof Error ? err.message : "Failed to update status",
+      );
     } finally {
       setTogglingStatus(false);
     }
@@ -630,6 +668,12 @@ function PersonaDetail({
           </Button>
         </div>
       </div>
+
+      {detailError && (
+        <div className="text-sm text-red-600 border border-red-200 rounded-md p-3">
+          {detailError}
+        </div>
+      )}
 
       <Tabs defaultValue="timeline">
         <TabsList>
@@ -758,6 +802,7 @@ function ChannelCard({
   onChanged: () => void;
 }) {
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [handle, setHandle] = useState(channel.external_handle ?? "");
   const [bridgeId, setBridgeId] = useState(
     channel.channel_config.post_bridge_account_id
@@ -772,12 +817,19 @@ function ChannelCard({
   async function patch(body: Record<string, unknown>) {
     setSaving(true);
     try {
-      await fetch(`/api/influencers/channels/${channel.id}`, {
+      const res = await fetch(`/api/influencers/channels/${channel.id}`, {
         method: "PATCH",
         headers: authHeaders(token),
         body: JSON.stringify(body),
       });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(payload.error || `Failed to save (${res.status})`);
+      }
+      setSaveError(null);
       onChanged();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Failed to save");
     } finally {
       setSaving(false);
     }
@@ -824,6 +876,7 @@ function ChannelCard({
         </div>
       </CardHeader>
       <CardContent className="space-y-4 text-sm">
+        {saveError && <p className="text-xs text-red-600">{saveError}</p>}
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
             <p className="text-xs text-muted-foreground mb-1">Platform handle</p>

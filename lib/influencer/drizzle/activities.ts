@@ -169,6 +169,42 @@ export async function updateActivity(
 }
 
 /**
+ * Review update guarded against races: applies the patch only while the row is
+ * still in one of `allowedFrom`. Returns null when a concurrent reviewer or
+ * the publisher moved it first — the same shape as claimActivityForPublishing.
+ */
+export async function updateActivityIfStatus(
+  db: Db,
+  id: string,
+  patch: ActivityPatch,
+  allowedFrom: ActivityStatus[],
+): Promise<PersonaActivity | null> {
+  const set: Partial<typeof personaActivities.$inferInsert> = {};
+  if (patch.status !== undefined) set.status = patch.status;
+  if (patch.title !== undefined) set.title = patch.title;
+  if (patch.content !== undefined) set.content = patch.content;
+  if (patch.content_meta !== undefined) set.contentMeta = patch.content_meta;
+  if (patch.scheduled_at !== undefined) set.scheduledAt = patch.scheduled_at;
+  if (patch.error !== undefined) set.error = patch.error;
+  if (patch.approved_by !== undefined) set.approvedBy = patch.approved_by;
+
+  if (!Object.keys(set).length || !allowedFrom.length) return null;
+
+  const rows = await db
+    .update(personaActivities)
+    .set(set)
+    .where(
+      and(
+        eq(personaActivities.id, id),
+        inArray(personaActivities.status, allowedFrom),
+      ),
+    )
+    .returning();
+
+  return rows.length ? rowToActivity(rows[0]) : null;
+}
+
+/**
  * Atomically claims an activity for publishing: flips it to `publishing` only
  * if it is still in `from`. Returns null when another worker got there first.
  */
@@ -189,8 +225,9 @@ export async function claimActivityForPublishing(
 }
 
 /**
- * Activities the publisher should look at: approved, or scheduled with a due
- * scheduled_at (deferred by a daily cap or an explicit schedule).
+ * Activities the publisher should look at: approved or scheduled, in both
+ * cases only once their scheduled_at (if any) is due — a reviewer can approve
+ * with a future date and it must hold.
  */
 export async function listDueForPublish(
   db: Db,
@@ -201,14 +238,11 @@ export async function listDueForPublish(
     .select()
     .from(personaActivities)
     .where(
-      or(
-        eq(personaActivities.status, "approved"),
-        and(
-          eq(personaActivities.status, "scheduled"),
-          or(
-            isNull(personaActivities.scheduledAt),
-            lte(personaActivities.scheduledAt, nowIso),
-          ),
+      and(
+        inArray(personaActivities.status, ["approved", "scheduled"]),
+        or(
+          isNull(personaActivities.scheduledAt),
+          lte(personaActivities.scheduledAt, nowIso),
         ),
       ),
     )
@@ -216,6 +250,34 @@ export async function listDueForPublish(
     .limit(limit);
 
   return rows.map(rowToActivity);
+}
+
+/**
+ * Recovers claims orphaned by a crash: anything sitting in `publishing` since
+ * before `cutoffIso` goes to `failed` (not back to `approved` — the external
+ * call may have gone through, and a silent double-post is worse than a human
+ * re-approving). Returns how many rows were reset.
+ */
+export async function resetStalePublishing(
+  db: Db,
+  cutoffIso: string,
+): Promise<number> {
+  const rows = await db
+    .update(personaActivities)
+    .set({
+      status: "failed",
+      error:
+        "Publish interrupted (stale claim reset). Check the platform before re-approving — the post may have gone out.",
+    })
+    .where(
+      and(
+        eq(personaActivities.status, "publishing"),
+        lte(personaActivities.updatedAt, cutoffIso),
+      ),
+    )
+    .returning({ id: personaActivities.id });
+
+  return rows.length;
 }
 
 /**

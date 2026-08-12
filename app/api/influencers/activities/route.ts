@@ -23,7 +23,8 @@ export async function GET(req: Request) {
     );
 
     const url = new URL(req.url);
-    const personaId = url.searchParams.get("persona_id") ?? undefined;
+    // "?persona_id=" must not silently widen the query to every persona.
+    const personaId = url.searchParams.get("persona_id")?.trim() || undefined;
     const statuses = (url.searchParams.get("status") ?? "")
       .split(",")
       .map((item) => normalizeActivityStatus(item.trim()))

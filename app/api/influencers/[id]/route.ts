@@ -80,6 +80,9 @@ export async function PATCH(
       nullable = true,
     ) => {
       if (typeof value === "string") {
+        // Required fields can be changed but never emptied — POST enforces
+        // non-empty on create and PATCH must not undo that.
+        if (!value.trim() && !nullable) return;
         (patch as Record<string, unknown>)[key] = value;
       } else if (value === null && nullable) {
         (patch as Record<string, unknown>)[key] = null;

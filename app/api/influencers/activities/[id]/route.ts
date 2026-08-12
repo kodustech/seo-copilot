@@ -5,10 +5,13 @@ import { getSupabaseUserClient } from "@/lib/supabase-server";
 
 import {
   getActivity,
-  updateActivity,
+  updateActivityIfStatus,
   type ActivityPatch,
 } from "@/lib/influencer/drizzle/activities";
-import { influencerTableMissingMessage } from "@/lib/influencer/types";
+import {
+  influencerTableMissingMessage,
+  type ActivityStatus,
+} from "@/lib/influencer/types";
 
 export const maxDuration = 60;
 
@@ -44,11 +47,6 @@ export async function PATCH(
     const activity = await withUser({ email: userEmail }, async (tx) => {
       const current = await getActivity(tx, id);
       if (!current) return null;
-      if (!REVIEWABLE.has(current.status)) {
-        throw new Error(
-          `Activity is ${current.status} and can no longer be reviewed.`,
-        );
-      }
 
       const patch: ActivityPatch = {};
       if (typeof body.content === "string" && body.content.trim()) {
@@ -67,9 +65,25 @@ export async function PATCH(
         patch.error = null;
       } else if (action === "discard") {
         patch.status = "discarded";
+      } else if (!Object.keys(patch).length) {
+        // Plain edit with nothing to change: return as-is.
+        return current;
       }
 
-      return updateActivity(tx, id, patch);
+      // Guarded update: only applies while the row is still reviewable, so a
+      // concurrent reviewer (or the publisher claiming it) wins cleanly.
+      const updated = await updateActivityIfStatus(
+        tx,
+        id,
+        patch,
+        [...REVIEWABLE] as ActivityStatus[],
+      );
+      if (!updated) {
+        throw new Error(
+          `Activity is ${current.status} (or just changed) and can no longer be reviewed.`,
+        );
+      }
+      return updated;
     });
 
     if (!activity) {

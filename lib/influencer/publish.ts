@@ -12,6 +12,7 @@ import {
   claimActivityForPublishing,
   countPublishedToday,
   listDueForPublish,
+  resetStalePublishing,
   updateActivity,
 } from "@/lib/influencer/drizzle/activities";
 import { listChannels, listPersonas } from "@/lib/influencer/drizzle/personas";
@@ -198,11 +199,25 @@ async function publishViaPostBridge(
   return { external_id: scheduled.id, external_url: null };
 }
 
+/**
+ * credentials_ref is data anyone with app access can edit; using it verbatim
+ * as a process.env key would let a row read arbitrary secrets. Only
+ * DEVTO_API_KEY or DEVTO_API_KEY_<SUFFIX> (one per persona account) resolve.
+ */
+export function isAllowedDevtoEnvName(name: string): boolean {
+  return /^DEVTO_API_KEY(_[A-Z0-9_]+)?$/.test(name);
+}
+
 async function publishToDevto(
   activity: PersonaActivity,
   channel: PersonaChannel,
 ): Promise<PublishOutcome> {
   const envName = channel.credentials_ref?.trim() || "DEVTO_API_KEY";
+  if (!isAllowedDevtoEnvName(envName)) {
+    throw new Error(
+      `credentials_ref "${envName}" is not allowed. Use DEVTO_API_KEY or DEVTO_API_KEY_<HANDLE>.`,
+    );
+  }
   const apiKey = process.env[envName]?.trim();
   if (!apiKey) {
     throw new Error(
@@ -294,6 +309,13 @@ export async function runInfluencerPublishCron(
     failed: 0,
     skipped: 0,
   };
+
+  // Recover claims orphaned by a crash between claim and outcome update.
+  const staleCutoff = new Date(now.getTime() - 30 * 60 * 1000).toISOString();
+  const reset = await resetStalePublishing(db, staleCutoff);
+  if (reset > 0) {
+    console.warn(`[influencer] reset ${reset} stale publishing claim(s) to failed`);
+  }
 
   const due = await listDueForPublish(db, now.toISOString());
   if (!due.length) return summary;

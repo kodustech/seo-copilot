@@ -68,9 +68,16 @@ export async function GET(req: Request) {
         );
       }
 
+      const channelsByPersona = new Map<string, typeof channels>();
+      for (const channel of channels) {
+        const bucket = channelsByPersona.get(channel.persona_id);
+        if (bucket) bucket.push(channel);
+        else channelsByPersona.set(channel.persona_id, [channel]);
+      }
+
       return personas.map((persona) => ({
         ...persona,
-        channels: channels.filter((ch) => ch.persona_id === persona.id),
+        channels: channelsByPersona.get(persona.id) ?? [],
         pending_drafts: pendingByPersona.get(persona.id) ?? 0,
       }));
     });
