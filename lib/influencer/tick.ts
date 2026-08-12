@@ -33,6 +33,10 @@ const MIN_WAIT_MIN = 15;
 const MAX_WAIT_MIN = 24 * 60;
 const NO_CHANNEL_WAIT_MIN = 6 * 60;
 const FAILURE_WAIT_MIN = 60;
+// Don't let the persona out-produce what it can publish: if this many pieces
+// are already waiting to go out, skip a producing shift and let the queue drain.
+const MAX_PENDING = 6;
+const BACKLOG_WAIT_MIN = 3 * 60;
 
 export type Cadence = "off" | "daily" | "weekly";
 
@@ -93,8 +97,22 @@ function buildShiftGoal(persona: Persona, allowed: string[]): string {
     `This is your shift as ${persona.display_name} (@${persona.handle}).`,
     `Your beat: ${persona.beat}.`,
     `Channels you can post to right now: ${allowed.join(", ")}.`,
-    "Do ONE genuinely valuable thing this shift: research something current in your beat (read a real source with fetch_url first), then write and queue a post/thread/article for one of those channels — or engage thoughtfully. Ground it in something concrete, match your voice, and do NOT repeat something you recently did. When you've done one solid thing, stop.",
+    "Do ONE genuinely valuable thing this shift: research something current in your beat (read a real source with fetch_url first), then write and queue ONE self-contained piece for ONE of those channels — or engage thoughtfully. For X, that is a single standalone tweet that stands on its own; never a thread or thread pieces. Queue at most one piece. Ground it in something concrete, match your voice, and do NOT repeat something you recently did. When you've done one solid thing, stop.",
   ].join("\n");
+}
+
+/** Pieces already waiting to publish — used to avoid out-producing the queue. */
+async function countPendingActivities(
+  client: SupabaseClient,
+  personaId: string,
+): Promise<number> {
+  const { count, error } = await client
+    .from("persona_activities")
+    .select("id", { count: "exact", head: true })
+    .eq("persona_id", personaId)
+    .in("status", ["draft", "approved", "scheduled"]);
+  if (error) throw new Error(error.message);
+  return count ?? 0;
 }
 
 export type TickResult = {
@@ -140,6 +158,19 @@ export async function runPersonaTick({
       last_tick_at: now.toISOString(),
     });
     return { ...base, wait_minutes: NO_CHANNEL_WAIT_MIN, note };
+  }
+
+  // Queue is backed up — don't pile on. Hold until the publisher drains it.
+  const pending = await countPendingActivities(client, persona.id);
+  if (pending >= MAX_PENDING) {
+    const note = `Queue is backed up (${pending} pieces waiting) — holding off on new posts until it drains.`;
+    const next = new Date(now.getTime() + BACKLOG_WAIT_MIN * 60_000);
+    await setTickState(client, persona, {
+      next_action_at: next.toISOString(),
+      last_note: note,
+      last_tick_at: now.toISOString(),
+    });
+    return { ...base, wait_minutes: BACKLOG_WAIT_MIN, note };
   }
 
   // Do the shift: one real multi-step session, gated to connected channels.

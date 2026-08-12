@@ -147,7 +147,7 @@ function buildAgentSystem(persona: Persona, platforms?: string[]): string {
     "",
     "PLATFORM FORMAT — match the channel exactly:",
     platformRules(configs),
-    "For X specifically: one post is ONE idea in ≤280 characters. A thread is a sequence — queue each tweet as its own draft, never one long blob in a single tweet.",
+    "For X specifically: write ONE standalone tweet — a single, self-contained idea in ≤280 characters that makes complete sense on its own. Do NOT write threads or thread pieces: this account posts through a scheduler with no thread support, so every tweet must stand alone. One shift produces one tweet, not a series.",
   ].join("\n");
 }
 
@@ -367,7 +367,7 @@ export async function runInfluencerAgentSession({
         if (normalizedPlatform === "x") {
           const len = tweetLength(content);
           if (len > 280) {
-            const msg = `That's ${len} chars (X counts each link as 23) — an X post must be ≤280. Tighten it to one idea, or if it's a thread, queue each tweet as its own draft.`;
+            const msg = `That's ${len} chars (X counts each link as 23) — an X post must be ≤280 and stand on its own (no threads). Tighten it to one self-contained idea.`;
             await step({ kind: "tool_result", tool: "queue_draft", payload: { too_long: len } });
             return msg;
           }
