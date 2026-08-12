@@ -123,6 +123,19 @@ export async function getPersona(
   return data ? rowToPersona(data) : null;
 }
 
+export async function getChannel(
+  client: SupabaseClient,
+  id: string,
+): Promise<PersonaChannel | null> {
+  const { data, error } = await client
+    .from("persona_channels")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ? rowToChannel(data) : null;
+}
+
 export async function listChannels(
   client: SupabaseClient,
 ): Promise<PersonaChannel[]> {

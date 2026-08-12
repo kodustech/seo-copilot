@@ -14,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 
+import { ONBOARDING_STEP_KEYS } from "@/lib/influencer/types";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -124,12 +125,19 @@ const STATUS_BADGE: Record<Activity["status"], string> = {
   discarded: "bg-muted text-muted-foreground line-through",
 };
 
-const ONBOARDING_STEPS: Array<{ key: string; label: string }> = [
-  { key: "account_created", label: "Account created on the platform" },
-  { key: "automation_label", label: "Automation label enabled (X)" },
-  { key: "disclosure_in_bio", label: "AI disclosure in the bio" },
-  { key: "credentials_linked", label: "Credentials linked (Post-Bridge / api-key)" },
-];
+const ONBOARDING_LABELS: Record<(typeof ONBOARDING_STEP_KEYS)[number], string> = {
+  account_created: "Account created on the platform",
+  automation_label: "Automation label enabled (X)",
+  disclosure_in_bio: "AI disclosure in the bio",
+  credentials_linked: "Credentials linked (Post-Bridge / api-key)",
+};
+
+// Keys come from the server-side wall in lib/influencer/types — the UI
+// checklist mirrors it, it doesn't define it.
+const ONBOARDING_STEPS = ONBOARDING_STEP_KEYS.map((key) => ({
+  key,
+  label: ONBOARDING_LABELS[key],
+}));
 
 function useAuthToken() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
@@ -809,10 +817,14 @@ function ChannelCard({
       ? String(channel.channel_config.post_bridge_account_id)
       : "",
   );
+  // Local checklist state: rapid toggles must build on each other, not on the
+  // stale channel prop from the last fleet fetch.
+  const [onboarding, setOnboarding] = useState(channel.onboarding);
+  useEffect(() => {
+    setOnboarding(channel.onboarding);
+  }, [channel.onboarding]);
   const isDraftOnly = channel.automation_level === "draft_only";
-  const onboardingDone = ONBOARDING_STEPS.every(
-    (step) => channel.onboarding[step.key],
-  );
+  const onboardingDone = ONBOARDING_STEPS.every((step) => onboarding[step.key]);
 
   async function patch(body: Record<string, unknown>) {
     setSaving(true);
@@ -983,12 +995,12 @@ function ChannelCard({
               className="flex items-center gap-2 text-sm cursor-pointer"
             >
               <Switch
-                checked={Boolean(channel.onboarding[step.key])}
-                onCheckedChange={(checked) =>
-                  patch({
-                    onboarding: { ...channel.onboarding, [step.key]: checked },
-                  })
-                }
+                checked={Boolean(onboarding[step.key])}
+                onCheckedChange={(checked) => {
+                  const next = { ...onboarding, [step.key]: checked };
+                  setOnboarding(next);
+                  patch({ onboarding: next });
+                }}
               />
               {step.label}
             </label>

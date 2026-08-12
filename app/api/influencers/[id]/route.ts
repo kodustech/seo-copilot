@@ -75,10 +75,12 @@ export async function PATCH(
       nullable = true,
     ) => {
       if (typeof value === "string") {
+        const trimmed = value.trim();
         // Required fields can be changed but never emptied — POST enforces
-        // non-empty on create and PATCH must not undo that.
-        if (!value.trim() && !nullable) return;
-        (patch as Record<string, unknown>)[key] = value;
+        // non-empty on create and PATCH must not undo that. For nullable
+        // fields a whitespace-only string means null, not three spaces.
+        if (!trimmed && !nullable) return;
+        (patch as Record<string, unknown>)[key] = trimmed ? value : null;
       } else if (value === null && nullable) {
         (patch as Record<string, unknown>)[key] = null;
       }

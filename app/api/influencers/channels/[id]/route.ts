@@ -3,11 +3,13 @@ import { NextResponse } from "next/server";
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 
 import {
+  getChannel,
   updateChannel,
   type ChannelPatch,
 } from "@/lib/influencer/personas";
 import {
   influencerTableMissingMessage,
+  isOnboardingComplete,
   normalizeAutomationLevel,
   normalizeChannelStatus,
 } from "@/lib/influencer/types";
@@ -60,6 +62,23 @@ export async function PATCH(
     }
     const status = normalizeChannelStatus(body.status);
     if (status) patch.status = status;
+
+    // The onboarding checklist is a server-side wall, not a UI nicety: a
+    // channel only activates once every step is done — checked against the
+    // STORED state merged with this request, so a direct API call can't skip it.
+    if (patch.status === "active") {
+      const current = await getChannel(client, id);
+      if (!current) {
+        return NextResponse.json({ error: "Channel not found" }, { status: 404 });
+      }
+      const merged = { ...current.onboarding, ...(patch.onboarding ?? {}) };
+      if (!isOnboardingComplete(merged)) {
+        return NextResponse.json(
+          { error: "Complete the onboarding checklist before activating this channel." },
+          { status: 400 },
+        );
+      }
+    }
 
     const channel = await updateChannel(client, id, patch);
     if (!channel) {

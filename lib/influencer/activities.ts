@@ -278,10 +278,14 @@ export async function listRecentContents(
   client: SupabaseClient,
   sinceIso: string,
 ): Promise<Array<{ persona_id: string; content: string }>> {
+  // Dedup needs recent samples, not the full history — cap the scan so a
+  // grown fleet doesn't pull thousands of full content strings into memory.
   const { data, error } = await client
     .from("persona_activities")
     .select("persona_id, content")
-    .gte("created_at", sinceIso);
+    .gte("created_at", sinceIso)
+    .order("created_at", { ascending: false })
+    .limit(1000);
 
   if (error) throw new Error(error.message);
   return (data ?? []).map((row) => ({

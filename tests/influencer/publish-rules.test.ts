@@ -13,10 +13,12 @@ import {
   nextDayStartUtcIso,
   resolvePublishDecision,
 } from "../../lib/influencer/publish";
-import type {
-  Persona,
-  PersonaActivity,
-  PersonaChannel,
+import {
+  isOnboardingComplete,
+  ONBOARDING_STEP_KEYS,
+  type Persona,
+  type PersonaActivity,
+  type PersonaChannel,
 } from "../../lib/influencer/types";
 
 const NOW = new Date("2026-08-11T15:30:00.000Z");
@@ -220,6 +222,15 @@ describe("isAllowedDevtoEnvName", () => {
     expect(isAllowedDevtoEnvName("DATABASE_ADMIN_URL")).toBe(false);
     expect(isAllowedDevtoEnvName("DEVTO_API_KEYX")).toBe(false);
     expect(isAllowedDevtoEnvName("devto_api_key")).toBe(false);
+  });
+});
+
+describe("isOnboardingComplete", () => {
+  it("requires every step, not just the ones present", () => {
+    const all = Object.fromEntries(ONBOARDING_STEP_KEYS.map((key) => [key, true]));
+    expect(isOnboardingComplete(all)).toBe(true);
+    expect(isOnboardingComplete({ ...all, credentials_linked: false })).toBe(false);
+    expect(isOnboardingComplete({})).toBe(false);
   });
 });
 

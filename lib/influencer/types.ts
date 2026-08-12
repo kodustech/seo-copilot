@@ -181,6 +181,24 @@ export function isReplyKind(kind: ActivityKind): boolean {
   return kind === "reply" || kind === "quote";
 }
 
+/**
+ * The onboarding checklist a channel must complete before it can activate.
+ * Enforced server-side on the channel PATCH — the UI checklist is a mirror,
+ * not the wall.
+ */
+export const ONBOARDING_STEP_KEYS = [
+  "account_created",
+  "automation_label",
+  "disclosure_in_bio",
+  "credentials_linked",
+] as const;
+
+export function isOnboardingComplete(
+  onboarding: Record<string, boolean>,
+): boolean {
+  return ONBOARDING_STEP_KEYS.every((key) => onboarding[key]);
+}
+
 export function influencerTableMissingMessage(error: unknown): string | null {
   const message = error instanceof Error ? error.message : String(error);
   if (!/persona(s|_channels|_activities|_activity_metrics|_learnings)/i.test(message)) {
