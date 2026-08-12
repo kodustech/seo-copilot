@@ -50,7 +50,9 @@ export type Persona = {
   bio: string;
   avatar_url: string | null;
   backstory: string;
-  disclosure: string;
+  // Optional: when set, the persona operates openly as AI and honors this line.
+  // When null, the creator has chosen not to disclose.
+  disclosure: string | null;
   beat: string;
   tone: string | null;
   writing_guidelines: string | null;
@@ -64,6 +66,8 @@ export type Persona = {
   model_name: string | null;
   // Custom endpoint for the *_compatible providers (base URL of the gateway).
   model_base_url: string | null;
+  // Linked outreach mailbox so the persona can send/read email.
+  mailbox_id: string | null;
   status: PersonaStatus;
   created_by: string;
   created_at: string;

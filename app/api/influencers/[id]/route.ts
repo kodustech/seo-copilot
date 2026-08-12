@@ -90,7 +90,9 @@ export async function PATCH(
     assignText("bio", body.bio, false);
     assignText("avatar_url", body.avatar_url);
     assignText("backstory", body.backstory, false);
-    assignText("disclosure", body.disclosure, false);
+    // Disclosure is optional — the creator decides whether the persona is
+    // openly AI, and can clear it later (nullable).
+    assignText("disclosure", body.disclosure);
     assignText("beat", body.beat, false);
     assignText("tone", body.tone);
     assignText("writing_guidelines", body.writing_guidelines);

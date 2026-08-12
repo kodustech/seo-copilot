@@ -55,7 +55,7 @@ export function rowToPersona(row: Row): Persona {
     bio: asText(row.bio),
     avatar_url: asNullableText(row.avatar_url),
     backstory: asText(row.backstory),
-    disclosure: asText(row.disclosure),
+    disclosure: asNullableText(row.disclosure),
     beat: asText(row.beat),
     tone: asNullableText(row.tone),
     writing_guidelines: asNullableText(row.writing_guidelines),
@@ -67,6 +67,7 @@ export function rowToPersona(row: Row): Persona {
     model_provider: normalizeModelProvider(row.model_provider),
     model_name: asNullableText(row.model_name),
     model_base_url: asNullableText(row.model_base_url),
+    mailbox_id: asNullableText(row.mailbox_id),
     status: normalizePersonaStatus(row.status) ?? "paused",
     created_by: asText(row.created_by),
     created_at: asText(row.created_at),
@@ -171,7 +172,7 @@ export type CreatePersonaInput = {
   bio: string;
   avatar_url?: string | null;
   backstory: string;
-  disclosure: string;
+  disclosure?: string | null;
   beat: string;
   tone?: string | null;
   writing_guidelines?: string | null;
@@ -189,11 +190,6 @@ export async function createPersona(
 ): Promise<Persona> {
   const handle = input.handle.trim().toLowerCase().replace(/^@/, "");
   if (!handle) throw new Error("Persona handle is required.");
-  if (!input.disclosure.trim()) {
-    throw new Error(
-      "Persona disclosure line is required — every persona is openly AI.",
-    );
-  }
 
   const { data, error } = await client
     .from("personas")
@@ -203,7 +199,7 @@ export async function createPersona(
       bio: input.bio.trim(),
       avatar_url: input.avatar_url ?? null,
       backstory: input.backstory.trim(),
-      disclosure: input.disclosure.trim(),
+      disclosure: input.disclosure?.trim() || null,
       beat: input.beat.trim(),
       tone: input.tone ?? null,
       writing_guidelines: input.writing_guidelines ?? null,
@@ -226,7 +222,7 @@ export type PersonaPatch = Partial<{
   bio: string;
   avatar_url: string | null;
   backstory: string;
-  disclosure: string;
+  disclosure: string | null;
   beat: string;
   tone: string | null;
   writing_guidelines: string | null;
@@ -238,6 +234,7 @@ export type PersonaPatch = Partial<{
   model_provider: ModelProvider | null;
   model_name: string | null;
   model_base_url: string | null;
+  mailbox_id: string | null;
   status: PersonaStatus;
 }>;
 
@@ -246,9 +243,6 @@ export async function updatePersona(
   id: string,
   patch: PersonaPatch,
 ): Promise<Persona | null> {
-  if (patch.disclosure !== undefined && !patch.disclosure.trim()) {
-    throw new Error("Persona disclosure cannot be emptied.");
-  }
   if (!Object.keys(patch).length) return getPersona(client, id);
 
   const { data, error } = await client

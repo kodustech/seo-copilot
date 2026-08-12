@@ -43,6 +43,7 @@ function makePersona(overrides: Partial<Persona> = {}): Persona {
     model_provider: null,
     model_name: null,
     model_base_url: null,
+    mailbox_id: null,
     status: "active",
     created_by: "gabriel@kodus.io",
     created_at: NOW.toISOString(),

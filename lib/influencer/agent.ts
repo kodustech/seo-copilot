@@ -5,6 +5,9 @@ import { generateText, stepCountIs, tool } from "ai";
 import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { listReplyThreads } from "@/lib/outreach/inbox";
+import { sendOutreachEmail } from "@/lib/outreach/send-email";
+
 import { insertActivities } from "@/lib/influencer/activities";
 import { getExecutor } from "@/lib/influencer/executor";
 import { getModelForPersona } from "@/lib/influencer/model";
@@ -112,7 +115,7 @@ function buildAgentSystem(persona: Persona): string {
     "When you have something genuinely worth posting — a tweet, an article, a reply — call queue_draft to put it in the human review queue.",
     "You NEVER publish directly. queue_draft only drafts; a human approves before anything goes live.",
     "Quality over output: if after researching nothing meets the bar, finish without drafting. Never post filler to have posted.",
-    "Stay in character and honor every boundary in your voice policy. Keep the AI disclosure honest.",
+    "Stay in character and honor every boundary in your voice policy.",
   ].join("\n");
 }
 
@@ -211,6 +214,79 @@ export async function runInfluencerAgentSession({
           const message = err instanceof Error ? err.message : String(err);
           await step({ kind: "tool_result", tool: "run_bash", payload: { error: message } });
           return `Command failed: ${message}`;
+        }
+      },
+    }),
+
+    send_email: tool({
+      description:
+        "Send an email from the persona's own mailbox. Use for outreach or to reply to a received email. Returns success or a clear failure (e.g. no mailbox linked).",
+      inputSchema: z.object({
+        to: z.string().describe("Recipient email"),
+        subject: z.string(),
+        body: z.string().describe("Plain-text body, in the persona's voice"),
+      }),
+      execute: async ({ to, subject, body }) => {
+        await step({ kind: "tool_call", tool: "send_email", payload: { to, subject } });
+        // Require an explicitly linked mailbox. Without this guard
+        // sendOutreachEmail silently falls back to the workspace default
+        // mailbox, so the persona would send as someone else.
+        if (!persona.mailbox_id) {
+          await step({
+            kind: "tool_result",
+            tool: "send_email",
+            payload: { error: "no_mailbox" },
+          });
+          return "Could not send — no mailbox is linked to this persona.";
+        }
+        const r = await sendOutreachEmail(client, {
+          to,
+          subject,
+          text: body,
+          mailboxId: persona.mailbox_id,
+        });
+        await step({
+          kind: "tool_result",
+          tool: "send_email",
+          payload: r.ok ? { ok: true, to } : { error: r.error, code: r.code },
+        });
+        return r.ok
+          ? `Sent to ${to}.`
+          : `Could not send${r.code === "no_mailbox" ? " — no mailbox is linked to this persona" : ""}: ${r.error}`;
+      },
+    }),
+
+    read_inbox: tool({
+      description:
+        "Read recent emails/replies in the persona's inbox (sender, subject, snippet). Use to see what came in before deciding to reply.",
+      inputSchema: z.object({ limit: z.number().optional() }),
+      execute: async ({ limit }) => {
+        await step({ kind: "tool_call", tool: "read_inbox", payload: {} });
+        // Require an explicitly linked mailbox. The worker runs on the service
+        // client (RLS bypassed), so an unfiltered listReplyThreads would return
+        // every mailbox's threads across the whole workspace — never do that.
+        if (!persona.mailbox_id) {
+          await step({ kind: "tool_result", tool: "read_inbox", payload: { count: 0 } });
+          return "No mailbox is linked to this persona.";
+        }
+        try {
+          const { threads } = await listReplyThreads(client, {
+            mailboxId: persona.mailbox_id,
+            channel: "email",
+            limit: Math.min(limit ?? 10, 25),
+          });
+          const items = threads.map((t) => ({
+            from: t.contactEmail ?? t.contactName ?? "unknown",
+            subject: t.subject,
+            snippet: t.snippet,
+            at: t.lastInboundAt,
+          }));
+          await step({ kind: "tool_result", tool: "read_inbox", payload: { count: items.length } });
+          return items.length ? JSON.stringify(items) : "Inbox is empty.";
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await step({ kind: "tool_result", tool: "read_inbox", payload: { error: message } });
+          return `Could not read inbox: ${message}`;
         }
       },
     }),

@@ -63,7 +63,7 @@ type Persona = {
   bio: string;
   avatar_url: string | null;
   backstory: string;
-  disclosure: string;
+  disclosure: string | null;
   beat: string;
   tone: string | null;
   writing_guidelines: string | null;
@@ -685,12 +685,17 @@ function PersonaDetail({
 
       <Tabs defaultValue="timeline">
         <TabsList>
+          <TabsTrigger value="plan">Plan</TabsTrigger>
           <TabsTrigger value="timeline">Timeline</TabsTrigger>
           <TabsTrigger value="runs">Runs</TabsTrigger>
           <TabsTrigger value="channels">Channels</TabsTrigger>
           <TabsTrigger value="model">Model</TabsTrigger>
           <TabsTrigger value="profile">Profile</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="plan" className="mt-4">
+          <PlanTab token={token} persona={persona} />
+        </TabsContent>
 
         <TabsContent value="runs" className="mt-4">
           <RunsTab token={token} persona={persona} onChanged={onChanged} />
@@ -770,9 +775,9 @@ function PersonaDetail({
               </div>
               <div>
                 <p className="text-xs font-medium uppercase text-muted-foreground mb-1">
-                  AI disclosure (mandatory)
+                  AI disclosure
                 </p>
-                <p>{persona.disclosure}</p>
+                <p>{persona.disclosure ?? "— (not disclosing)"}</p>
               </div>
               <div>
                 <p className="text-xs font-medium uppercase text-muted-foreground mb-1">
@@ -1212,7 +1217,7 @@ function WizardDialog({
             </div>
             <div>
               <p className="text-xs text-muted-foreground mb-1">
-                AI disclosure (goes in the bio, non-negotiable)
+                AI disclosure (optional — leave blank to not disclose)
               </p>
               <Input
                 value={proposal.disclosure}
@@ -1698,6 +1703,174 @@ function RunsTab({
             </CardContent>
           </Card>
         ))
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Plan tab: the persona's own backlog + autonomy cadence + "plan now"
+// ---------------------------------------------------------------------------
+
+type PersonaTask = {
+  id: string;
+  kind: string;
+  channel_platform: string | null;
+  title: string;
+  goal: string;
+  status: "planned" | "doing" | "done" | "failed" | "cancelled";
+  scheduled_for: string;
+  result_summary: string | null;
+  error: string | null;
+};
+
+const TASK_BADGE: Record<PersonaTask["status"], string> = {
+  planned: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
+  doing: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  done: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
+  failed: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
+  cancelled: "bg-muted text-muted-foreground line-through",
+};
+
+function PlanTab({ token, persona }: { token: string; persona: Persona }) {
+  const [tasks, setTasks] = useState<PersonaTask[]>([]);
+  const [cadence, setCadence] = useState<"off" | "daily" | "weekly">("off");
+  const [loading, setLoading] = useState(true);
+  const [planning, setPlanning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/influencers/${persona.id}/tasks`, {
+        headers: authHeaders(token),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Failed to load the plan");
+      setTasks(body.tasks ?? []);
+      setCadence(body.cadence ?? "off");
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load");
+    } finally {
+      setLoading(false);
+    }
+  }, [token, persona.id]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function setCadenceRemote(next: "off" | "daily" | "weekly") {
+    const previous = cadence;
+    setCadence(next); // optimistic
+    setError(null);
+    try {
+      const res = await fetch(`/api/influencers/${persona.id}/tasks`, {
+        method: "POST",
+        headers: authHeaders(token),
+        body: JSON.stringify({ action: "set_cadence", cadence: next }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to update the cadence");
+      }
+    } catch (err) {
+      setCadence(previous); // revert so the UI matches the server
+      setError(err instanceof Error ? err.message : "Failed to update the cadence");
+    }
+  }
+
+  async function planNow() {
+    setPlanning(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/influencers/${persona.id}/tasks`, {
+        method: "POST",
+        headers: authHeaders(token),
+        body: JSON.stringify({ action: "plan" }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Planning failed");
+      setTasks(body.tasks ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Planning failed");
+    } finally {
+      setPlanning(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardContent className="pt-4 space-y-3">
+          <p className="text-sm text-muted-foreground">
+            The persona plans its own work into this backlog and executes it on
+            its own — you only review drafts and get an alert if something fails.
+            Set a cadence to let it plan automatically, or plan now.
+          </p>
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">Autonomy</span>
+              <Select value={cadence} onValueChange={(v) => setCadenceRemote(v as typeof cadence)}>
+                <SelectTrigger className="w-40">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="off">Off (manual only)</SelectItem>
+                  <SelectItem value="daily">Plans daily</SelectItem>
+                  <SelectItem value="weekly">Plans weekly</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <Button size="sm" onClick={planNow} disabled={planning}>
+              {planning ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin mr-1" /> Planning…
+                </>
+              ) : (
+                "Plan now"
+              )}
+            </Button>
+          </div>
+          {error && <p className="text-xs text-red-600">{error}</p>}
+        </CardContent>
+      </Card>
+
+      {loading ? (
+        <Skeleton className="h-24" />
+      ) : tasks.length === 0 ? (
+        <Card>
+          <CardContent className="py-8 text-center text-sm text-muted-foreground">
+            No tasks yet. Hit “Plan now” to have the persona plan its week, or
+            set a cadence so it plans on its own.
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-2">
+          {tasks.map((t) => (
+            <Card key={t.id}>
+              <CardContent className="pt-4 space-y-1">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+                  <Badge className={TASK_BADGE[t.status]}>{t.status}</Badge>
+                  <Badge variant="outline">{t.kind}</Badge>
+                  {t.channel_platform && (
+                    <Badge variant="outline">{t.channel_platform}</Badge>
+                  )}
+                  <span className="ml-auto">
+                    {new Date(t.scheduled_for).toLocaleString()}
+                  </span>
+                </div>
+                <p className="text-sm font-medium">{t.title}</p>
+                <p className="text-xs text-muted-foreground">{t.goal}</p>
+                {t.result_summary && (
+                  <p className="text-xs text-emerald-600">{t.result_summary}</p>
+                )}
+                {t.error && <p className="text-xs text-red-600">{t.error}</p>}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
       )}
     </div>
   );
