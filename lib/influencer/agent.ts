@@ -230,6 +230,92 @@ export async function runInfluencerAgentSession({
       },
     }),
 
+    browse_signals: tool({
+      description:
+        "See what the dev community is talking about RIGHT NOW: Hacker News (reliable) plus, best-effort, subreddits you pick. Use it at the start of a shift to find something current in your beat to react to. Returns titles, links, points/score, and comment counts.",
+      inputSchema: z.object({
+        query: z
+          .string()
+          .optional()
+          .describe("Keyword to focus HN, e.g. 'LLM benchmark' or 'code review'. Omit for the front page."),
+        subreddits: z
+          .array(z.string())
+          .optional()
+          .describe("Subreddits for today's top posts, e.g. ['LocalLLaMA','MachineLearning']"),
+        limit: z.number().optional().describe("Max items per source (default 8, max 15)"),
+      }),
+      execute: async ({ query, subreddits, limit }) => {
+        const n = Math.min(Math.max(limit ?? 8, 1), 15);
+        await step({ kind: "tool_call", tool: "browse_signals", payload: { query, subreddits } });
+        const out: Record<string, unknown> = {};
+
+        // Hacker News via the public Algolia API (no auth, reliable).
+        try {
+          const hnUrl = query
+            ? `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=${n}&numericFilters=points>20`
+            : `https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=${n}`;
+          const res = await fetch(hnUrl, {
+            signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+            headers: { "User-Agent": "seo-copilot-influencer/1.0" },
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const body = (await res.json()) as { hits?: Array<Record<string, unknown>> };
+          out.hackernews = (body.hits ?? []).slice(0, n).map((h) => ({
+            title: h.title,
+            url: h.url ?? `https://news.ycombinator.com/item?id=${h.objectID}`,
+            points: h.points,
+            comments: h.num_comments,
+            discussion: `https://news.ycombinator.com/item?id=${h.objectID}`,
+          }));
+        } catch (err) {
+          out.hackernews = { error: err instanceof Error ? err.message : String(err) };
+        }
+
+        // Reddit — best effort. Unauthenticated JSON often 403/429s from a
+        // datacenter IP; degrade to a per-sub error instead of failing the tool.
+        const subs = (subreddits ?? [])
+          .map((s) => s.replace(/[^a-z0-9_]/gi, ""))
+          .filter(Boolean)
+          .slice(0, 4);
+        if (subs.length) {
+          const reddit: Array<Record<string, unknown>> = [];
+          for (const sub of subs) {
+            try {
+              const res = await fetch(
+                `https://www.reddit.com/r/${sub}/top.json?t=day&limit=${n}`,
+                {
+                  signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+                  headers: { "User-Agent": "seo-copilot-influencer/1.0 (research)" },
+                },
+              );
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              const body = (await res.json()) as {
+                data?: { children?: Array<{ data?: Record<string, unknown> }> };
+              };
+              for (const child of body.data?.children ?? []) {
+                const d = child.data ?? {};
+                reddit.push({
+                  subreddit: sub,
+                  title: d.title,
+                  url: d.url,
+                  score: d.score,
+                  comments: d.num_comments,
+                  discussion: `https://www.reddit.com${d.permalink ?? ""}`,
+                });
+              }
+            } catch (err) {
+              reddit.push({ subreddit: sub, error: err instanceof Error ? err.message : String(err) });
+            }
+          }
+          out.reddit = reddit;
+        }
+
+        const hnCount = Array.isArray(out.hackernews) ? out.hackernews.length : 0;
+        await step({ kind: "tool_result", tool: "browse_signals", payload: { hn: hnCount } });
+        return JSON.stringify(out).slice(0, MAX_FETCH_CHARS);
+      },
+    }),
+
     run_bash: tool({
       description:
         "Run a shell command in an isolated sandbox (clone a repo, run a benchmark, inspect code). Returns stdout/stderr. Only available when code execution is configured.",
