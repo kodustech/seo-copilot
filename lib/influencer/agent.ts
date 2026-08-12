@@ -17,6 +17,7 @@ import {
   SOCIAL_STYLE_GUIDE,
   platformRules,
 } from "@/lib/social-writing-style";
+import { fetchFeedPosts } from "@/lib/feed-sources";
 import {
   createSession,
   finishSession,
@@ -226,6 +227,43 @@ export async function runInfluencerAgentSession({
           const message = err instanceof Error ? err.message : String(err);
           await step({ kind: "tool_result", tool: "fetch_url", payload: { url, error: message } });
           return `Failed to fetch ${url}: ${message}`;
+        }
+      },
+    }),
+
+    browse_signals: tool({
+      description:
+        "See what the dev community is discussing right now, from the app's own signal feeds (Exa-backed): Hacker News, Reddit dev/AI subreddits (ExperiencedDevs, LocalLLaMA, MachineLearning, ClaudeAI…), research papers, and competitor takes. Use it at the start of a shift to find something current in your beat to react to. Returns titles, links, and excerpts.",
+      inputSchema: z.object({
+        source: z
+          .enum(["hackernews", "reddit", "research", "competitor", "all"])
+          .optional()
+          .describe(
+            "Which feed to read. Default 'hackernews' (cheapest). 'reddit'/'research'/'competitor' pull via Exa; 'all' merges everything (heavier).",
+          ),
+        limit: z.number().optional().describe("Max items (default 10, max 20)"),
+      }),
+      execute: async ({ source, limit }) => {
+        const n = Math.min(Math.max(limit ?? 10, 1), 20);
+        const src = source ?? "hackernews";
+        await step({ kind: "tool_call", tool: "browse_signals", payload: { source: src } });
+        try {
+          const items = await fetchFeedPosts(src);
+          const trimmed = items.slice(0, n).map((i) => ({
+            source: i.source,
+            title: i.title,
+            link: i.link,
+            excerpt: (i.excerpt || i.content || "").slice(0, 300),
+            at: i.publishedAt,
+          }));
+          await step({ kind: "tool_result", tool: "browse_signals", payload: { count: trimmed.length } });
+          return trimmed.length
+            ? JSON.stringify(trimmed).slice(0, MAX_FETCH_CHARS)
+            : "No signals right now.";
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await step({ kind: "tool_result", tool: "browse_signals", payload: { error: message } });
+          return `Could not load signals: ${message}`;
         }
       },
     }),

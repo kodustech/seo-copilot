@@ -97,7 +97,7 @@ function buildShiftGoal(persona: Persona, allowed: string[]): string {
     `This is your shift as ${persona.display_name} (@${persona.handle}).`,
     `Your beat: ${persona.beat}.`,
     `Channels you can post to right now: ${allowed.join(", ")}.`,
-    "Do ONE genuinely valuable thing this shift: research something current in your beat (read a real source with fetch_url first), then write and queue ONE self-contained piece for ONE of those channels — or engage thoughtfully. For X, that is a single standalone tweet that stands on its own; never a thread or thread pieces. Queue at most one piece. Ground it in something concrete, match your voice, and do NOT repeat something you recently did. When you've done one solid thing, stop.",
+    "Start by calling browse_signals (try 'hackernews', or 'reddit'/'research' for deeper signals) to see what the dev community is discussing today. Pick something current in your beat, open the source with fetch_url to get specifics, then write and queue ONE self-contained piece for ONE of those channels — or engage thoughtfully. For X, that is a single standalone tweet that stands on its own; never a thread or thread pieces. Queue at most one piece. Ground it in something concrete, match your voice, and do NOT repeat something you recently did. When you've done one solid thing, stop.",
   ].join("\n");
 }
 
