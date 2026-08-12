@@ -87,6 +87,82 @@ export async function deletePersonaCredential(
   if (error) throw new Error(error.message);
 }
 
+// ---------------------------------------------------------------------------
+// Channel credentials (dev.to api-key, …) — stored in the SAME encrypted vault
+// under a platform-named provider, so a channel key never rides in plaintext.
+// ---------------------------------------------------------------------------
+
+/** Platforms whose publishing uses an in-app API key (not Post-Bridge). */
+export type ChannelCredentialPlatform = "devto";
+
+export async function setChannelCredential(
+  client: SupabaseClient,
+  input: {
+    persona_id: string;
+    platform: ChannelCredentialPlatform;
+    key: string;
+    label?: string | null;
+    created_by: string;
+  },
+): Promise<{ key_last4: string }> {
+  const trimmed = input.key.trim();
+  if (!trimmed) throw new Error("API key is required.");
+
+  const { data, error } = await client
+    .from("persona_credentials")
+    .upsert(
+      {
+        persona_id: input.persona_id,
+        provider: input.platform,
+        encrypted_key: encryptPersonaKey(trimmed),
+        key_last4: keyLast4(trimmed),
+        label: input.label ?? null,
+        status: "active",
+        created_by: input.created_by,
+      },
+      { onConflict: "persona_id,provider" },
+    )
+    .select("key_last4")
+    .single();
+
+  if (error) throw new Error(error.message);
+  return { key_last4: typeof data?.key_last4 === "string" ? data.key_last4 : "" };
+}
+
+export async function deleteChannelCredential(
+  client: SupabaseClient,
+  personaId: string,
+  platform: ChannelCredentialPlatform,
+): Promise<void> {
+  const { error } = await client
+    .from("persona_credentials")
+    .delete()
+    .eq("persona_id", personaId)
+    .eq("provider", platform);
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * Server-side ONLY: the encrypted channel key for the publisher to decrypt.
+ * Same single-point-of-access discipline as getActiveCredentialCipher.
+ */
+export async function getChannelCredentialCipher(
+  client: SupabaseClient,
+  personaId: string,
+  platform: ChannelCredentialPlatform,
+): Promise<string | null> {
+  const { data, error } = await client
+    .from("persona_credentials")
+    .select("encrypted_key")
+    .eq("persona_id", personaId)
+    .eq("provider", platform)
+    .eq("status", "active")
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  return typeof data?.encrypted_key === "string" ? data.encrypted_key : null;
+}
+
 /**
  * Server-side ONLY: fetch the encrypted key for the model resolver to decrypt.
  * This is the single place `encrypted_key` is ever selected — keep it out of

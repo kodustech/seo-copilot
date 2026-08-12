@@ -8,6 +8,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { scheduleSocialPost } from "@/lib/copilot";
+import { decryptPersonaKey } from "@/lib/crypto/persona-secrets";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 
 import {
@@ -17,6 +18,7 @@ import {
   resetStalePublishing,
   updateActivity,
 } from "@/lib/influencer/activities";
+import { getChannelCredentialCipher } from "@/lib/influencer/credentials";
 import { listChannels, listPersonas } from "@/lib/influencer/personas";
 import {
   isReplyKind,
@@ -210,10 +212,17 @@ export function isAllowedDevtoEnvName(name: string): boolean {
   return /^DEVTO_API_KEY(_[A-Z0-9_]+)?$/.test(name);
 }
 
-async function publishToDevto(
-  activity: PersonaActivity,
+async function resolveDevtoApiKey(
+  client: SupabaseClient,
   channel: PersonaChannel,
-): Promise<PublishOutcome> {
+): Promise<string> {
+  // Preferred: the key the persona connected in-app (encrypted vault).
+  const cipher = await getChannelCredentialCipher(client, channel.persona_id, "devto");
+  if (cipher) {
+    const key = decryptPersonaKey(cipher).trim();
+    if (key) return key;
+  }
+  // Back-compat: an allowlisted env var named by credentials_ref.
   const envName = channel.credentials_ref?.trim() || "DEVTO_API_KEY";
   if (!isAllowedDevtoEnvName(envName)) {
     throw new Error(
@@ -223,9 +232,18 @@ async function publishToDevto(
   const apiKey = process.env[envName]?.trim();
   if (!apiKey) {
     throw new Error(
-      `Missing ${envName}. Create an api-key for the persona's dev.to account and set it in the environment.`,
+      `No dev.to credential for this persona. Connect a dev.to API key, or set ${envName} in the environment.`,
     );
   }
+  return apiKey;
+}
+
+async function publishToDevto(
+  client: SupabaseClient,
+  activity: PersonaActivity,
+  channel: PersonaChannel,
+): Promise<PublishOutcome> {
+  const apiKey = await resolveDevtoApiKey(client, channel);
 
   const canonicalUrl =
     typeof activity.content_meta.canonical_url === "string"
@@ -267,6 +285,7 @@ async function publishToDevto(
 }
 
 async function publishActivity(
+  client: SupabaseClient,
   activity: PersonaActivity,
   channel: PersonaChannel,
 ): Promise<PublishOutcome> {
@@ -274,7 +293,7 @@ async function publishActivity(
     case "post_bridge":
       return publishViaPostBridge(activity, channel);
     case "api":
-      if (channel.platform === "devto") return publishToDevto(activity, channel);
+      if (channel.platform === "devto") return publishToDevto(client, activity, channel);
       throw new Error(`No API adapter for platform "${channel.platform}" yet.`);
     case "n8n":
       throw new Error(
@@ -398,7 +417,7 @@ export async function runInfluencerPublishCron(
     }
 
     try {
-      const outcome = await publishActivity(claimed, channel!);
+      const outcome = await publishActivity(client, claimed, channel!);
       await updateActivity(client, activity.id, {
         status: "published",
         published_at: now.toISOString(),
