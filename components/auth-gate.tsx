@@ -6,7 +6,6 @@ import { usePathname } from "next/navigation";
 import type { Session } from "@supabase/supabase-js";
 import {
   BarChart3,
-  Bot,
   Building2,
   ChevronRight,
   Clock,
@@ -92,7 +91,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         label: "Engage",
         items: [
           { href: "/social-monitoring", label: "Social monitor", icon: Radar },
-          { href: "/influencers", label: "Influencers", icon: Bot },
         ],
       },
       {
