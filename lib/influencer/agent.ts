@@ -31,9 +31,10 @@ async function fetchText(url: string): Promise<string> {
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const raw = await res.text();
+  // Crude tag strip to hand readable-ish text to the model (not a DOM sink).
+  // Blanket strip rather than a script/style-specific filter; proper
+  // readability extraction (Exa/readability) is a follow-up.
   const text = raw
-    .replace(/<script[\s\S]*?<\/script\s*>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style\s*>/gi, " ")
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
