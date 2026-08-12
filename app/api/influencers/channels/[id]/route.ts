@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 
 import {
+  getChannel,
   updateChannel,
   type ChannelPatch,
 } from "@/lib/influencer/personas";
@@ -52,9 +53,30 @@ export async function PATCH(
     const status = normalizeChannelStatus(body.status);
     if (status) patch.status = status;
 
-    // Publishing readiness is enforced where it matters — the /connect flow
-    // links the real credential (and activates), and the publisher refuses to
-    // post without one. Activation here no longer rides on a manual checklist.
+    // A publishing channel can't go active without a linked credential — the
+    // publisher would just fail at runtime. /connect is the path that links it
+    // (and activates). Draft-only / manual channels never publish, so they
+    // activate freely.
+    if (patch.status === "active") {
+      const current = await getChannel(client, id);
+      if (!current) {
+        return NextResponse.json({ error: "Channel not found" }, { status: 404 });
+      }
+      const needsCredential =
+        current.publish_via === "post_bridge" || current.publish_via === "api";
+      const config = { ...current.channel_config, ...(patch.channel_config ?? {}) };
+      const credentialsRef =
+        patch.credentials_ref !== undefined ? patch.credentials_ref : current.credentials_ref;
+      const hasCredential =
+        (typeof credentialsRef === "string" && credentialsRef.length > 0) ||
+        config.post_bridge_account_id != null;
+      if (needsCredential && !hasCredential) {
+        return NextResponse.json(
+          { error: "Connect a credential before activating this channel." },
+          { status: 400 },
+        );
+      }
+    }
 
     const channel = await updateChannel(client, id, patch);
     if (!channel) {

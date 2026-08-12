@@ -30,8 +30,8 @@ export async function GET(req: Request) {
 
     let accounts = await fetchSocialAccounts();
     if (platform) {
-      const aliases = PLATFORM_ALIASES[platform] ?? [platform];
-      accounts = accounts.filter((a) => aliases.includes(a.platform.toLowerCase()));
+      const aliases = new Set(PLATFORM_ALIASES[platform] ?? [platform]);
+      accounts = accounts.filter((a) => aliases.has(a.platform.toLowerCase()));
     }
 
     return NextResponse.json({ accounts });
