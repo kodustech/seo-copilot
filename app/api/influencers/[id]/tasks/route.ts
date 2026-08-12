@@ -3,9 +3,8 @@ import { NextResponse } from "next/server";
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 
 import { getPersona, updatePersona } from "@/lib/influencer/personas";
-import { planPersona } from "@/lib/influencer/planner";
-import { listTasks } from "@/lib/influencer/tasks";
-import { influencerTableMissingMessage } from "@/lib/influencer/types";
+import { cadenceOf, nextActionAt, runPersonaTick } from "@/lib/influencer/tick";
+import { influencerTableMissingMessage, type Persona } from "@/lib/influencer/types";
 
 export const maxDuration = 300;
 
@@ -23,7 +22,35 @@ function errorResponse(error: unknown) {
   return NextResponse.json({ error: message }, { status: 500 });
 }
 
-/** The persona's backlog + its autonomy cadence. */
+function tickState(persona: Persona, now: Date) {
+  const cadence = cadenceOf(persona);
+  const next = nextActionAt(persona);
+  const status =
+    cadence === "off"
+      ? "off"
+      : next && new Date(next).getTime() > now.getTime()
+        ? "waiting"
+        : "due";
+  return {
+    cadence,
+    status,
+    next_action_at: next,
+    last_note:
+      typeof persona.content_config.last_note === "string"
+        ? persona.content_config.last_note
+        : null,
+    last_tick_at:
+      typeof persona.content_config.last_tick_at === "string"
+        ? persona.content_config.last_tick_at
+        : null,
+    last_session_id:
+      typeof persona.content_config.last_session_id === "string"
+        ? persona.content_config.last_session_id
+        : null,
+  };
+}
+
+/** The persona's autonomy state: cadence + what it's doing / when it acts next. */
 export async function GET(
   req: Request,
   ctx: { params: Promise<{ id: string }> },
@@ -35,19 +62,13 @@ export async function GET(
     if (!persona) {
       return NextResponse.json({ error: "Persona not found" }, { status: 404 });
     }
-    const tasks = await listTasks(client, id, { limit: 200 });
-    const cadence =
-      persona.content_config.agent_cadence === "daily" ||
-      persona.content_config.agent_cadence === "weekly"
-        ? persona.content_config.agent_cadence
-        : "off";
-    return NextResponse.json({ tasks, cadence });
+    return NextResponse.json(tickState(persona, new Date()));
   } catch (error) {
     return errorResponse(error);
   }
 }
 
-/** Plan now, or set the autonomy cadence. */
+/** Set the autonomy cadence, or run a shift right now. */
 export async function POST(
   req: Request,
   ctx: { params: Promise<{ id: string }> },
@@ -65,20 +86,29 @@ export async function POST(
     if (body.action === "set_cadence") {
       const cadence =
         body.cadence === "daily" || body.cadence === "weekly" ? body.cadence : "off";
-      const updated = await updatePersona(client, id, {
-        content_config: { ...persona.content_config, agent_cadence: cadence },
-      });
-      return NextResponse.json({ cadence, ok: Boolean(updated) });
+      // Turning autonomy on makes it due immediately (next heartbeat picks it up).
+      const content_config: Record<string, unknown> = {
+        ...persona.content_config,
+        agent_cadence: cadence,
+      };
+      if (cadence !== "off" && !nextActionAt(persona)) {
+        content_config.next_action_at = new Date().toISOString();
+      }
+      const updated = await updatePersona(client, id, { content_config });
+      return NextResponse.json(tickState(updated ?? persona, new Date()));
     }
 
-    if (body.action === "plan") {
-      const planned = await planPersona({ client, persona, now: new Date() });
-      const tasks = await listTasks(client, id, { limit: 200 });
-      return NextResponse.json({ planned, tasks });
+    if (body.action === "act_now") {
+      const result = await runPersonaTick({ client, persona, now: new Date() });
+      const refreshed = await getPersona(client, id);
+      return NextResponse.json({
+        result,
+        ...tickState(refreshed ?? persona, new Date()),
+      });
     }
 
     return NextResponse.json(
-      { error: "action must be 'plan' or 'set_cadence'." },
+      { error: "action must be 'set_cadence' or 'act_now'." },
       { status: 400 },
     );
   } catch (error) {

@@ -131,6 +131,7 @@ export type AgentRunResult = {
   session_id: string;
   status: "completed" | "failed";
   drafts: number;
+  summary?: string;
   error?: string;
 };
 
@@ -146,12 +147,18 @@ export async function runInfluencerAgentSession({
   goal,
   trigger,
   createdBy,
+  allowedPlatforms,
+  maxSteps,
 }: {
   client: SupabaseClient;
   persona: Persona;
   goal: string;
   trigger: SessionTrigger;
   createdBy?: string;
+  /** If set, queue_draft may only target these platforms (connected channels). */
+  allowedPlatforms?: string[];
+  /** Override the per-session step budget (a self-paced shift runs longer). */
+  maxSteps?: number;
 }): Promise<AgentRunResult> {
   const model = await getModelForPersona(client, persona);
   const channels = await listChannelsForPersona(client, persona.id);
@@ -308,6 +315,14 @@ export async function runInfluencerAgentSession({
         await step({ kind: "tool_call", tool: "queue_draft", payload: { kind, platform } });
         const normalizedKind = normalizeActivityKind(kind) ?? "post";
         const normalizedPlatform = normalizeChannelPlatform(platform);
+        if (
+          allowedPlatforms &&
+          (!normalizedPlatform || !allowedPlatforms.includes(normalizedPlatform))
+        ) {
+          const msg = `You can only post to connected channels right now: ${allowedPlatforms.join(", ") || "none"}. Skip "${platform}".`;
+          await step({ kind: "tool_result", tool: "queue_draft", payload: { blocked: platform } });
+          return msg;
+        }
         const channel = normalizedPlatform
           ? pickChannel(channels, normalizedPlatform)
           : undefined;
@@ -352,14 +367,14 @@ export async function runInfluencerAgentSession({
       system: buildAgentSystem(persona),
       prompt: goal,
       tools,
-      stopWhen: stepCountIs(MAX_STEPS),
+      stopWhen: stepCountIs(maxSteps ?? MAX_STEPS),
     });
     await step({ kind: "message", payload: { text: result.text } });
     await finishSession(client, session.id, {
       status: "completed",
       result_summary: result.text.slice(0, 500),
     });
-    return { session_id: session.id, status: "completed", drafts };
+    return { session_id: session.id, status: "completed", drafts, summary: result.text };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await step({ kind: "error", payload: { message } });

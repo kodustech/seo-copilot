@@ -695,8 +695,8 @@ function PersonaDetail({
           ) : activities.length === 0 ? (
             <Card>
               <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                Nothing yet. Activate the persona and drafts start landing on
-                the next daily run.
+                Nothing yet. Turn on autonomy (or hit “Act now”) in the Plan
+                tab and drafts start landing after its next shift.
               </CardContent>
             </Card>
           ) : (
@@ -1905,46 +1905,33 @@ function RunsTab({
 }
 
 // ---------------------------------------------------------------------------
-// Plan tab: the persona's own backlog + autonomy cadence + "plan now"
+// Plan tab: the persona's self-paced autonomy — what it's doing, when it next
+// acts, and a "run a shift now" button. No dated backlog; it paces itself.
 // ---------------------------------------------------------------------------
 
-type PersonaTask = {
-  id: string;
-  kind: string;
-  channel_platform: string | null;
-  title: string;
-  goal: string;
-  status: "planned" | "doing" | "done" | "failed" | "cancelled";
-  scheduled_for: string;
-  result_summary: string | null;
-  error: string | null;
-};
-
-const TASK_BADGE: Record<PersonaTask["status"], string> = {
-  planned: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
-  doing: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  done: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
-  failed: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
-  cancelled: "bg-muted text-muted-foreground line-through",
+type TickState = {
+  cadence: "off" | "daily" | "weekly";
+  status: "off" | "waiting" | "due";
+  next_action_at: string | null;
+  last_note: string | null;
+  last_tick_at: string | null;
+  last_session_id: string | null;
 };
 
 function PlanTab({ token, persona }: { token: string; persona: Persona }) {
-  const [tasks, setTasks] = useState<PersonaTask[]>([]);
-  const [cadence, setCadence] = useState<"off" | "daily" | "weekly">("off");
+  const [state, setState] = useState<TickState | null>(null);
   const [loading, setLoading] = useState(true);
-  const [planning, setPlanning] = useState(false);
+  const [acting, setActing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    setLoading(true);
     try {
       const res = await fetch(`/api/influencers/${persona.id}/tasks`, {
         headers: authHeaders(token),
       });
       const body = await res.json();
-      if (!res.ok) throw new Error(body.error || "Failed to load the plan");
-      setTasks(body.tasks ?? []);
-      setCadence(body.cadence ?? "off");
+      if (!res.ok) throw new Error(body.error || "Failed to load");
+      setState(body);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load");
@@ -1957,9 +1944,11 @@ function PlanTab({ token, persona }: { token: string; persona: Persona }) {
     load();
   }, [load]);
 
+  const cadence = state?.cadence ?? "off";
+
   async function setCadenceRemote(next: "off" | "daily" | "weekly") {
-    const previous = cadence;
-    setCadence(next); // optimistic
+    const previous = state;
+    setState((s) => (s ? { ...s, cadence: next } : s)); // optimistic
     setError(null);
     try {
       const res = await fetch(`/api/influencers/${persona.id}/tasks`, {
@@ -1967,65 +1956,76 @@ function PlanTab({ token, persona }: { token: string; persona: Persona }) {
         headers: authHeaders(token),
         body: JSON.stringify({ action: "set_cadence", cadence: next }),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || "Failed to update the cadence");
-      }
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Failed to update the cadence");
+      setState(body);
     } catch (err) {
-      setCadence(previous); // revert so the UI matches the server
+      setState(previous); // revert so the UI matches the server
       setError(err instanceof Error ? err.message : "Failed to update the cadence");
     }
   }
 
-  async function planNow() {
-    setPlanning(true);
+  async function actNow() {
+    setActing(true);
     setError(null);
     try {
       const res = await fetch(`/api/influencers/${persona.id}/tasks`, {
         method: "POST",
         headers: authHeaders(token),
-        body: JSON.stringify({ action: "plan" }),
+        body: JSON.stringify({ action: "act_now" }),
       });
       const body = await res.json();
-      if (!res.ok) throw new Error(body.error || "Planning failed");
-      setTasks(body.tasks ?? []);
+      if (!res.ok) throw new Error(body.error || "The shift failed");
+      setState(body);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Planning failed");
+      setError(err instanceof Error ? err.message : "The shift failed");
     } finally {
-      setPlanning(false);
+      setActing(false);
     }
   }
+
+  const statusLine = () => {
+    if (!state || cadence === "off") {
+      return "Autonomy is off — it won't act on its own. Turn it on, or run a shift now.";
+    }
+    if (acting) return "🟢 Working a shift right now…";
+    if (state.status === "waiting" && state.next_action_at) {
+      return `⏳ Waiting until ${new Date(state.next_action_at).toLocaleString()} — its own choice.`;
+    }
+    return "🟢 Ready — it'll pick up work on the next 15-min cycle.";
+  };
 
   return (
     <div className="space-y-4">
       <Card>
         <CardContent className="pt-4 space-y-3">
           <p className="text-sm text-muted-foreground">
-            The persona plans its own work into this backlog and executes it on
-            its own — you only review drafts and get an alert if something fails.
-            Set a cadence to let it plan automatically, or plan now.
+            The persona paces itself: it wakes on a heartbeat, does one real shift
+            of work (research → draft/post to a connected channel), then decides
+            when to come back. You only review drafts and get an alert if a shift
+            fails.
           </p>
           <div className="flex items-center gap-3 flex-wrap">
             <div className="flex items-center gap-2">
               <span className="text-xs text-muted-foreground">Autonomy</span>
               <Select value={cadence} onValueChange={(v) => setCadenceRemote(v as typeof cadence)}>
-                <SelectTrigger className="w-40">
+                <SelectTrigger className="w-44">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="off">Off (manual only)</SelectItem>
-                  <SelectItem value="daily">Plans daily</SelectItem>
-                  <SelectItem value="weekly">Plans weekly</SelectItem>
+                  <SelectItem value="daily">On — active pace</SelectItem>
+                  <SelectItem value="weekly">On — light pace</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            <Button size="sm" onClick={planNow} disabled={planning}>
-              {planning ? (
+            <Button size="sm" onClick={actNow} disabled={acting}>
+              {acting ? (
                 <>
-                  <Loader2 className="h-4 w-4 animate-spin mr-1" /> Planning…
+                  <Loader2 className="h-4 w-4 animate-spin mr-1" /> Working…
                 </>
               ) : (
-                "Plan now"
+                "Act now"
               )}
             </Button>
           </div>
@@ -2035,38 +2035,26 @@ function PlanTab({ token, persona }: { token: string; persona: Persona }) {
 
       {loading ? (
         <Skeleton className="h-24" />
-      ) : tasks.length === 0 ? (
+      ) : (
         <Card>
-          <CardContent className="py-8 text-center text-sm text-muted-foreground">
-            No tasks yet. Hit “Plan now” to have the persona plan its week, or
-            set a cadence so it plans on its own.
+          <CardContent className="pt-4 space-y-2">
+            <p className="text-sm">{statusLine()}</p>
+            {state?.last_note && (
+              <div className="rounded-md border border-border p-3">
+                <p className="text-xs text-muted-foreground mb-1">
+                  Its last note to itself
+                  {state.last_tick_at
+                    ? ` · ${new Date(state.last_tick_at).toLocaleString()}`
+                    : ""}
+                </p>
+                <p className="text-sm italic">“{state.last_note}”</p>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">
+              See the actual work in the Runs and Timeline tabs.
+            </p>
           </CardContent>
         </Card>
-      ) : (
-        <div className="space-y-2">
-          {tasks.map((t) => (
-            <Card key={t.id}>
-              <CardContent className="pt-4 space-y-1">
-                <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
-                  <Badge className={TASK_BADGE[t.status]}>{t.status}</Badge>
-                  <Badge variant="outline">{t.kind}</Badge>
-                  {t.channel_platform && (
-                    <Badge variant="outline">{t.channel_platform}</Badge>
-                  )}
-                  <span className="ml-auto">
-                    {new Date(t.scheduled_for).toLocaleString()}
-                  </span>
-                </div>
-                <p className="text-sm font-medium">{t.title}</p>
-                <p className="text-xs text-muted-foreground">{t.goal}</p>
-                {t.result_summary && (
-                  <p className="text-xs text-emerald-600">{t.result_summary}</p>
-                )}
-                {t.error && <p className="text-xs text-red-600">{t.error}</p>}
-              </CardContent>
-            </Card>
-          ))}
-        </div>
       )}
     </div>
   );
