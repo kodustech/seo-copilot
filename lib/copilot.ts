@@ -6,6 +6,7 @@ import type {
   TitleIdea,
 } from "@/lib/types";
 import { generateObject } from "ai";
+import type { LanguageModel } from "ai";
 import { z } from "zod";
 import { getModel } from "@/lib/ai/provider";
 import type { VoicePolicyPayload } from "@/lib/voice-policy";
@@ -515,6 +516,7 @@ export async function generateSocialContent({
   narrativeStyle,
   voicePolicy,
   sourceAttachments,
+  model,
 }: {
   baseContent: string;
   instructions?: string;
@@ -528,6 +530,8 @@ export async function generateSocialContent({
   narrativeStyle?: SocialNarrativeStyle;
   voicePolicy?: VoicePolicyPayload | null;
   sourceAttachments?: SourceAttachmentPayload[];
+  /** Override the model (e.g. a persona's own provider). Defaults to global getModel(). */
+  model?: LanguageModel;
 }): Promise<SocialPostVariation[]> {
   const normalizedSourceAttachments = normalizeSourceAttachments(sourceAttachments);
   if (!baseContent.trim() && !normalizedSourceAttachments.length) {
@@ -565,7 +569,7 @@ export async function generateSocialContent({
   });
 
   const { object } = await generateObject({
-    model: getModel(),
+    model: model ?? getModel(),
     schema: SocialGeneratedPostsSchema,
     prompt: socialWriterPrompt,
   });
@@ -579,6 +583,7 @@ export async function generateSocialContent({
   return reviseSocialPostsWithEditor(variations, {
     language,
     platformConfigs: normalizedConfigs,
+    model,
   });
 }
 
@@ -587,13 +592,14 @@ async function reviseSocialPostsWithEditor(
   options: {
     language: string;
     platformConfigs: SocialPlatformConfigInput[];
+    model?: LanguageModel;
   },
 ): Promise<SocialPostVariation[]> {
   const violations = collectSocialPostStyleViolations(posts);
 
   try {
     const { object } = await generateObject({
-      model: getModel(),
+      model: options.model ?? getModel(),
       schema: SocialGeneratedPostsSchema,
       prompt: buildSocialEditorPrompt(posts, {
         ...options,

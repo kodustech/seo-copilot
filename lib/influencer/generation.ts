@@ -15,6 +15,7 @@ import {
 } from "@/lib/copilot";
 import { fetchFeedPosts, type FeedItem } from "@/lib/feed-sources";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
+import { getModelForPersona } from "@/lib/influencer/model";
 
 import {
   hasGeneratedActivitiesSince,
@@ -204,6 +205,8 @@ export async function generateDraftsForPersona({
   const voicePolicy = buildPersonaVoicePolicy(persona);
   const language = personaLanguage(persona);
   const perLane = Math.max(2, Math.ceil(target / plans.length));
+  // The persona's own model (its own provider/key), falling back to global.
+  const model = await getModelForPersona(client, persona);
 
   const drafts: NewActivity[] = [];
 
@@ -214,6 +217,7 @@ export async function generateDraftsForPersona({
       const variations = await generateSocialContent({
         baseContent,
         language,
+        model,
         instructions: plan.instructions,
         variationStrategy: plan.variationStrategy,
         generationMode: plan.generationMode,

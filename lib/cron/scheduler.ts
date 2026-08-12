@@ -280,6 +280,18 @@ async function runPersonaPublishCron(): Promise<void> {
   }
 }
 
+async function runPersonaAgentCron(): Promise<void> {
+  const { runInfluencerAgentCron } = await import("@/lib/influencer/agent-cron");
+  const results = await runInfluencerAgentCron();
+  const ran = results.filter((r) => r.ran);
+  if (ran.length) {
+    const drafts = ran.reduce((n, r) => n + (r.result?.drafts ?? 0), 0);
+    console.log(
+      `[cron] persona-agent: ${ran.length} personas ran autonomous sessions, ${drafts} drafts queued`,
+    );
+  }
+}
+
 const JOBS: JobDefinition[] = [
   {
     name: "scheduled-jobs",
@@ -362,6 +374,14 @@ const JOBS: JobDefinition[] = [
     name: "persona-publish",
     schedule: "*/15 * * * *",
     run: runPersonaPublishCron,
+  },
+  {
+    // Daily 09:00 UTC: autonomous agent sessions for personas that opted into
+    // a cadence (content_config.agent_cadence). The persona researches on its
+    // own model, does the work, and queues drafts — it never publishes.
+    name: "persona-agent",
+    schedule: "0 9 * * *",
+    run: runPersonaAgentCron,
   },
 ];
 

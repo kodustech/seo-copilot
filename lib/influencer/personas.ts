@@ -4,10 +4,12 @@ import {
   normalizeAutomationLevel,
   normalizeChannelPlatform,
   normalizeChannelStatus,
+  normalizeModelProvider,
   normalizePersonaStatus,
   type AutomationLevel,
   type ChannelPlatform,
   type ChannelStatus,
+  type ModelProvider,
   type Persona,
   type PersonaChannel,
   type PersonaStatus,
@@ -62,6 +64,9 @@ export function rowToPersona(row: Row): Persona {
     allowed_topics: asStringArray(row.allowed_topics),
     forbidden_topics: asStringArray(row.forbidden_topics),
     content_config: asRecord(row.content_config),
+    model_provider: normalizeModelProvider(row.model_provider),
+    model_name: asNullableText(row.model_name),
+    model_base_url: asNullableText(row.model_base_url),
     status: normalizePersonaStatus(row.status) ?? "paused",
     created_by: asText(row.created_by),
     created_at: asText(row.created_at),
@@ -230,6 +235,9 @@ export type PersonaPatch = Partial<{
   allowed_topics: string[];
   forbidden_topics: string[];
   content_config: Record<string, unknown>;
+  model_provider: ModelProvider | null;
+  model_name: string | null;
+  model_base_url: string | null;
   status: PersonaStatus;
 }>;
 
