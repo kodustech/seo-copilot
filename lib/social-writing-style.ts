@@ -38,7 +38,7 @@ export type SocialNarrativeStyle =
   | "hot_take"
   | "lesson";
 
-const SOCIAL_STYLE_GUIDE = `Write social posts in a technical operator voice with a clear point of view, not as a generic brand account.
+export const SOCIAL_STYLE_GUIDE = `Write social posts in a technical operator voice with a clear point of view, not as a generic brand account.
 
 Voice:
 - Sound like someone close to engineering work and product decisions.
@@ -122,7 +122,7 @@ Naturalness guardrails:
 - Acknowledge mixed feelings when the source supports them.
 - Leave some imperfection. Perfect structure feels generated.`;
 
-function platformRules(platformConfigs?: PlatformConfigLike[]): string {
+export function platformRules(platformConfigs?: PlatformConfigLike[]): string {
   const platforms = new Set(
     (platformConfigs ?? [])
       .map((config) => config.platform.trim().toLowerCase())
