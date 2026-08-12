@@ -33,6 +33,16 @@ export type ActivityStatus =
 
 export type LearningKind = "works" | "avoid";
 
+export type ModelProvider =
+  | "kimi"
+  | "google"
+  | "openai"
+  | "anthropic"
+  // Bring-your-own endpoint (subscription gateway, coding-plan endpoint,
+  // proxy, OpenRouter, LiteLLM, …). Uses model_base_url + the stored token.
+  | "openai_compatible"
+  | "anthropic_compatible";
+
 export type Persona = {
   id: string;
   handle: string;
@@ -49,10 +59,23 @@ export type Persona = {
   allowed_topics: string[];
   forbidden_topics: string[];
   content_config: Record<string, unknown>;
+  // Which provider/model this persona operates on. null = global default.
+  model_provider: ModelProvider | null;
+  model_name: string | null;
+  // Custom endpoint for the *_compatible providers (base URL of the gateway).
+  model_base_url: string | null;
   status: PersonaStatus;
   created_by: string;
   created_at: string;
   updated_at: string;
+};
+
+export type PersonaCredentialMeta = {
+  provider: ModelProvider;
+  key_last4: string;
+  label: string | null;
+  status: "active" | "revoked";
+  created_at: string;
 };
 
 export type PersonaChannel = {
@@ -150,6 +173,21 @@ export function normalizeChannelPlatform(
     : null;
 }
 
+const MODEL_PROVIDERS: ModelProvider[] = [
+  "kimi",
+  "google",
+  "openai",
+  "anthropic",
+  "openai_compatible",
+  "anthropic_compatible",
+];
+
+export function normalizeModelProvider(value: unknown): ModelProvider | null {
+  return MODEL_PROVIDERS.includes(value as ModelProvider)
+    ? (value as ModelProvider)
+    : null;
+}
+
 export function normalizeAutomationLevel(
   value: unknown,
 ): AutomationLevel | null {
@@ -201,7 +239,11 @@ export function isOnboardingComplete(
 
 export function influencerTableMissingMessage(error: unknown): string | null {
   const message = error instanceof Error ? error.message : String(error);
-  if (!/persona(s|_channels|_activities|_activity_metrics|_learnings)/i.test(message)) {
+  if (
+    !/persona(s|_channels|_activities|_activity_metrics|_learnings|_credentials|_sessions|_session_steps)/i.test(
+      message,
+    )
+  ) {
     return null;
   }
   if (!/does not exist|relation/i.test(message)) {

@@ -686,9 +686,19 @@ function PersonaDetail({
       <Tabs defaultValue="timeline">
         <TabsList>
           <TabsTrigger value="timeline">Timeline</TabsTrigger>
+          <TabsTrigger value="runs">Runs</TabsTrigger>
           <TabsTrigger value="channels">Channels</TabsTrigger>
+          <TabsTrigger value="model">Model</TabsTrigger>
           <TabsTrigger value="profile">Profile</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="runs" className="mt-4">
+          <RunsTab token={token} persona={persona} onChanged={onChanged} />
+        </TabsContent>
+
+        <TabsContent value="model" className="mt-4">
+          <ModelTab token={token} persona={persona} />
+        </TabsContent>
 
         <TabsContent value="timeline" className="mt-4 space-y-3">
           {loadingActivities ? (
@@ -1269,5 +1279,426 @@ function WizardDialog({
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Model tab: per-persona provider/model/endpoint + bring-your-own key
+// ---------------------------------------------------------------------------
+
+type ModelProviderOption =
+  | ""
+  | "kimi"
+  | "google"
+  | "openai"
+  | "anthropic"
+  | "openai_compatible"
+  | "anthropic_compatible";
+
+const PROVIDER_LABELS: Record<Exclude<ModelProviderOption, "">, string> = {
+  kimi: "Kimi (Moonshot)",
+  google: "Google (Gemini)",
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  openai_compatible: "OpenAI-compatible endpoint",
+  anthropic_compatible: "Anthropic-compatible endpoint",
+};
+
+type CredentialMeta = {
+  provider: string;
+  key_last4: string;
+  label: string | null;
+  status: string;
+  created_at: string;
+};
+
+function ModelTab({ token, persona }: { token: string; persona: Persona }) {
+  const [provider, setProvider] = useState<ModelProviderOption>("");
+  const [model, setModel] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [credentials, setCredentials] = useState<CredentialMeta[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const isCustom =
+    provider === "openai_compatible" || provider === "anthropic_compatible";
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/influencers/${persona.id}/model`, {
+        headers: authHeaders(token),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Failed to load model config");
+      setProvider((body.model_provider ?? "") as ModelProviderOption);
+      setModel(body.model_name ?? "");
+      setBaseUrl(body.model_base_url ?? "");
+      setCredentials(body.credentials ?? []);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load");
+    } finally {
+      setLoading(false);
+    }
+  }, [token, persona.id]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function save() {
+    setSaving(true);
+    setError(null);
+    setSaved(false);
+    try {
+      const res = await fetch(`/api/influencers/${persona.id}/model`, {
+        method: "PATCH",
+        headers: authHeaders(token),
+        body: JSON.stringify({
+          provider: provider || null,
+          model: model.trim() || null,
+          base_url: isCustom ? baseUrl.trim() || null : null,
+          ...(apiKey.trim() ? { key: apiKey.trim() } : {}),
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Failed to save");
+      setCredentials(body.credentials ?? []);
+      setApiKey("");
+      setSaved(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeKey(prov: string) {
+    const res = await fetch(
+      `/api/influencers/${persona.id}/model?provider=${prov}`,
+      { method: "DELETE", headers: authHeaders(token) },
+    );
+    if (res.ok) {
+      const body = await res.json();
+      setCredentials(body.credentials ?? []);
+    }
+  }
+
+  if (loading) return <Skeleton className="h-40" />;
+
+  return (
+    <Card>
+      <CardContent className="pt-4 space-y-4 text-sm">
+        <p className="text-muted-foreground">
+          This persona runs on its own model and key — billing is isolated from
+          the rest of the fleet. Leave the provider empty to use the global
+          default. Use an <span className="font-medium">-compatible</span>{" "}
+          endpoint to plug in a subscription/gateway (paste its base URL + token).
+        </p>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <p className="text-xs text-muted-foreground mb-1">Provider</p>
+            <Select
+              value={provider || "__global"}
+              onValueChange={(v) =>
+                setProvider(v === "__global" ? "" : (v as ModelProviderOption))
+              }
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__global">Global default</SelectItem>
+                {(Object.keys(PROVIDER_LABELS) as Array<
+                  Exclude<ModelProviderOption, "">
+                >).map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {PROVIDER_LABELS[p]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground mb-1">
+              Model {isCustom ? "(required)" : "(optional)"}
+            </p>
+            <Input
+              value={model}
+              placeholder="e.g. gpt-5, claude-sonnet-5, kimi-k2..."
+              onChange={(e) => setModel(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {isCustom && (
+          <div>
+            <p className="text-xs text-muted-foreground mb-1">
+              Endpoint base URL (required)
+            </p>
+            <Input
+              value={baseUrl}
+              placeholder="https://your-gateway/v1"
+              onChange={(e) => setBaseUrl(e.target.value)}
+            />
+          </div>
+        )}
+
+        <div>
+          <p className="text-xs text-muted-foreground mb-1">
+            API key / token{" "}
+            <span className="text-muted-foreground">
+              (write-only — stored encrypted, never shown again)
+            </span>
+          </p>
+          <Input
+            type="password"
+            value={apiKey}
+            placeholder={
+              credentials.length
+                ? "Leave blank to keep the current key"
+                : "Paste the key/token"
+            }
+            onChange={(e) => setApiKey(e.target.value)}
+          />
+        </div>
+
+        {credentials.length > 0 && (
+          <div className="space-y-1">
+            <p className="text-xs font-medium uppercase text-muted-foreground">
+              Stored keys
+            </p>
+            {credentials.map((c) => (
+              <div
+                key={c.provider}
+                className="flex items-center gap-2 text-xs"
+              >
+                <Badge variant="outline">{c.provider}</Badge>
+                <span className="text-muted-foreground">····{c.key_last4}</span>
+                <Badge
+                  variant={c.status === "active" ? "default" : "secondary"}
+                >
+                  {c.status}
+                </Badge>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="ml-auto h-6 px-2"
+                  onClick={() => removeKey(c.provider)}
+                >
+                  Remove
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {error && <p className="text-xs text-red-600">{error}</p>}
+        {saved && !error && (
+          <p className="text-xs text-emerald-600">Saved.</p>
+        )}
+
+        <Button onClick={save} disabled={saving}>
+          {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+          Save model
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Runs tab: kick off an agent job, list sessions, view the step-by-step trace
+// ---------------------------------------------------------------------------
+
+type AgentSession = {
+  id: string;
+  trigger: string;
+  goal: string;
+  status: "running" | "completed" | "failed";
+  result_summary: string | null;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+};
+
+type SessionStep = {
+  id: string;
+  idx: number;
+  kind: string;
+  tool: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
+const SESSION_BADGE: Record<AgentSession["status"], string> = {
+  running: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  completed:
+    "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
+  failed: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
+};
+
+function RunsTab({
+  token,
+  persona,
+  onChanged,
+}: {
+  token: string;
+  persona: Persona;
+  onChanged: () => void;
+}) {
+  const [sessions, setSessions] = useState<AgentSession[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [goal, setGoal] = useState("");
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [steps, setSteps] = useState<Record<string, SessionStep[]>>({});
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/influencers/${persona.id}/agent`, {
+        headers: authHeaders(token),
+      });
+      const body = await res.json();
+      if (res.ok) setSessions(body.sessions ?? []);
+    } finally {
+      setLoading(false);
+    }
+  }, [token, persona.id]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function runTask() {
+    if (!goal.trim()) return;
+    setRunning(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/influencers/${persona.id}/agent`, {
+        method: "POST",
+        headers: authHeaders(token),
+        body: JSON.stringify({ goal: goal.trim() }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Run failed");
+      setGoal("");
+      await load();
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Run failed");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function toggleTrace(id: string) {
+    if (openId === id) {
+      setOpenId(null);
+      return;
+    }
+    setOpenId(id);
+    if (!steps[id]) {
+      const res = await fetch(`/api/influencers/sessions/${id}`, {
+        headers: authHeaders(token),
+      });
+      const body = await res.json();
+      if (res.ok) setSteps((prev) => ({ ...prev, [id]: body.steps ?? [] }));
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardContent className="pt-4 space-y-2">
+          <p className="text-xs text-muted-foreground">
+            Give the persona a task. It works with its own tools and model, and
+            queues drafts for review — it never publishes directly.
+          </p>
+          <Textarea
+            value={goal}
+            onChange={(e) => setGoal(e.target.value)}
+            rows={2}
+            placeholder="e.g. Review the latest changes in facebook/react and write a tweet on what stood out."
+          />
+          {error && <p className="text-xs text-red-600">{error}</p>}
+          <Button onClick={runTask} disabled={running || !goal.trim()}>
+            {running ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin mr-1" /> Working…
+              </>
+            ) : (
+              "Run task"
+            )}
+          </Button>
+        </CardContent>
+      </Card>
+
+      {loading ? (
+        <Skeleton className="h-24" />
+      ) : sessions.length === 0 ? (
+        <Card>
+          <CardContent className="py-8 text-center text-sm text-muted-foreground">
+            No runs yet. Give it a task above, or set an{" "}
+            <code>agent_cadence</code> to let it run autonomously.
+          </CardContent>
+        </Card>
+      ) : (
+        sessions.map((s) => (
+          <Card key={s.id}>
+            <CardContent className="pt-4 space-y-2">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+                <Badge className={SESSION_BADGE[s.status]}>{s.status}</Badge>
+                <Badge variant="outline">{s.trigger}</Badge>
+                <span className="ml-auto">
+                  {new Date(s.started_at).toLocaleString()}
+                </span>
+              </div>
+              <p className="text-sm">{s.goal}</p>
+              {s.result_summary && (
+                <p className="text-xs text-muted-foreground whitespace-pre-wrap">
+                  {s.result_summary}
+                </p>
+              )}
+              {s.error && <p className="text-xs text-red-600">{s.error}</p>}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-xs"
+                onClick={() => toggleTrace(s.id)}
+              >
+                {openId === s.id ? "Hide trace" : "View trace"}
+              </Button>
+              {openId === s.id && (
+                <div className="border rounded-md p-2 space-y-1 bg-muted/40">
+                  {(steps[s.id] ?? []).map((step) => (
+                    <div key={step.id} className="text-xs flex gap-2">
+                      <span className="text-muted-foreground tabular-nums">
+                        {step.idx}
+                      </span>
+                      <Badge variant="outline" className="text-[10px]">
+                        {step.tool ? `${step.kind}:${step.tool}` : step.kind}
+                      </Badge>
+                      <span className="text-muted-foreground truncate">
+                        {JSON.stringify(step.payload).slice(0, 160)}
+                      </span>
+                    </div>
+                  ))}
+                  {(steps[s.id]?.length ?? 0) === 0 && (
+                    <p className="text-xs text-muted-foreground">No steps.</p>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        ))
+      )}
+    </div>
   );
 }
