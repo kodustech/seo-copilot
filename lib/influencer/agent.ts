@@ -109,6 +109,20 @@ async function fetchText(url: string): Promise<string> {
   return text.slice(0, MAX_FETCH_CHARS);
 }
 
+/**
+ * Approximate X's weighted character count for a drafting guardrail: every URL
+ * counts as 23 (X shortens links via t.co), and the rest is measured by code
+ * point rather than UTF-16 unit. Not the full twitter-text algorithm — voice
+ * bans emoji and these personas write mostly ASCII — but it stops the real
+ * false-reject: a valid tweet with a long link counted at its full length.
+ */
+function tweetLength(text: string): number {
+  const URL = /https?:\/\/\S+/g;
+  const urls = text.match(URL)?.length ?? 0;
+  const rest = text.replace(URL, "");
+  return Array.from(rest).length + urls * 23;
+}
+
 function buildAgentSystem(persona: Persona, platforms?: string[]): string {
   const voice = buildPersonaVoicePolicy(persona);
   const configs = (platforms ?? []).map((p) => ({
@@ -350,10 +364,13 @@ export async function runInfluencerAgentSession({
           return msg;
         }
         // Hard platform limit: an X post is one tweet. A thread is many drafts.
-        if (normalizedPlatform === "x" && content.length > 280) {
-          const msg = `That's ${content.length} chars — an X post must be ≤280. Tighten it to one idea, or if it's a thread, queue each tweet as its own draft.`;
-          await step({ kind: "tool_result", tool: "queue_draft", payload: { too_long: content.length } });
-          return msg;
+        if (normalizedPlatform === "x") {
+          const len = tweetLength(content);
+          if (len > 280) {
+            const msg = `That's ${len} chars (X counts each link as 23) — an X post must be ≤280. Tighten it to one idea, or if it's a thread, queue each tweet as its own draft.`;
+            await step({ kind: "tool_result", tool: "queue_draft", payload: { too_long: len } });
+            return msg;
+          }
         }
         // Honor the channel's automation level: an `auto` channel publishes
         // without review; everything else waits in the queue for a human.
