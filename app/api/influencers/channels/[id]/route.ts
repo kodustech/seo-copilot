@@ -78,6 +78,9 @@ export async function PATCH(
           { status: 400 },
         );
       }
+      // Persist the merged state: a partial onboarding payload must not wipe
+      // previously saved steps when it replaces the JSONB column.
+      patch.onboarding = merged;
     }
 
     const channel = await updateChannel(client, id, patch);
