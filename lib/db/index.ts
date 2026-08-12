@@ -1,6 +1,7 @@
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm";
 import { Pool } from "pg";
+import { parse as parseConnectionString } from "pg-connection-string";
 
 import * as schema from "./schema";
 
@@ -32,18 +33,20 @@ const globalForDb = globalThis as unknown as {
 };
 
 /**
- * Railway's TCP proxy terminates TLS with its own certificate. Match on the
- * actual hostname (not a substring — CodeQL: a URL like rlwy.net.evil.com
- * must not disable verification), falling back to the substring check only
- * when the connection string doesn't parse as a URL.
+ * Railway's TCP proxy terminates TLS with its own certificate, so
+ * verification is disabled for it — and only for it. The host comes from
+ * pg's own connection-string parser (never a substring match: a URL like
+ * rlwy.net.evil.com must not disable verification). An unparseable string
+ * keeps verification ON, which fails loudly rather than silently trusting.
  */
 export function isRailwayProxyUrl(connectionString: string): boolean {
+  let host: string | null | undefined;
   try {
-    const host = new URL(connectionString).hostname;
-    return host === "rlwy.net" || host.endsWith(".rlwy.net");
+    host = parseConnectionString(connectionString).host;
   } catch {
-    return connectionString.includes("rlwy.net");
+    return false;
   }
+  return host === "rlwy.net" || Boolean(host?.endsWith(".rlwy.net"));
 }
 
 function createPool(connectionString: string | undefined, label: string): Pool {

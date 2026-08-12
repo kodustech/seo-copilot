@@ -4,16 +4,18 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Pool } from "pg";
+import { parse as parseConnectionString } from "pg-connection-string";
 
 // Match the proxy hostname, not a substring (mirrors lib/db/index.ts —
 // standalone copy because importing lib/db creates pools from process.env).
 function isRailwayProxyUrl(connectionString: string): boolean {
+  let host: string | null | undefined;
   try {
-    const host = new URL(connectionString).hostname;
-    return host === "rlwy.net" || host.endsWith(".rlwy.net");
+    host = parseConnectionString(connectionString).host;
   } catch {
-    return connectionString.includes("rlwy.net");
+    return false;
   }
+  return host === "rlwy.net" || Boolean(host?.endsWith(".rlwy.net"));
 }
 
 function readEnvVar(name: string): string | undefined {
