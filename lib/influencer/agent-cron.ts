@@ -5,6 +5,11 @@ import { runInfluencerAgentSession, type AgentRunResult } from "@/lib/influencer
 import { listActivePersonas } from "@/lib/influencer/personas";
 import type { Persona } from "@/lib/influencer/types";
 
+// Each run does multi-minute LLM sessions sequentially, so bound how many
+// personas one cron tick processes. Cadence gating means most personas are
+// skipped anyway; the rest roll to the next tick (logged, never silently).
+const MAX_PERSONAS_PER_RUN = 25;
+
 type Cadence = "off" | "daily" | "weekly";
 
 const WINDOW_MS: Record<Exclude<Cadence, "off">, number> = {
@@ -61,17 +66,23 @@ export async function runInfluencerAgentCron(
   const personas = await listActivePersonas(client);
   const results: AgentCronResult[] = [];
 
-  for (const persona of personas) {
+  // Only personas that opted into a cadence are eligible; cap the batch.
+  const eligible = personas.filter((p) => cadenceOf(p) !== "off");
+  const batch = eligible.slice(0, MAX_PERSONAS_PER_RUN);
+  if (eligible.length > batch.length) {
+    console.warn(
+      `[influencer-agent] ${eligible.length} personas due; processing ${batch.length} this run, rest roll to the next tick`,
+    );
+  }
+
+  for (const persona of batch) {
     const base: AgentCronResult = {
       persona_id: persona.id,
       handle: persona.handle,
       ran: false,
     };
     const cadence = cadenceOf(persona);
-    if (cadence === "off") {
-      results.push({ ...base, skipped_reason: "no cadence set" });
-      continue;
-    }
+    if (cadence === "off") continue; // already filtered, defensive
 
     try {
       const since = new Date(now.getTime() - WINDOW_MS[cadence]).toISOString();
