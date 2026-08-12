@@ -64,7 +64,11 @@ export async function PATCH(
       }
       const needsCredential =
         current.publish_via === "post_bridge" || current.publish_via === "api";
-      const config = { ...current.channel_config, ...(patch.channel_config ?? {}) };
+      // Validate the state the write will actually persist: updateChannel does
+      // a blind .update(patch), so channel_config is REPLACED (not merged) when
+      // the patch carries it. Merging here would pass the check while the write
+      // silently drops post_bridge_account_id.
+      const config = patch.channel_config ?? current.channel_config;
       const credentialsRef =
         patch.credentials_ref !== undefined ? patch.credentials_ref : current.credentials_ref;
       const hasCredential =
