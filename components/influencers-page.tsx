@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   Bot,
@@ -14,7 +14,6 @@ import {
   X,
 } from "lucide-react";
 
-import { ONBOARDING_STEP_KEYS } from "@/lib/influencer/types";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -37,7 +36,6 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -124,20 +122,6 @@ const STATUS_BADGE: Record<Activity["status"], string> = {
   failed: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
   discarded: "bg-muted text-muted-foreground line-through",
 };
-
-const ONBOARDING_LABELS: Record<(typeof ONBOARDING_STEP_KEYS)[number], string> = {
-  account_created: "Account created on the platform",
-  automation_label: "Automation label enabled (X)",
-  disclosure_in_bio: "AI disclosure in the bio",
-  credentials_linked: "Credentials linked (Post-Bridge / api-key)",
-};
-
-// Keys come from the server-side wall in lib/influencer/types — the UI
-// checklist mirrors it, it doesn't define it.
-const ONBOARDING_STEPS = ONBOARDING_STEP_KEYS.map((key) => ({
-  key,
-  label: ONBOARDING_LABELS[key],
-}));
 
 function useAuthToken() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
@@ -827,19 +811,7 @@ function ChannelCard({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [handle, setHandle] = useState(channel.external_handle ?? "");
-  const [bridgeId, setBridgeId] = useState(
-    channel.channel_config.post_bridge_account_id
-      ? String(channel.channel_config.post_bridge_account_id)
-      : "",
-  );
-  // Local checklist state: rapid toggles must build on each other, not on the
-  // stale channel prop from the last fleet fetch.
-  const [onboarding, setOnboarding] = useState(channel.onboarding);
-  useEffect(() => {
-    setOnboarding(channel.onboarding);
-  }, [channel.onboarding]);
   const isDraftOnly = channel.automation_level === "draft_only";
-  const onboardingDone = ONBOARDING_STEPS.every((step) => onboarding[step.key]);
 
   async function patch(body: Record<string, unknown>) {
     setSaving(true);
@@ -874,22 +846,7 @@ function ChannelCard({
           {saving && (
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
           )}
-          {channel.status !== "active" && (
-            <Button
-              size="sm"
-              className="ml-auto"
-              disabled={saving || !onboardingDone}
-              title={
-                onboardingDone
-                  ? undefined
-                  : "Finish the onboarding checklist first"
-              }
-              onClick={() => patch({ status: "active" })}
-            >
-              Activate channel
-            </Button>
-          )}
-          {channel.status === "active" && (
+          {channel.status === "active" ? (
             <Button
               size="sm"
               variant="outline"
@@ -898,6 +855,16 @@ function ChannelCard({
               onClick={() => patch({ status: "paused" })}
             >
               Pause
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              className="ml-auto"
+              disabled={saving}
+              onClick={() => patch({ status: "active" })}
+            >
+              Activate
             </Button>
           )}
         </div>
@@ -918,28 +885,6 @@ function ChannelCard({
               }}
             />
           </div>
-          {channel.publish_via === "post_bridge" && (
-            <div>
-              <p className="text-xs text-muted-foreground mb-1">
-                Post-Bridge account id
-              </p>
-              <Input
-                value={bridgeId}
-                placeholder="e.g. 123"
-                onChange={(event) => setBridgeId(event.target.value)}
-                onBlur={() => {
-                  const parsed = Number(bridgeId);
-                  patch({
-                    channel_config: {
-                      ...channel.channel_config,
-                      post_bridge_account_id:
-                        Number.isInteger(parsed) && parsed > 0 ? parsed : null,
-                    },
-                  });
-                }}
-              />
-            </div>
-          )}
           {!isDraftOnly && (
             <div>
               <p className="text-xs text-muted-foreground mb-1">Automation</p>
@@ -1000,29 +945,280 @@ function ChannelCard({
         )}
 
         <Separator />
-        <div className="space-y-2">
-          <p className="text-xs font-medium uppercase text-muted-foreground">
-            Onboarding checklist
-          </p>
-          {ONBOARDING_STEPS.map((step) => (
-            <label
-              key={step.key}
-              className="flex items-center gap-2 text-sm cursor-pointer"
-            >
-              <Switch
-                checked={Boolean(onboarding[step.key])}
-                onCheckedChange={(checked) => {
-                  const next = { ...onboarding, [step.key]: checked };
-                  setOnboarding(next);
-                  patch({ onboarding: next });
-                }}
-              />
-              {step.label}
-            </label>
-          ))}
-        </div>
+        <ChannelConnect token={token} channel={channel} onChanged={onChanged} />
       </CardContent>
     </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Real per-channel connect: Post-Bridge account picker (X, …) or a dev.to key.
+// Replaces the old manual onboarding checklist.
+// ---------------------------------------------------------------------------
+
+type SocialAccount = { id: number; platform: string; username: string };
+
+function ConnectShell({
+  status,
+  children,
+}: {
+  status: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <p className="text-xs font-medium uppercase text-muted-foreground">
+          Connection
+        </p>
+        <Badge variant={status === "connected" ? "default" : "secondary"}>
+          {status}
+        </Badge>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ChannelConnect({
+  token,
+  channel,
+  onChanged,
+}: {
+  token: string;
+  channel: Channel;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function connect(payload: Record<string, unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/influencers/channels/${channel.id}/connect`, {
+        method: "POST",
+        headers: authHeaders(token),
+        body: JSON.stringify(payload),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Could not connect");
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not connect");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/influencers/channels/${channel.id}/connect`, {
+        method: "DELETE",
+        headers: authHeaders(token),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Could not disconnect");
+      }
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not disconnect");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Post-Bridge platforms (X, …): pick from the accounts already linked there.
+  if (channel.publish_via === "post_bridge") {
+    return (
+      <PostBridgeConnect
+        token={token}
+        channel={channel}
+        busy={busy}
+        error={error}
+        onConnect={(accountId) => connect({ post_bridge_account_id: accountId })}
+        onDisconnect={disconnect}
+      />
+    );
+  }
+
+  // dev.to: paste a personal API key; we validate it against dev.to.
+  if (channel.platform === "devto") {
+    return (
+      <DevtoConnect
+        channel={channel}
+        busy={busy}
+        error={error}
+        onConnect={(apiKey) => connect({ api_key: apiKey })}
+        onDisconnect={disconnect}
+      />
+    );
+  }
+
+  // No direct publishing integration — the tool drafts, a human posts.
+  return (
+    <ConnectShell status="draft-only">
+      <p className="text-xs text-muted-foreground">
+        No direct publishing integration for {channel.platform} yet — the persona
+        drafts here and a human posts from their own account.
+      </p>
+    </ConnectShell>
+  );
+}
+
+function PostBridgeConnect({
+  token,
+  channel,
+  busy,
+  error,
+  onConnect,
+  onDisconnect,
+}: {
+  token: string;
+  channel: Channel;
+  busy: boolean;
+  error: string | null;
+  onConnect: (accountId: number) => void;
+  onDisconnect: () => void;
+}) {
+  const connectedId = channel.channel_config.post_bridge_account_id
+    ? Number(channel.channel_config.post_bridge_account_id)
+    : null;
+  const [accounts, setAccounts] = useState<SocialAccount[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [picked, setPicked] = useState<string>("");
+  const [warning, setWarning] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/influencers/channels/social-accounts?platform=${channel.platform}`, {
+      headers: authHeaders(token),
+    })
+      .then((r) => r.json())
+      .then((body) => {
+        if (!active) return;
+        setAccounts(body.accounts ?? []);
+        setWarning(body.warning ?? null);
+      })
+      .catch(() => active && setWarning("Could not reach Post-Bridge."))
+      .finally(() => active && setLoading(false));
+    return () => {
+      active = false;
+    };
+  }, [token, channel.platform]);
+
+  const connectedAccount = accounts.find((a) => a.id === connectedId);
+
+  if (connectedId) {
+    return (
+      <ConnectShell status="connected">
+        <p className="text-xs text-muted-foreground">
+          Posting via Post-Bridge as{" "}
+          <span className="font-medium">
+            {connectedAccount ? `@${connectedAccount.username}` : `account #${connectedId}`}
+          </span>
+          .
+        </p>
+        {error && <p className="text-xs text-red-600">{error}</p>}
+        <Button size="sm" variant="outline" disabled={busy} onClick={onDisconnect}>
+          Disconnect
+        </Button>
+      </ConnectShell>
+    );
+  }
+
+  return (
+    <ConnectShell status="not connected">
+      <p className="text-xs text-muted-foreground">
+        Pick the Post-Bridge account this persona posts as. Don’t see it? Link
+        the account in Post-Bridge first, then reload.
+      </p>
+      <div className="flex items-center gap-2">
+        <Select value={picked} onValueChange={setPicked} disabled={loading || busy}>
+          <SelectTrigger className="w-64">
+            <SelectValue placeholder={loading ? "Loading accounts…" : "Choose an account"} />
+          </SelectTrigger>
+          <SelectContent>
+            {accounts.map((a) => (
+              <SelectItem key={a.id} value={String(a.id)}>
+                @{a.username} · {a.platform}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          size="sm"
+          disabled={busy || !picked}
+          onClick={() => onConnect(Number(picked))}
+        >
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Connect"}
+        </Button>
+      </div>
+      {!loading && accounts.length === 0 && (
+        <p className="text-xs text-muted-foreground">
+          No {channel.platform} accounts found in Post-Bridge.
+        </p>
+      )}
+      {warning && <p className="text-xs text-amber-600">{warning}</p>}
+      {error && <p className="text-xs text-red-600">{error}</p>}
+    </ConnectShell>
+  );
+}
+
+function DevtoConnect({
+  channel,
+  busy,
+  error,
+  onConnect,
+  onDisconnect,
+}: {
+  channel: Channel;
+  busy: boolean;
+  error: string | null;
+  onConnect: (apiKey: string) => void;
+  onDisconnect: () => void;
+}) {
+  const connected = channel.credentials_ref?.startsWith("vault") ?? false;
+  const [key, setKey] = useState("");
+
+  if (connected) {
+    return (
+      <ConnectShell status="connected">
+        <p className="text-xs text-muted-foreground">
+          A dev.to API key is linked (stored encrypted). Articles publish to this
+          account.
+        </p>
+        {error && <p className="text-xs text-red-600">{error}</p>}
+        <Button size="sm" variant="outline" disabled={busy} onClick={onDisconnect}>
+          Disconnect
+        </Button>
+      </ConnectShell>
+    );
+  }
+
+  return (
+    <ConnectShell status="not connected">
+      <p className="text-xs text-muted-foreground">
+        Paste a dev.to API key (Settings → Extensions → “DEV Community API Keys”).
+        We validate it and store it encrypted.
+      </p>
+      <div className="flex items-center gap-2">
+        <Input
+          type="password"
+          value={key}
+          placeholder="dev.to API key"
+          className="w-64"
+          onChange={(e) => setKey(e.target.value)}
+        />
+        <Button size="sm" disabled={busy || !key.trim()} onClick={() => onConnect(key.trim())}>
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Connect"}
+        </Button>
+      </div>
+      {error && <p className="text-xs text-red-600">{error}</p>}
+    </ConnectShell>
   );
 }
 

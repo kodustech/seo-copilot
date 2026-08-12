@@ -9,7 +9,6 @@ import {
 } from "@/lib/influencer/personas";
 import {
   influencerTableMissingMessage,
-  isOnboardingComplete,
   normalizeAutomationLevel,
   normalizeChannelStatus,
 } from "@/lib/influencer/types";
@@ -51,36 +50,36 @@ export async function PATCH(
     if (body.channel_config && typeof body.channel_config === "object") {
       patch.channel_config = body.channel_config as Record<string, unknown>;
     }
-    if (body.onboarding && typeof body.onboarding === "object") {
-      const onboarding: Record<string, boolean> = {};
-      for (const [key, value] of Object.entries(
-        body.onboarding as Record<string, unknown>,
-      )) {
-        onboarding[key] = Boolean(value);
-      }
-      patch.onboarding = onboarding;
-    }
     const status = normalizeChannelStatus(body.status);
     if (status) patch.status = status;
 
-    // The onboarding checklist is a server-side wall, not a UI nicety: a
-    // channel only activates once every step is done — checked against the
-    // STORED state merged with this request, so a direct API call can't skip it.
+    // A publishing channel can't go active without a linked credential — the
+    // publisher would just fail at runtime. /connect is the path that links it
+    // (and activates). Draft-only / manual channels never publish, so they
+    // activate freely.
     if (patch.status === "active") {
       const current = await getChannel(client, id);
       if (!current) {
         return NextResponse.json({ error: "Channel not found" }, { status: 404 });
       }
-      const merged = { ...current.onboarding, ...(patch.onboarding ?? {}) };
-      if (!isOnboardingComplete(merged)) {
+      const needsCredential =
+        current.publish_via === "post_bridge" || current.publish_via === "api";
+      // Validate the state the write will actually persist: updateChannel does
+      // a blind .update(patch), so channel_config is REPLACED (not merged) when
+      // the patch carries it. Merging here would pass the check while the write
+      // silently drops post_bridge_account_id.
+      const config = patch.channel_config ?? current.channel_config;
+      const credentialsRef =
+        patch.credentials_ref !== undefined ? patch.credentials_ref : current.credentials_ref;
+      const hasCredential =
+        (typeof credentialsRef === "string" && credentialsRef.length > 0) ||
+        config.post_bridge_account_id != null;
+      if (needsCredential && !hasCredential) {
         return NextResponse.json(
-          { error: "Complete the onboarding checklist before activating this channel." },
+          { error: "Connect a credential before activating this channel." },
           { status: 400 },
         );
       }
-      // Persist the merged state: a partial onboarding payload must not wipe
-      // previously saved steps when it replaces the JSONB column.
-      patch.onboarding = merged;
     }
 
     const channel = await updateChannel(client, id, patch);
