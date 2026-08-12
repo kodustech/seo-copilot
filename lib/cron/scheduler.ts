@@ -280,23 +280,14 @@ async function runPersonaPublishCron(): Promise<void> {
   }
 }
 
-async function runPersonaPlannerCron(): Promise<void> {
-  const { runInfluencerPlannerCron } = await import("@/lib/influencer/planner");
-  const results = await runInfluencerPlannerCron();
-  const planned = results.reduce((n, r) => n + r.planned, 0);
-  if (planned) {
+async function runPersonaTickCron(): Promise<void> {
+  const { runInfluencerTickCron } = await import("@/lib/influencer/tick");
+  const results = await runInfluencerTickCron();
+  const acted = results.filter((r) => r.acted).length;
+  if (results.length) {
+    const drafts = results.reduce((n, r) => n + r.drafts, 0);
     console.log(
-      `[cron] persona-planner: ${planned} tasks planned across ${results.filter((r) => r.planned > 0).length} personas`,
-    );
-  }
-}
-
-async function runPersonaWorkerCron(): Promise<void> {
-  const { runInfluencerWorkerCron } = await import("@/lib/influencer/worker-cron");
-  const res = await runInfluencerWorkerCron();
-  if (res.examined > 0) {
-    console.log(
-      `[cron] persona-worker: examined ${res.examined}, done ${res.done}, failed ${res.failed}, skipped ${res.skipped}`,
+      `[cron] persona-tick: ${results.length} due, ${acted} acted, ${drafts} draft(s) queued`,
     );
   }
 }
@@ -385,18 +376,12 @@ const JOBS: JobDefinition[] = [
     run: runPersonaPublishCron,
   },
   {
-    // Daily 08:00 UTC: personas that opted into a cadence plan their own week
-    // of work into persona_tasks (posts, articles, research, email, …).
-    name: "persona-planner",
-    schedule: "0 8 * * *",
-    run: runPersonaPlannerCron,
-  },
-  {
-    // Every 30 min: execute due planned tasks — one agent session per task,
-    // drafts to the review queue, an operator alert on failure. Never publishes.
-    name: "persona-worker",
-    schedule: "*/30 * * * *",
-    run: runPersonaWorkerCron,
+    // Every 15 min: the self-paced heartbeat. Wakes each active persona whose
+    // self-chosen next_action_at has arrived, runs one real shift, and lets it
+    // decide when to come back. Only drafts — never publishes.
+    name: "persona-tick",
+    schedule: "*/15 * * * *",
+    run: runPersonaTickCron,
   },
 ];
 
