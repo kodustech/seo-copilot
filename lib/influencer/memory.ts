@@ -56,9 +56,14 @@ export async function searchMemory(
     .eq("persona_id", personaId)
     .order("created_at", { ascending: false })
     .limit(Math.min(Math.max(limit, 1), 20));
-  if (q) {
-    // Escape PostgREST or() special chars in the user/agent-supplied query.
-    const safe = q.replace(/[%,()]/g, " ");
+  // Strip every PostgREST or()/ilike control char from the agent-supplied query
+  // so it can only ever be a plain ILIKE substring — no filter breakout.
+  const safe = q
+    .replace(/[,.()%*:\\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 100);
+  if (safe) {
     builder = builder.or(`title.ilike.%${safe}%,content.ilike.%${safe}%`);
   }
   const { data, error } = await builder;

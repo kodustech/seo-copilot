@@ -199,6 +199,7 @@ export async function runPersonaTick({
     trigger: "scheduled",
     allowedPlatforms: allowed,
     maxSteps: SHIFT_STEPS,
+    allowQueue: postingAllowed,
   });
 
   if (run.status === "failed") {

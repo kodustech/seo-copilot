@@ -184,6 +184,7 @@ export async function runInfluencerAgentSession({
   createdBy,
   allowedPlatforms,
   maxSteps,
+  allowQueue = true,
 }: {
   client: SupabaseClient;
   persona: Persona;
@@ -194,6 +195,8 @@ export async function runInfluencerAgentSession({
   allowedPlatforms?: string[];
   /** Override the per-session step budget (a self-paced shift runs longer). */
   maxSteps?: number;
+  /** When false, queue_draft is hard-blocked (e.g. the publish queue is full). */
+  allowQueue?: boolean;
 }): Promise<AgentRunResult> {
   const model = await getModelForPersona(client, persona);
   const channels = await listChannelsForPersona(client, persona.id);
@@ -439,6 +442,14 @@ export async function runInfluencerAgentSession({
       }),
       execute: async ({ kind, platform, title, content }) => {
         await step({ kind: "tool_call", tool: "queue_draft", payload: { kind, platform } });
+        // Hard backpressure: when the publish queue is full, the shift must not
+        // add posts — enforced here, not just in the prompt.
+        if (!allowQueue) {
+          const msg =
+            "Your post queue is full right now — don't queue a new post this shift. Save the idea to memory or engage instead.";
+          await step({ kind: "tool_result", tool: "queue_draft", payload: { blocked: "queue_full" } });
+          return msg;
+        }
         const normalizedKind = normalizeActivityKind(kind) ?? "post";
         const normalizedPlatform = normalizeChannelPlatform(platform);
         if (
