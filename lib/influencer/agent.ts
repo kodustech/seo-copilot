@@ -430,7 +430,7 @@ export async function runInfluencerAgentSession({
 
     queue_draft: tool({
       description:
-        "Queue a finished piece of content for human review. This is how your work reaches people — it drafts, it does not publish. Call once per finished piece.",
+        "Queue a finished piece of content. This is how your work reaches people. Call once per finished piece. For a blog post (platform 'blog', aicodereview.io): title ≥5 chars, description ≥20 chars, content ≥100 chars of markdown (NO H1 — the layout renders the title), and a category from best-of/alternatives/comparison/guide/explainer/review.",
       inputSchema: z.object({
         kind: z
           .enum(["post", "reply", "quote", "article", "crosspost"])
@@ -440,8 +440,23 @@ export async function runInfluencerAgentSession({
           .describe("Which channel this is for"),
         title: z.string().nullable().optional().describe("Title (for articles)"),
         content: z.string().describe("The full content, in the persona's voice"),
+        description: z
+          .string()
+          .nullable()
+          .optional()
+          .describe("Short SEO description (blog/article posts)"),
+        category: z
+          .enum(["best-of", "alternatives", "comparison", "guide", "explainer", "review"])
+          .nullable()
+          .optional()
+          .describe("Category for a blog post (aicodereview.io)"),
+        tags: z.array(z.string()).optional().describe("Tags for a blog/article post"),
+        faq: z
+          .array(z.object({ q: z.string(), a: z.string() }))
+          .optional()
+          .describe("Optional FAQ entries for a blog post (aicodereview.io)"),
       }),
-      execute: async ({ kind, platform, title, content }) => {
+      execute: async ({ kind, platform, title, content, description, category, tags, faq }) => {
         await step({ kind: "tool_call", tool: "queue_draft", payload: { kind, platform } });
         // Hard backpressure, enforced live against the running draft counter (not
         // a stale snapshot): 0 = queue is full, don't post; 1 = one post/shift.
@@ -492,7 +507,13 @@ export async function runInfluencerAgentSession({
               status: autoPublish ? "approved" : "draft",
               title: title ?? null,
               content,
-              content_meta: { session_id: session.id },
+              content_meta: {
+                session_id: session.id,
+                ...(description ? { description } : {}),
+                ...(category ? { category } : {}),
+                ...(tags?.length ? { tags } : {}),
+                ...(faq?.length ? { faq } : {}),
+              },
               source_kind: "agent",
               source_ref: session.id,
             },
