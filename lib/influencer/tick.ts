@@ -107,7 +107,16 @@ function buildShiftGoal(
   memoryTitles: string[],
   postingAllowed: boolean,
   feedback: Feedback[],
+  failures: { title: string; error: string }[],
 ): string {
+  const failureLine = failures.length
+    ? `SOME OF YOUR POSTS FAILED TO PUBLISH — learn from this, fix the cause, and do NOT repeat it: ${failures
+        .map(
+          (f) =>
+            `"${f.title.slice(0, 60)}" → ${f.error.replace(/\s+/g, " ").slice(0, 160)}`,
+        )
+        .join(" | ")} If it's a recurring rule (a length or format limit), save it with learn_skill so it never happens again.`
+    : "";
   const feedbackLine = feedback.length
     ? `NEW FEEDBACK FROM YOUR OPERATOR — take it seriously and act on it this shift: ${feedback
         .map((f) => `"${f.body}"`)
@@ -123,6 +132,7 @@ function buildShiftGoal(
     `This is your shift as ${persona.display_name} (@${persona.handle}). You are a relentless operator: your job is to HIT YOUR GOALS, and you do whatever it takes and never stop working to get there.`,
     `Your beat: ${persona.beat}.`,
     `Channels you can post to right now: ${allowed.join(", ")}.`,
+    failureLine,
     feedbackLine,
     goalsBrief,
     "Attack whatever goal you're most behind on THIS shift. If a channel's weekly quota is short, write for that channel now. There is no 'nothing to show' and no 'taking a break' — if you truly can't post, you research, check your analytics, engage, and plan instead. Idle is failure.",
@@ -137,6 +147,28 @@ function buildShiftGoal(
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/** Recent publish failures with their error, so the persona can learn from them. */
+async function recentPublishFailures(
+  client: SupabaseClient,
+  personaId: string,
+  sinceIso: string,
+): Promise<{ title: string; error: string }[]> {
+  const { data, error } = await client
+    .from("persona_activities")
+    .select("title,error,updated_at")
+    .eq("persona_id", personaId)
+    .eq("status", "failed")
+    .not("error", "is", null)
+    .gte("updated_at", sinceIso)
+    .order("updated_at", { ascending: false })
+    .limit(5);
+  if (error) return [];
+  return (data ?? []).map((r) => ({
+    title: typeof r.title === "string" ? r.title : "",
+    error: typeof r.error === "string" ? r.error : "",
+  }));
 }
 
 /** Pieces already waiting to publish — used to avoid out-producing the queue. */
@@ -206,6 +238,16 @@ export async function runPersonaTick({
   const goalsBrief = buildGoalsBrief(await computeProgress(client, persona, now));
   const memoryTitles = await recentMemoryTitles(client, persona.id).catch(() => []);
   const feedback = await listNewFeedback(client, persona.id).catch(() => []);
+  // Publish failures since the last shift, so it learns from its own errors.
+  const failureSince =
+    typeof persona.content_config.last_tick_at === "string"
+      ? persona.content_config.last_tick_at
+      : new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const failures = await recentPublishFailures(
+    client,
+    persona.id,
+    failureSince,
+  ).catch(() => []);
 
   // Do the shift: one real multi-step session, gated to connected channels.
   const run = await runInfluencerAgentSession({
@@ -218,6 +260,7 @@ export async function runPersonaTick({
       memoryTitles,
       postingAllowed,
       feedback,
+      failures,
     ),
     trigger: "scheduled",
     allowedPlatforms: allowed,

@@ -580,7 +580,7 @@ export async function runInfluencerAgentSession({
 
     queue_draft: tool({
       description:
-        "Queue a finished piece of content. This is how your work reaches people. Call once per finished piece. For a blog post (platform 'blog', aicodereview.io): title ≥5 chars, description ≥20 chars, content ≥100 chars of markdown (NO H1 — the layout renders the title), and a category from best-of/alternatives/comparison/guide/explainer/review.",
+        "Queue a finished piece of content. This is how your work reaches people. Call once per finished piece. For a blog post (platform 'blog', aicodereview.io): title 5-90 chars (aim ≤60 for SEO), description ≥20 chars, content ≥100 chars of markdown (NO H1 — the layout renders the title), and a category from best-of/alternatives/comparison/guide/explainer/review.",
       inputSchema: z.object({
         kind: z
           .enum(["post", "reply", "quote", "article", "crosspost"])
