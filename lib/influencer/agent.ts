@@ -440,8 +440,23 @@ export async function runInfluencerAgentSession({
           .describe("Which channel this is for"),
         title: z.string().nullable().optional().describe("Title (for articles)"),
         content: z.string().describe("The full content, in the persona's voice"),
+        description: z
+          .string()
+          .nullable()
+          .optional()
+          .describe("Short SEO description (blog/article posts)"),
+        category: z
+          .string()
+          .nullable()
+          .optional()
+          .describe("Category for a blog post, e.g. 'comparison' or 'article'"),
+        tags: z.array(z.string()).optional().describe("Tags for a blog/article post"),
+        faq: z
+          .array(z.object({ q: z.string(), a: z.string() }))
+          .optional()
+          .describe("Optional FAQ entries for a blog post (aicodereview.io)"),
       }),
-      execute: async ({ kind, platform, title, content }) => {
+      execute: async ({ kind, platform, title, content, description, category, tags, faq }) => {
         await step({ kind: "tool_call", tool: "queue_draft", payload: { kind, platform } });
         // Hard backpressure, enforced live against the running draft counter (not
         // a stale snapshot): 0 = queue is full, don't post; 1 = one post/shift.
@@ -492,7 +507,13 @@ export async function runInfluencerAgentSession({
               status: autoPublish ? "approved" : "draft",
               title: title ?? null,
               content,
-              content_meta: { session_id: session.id },
+              content_meta: {
+                session_id: session.id,
+                ...(description ? { description } : {}),
+                ...(category ? { category } : {}),
+                ...(tags?.length ? { tags } : {}),
+                ...(faq?.length ? { faq } : {}),
+              },
               source_kind: "agent",
               source_ref: session.id,
             },

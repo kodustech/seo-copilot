@@ -284,11 +284,71 @@ async function publishToDevto(
   };
 }
 
+const BLOG_API_URL =
+  process.env.AICODEREVIEW_API_URL?.replace(/\/$/, "") ?? "https://aicodereview.io";
+
+async function publishToBlog(activity: PersonaActivity): Promise<PublishOutcome> {
+  const key = process.env.CONTENT_API_KEY?.trim();
+  if (!key) {
+    throw new Error(
+      "Missing CONTENT_API_KEY — set it to publish to aicodereview.io.",
+    );
+  }
+  const meta = activity.content_meta ?? {};
+  const asString = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
+  const tags = Array.isArray(meta.tags)
+    ? meta.tags.filter((t): t is string => typeof t === "string")
+    : undefined;
+  const faq = Array.isArray(meta.faq)
+    ? meta.faq.filter(
+        (f): f is { q: string; a: string } =>
+          Boolean(f) &&
+          typeof (f as { q?: unknown }).q === "string" &&
+          typeof (f as { a?: unknown }).a === "string",
+      )
+    : undefined;
+
+  const payload = {
+    title: activity.title || activity.content.slice(0, 80),
+    description: asString(meta.description),
+    category: asString(meta.category) ?? "article",
+    tags: tags?.length ? tags : undefined,
+    content: activity.content, // markdown, no H1 (layout renders the title)
+    faq: faq?.length ? faq : undefined,
+  };
+
+  const response = await fetch(`${BLOG_API_URL}/api/posts`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    cache: "no-store",
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`aicodereview.io API ${response.status}: ${text.slice(0, 300)}`);
+  }
+
+  const body = (await response.json().catch(() => ({}))) as {
+    id?: string | number;
+    url?: string;
+    slug?: string;
+  };
+  return {
+    external_id: body.id != null ? String(body.id) : null,
+    external_url: body.url ?? (body.slug ? `${BLOG_API_URL}/${body.slug}` : null),
+  };
+}
+
 async function publishActivity(
   client: SupabaseClient,
   activity: PersonaActivity,
   channel: PersonaChannel,
 ): Promise<PublishOutcome> {
+  // The blog (aicodereview.io) publishes via its own content API regardless of
+  // the channel's stored publish_via.
+  if (channel.platform === "blog") return publishToBlog(activity);
+
   switch (channel.publish_via) {
     case "post_bridge":
       return publishViaPostBridge(activity, channel);
