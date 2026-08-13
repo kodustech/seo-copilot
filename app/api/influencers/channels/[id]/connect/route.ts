@@ -110,6 +110,20 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       });
     }
 
+    if (channel.platform === "blog") {
+      if (!process.env.CONTENT_API_KEY?.trim()) {
+        return NextResponse.json(
+          { error: "Set CONTENT_API_KEY in the environment to publish to aicodereview.io." },
+          { status: 400 },
+        );
+      }
+      const updated = await updateChannel(client, id, {
+        status: "active",
+        credentials_ref: "env:content_api",
+      });
+      return NextResponse.json({ connected: true, platform: "blog", channel: updated });
+    }
+
     return NextResponse.json(
       {
         error: `"${channel.platform}" has no direct publishing integration yet — it stays draft-only.`,
@@ -143,6 +157,11 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
       await updateChannel(client, id, {
         channel_config: config,
         status: "pending_setup",
+      });
+    } else if (channel.platform === "blog") {
+      await updateChannel(client, id, {
+        status: "pending_setup",
+        credentials_ref: null,
       });
     }
 

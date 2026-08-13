@@ -1058,6 +1058,19 @@ function ChannelConnect({
     );
   }
 
+  // aicodereview.io: publishes via the content API keyed by CONTENT_API_KEY.
+  if (channel.platform === "blog") {
+    return (
+      <BlogConnect
+        channel={channel}
+        busy={busy}
+        error={error}
+        onConnect={() => connect({})}
+        onDisconnect={disconnect}
+      />
+    );
+  }
+
   // No direct publishing integration — the tool drafts, a human posts.
   return (
     <ConnectShell status="draft-only">
@@ -1214,6 +1227,52 @@ function DevtoConnect({
           onChange={(e) => setKey(e.target.value)}
         />
         <Button size="sm" disabled={busy || !key.trim()} onClick={() => onConnect(key.trim())}>
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Connect"}
+        </Button>
+      </div>
+      {error && <p className="text-xs text-red-600">{error}</p>}
+    </ConnectShell>
+  );
+}
+
+function BlogConnect({
+  channel,
+  busy,
+  error,
+  onConnect,
+  onDisconnect,
+}: {
+  channel: Channel;
+  busy: boolean;
+  error: string | null;
+  onConnect: () => void;
+  onDisconnect: () => void;
+}) {
+  const connected =
+    channel.credentials_ref?.startsWith("env:") || channel.status === "active";
+
+  if (connected) {
+    return (
+      <ConnectShell status="connected">
+        <p className="text-xs text-muted-foreground">
+          Publishing long-form articles to aicodereview.io via its content API.
+        </p>
+        {error && <p className="text-xs text-red-600">{error}</p>}
+        <Button size="sm" variant="outline" disabled={busy} onClick={onDisconnect}>
+          Disconnect
+        </Button>
+      </ConnectShell>
+    );
+  }
+
+  return (
+    <ConnectShell status="not connected">
+      <p className="text-xs text-muted-foreground">
+        Publishes to aicodereview.io using the workspace CONTENT_API_KEY. Connect
+        to activate — if the key isn’t set, you’ll get told to set it first.
+      </p>
+      <div className="flex items-center gap-2">
+        <Button size="sm" disabled={busy} onClick={onConnect}>
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Connect"}
         </Button>
       </div>
