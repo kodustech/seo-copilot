@@ -95,12 +95,14 @@ export async function listSkills(
   personaId: string,
   limit = 30,
 ): Promise<string[]> {
+  // Newest first + capped, so once there are more than `limit` skills the most
+  // recent ones are the ones that survive (not silently dropped).
   const { data, error } = await client
     .from("persona_memory")
     .select("content,created_at")
     .eq("persona_id", personaId)
     .contains("tags", [SKILL_TAG])
-    .order("created_at", { ascending: true })
+    .order("created_at", { ascending: false })
     .limit(limit);
   if (error) throw new Error(error.message);
   return (data ?? [])

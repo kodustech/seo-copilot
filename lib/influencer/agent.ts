@@ -557,12 +557,14 @@ export async function runInfluencerAgentSession({
       inputSchema: z.object({
         skill: z
           .string()
+          .min(3)
           .describe("The rule in imperative form, e.g. 'Keep X posts under 180 chars and lead with the number.'"),
       }),
       execute: async ({ skill }) => {
         await step({ kind: "tool_call", tool: "learn_skill", payload: { skill } });
+        if (!skill.trim()) return "A skill can't be empty.";
         try {
-          await addSkill(client, persona.id, skill);
+          await addSkill(client, persona.id, skill.trim());
           await step({ kind: "tool_result", tool: "learn_skill", payload: { ok: true } });
           return `Learned: "${skill}". I'll apply it every shift from now on.`;
         } catch (err) {
