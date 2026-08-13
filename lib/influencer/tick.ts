@@ -19,6 +19,11 @@ import { getSupabaseServiceClient } from "@/lib/supabase-server";
 
 import { runInfluencerAgentSession } from "@/lib/influencer/agent";
 import { alertOperator } from "@/lib/influencer/alerts";
+import {
+  listNewFeedback,
+  markFeedbackApplied,
+  type Feedback,
+} from "@/lib/influencer/feedback";
 import { buildGoalsBrief, computeProgress } from "@/lib/influencer/goals";
 import { recentMemoryTitles } from "@/lib/influencer/memory";
 import { getModelForPersona } from "@/lib/influencer/model";
@@ -101,7 +106,13 @@ function buildShiftGoal(
   goalsBrief: string,
   memoryTitles: string[],
   postingAllowed: boolean,
+  feedback: Feedback[],
 ): string {
+  const feedbackLine = feedback.length
+    ? `NEW FEEDBACK FROM YOUR OPERATOR — take it seriously and act on it this shift: ${feedback
+        .map((f) => `"${f.body}"`)
+        .join(" ")} If it's a lasting rule, save it with learn_skill so you apply it every shift from now on.`
+    : "";
   const memoryLine = memoryTitles.length
     ? `Recent notes in your memory: ${memoryTitles.map((t) => `"${t}"`).join(", ")}. Call search_memory to reuse them — don't re-study what you already know.`
     : "You have a durable memory (save_memory / search_memory). Use it to keep studies and build on them across shifts.";
@@ -112,6 +123,7 @@ function buildShiftGoal(
     `This is your shift as ${persona.display_name} (@${persona.handle}). You are a relentless operator: your job is to HIT YOUR GOALS, and you do whatever it takes and never stop working to get there.`,
     `Your beat: ${persona.beat}.`,
     `Channels you can post to right now: ${allowed.join(", ")}.`,
+    feedbackLine,
     goalsBrief,
     "Attack whatever goal you're most behind on THIS shift. If a channel's weekly quota is short, write for that channel now. There is no 'nothing to show' and no 'taking a break' — if you truly can't post, you research, check your analytics, engage, and plan instead. Idle is failure.",
     memoryLine,
@@ -193,12 +205,20 @@ export async function runPersonaTick({
 
   const goalsBrief = buildGoalsBrief(await computeProgress(client, persona, now));
   const memoryTitles = await recentMemoryTitles(client, persona.id).catch(() => []);
+  const feedback = await listNewFeedback(client, persona.id).catch(() => []);
 
   // Do the shift: one real multi-step session, gated to connected channels.
   const run = await runInfluencerAgentSession({
     client,
     persona,
-    goal: buildShiftGoal(persona, allowed, goalsBrief, memoryTitles, postingAllowed),
+    goal: buildShiftGoal(
+      persona,
+      allowed,
+      goalsBrief,
+      memoryTitles,
+      postingAllowed,
+      feedback,
+    ),
     trigger: "scheduled",
     allowedPlatforms: allowed,
     maxSteps: SHIFT_STEPS,
@@ -206,6 +226,15 @@ export async function runPersonaTick({
     // running counter can't overshoot MAX_PENDING across shifts.
     maxDrafts: postingAllowed ? 1 : 0,
   });
+
+  // The shift was told to act on the operator's feedback — mark it applied so it
+  // isn't re-injected. Keep it 'new' if the shift failed, so a retry still sees it.
+  if (feedback.length && run.status === "completed") {
+    await markFeedbackApplied(
+      client,
+      feedback.map((f) => f.id),
+    ).catch(() => {});
+  }
 
   if (run.status === "failed") {
     const note = `Shift failed: ${run.error ?? "unknown error"}`;
