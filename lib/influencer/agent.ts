@@ -558,7 +558,12 @@ export async function runInfluencerAgentSession({
       execute: async () => {
         await step({ kind: "tool_call", tool: "read_failures", payload: {} });
         try {
-          const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+          // Same window the shift used to COUNT failures, so the "N failed"
+          // signal and this detail list always agree.
+          const since =
+            typeof persona.content_config.last_tick_at === "string"
+              ? persona.content_config.last_tick_at
+              : new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
           const { data } = await client
             .from("persona_activities")
             .select("title,error,updated_at")
