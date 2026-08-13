@@ -199,7 +199,9 @@ export async function runPersonaTick({
     trigger: "scheduled",
     allowedPlatforms: allowed,
     maxSteps: SHIFT_STEPS,
-    allowQueue: postingAllowed,
+    // One post per shift; 0 when the publish queue is full. Deterministic — the
+    // running counter can't overshoot MAX_PENDING across shifts.
+    maxDrafts: postingAllowed ? 1 : 0,
   });
 
   if (run.status === "failed") {

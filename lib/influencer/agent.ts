@@ -184,7 +184,7 @@ export async function runInfluencerAgentSession({
   createdBy,
   allowedPlatforms,
   maxSteps,
-  allowQueue = true,
+  maxDrafts,
 }: {
   client: SupabaseClient;
   persona: Persona;
@@ -195,8 +195,9 @@ export async function runInfluencerAgentSession({
   allowedPlatforms?: string[];
   /** Override the per-session step budget (a self-paced shift runs longer). */
   maxSteps?: number;
-  /** When false, queue_draft is hard-blocked (e.g. the publish queue is full). */
-  allowQueue?: boolean;
+  /** Hard cap on drafts this session (0 = none; 1 = one post/shift). Enforced
+   *  live against the running counter, so a full queue can't be exceeded. */
+  maxDrafts?: number;
 }): Promise<AgentRunResult> {
   const model = await getModelForPersona(client, persona);
   const channels = await listChannelsForPersona(client, persona.id);
@@ -442,12 +443,14 @@ export async function runInfluencerAgentSession({
       }),
       execute: async ({ kind, platform, title, content }) => {
         await step({ kind: "tool_call", tool: "queue_draft", payload: { kind, platform } });
-        // Hard backpressure: when the publish queue is full, the shift must not
-        // add posts — enforced here, not just in the prompt.
-        if (!allowQueue) {
+        // Hard backpressure, enforced live against the running draft counter (not
+        // a stale snapshot): 0 = queue is full, don't post; 1 = one post/shift.
+        if (maxDrafts !== undefined && drafts >= maxDrafts) {
           const msg =
-            "Your post queue is full right now — don't queue a new post this shift. Save the idea to memory or engage instead.";
-          await step({ kind: "tool_result", tool: "queue_draft", payload: { blocked: "queue_full" } });
+            maxDrafts === 0
+              ? "Your post queue is full right now — don't queue a new post this shift. Save the idea to memory or engage instead."
+              : "You've already queued your post for this shift — one is enough. Save any other idea to memory instead.";
+          await step({ kind: "tool_result", tool: "queue_draft", payload: { blocked: "cap", drafts } });
           return msg;
         }
         const normalizedKind = normalizeActivityKind(kind) ?? "post";
