@@ -103,9 +103,12 @@ function buildShiftGoal(
     `Your beat: ${persona.beat}.`,
     `Channels you can post to right now: ${allowed.join(", ")}.`,
     goalsBrief,
-    "Start by calling browse_signals (try 'hackernews', or 'reddit'/'research' for deeper signals) to see what the dev community is discussing today. Pick something current in your beat, open the source with fetch_url to get specifics, then write and queue ONE self-contained piece for ONE of those channels — or engage thoughtfully. For X, that is a single standalone tweet that stands on its own; never a thread or thread pieces. Queue at most one piece. Ground it in something concrete, match your voice, and do NOT repeat something you recently did.",
-    "Not every X post is a data-take. Some shifts, post like a dev building in public: what you're digging into right now, a small win or dead end, what you're reading, the grind — a genuine day-in-the-life note in your voice. It makes you a person, not a stats bot.",
-    "When you've done one solid thing, stop.",
+    "Work in three quick beats — be decisive, do NOT linger in research:",
+    "1) Call browse_signals ONCE ('hackernews' is usually enough) and pick the SINGLE most interesting item for your beat.",
+    "2) Read AT MOST two sources with fetch_url to get real specifics. Use the exact URLs the tools give you — never invent or guess a URL (no made-up news.ycombinator.com/item?id=... links), and never re-fetch one you already read.",
+    "3) WRITE and queue ONE self-contained piece with queue_draft. This is the whole point of the shift: finishing without calling queue_draft is a wasted shift. For X, that is a single standalone tweet that stands on its own — never a thread. Queue at most one piece, in your voice, not repeating something recent.",
+    "Not every X post is a data-take. Some shifts, post like a dev building in public: what you're digging into, a small win or dead end, what you're reading, the grind — a genuine day-in-the-life note. It makes you a person, not a stats bot.",
+    "Only skip drafting if, after a quick look, genuinely nothing is worth posting — then say so in one line and stop. Do not keep browsing to avoid writing.",
   ]
     .filter(Boolean)
     .join("\n");

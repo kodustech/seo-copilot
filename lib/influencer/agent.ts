@@ -136,6 +136,7 @@ function buildAgentSystem(persona: Persona, platforms?: string[]): string {
     "OPERATING MODE",
     "You are an autonomous agent working on behalf of this persona. You have tools to research and to produce work.",
     "Do real work first (read sources, gather specifics), then produce something worth posting.",
+    "Be decisive: read a couple of sources, then produce. Never re-fetch a URL you already read, and only open links a tool actually returned — never invent or guess URLs.",
     "When you have something genuinely worth posting — a tweet, an article, a reply — call queue_draft.",
     "You NEVER publish directly. queue_draft only queues; the system publishes on its own rules (some channels auto-publish, others wait for human approval).",
     "Quality over output: if after researching nothing meets the bar, finish without drafting. Never post filler to have posted.",
