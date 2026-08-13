@@ -430,7 +430,7 @@ export async function runInfluencerAgentSession({
 
     queue_draft: tool({
       description:
-        "Queue a finished piece of content for human review. This is how your work reaches people — it drafts, it does not publish. Call once per finished piece.",
+        "Queue a finished piece of content. This is how your work reaches people. Call once per finished piece. For a blog post (platform 'blog', aicodereview.io): title ≥5 chars, description ≥20 chars, content ≥100 chars of markdown (NO H1 — the layout renders the title), and a category from best-of/alternatives/comparison/guide/explainer/review.",
       inputSchema: z.object({
         kind: z
           .enum(["post", "reply", "quote", "article", "crosspost"])
@@ -446,10 +446,10 @@ export async function runInfluencerAgentSession({
           .optional()
           .describe("Short SEO description (blog/article posts)"),
         category: z
-          .string()
+          .enum(["best-of", "alternatives", "comparison", "guide", "explainer", "review"])
           .nullable()
           .optional()
-          .describe("Category for a blog post, e.g. 'comparison' or 'article'"),
+          .describe("Category for a blog post (aicodereview.io)"),
         tags: z.array(z.string()).optional().describe("Tags for a blog/article post"),
         faq: z
           .array(z.object({ q: z.string(), a: z.string() }))

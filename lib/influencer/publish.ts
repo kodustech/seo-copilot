@@ -311,10 +311,20 @@ async function publishToBlog(activity: PersonaActivity): Promise<PublishOutcome>
       )
     : undefined;
 
+  // Categories the aicodereview.io API accepts; anything else 422s.
+  const BLOG_CATEGORIES = new Set([
+    "best-of",
+    "alternatives",
+    "comparison",
+    "guide",
+    "explainer",
+    "review",
+  ]);
+  const category = asString(meta.category);
   const payload = {
     title: activity.title || activity.content.slice(0, 80),
     description: asString(meta.description),
-    category: asString(meta.category) ?? "article",
+    category: category && BLOG_CATEGORIES.has(category) ? category : "explainer",
     tags: tags?.length ? tags : undefined,
     content: activity.content, // markdown, no H1 (layout renders the title)
     faq: faq?.length ? faq : undefined,
