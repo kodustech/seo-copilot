@@ -18,6 +18,7 @@ import {
   platformRules,
 } from "@/lib/social-writing-style";
 import { fetchFeedPosts } from "@/lib/feed-sources";
+import { saveMemory, searchMemory } from "@/lib/influencer/memory";
 import {
   createSession,
   finishSession,
@@ -365,6 +366,60 @@ export async function runInfluencerAgentSession({
           const message = err instanceof Error ? err.message : String(err);
           await step({ kind: "tool_result", tool: "read_inbox", payload: { error: message } });
           return `Could not read inbox: ${message}`;
+        }
+      },
+    }),
+
+    save_memory: tool({
+      description:
+        "Save a study, finding, or note to your durable memory so you can build on it on later shifts instead of re-researching. Use it whenever you learn something worth keeping.",
+      inputSchema: z.object({
+        title: z.string().describe("Short label for the note"),
+        content: z
+          .string()
+          .describe("The finding in your own words — keep the concrete facts, numbers, and links"),
+        tags: z.array(z.string()).optional().describe("A few topic tags"),
+      }),
+      execute: async ({ title, content, tags }) => {
+        await step({ kind: "tool_call", tool: "save_memory", payload: { title } });
+        try {
+          const note = await saveMemory(client, persona.id, { title, content, tags });
+          await step({ kind: "tool_result", tool: "save_memory", payload: { id: note.id } });
+          return `Saved "${note.title}" to memory.`;
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          await step({ kind: "tool_result", tool: "save_memory", payload: { error: m } });
+          return `Could not save: ${m}`;
+        }
+      },
+    }),
+
+    search_memory: tool({
+      description:
+        "Search your durable memory for past studies/notes. Do this before researching so you build on what you already know. Empty query returns your most recent notes.",
+      inputSchema: z.object({
+        query: z.string().describe("What to look for; empty returns recent notes"),
+        limit: z.number().optional(),
+      }),
+      execute: async ({ query, limit }) => {
+        await step({ kind: "tool_call", tool: "search_memory", payload: { query } });
+        try {
+          const notes = await searchMemory(client, persona.id, query ?? "", Math.min(limit ?? 5, 20));
+          await step({ kind: "tool_result", tool: "search_memory", payload: { count: notes.length } });
+          return notes.length
+            ? JSON.stringify(
+                notes.map((n) => ({
+                  title: n.title,
+                  content: n.content.slice(0, 500),
+                  tags: n.tags,
+                  at: n.created_at,
+                })),
+              )
+            : "No matching notes yet.";
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          await step({ kind: "tool_result", tool: "search_memory", payload: { error: m } });
+          return `Could not search memory: ${m}`;
         }
       },
     }),
