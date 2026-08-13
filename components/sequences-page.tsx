@@ -33,6 +33,7 @@ import { findUnresolvedTokens, renderTemplate } from "@/lib/outreach/renderer";
 import {
   CONTACT_TEMPLATE_VARS,
   PRODUCT_TEMPLATE_VARS,
+  RESEARCH_TEMPLATE_VARS,
 } from "@/lib/outreach/template-vars";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -346,6 +347,7 @@ type EnrollmentRow = {
   contactEmail: string | null;
   contactLinkedin: string | null;
   contactRole: string | null;
+  templateVars: Record<string, string> | null;
   status: string;
   currentStepPosition: number;
   nextRunAt: string | null;
@@ -622,6 +624,10 @@ function StatusDot({ status }: { status: string }) {
 function TokenCatalog() {
   const groups: Array<{ label: string; vars: typeof CONTACT_TEMPLATE_VARS }> = [
     { label: "Always available", vars: CONTACT_TEMPLATE_VARS },
+    {
+      label: "Research list variables — only when the enrolled row has the value",
+      vars: RESEARCH_TEMPLATE_VARS,
+    },
     {
       label: "Product signals — CRM accounts with a connected org only",
       vars: PRODUCT_TEMPLATE_VARS,
@@ -1001,6 +1007,9 @@ export function SequencesPage() {
           e.contact_linkedin ??
           null) as string | null,
         contactRole: (e.contactRole ?? e.contact_role ?? null) as string | null,
+        templateVars: (e.templateVars ??
+          e.template_vars ??
+          null) as Record<string, string> | null,
         status: String(e.status ?? "active"),
         currentStepPosition: Number(
           e.currentStepPosition ?? e.current_step_position ?? 0,
@@ -1051,6 +1060,9 @@ export function SequencesPage() {
         | string
         | null,
       contactRole: (e.contactRole ?? e.contact_role ?? null) as string | null,
+      templateVars: (e.templateVars ??
+        e.template_vars ??
+        null) as Record<string, string> | null,
       status: String(e.status ?? "active"),
       currentStepPosition: Number(
         e.currentStepPosition ?? e.current_step_position ?? 0,
@@ -2689,6 +2701,10 @@ export function SequencesPage() {
                           contactEmail: "alex@acme.com",
                           contactLinkedin: "https://linkedin.com/in/alex",
                           contactRole: "Head of QA",
+                          templateVars: {
+                            public_trigger:
+                              "Alex shared a public post about AI-assisted engineering reviews | https://example.com/post | 2026-08-01",
+                          },
                         }
                       : (() => {
                           const e = enrollments.find(
@@ -2702,6 +2718,7 @@ export function SequencesPage() {
                                 contactEmail: e.contactEmail,
                                 contactLinkedin: e.contactLinkedin,
                                 contactRole: e.contactRole,
+                                templateVars: e.templateVars,
                               }
                             : {
                                 companyName: "Acme QA",
@@ -2711,6 +2728,10 @@ export function SequencesPage() {
                                 contactLinkedin:
                                   "https://linkedin.com/in/alex",
                                 contactRole: "Head of QA",
+                                templateVars: {
+                                  public_trigger:
+                                    "Alex shared a public post about AI-assisted engineering reviews | https://example.com/post | 2026-08-01",
+                                },
                               };
                         })();
                   const renderedBody = renderTemplate(
