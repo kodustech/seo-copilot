@@ -284,8 +284,11 @@ async function publishToDevto(
   };
 }
 
-const BLOG_API_URL =
-  process.env.AICODEREVIEW_API_URL?.replace(/\/$/, "") ?? "https://aicodereview.io";
+// `||` (not `??`) so an empty AICODEREVIEW_API_URL falls back instead of
+// producing a broken relative URL.
+const BLOG_API_URL = (
+  process.env.AICODEREVIEW_API_URL?.trim() || "https://aicodereview.io"
+).replace(/\/$/, "");
 
 async function publishToBlog(activity: PersonaActivity): Promise<PublishOutcome> {
   const key = process.env.CONTENT_API_KEY?.trim();
