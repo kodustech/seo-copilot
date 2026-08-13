@@ -21,10 +21,11 @@ import {
   nextSendingSlotAfter,
 } from "@/lib/outreach/sending-window";
 import {
+  freezeResearchVars,
   freezeSignalVars,
   PRODUCT_SIGNAL_COLUMNS,
 } from "@/lib/outreach/template-vars";
-import { listPeople, listRows } from "@/lib/research/tables";
+import { getRow, listPeople, listRows } from "@/lib/research/tables";
 import { resolveTable } from "@/lib/research/columns";
 import { getProspect, updateProspect } from "@/lib/outreach";
 
@@ -966,6 +967,7 @@ export async function enrollFromResearch(
             contactEmail: p.email,
             contactLinkedin: p.linkedin,
             contactRole: p.role,
+            templateVars: freezeResearchVars(row.cells ?? {}),
             researchRowId: row.id,
             researchPersonId: p.id,
           },
@@ -1416,6 +1418,108 @@ export async function refreshCrmSignalVars(
           rendered_subject: subject,
           rendered_body: body,
           // Clear the block once the data that caused it arrived.
+          error:
+            stillUnfilled.length > 0
+              ? task.error
+              : task.error?.startsWith("Unfilled variables:")
+                ? null
+                : task.error,
+          updated_at: now,
+        })
+        .eq("id", task.id)
+        .in("status", ["scheduled", "ready"]);
+      if (taskError) throw new Error(taskError.message);
+      tasksRerendered += 1;
+    }
+  }
+
+  return { enrollmentsUpdated, tasksRerendered };
+}
+
+/**
+ * Re-freeze research-list tokens such as {{public_trigger}} and re-render
+ * unsent tasks. This repairs enrollments created before a research token
+ * existed or before its column was added to the list schema.
+ */
+export async function refreshResearchTemplateVars(
+  client: SupabaseClient,
+  opts: { sequenceId?: string; limit?: number } = {},
+): Promise<{ enrollmentsUpdated: number; tasksRerendered: number }> {
+  let q = client
+    .from("outreach_enrollments")
+    .select("*")
+    .eq("source", "research")
+    .eq("status", "active")
+    .not("research_row_id", "is", null)
+    .limit(opts.limit ?? 500);
+  if (opts.sequenceId) q = q.eq("sequence_id", opts.sequenceId);
+
+  const { data: rawEnrollments, error } = await q;
+  if (error) throw new Error(error.message);
+
+  const enrollments = (rawEnrollments ?? []).map((r) =>
+    mapEnrollment(r as Record<string, unknown>),
+  );
+  if (enrollments.length === 0) {
+    return { enrollmentsUpdated: 0, tasksRerendered: 0 };
+  }
+
+  const now = new Date().toISOString();
+  const stepsBySequence = new Map<string, OutreachSequenceStep[]>();
+  let enrollmentsUpdated = 0;
+  let tasksRerendered = 0;
+
+  for (const enrollment of enrollments) {
+    if (!enrollment.researchRowId) continue;
+    const row = await getRow(client, enrollment.researchRowId);
+    if (!row) continue;
+
+    const previous = enrollment.templateVars ?? {};
+    const next = {
+      ...previous,
+      ...freezeResearchVars(row.cells ?? {}),
+    };
+    if (JSON.stringify(next) === JSON.stringify(previous)) continue;
+
+    const { error: updateError } = await client
+      .from("outreach_enrollments")
+      .update({ template_vars: next, updated_at: now })
+      .eq("id", enrollment.id);
+    if (updateError) throw new Error(updateError.message);
+    enrollmentsUpdated += 1;
+
+    const refreshed: OutreachEnrollment = { ...enrollment, templateVars: next };
+    const { data: rawTasks, error: tasksError } = await client
+      .from("outreach_send_tasks")
+      .select("*")
+      .eq("enrollment_id", enrollment.id)
+      .in("status", ["scheduled", "ready"]);
+    if (tasksError) throw new Error(tasksError.message);
+
+    let steps = stepsBySequence.get(enrollment.sequenceId);
+    if (!steps) {
+      steps = await listSteps(client, enrollment.sequenceId);
+      stepsBySequence.set(enrollment.sequenceId, steps);
+    }
+    const stepById = new Map(steps.map((s) => [s.id, s]));
+
+    for (const rawTask of rawTasks ?? []) {
+      const task = mapTask(rawTask as Record<string, unknown>);
+      const step = stepById.get(task.stepId);
+      if (!step) continue;
+      const body = renderTemplate(step.bodyTemplate, refreshed);
+      const subject = step.subjectTemplate
+        ? renderTemplate(step.subjectTemplate, refreshed)
+        : null;
+      if (body === task.renderedBody && subject === task.renderedSubject) {
+        continue;
+      }
+      const stillUnfilled = findUnresolvedTokens(subject, body);
+      const { error: taskError } = await client
+        .from("outreach_send_tasks")
+        .update({
+          rendered_subject: subject,
+          rendered_body: body,
           error:
             stillUnfilled.length > 0
               ? task.error

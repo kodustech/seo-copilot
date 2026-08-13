@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import {
   processDueSequenceTasks,
   refreshCrmSignalVars,
+  refreshResearchTemplateVars,
 } from "@/lib/outreach/sequences";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 
@@ -23,15 +24,27 @@ export async function POST(req: Request) {
     // A failure here must not stop the sends — it only costs freshness.
     let signalRefresh: { enrollmentsUpdated: number; tasksRerendered: number } =
       { enrollmentsUpdated: 0, tasksRerendered: 0 };
+    let researchRefresh: { enrollmentsUpdated: number; tasksRerendered: number } =
+      { enrollmentsUpdated: 0, tasksRerendered: 0 };
     try {
       signalRefresh = await refreshCrmSignalVars(client);
     } catch (err) {
       console.error("[outreach-sequences] signal var refresh failed", err);
     }
+    try {
+      researchRefresh = await refreshResearchTemplateVars(client);
+    } catch (err) {
+      console.error("[outreach-sequences] research var refresh failed", err);
+    }
     const result = await processDueSequenceTasks(client, {
       reseedOrphans: true,
     });
-    return NextResponse.json({ ok: true, ...result, signalRefresh });
+    return NextResponse.json({
+      ok: true,
+      ...result,
+      signalRefresh,
+      researchRefresh,
+    });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed" },
