@@ -18,6 +18,7 @@ import {
   platformRules,
 } from "@/lib/social-writing-style";
 import { fetchFeedPosts } from "@/lib/feed-sources";
+import { saveMemory, searchMemory } from "@/lib/influencer/memory";
 import {
   createSession,
   finishSession,
@@ -136,6 +137,7 @@ function buildAgentSystem(persona: Persona, platforms?: string[]): string {
     "OPERATING MODE",
     "You are an autonomous agent working on behalf of this persona. You have tools to research and to produce work.",
     "Do real work first (read sources, gather specifics), then produce something worth posting.",
+    "Be decisive: read a couple of sources, then produce. Never re-fetch a URL you already read, and only open links a tool actually returned — never invent or guess URLs.",
     "When you have something genuinely worth posting — a tweet, an article, a reply — call queue_draft.",
     "You NEVER publish directly. queue_draft only queues; the system publishes on its own rules (some channels auto-publish, others wait for human approval).",
     "Quality over output: if after researching nothing meets the bar, finish without drafting. Never post filler to have posted.",
@@ -182,6 +184,7 @@ export async function runInfluencerAgentSession({
   createdBy,
   allowedPlatforms,
   maxSteps,
+  maxDrafts,
 }: {
   client: SupabaseClient;
   persona: Persona;
@@ -192,6 +195,9 @@ export async function runInfluencerAgentSession({
   allowedPlatforms?: string[];
   /** Override the per-session step budget (a self-paced shift runs longer). */
   maxSteps?: number;
+  /** Hard cap on drafts this session (0 = none; 1 = one post/shift). Enforced
+   *  live against the running counter, so a full queue can't be exceeded. */
+  maxDrafts?: number;
 }): Promise<AgentRunResult> {
   const model = await getModelForPersona(client, persona);
   const channels = await listChannelsForPersona(client, persona.id);
@@ -368,6 +374,60 @@ export async function runInfluencerAgentSession({
       },
     }),
 
+    save_memory: tool({
+      description:
+        "Save a study, finding, or note to your durable memory so you can build on it on later shifts instead of re-researching. Use it whenever you learn something worth keeping.",
+      inputSchema: z.object({
+        title: z.string().describe("Short label for the note"),
+        content: z
+          .string()
+          .describe("The finding in your own words — keep the concrete facts, numbers, and links"),
+        tags: z.array(z.string()).optional().describe("A few topic tags"),
+      }),
+      execute: async ({ title, content, tags }) => {
+        await step({ kind: "tool_call", tool: "save_memory", payload: { title } });
+        try {
+          const note = await saveMemory(client, persona.id, { title, content, tags });
+          await step({ kind: "tool_result", tool: "save_memory", payload: { id: note.id } });
+          return `Saved "${note.title}" to memory.`;
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          await step({ kind: "tool_result", tool: "save_memory", payload: { error: m } });
+          return `Could not save: ${m}`;
+        }
+      },
+    }),
+
+    search_memory: tool({
+      description:
+        "Search your durable memory for past studies/notes. Do this before researching so you build on what you already know. Empty query returns your most recent notes.",
+      inputSchema: z.object({
+        query: z.string().describe("What to look for; empty returns recent notes"),
+        limit: z.number().optional(),
+      }),
+      execute: async ({ query, limit }) => {
+        await step({ kind: "tool_call", tool: "search_memory", payload: { query } });
+        try {
+          const notes = await searchMemory(client, persona.id, query ?? "", Math.min(limit ?? 5, 20));
+          await step({ kind: "tool_result", tool: "search_memory", payload: { count: notes.length } });
+          return notes.length
+            ? JSON.stringify(
+                notes.map((n) => ({
+                  title: n.title,
+                  content: n.content.slice(0, 500),
+                  tags: n.tags,
+                  at: n.created_at,
+                })),
+              )
+            : "No matching notes yet.";
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          await step({ kind: "tool_result", tool: "search_memory", payload: { error: m } });
+          return `Could not search memory: ${m}`;
+        }
+      },
+    }),
+
     queue_draft: tool({
       description:
         "Queue a finished piece of content for human review. This is how your work reaches people — it drafts, it does not publish. Call once per finished piece.",
@@ -383,6 +443,16 @@ export async function runInfluencerAgentSession({
       }),
       execute: async ({ kind, platform, title, content }) => {
         await step({ kind: "tool_call", tool: "queue_draft", payload: { kind, platform } });
+        // Hard backpressure, enforced live against the running draft counter (not
+        // a stale snapshot): 0 = queue is full, don't post; 1 = one post/shift.
+        if (maxDrafts !== undefined && drafts >= maxDrafts) {
+          const msg =
+            maxDrafts === 0
+              ? "Your post queue is full right now — don't queue a new post this shift. Save the idea to memory or engage instead."
+              : "You've already queued your post for this shift — one is enough. Save any other idea to memory instead.";
+          await step({ kind: "tool_result", tool: "queue_draft", payload: { blocked: "cap", drafts } });
+          return msg;
+        }
         const normalizedKind = normalizeActivityKind(kind) ?? "post";
         const normalizedPlatform = normalizeChannelPlatform(platform);
         if (

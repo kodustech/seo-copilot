@@ -20,6 +20,7 @@ import { getSupabaseServiceClient } from "@/lib/supabase-server";
 import { runInfluencerAgentSession } from "@/lib/influencer/agent";
 import { alertOperator } from "@/lib/influencer/alerts";
 import { buildGoalsBrief, computeProgress } from "@/lib/influencer/goals";
+import { recentMemoryTitles } from "@/lib/influencer/memory";
 import { getModelForPersona } from "@/lib/influencer/model";
 import {
   listActivePersonas,
@@ -29,15 +30,14 @@ import {
 import type { Persona, PersonaChannel } from "@/lib/influencer/types";
 
 const MAX_PERSONAS_PER_TICK = 5;
-const SHIFT_STEPS = 24;
+const SHIFT_STEPS = 32;
 const MIN_WAIT_MIN = 15;
 const MAX_WAIT_MIN = 24 * 60;
 const NO_CHANNEL_WAIT_MIN = 6 * 60;
 const FAILURE_WAIT_MIN = 60;
-// Don't let the persona out-produce what it can publish: if this many pieces
-// are already waiting to go out, skip a producing shift and let the queue drain.
+// When this many pieces are already waiting to publish, the shift stops adding
+// new posts — but it keeps working (research, memory, engagement).
 const MAX_PENDING = 6;
-const BACKLOG_WAIT_MIN = 3 * 60;
 
 export type Cadence = "off" | "daily" | "weekly";
 
@@ -97,15 +97,28 @@ function buildShiftGoal(
   persona: Persona,
   allowed: string[],
   goalsBrief: string,
+  memoryTitles: string[],
+  postingAllowed: boolean,
 ): string {
+  const memoryLine = memoryTitles.length
+    ? `Recent notes in your memory: ${memoryTitles.map((t) => `"${t}"`).join(", ")}. Call search_memory to reuse them — don't re-study what you already know.`
+    : "You have a durable memory (save_memory / search_memory). Use it to keep studies and build on them across shifts.";
+  const postBeat = postingAllowed
+    ? "4) WRITE and queue ONE self-contained piece with queue_draft. For X, a single standalone tweet that stands on its own — never a thread. A shift with no draft is wasted unless nothing is genuinely worth posting."
+    : "4) Your post queue is full right now — do NOT queue a new post. Instead go deeper: read more, save what you learn to memory, and engage (read your inbox / reply if you have email).";
   return [
-    `This is your shift as ${persona.display_name} (@${persona.handle}).`,
+    `This is your shift as ${persona.display_name} (@${persona.handle}). You're an active worker — you do several things a day, not one post.`,
     `Your beat: ${persona.beat}.`,
     `Channels you can post to right now: ${allowed.join(", ")}.`,
     goalsBrief,
-    "Start by calling browse_signals (try 'hackernews', or 'reddit'/'research' for deeper signals) to see what the dev community is discussing today. Pick something current in your beat, open the source with fetch_url to get specifics, then write and queue ONE self-contained piece for ONE of those channels — or engage thoughtfully. For X, that is a single standalone tweet that stands on its own; never a thread or thread pieces. Queue at most one piece. Ground it in something concrete, match your voice, and do NOT repeat something you recently did.",
-    "Not every X post is a data-take. Some shifts, post like a dev building in public: what you're digging into right now, a small win or dead end, what you're reading, the grind — a genuine day-in-the-life note in your voice. It makes you a person, not a stats bot.",
-    "When you've done one solid thing, stop.",
+    memoryLine,
+    "Work in decisive beats — research, learn, act. Don't linger re-reading:",
+    "1) Call browse_signals ONCE ('hackernews' is usually enough) and pick the SINGLE most interesting item for your beat.",
+    "2) search_memory first (build on past notes), then read AT MOST two REAL sources with fetch_url — use the exact URLs the tools give you, never invent/guess a URL, never re-fetch one you already read.",
+    "3) save_memory: keep the concrete study you just did (facts, numbers, links) so future shifts build on it.",
+    postBeat,
+    "Not every X post is a data-take. Some shifts, post like a dev building in public: what you're digging into, a small win or dead end, what you're reading, the grind — a genuine day-in-the-life note. It makes you a person, not a stats bot.",
+    "Do a couple of real things this shift, then stop.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -170,30 +183,25 @@ export async function runPersonaTick({
     return { ...base, wait_minutes: NO_CHANNEL_WAIT_MIN, note };
   }
 
-  // Queue is backed up — don't pile on. Hold until the publisher drains it.
+  // Backpressure: if the publish queue is full, still work this shift — just
+  // don't add a new post (research, memory, and engagement instead).
   const pending = await countPendingActivities(client, persona.id);
-  if (pending >= MAX_PENDING) {
-    const note = `Queue is backed up (${pending} pieces waiting) — holding off on new posts until it drains.`;
-    const next = new Date(now.getTime() + BACKLOG_WAIT_MIN * 60_000);
-    await setTickState(client, persona, {
-      next_action_at: next.toISOString(),
-      last_note: note,
-      last_tick_at: now.toISOString(),
-    });
-    return { ...base, wait_minutes: BACKLOG_WAIT_MIN, note };
-  }
+  const postingAllowed = pending < MAX_PENDING;
 
-  // Compute goal progress so the shift steers toward what it's behind on.
   const goalsBrief = buildGoalsBrief(await computeProgress(client, persona, now));
+  const memoryTitles = await recentMemoryTitles(client, persona.id).catch(() => []);
 
   // Do the shift: one real multi-step session, gated to connected channels.
   const run = await runInfluencerAgentSession({
     client,
     persona,
-    goal: buildShiftGoal(persona, allowed, goalsBrief),
+    goal: buildShiftGoal(persona, allowed, goalsBrief, memoryTitles, postingAllowed),
     trigger: "scheduled",
     allowedPlatforms: allowed,
     maxSteps: SHIFT_STEPS,
+    // One post per shift; 0 when the publish queue is full. Deterministic — the
+    // running counter can't overshoot MAX_PENDING across shifts.
+    maxDrafts: postingAllowed ? 1 : 0,
   });
 
   if (run.status === "failed") {
@@ -228,7 +236,7 @@ export async function runPersonaTick({
         run.summary?.slice(0, 2000) || "(no summary)",
         "",
         `You queued ${run.drafts} draft(s) for review.`,
-        "Decide, like a real person pacing themselves, how many minutes until your next shift and a short first-person note about it. Don't spam and don't disappear — a natural cadence for an active dev voice is anywhere from a couple of hours to most of a day.",
+        "Decide how many minutes until your next shift and a short first-person note. You're an active worker: during the day, check back and do something every 1-3 hours (60-180 min). Only wait longer — up to overnight — if you just did a lot, or it's late. Don't disappear for a whole day.",
       ].join("\n"),
     });
     waitMinutes = Math.round(object.wait_minutes);
