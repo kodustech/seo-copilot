@@ -22,6 +22,7 @@ import { querySearchPerformance, queryTopContent } from "@/lib/bigquery";
 import { fetchSerpResults } from "@/lib/dataforseo";
 import { decryptPersonaKey } from "@/lib/crypto/persona-secrets";
 import { getChannelCredentialCipher } from "@/lib/influencer/credentials";
+import { addSkill, listSkills } from "@/lib/influencer/feedback";
 import { saveMemory, searchMemory } from "@/lib/influencer/memory";
 import {
   createSession,
@@ -129,7 +130,11 @@ function tweetLength(text: string): number {
   return Array.from(rest).length + urls * 23;
 }
 
-function buildAgentSystem(persona: Persona, platforms?: string[]): string {
+function buildAgentSystem(
+  persona: Persona,
+  platforms?: string[],
+  skills?: string[],
+): string {
   const voice = buildPersonaVoicePolicy(persona);
   const configs = (platforms ?? []).map((p) => ({
     platform: p,
@@ -137,6 +142,13 @@ function buildAgentSystem(persona: Persona, platforms?: string[]): string {
   }));
   return [
     voice.prompt,
+    ...(skills?.length
+      ? [
+          "",
+          "LEARNED SKILLS — always apply these (from your operator's feedback and your own experience):",
+          ...skills.map((s) => `- ${s}`),
+        ]
+      : []),
     "",
     "OPERATING MODE",
     "You are an autonomous agent working on behalf of this persona. You have tools to research and to produce work.",
@@ -539,6 +551,28 @@ export async function runInfluencerAgentSession({
       },
     }),
 
+    learn_skill: tool({
+      description:
+        "Save a durable rule for yourself — a lasting lesson you'll apply on EVERY future shift (from your operator's feedback, or something you learned works). Use this for permanent behavior changes; use save_memory for one-off study notes.",
+      inputSchema: z.object({
+        skill: z
+          .string()
+          .describe("The rule in imperative form, e.g. 'Keep X posts under 180 chars and lead with the number.'"),
+      }),
+      execute: async ({ skill }) => {
+        await step({ kind: "tool_call", tool: "learn_skill", payload: { skill } });
+        try {
+          await addSkill(client, persona.id, skill);
+          await step({ kind: "tool_result", tool: "learn_skill", payload: { ok: true } });
+          return `Learned: "${skill}". I'll apply it every shift from now on.`;
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          await step({ kind: "tool_result", tool: "learn_skill", payload: { error: m } });
+          return `Could not save skill: ${m}`;
+        }
+      },
+    }),
+
     queue_draft: tool({
       description:
         "Queue a finished piece of content. This is how your work reaches people. Call once per finished piece. For a blog post (platform 'blog', aicodereview.io): title ≥5 chars, description ≥20 chars, content ≥100 chars of markdown (NO H1 — the layout renders the title), and a category from best-of/alternatives/comparison/guide/explainer/review.",
@@ -647,10 +681,14 @@ export async function runInfluencerAgentSession({
     }),
   };
 
+  // Durable skills the persona has learned (from operator feedback / experience)
+  // are always-on rules injected into the system prompt.
+  const skills = await listSkills(client, persona.id).catch(() => []);
+
   try {
     const result = await generateText({
       model,
-      system: buildAgentSystem(persona, allowedPlatforms),
+      system: buildAgentSystem(persona, allowedPlatforms, skills),
       prompt: goal,
       tools,
       stopWhen: stepCountIs(maxSteps ?? MAX_STEPS),

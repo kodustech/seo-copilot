@@ -2154,6 +2154,128 @@ function PlanTab({ token, persona }: { token: string; persona: Persona }) {
           </CardContent>
         </Card>
       )}
+
+      <FeedbackCard token={token} persona={persona} />
     </div>
+  );
+}
+
+type FeedbackItem = {
+  id: string;
+  body: string;
+  status: "new" | "applied";
+  created_at: string;
+};
+
+function FeedbackCard({ token, persona }: { token: string; persona: Persona }) {
+  const [feedback, setFeedback] = useState<FeedbackItem[]>([]);
+  const [skills, setSkills] = useState<string[]>([]);
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/influencers/${persona.id}/feedback`, {
+        headers: authHeaders(token),
+      });
+      const body = await res.json();
+      if (res.ok) {
+        setFeedback(body.feedback ?? []);
+        setSkills(body.skills ?? []);
+      }
+    } catch {
+      /* best-effort */
+    }
+  }, [token, persona.id]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function send() {
+    if (!text.trim()) return;
+    setSending(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/influencers/${persona.id}/feedback`, {
+        method: "POST",
+        headers: authHeaders(token),
+        body: JSON.stringify({ body: text }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Could not send");
+      setText("");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not send");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardContent className="pt-4 space-y-3">
+        <div>
+          <p className="text-xs font-medium uppercase text-muted-foreground mb-1">
+            Talk to it
+          </p>
+          <p className="text-xs text-muted-foreground mb-2">
+            Leave feedback — it reads new notes on its next shift, acts on them,
+            and turns lasting lessons into skills it always applies.
+          </p>
+          <Textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="e.g. Your tweets are too long — keep them punchy and under 180 chars."
+            rows={2}
+          />
+          <div className="flex items-center gap-2 mt-2">
+            <Button size="sm" onClick={send} disabled={sending || !text.trim()}>
+              {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Send"}
+            </Button>
+            {error && <p className="text-xs text-red-600">{error}</p>}
+          </div>
+        </div>
+
+        {skills.length > 0 && (
+          <div>
+            <p className="text-xs font-medium uppercase text-muted-foreground mb-1">
+              Skills it has learned
+            </p>
+            <ul className="space-y-1">
+              {skills.map((s, i) => (
+                <li key={i} className="text-sm flex gap-2">
+                  <span className="text-muted-foreground">•</span>
+                  <span>{s}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {feedback.length > 0 && (
+          <div>
+            <p className="text-xs font-medium uppercase text-muted-foreground mb-1">
+              Recent feedback
+            </p>
+            <div className="space-y-1">
+              {feedback.slice(0, 6).map((f) => (
+                <div key={f.id} className="flex items-start gap-2 text-sm">
+                  <Badge
+                    variant="secondary"
+                    className={f.status === "applied" ? "opacity-60" : ""}
+                  >
+                    {f.status}
+                  </Badge>
+                  <span className="text-muted-foreground">{f.body}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
