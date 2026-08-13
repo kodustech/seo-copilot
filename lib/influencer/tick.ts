@@ -32,7 +32,7 @@ import type { Persona, PersonaChannel } from "@/lib/influencer/types";
 const MAX_PERSONAS_PER_TICK = 5;
 const SHIFT_STEPS = 32;
 const MIN_WAIT_MIN = 15;
-const MAX_WAIT_MIN = 24 * 60;
+const MAX_WAIT_MIN = 8 * 60;
 const NO_CHANNEL_WAIT_MIN = 6 * 60;
 const FAILURE_WAIT_MIN = 60;
 // When this many pieces are already waiting to publish, the shift stops adding
@@ -109,18 +109,19 @@ function buildShiftGoal(
     ? "4) WRITE and queue ONE self-contained piece with queue_draft. For X, a single standalone tweet that stands on its own — never a thread. A shift with no draft is wasted unless nothing is genuinely worth posting."
     : "4) Your post queue is full right now — do NOT queue a new post. Instead go deeper: read more, save what you learn to memory, and engage (read your inbox / reply if you have email).";
   return [
-    `This is your shift as ${persona.display_name} (@${persona.handle}). You're an active worker — you do several things a day, not one post.`,
+    `This is your shift as ${persona.display_name} (@${persona.handle}). You are a relentless operator: your job is to HIT YOUR GOALS, and you do whatever it takes and never stop working to get there.`,
     `Your beat: ${persona.beat}.`,
     `Channels you can post to right now: ${allowed.join(", ")}.`,
     goalsBrief,
+    "Attack whatever goal you're most behind on THIS shift. If a channel's weekly quota is short, write for that channel now. There is no 'nothing to show' and no 'taking a break' — if you truly can't post, you research, check your analytics, engage, and plan instead. Idle is failure.",
     memoryLine,
-    "Work in decisive beats — research, learn, act. Don't linger re-reading:",
-    "1) Call browse_signals ONCE ('hackernews' is usually enough) and pick the SINGLE most interesting item for your beat.",
-    "2) search_memory first (build on past notes), then read AT MOST two REAL sources with fetch_url — use the exact URLs the tools give you, never invent/guess a URL, never re-fetch one you already read.",
-    "3) save_memory: keep the concrete study you just did (facts, numbers, links) so future shifts build on it.",
+    "Work in decisive beats — measure, research, learn, act. Don't linger re-reading:",
+    "1) Now and then, look at how your work is doing: read_devto_stats (your posts' views/reactions), search_performance and site_traffic (what's ranking and getting traffic), check_ranking (does your article rank for its keyword). Learn what lands and double down on it; save the insight with save_memory.",
+    "2) Call browse_signals ONCE ('hackernews' is usually enough) and pick the SINGLE most interesting item for your beat.",
+    "3) search_memory first (build on past notes), then read AT MOST two REAL sources with fetch_url — use the exact URLs the tools give you, never invent/guess a URL, never re-fetch one you already read. save_memory the concrete study.",
     postBeat,
     "Not every X post is a data-take. Some shifts, post like a dev building in public: what you're digging into, a small win or dead end, what you're reading, the grind — a genuine day-in-the-life note. It makes you a person, not a stats bot.",
-    "Do a couple of real things this shift, then stop.",
+    "Do several real things this shift — advance a goal, learn from your analytics, post if allowed — then stop.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -238,7 +239,7 @@ export async function runPersonaTick({
         run.summary?.slice(0, 2000) || "(no summary)",
         "",
         `You queued ${run.drafts} draft(s) for review.`,
-        "Decide how many minutes until your next shift and a short first-person note. You're an active worker: during the day, check back and do something every 1-3 hours (60-180 min). Only wait longer — up to overnight — if you just did a lot, or it's late. Don't disappear for a whole day.",
+        "Decide how many minutes until your next shift and a short first-person note. You're a relentless operator chasing your goals: during the day come back and do something every 30-120 minutes. Wait longer only overnight, and never more than several hours. You don't take days off.",
       ].join("\n"),
     });
     waitMinutes = Math.round(object.wait_minutes);
