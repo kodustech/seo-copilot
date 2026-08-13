@@ -347,7 +347,6 @@ type EnrollmentRow = {
   contactEmail: string | null;
   contactLinkedin: string | null;
   contactRole: string | null;
-  templateVars: Record<string, string> | null;
   status: string;
   currentStepPosition: number;
   nextRunAt: string | null;
@@ -357,7 +356,7 @@ type EnrollmentRow = {
   /** Frozen product-signal values behind the product tokens. The API has
    *  always sent these; the type omitted them, so the preview could not
    *  reach them. */
-  templateVars?: Record<string, string> | null;
+  templateVars: Record<string, string> | null;
 };
 
 type SequenceStepProgress = {
@@ -1011,9 +1010,6 @@ export function SequencesPage() {
           e.contact_linkedin ??
           null) as string | null,
         contactRole: (e.contactRole ?? e.contact_role ?? null) as string | null,
-        templateVars: (e.templateVars ??
-          e.template_vars ??
-          null) as Record<string, string> | null,
         status: String(e.status ?? "active"),
         currentStepPosition: Number(
           e.currentStepPosition ?? e.current_step_position ?? 0,
@@ -1070,9 +1066,6 @@ export function SequencesPage() {
         | string
         | null,
       contactRole: (e.contactRole ?? e.contact_role ?? null) as string | null,
-      templateVars: (e.templateVars ??
-        e.template_vars ??
-        null) as Record<string, string> | null,
       status: String(e.status ?? "active"),
       currentStepPosition: Number(
         e.currentStepPosition ?? e.current_step_position ?? 0,
