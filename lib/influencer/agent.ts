@@ -562,7 +562,10 @@ export async function runInfluencerAgentSession({
       }),
       execute: async ({ skill }) => {
         await step({ kind: "tool_call", tool: "learn_skill", payload: { skill } });
-        if (!skill.trim()) return "A skill can't be empty.";
+        if (!skill.trim()) {
+          await step({ kind: "tool_result", tool: "learn_skill", payload: { error: "empty" } });
+          return "A skill can't be empty.";
+        }
         try {
           await addSkill(client, persona.id, skill.trim());
           await step({ kind: "tool_result", tool: "learn_skill", payload: { ok: true } });
