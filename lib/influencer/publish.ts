@@ -249,9 +249,7 @@ async function publishToDevto(
     typeof activity.content_meta.canonical_url === "string"
       ? activity.content_meta.canonical_url
       : undefined;
-  const tags = Array.isArray(activity.content_meta.tags)
-    ? activity.content_meta.tags.filter((t): t is string => typeof t === "string")
-    : undefined;
+  const tags = sanitizeTags(activity.content_meta.tags);
 
   const response = await fetch("https://dev.to/api/articles", {
     method: "POST",
@@ -299,9 +297,7 @@ async function publishToBlog(activity: PersonaActivity): Promise<PublishOutcome>
   }
   const meta = activity.content_meta ?? {};
   const asString = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
-  const tags = Array.isArray(meta.tags)
-    ? meta.tags.filter((t): t is string => typeof t === "string")
-    : undefined;
+  const tags = sanitizeTags(meta.tags);
   const faq = Array.isArray(meta.faq)
     ? meta.faq.filter(
         (f): f is { q: string; a: string } =>
@@ -351,6 +347,24 @@ async function publishToBlog(activity: PersonaActivity): Promise<PublishOutcome>
     external_id: body.id != null ? String(body.id) : null,
     external_url: body.url ?? (body.slug ? `${BLOG_API_URL}/${body.slug}` : null),
   };
+}
+
+/** dev.to (and most tag systems) reject non-alphanumeric tags like "ai-agents".
+ *  Normalize to lowercase alphanumeric, drop empties/dupes, cap the count. */
+function sanitizeTags(
+  raw: unknown,
+  max = 4,
+): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const cleaned = Array.from(
+    new Set(
+      raw
+        .filter((t): t is string => typeof t === "string")
+        .map((t) => t.toLowerCase().replace(/[^a-z0-9]/g, ""))
+        .filter(Boolean),
+    ),
+  ).slice(0, max);
+  return cleaned.length ? cleaned : undefined;
 }
 
 async function publishActivity(
