@@ -18,6 +18,10 @@ import {
   platformRules,
 } from "@/lib/social-writing-style";
 import { fetchFeedPosts } from "@/lib/feed-sources";
+import { querySearchPerformance, queryTopContent } from "@/lib/bigquery";
+import { fetchSerpResults } from "@/lib/dataforseo";
+import { decryptPersonaKey } from "@/lib/crypto/persona-secrets";
+import { getChannelCredentialCipher } from "@/lib/influencer/credentials";
 import { saveMemory, searchMemory } from "@/lib/influencer/memory";
 import {
   createSession,
@@ -270,6 +274,113 @@ export async function runInfluencerAgentSession({
           const message = err instanceof Error ? err.message : String(err);
           await step({ kind: "tool_result", tool: "browse_signals", payload: { error: message } });
           return `Could not load signals: ${message}`;
+        }
+      },
+    }),
+
+    search_performance: tool({
+      description:
+        "ANALYTICS — Google Search Console for the kodus ecosystem: top queries and pages by clicks, impressions, CTR, and average position. Use it to see what has search demand and where things rank, then aim your writing at what works.",
+      inputSchema: z.object({
+        days: z.number().optional().describe("Look-back window in days (default 28)"),
+      }),
+      execute: async ({ days }) => {
+        await step({ kind: "tool_call", tool: "search_performance", payload: { days } });
+        try {
+          const end = new Date();
+          const start = new Date(end.getTime() - (days ?? 28) * 86_400_000);
+          const r = await querySearchPerformance({
+            startDate: start.toISOString().slice(0, 10),
+            endDate: end.toISOString().slice(0, 10),
+            limit: 15,
+          });
+          await step({ kind: "tool_result", tool: "search_performance", payload: { ok: true } });
+          return JSON.stringify(r).slice(0, MAX_FETCH_CHARS);
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          await step({ kind: "tool_result", tool: "search_performance", payload: { error: m } });
+          return `Could not load search performance: ${m}`;
+        }
+      },
+    }),
+
+    site_traffic: tool({
+      description:
+        "ANALYTICS — top content by traffic (Google Analytics): which pages get the most views/engagement. Use it to see what topics land.",
+      inputSchema: z.object({
+        days: z.number().optional(),
+        pathFilter: z.string().optional().describe("Only pages whose path starts with this"),
+      }),
+      execute: async ({ days, pathFilter }) => {
+        await step({ kind: "tool_call", tool: "site_traffic", payload: { days, pathFilter } });
+        try {
+          const end = new Date();
+          const start = new Date(end.getTime() - (days ?? 28) * 86_400_000);
+          const r = await queryTopContent({
+            startDate: start.toISOString().slice(0, 10),
+            endDate: end.toISOString().slice(0, 10),
+            limit: 15,
+            pathFilter,
+          });
+          await step({ kind: "tool_result", tool: "site_traffic", payload: { ok: true } });
+          return JSON.stringify(r).slice(0, MAX_FETCH_CHARS);
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          await step({ kind: "tool_result", tool: "site_traffic", payload: { error: m } });
+          return `Could not load traffic: ${m}`;
+        }
+      },
+    }),
+
+    check_ranking: tool({
+      description:
+        "ANALYTICS — check who ranks on Google for a keyword right now (live SERP): positions, titles, URLs. Use it to see if your article ranks and who you're up against. Small cost per call — use it deliberately.",
+      inputSchema: z.object({ keyword: z.string() }),
+      execute: async ({ keyword }) => {
+        await step({ kind: "tool_call", tool: "check_ranking", payload: { keyword } });
+        try {
+          const r = await fetchSerpResults(keyword);
+          await step({ kind: "tool_result", tool: "check_ranking", payload: { ok: Boolean(r) } });
+          return r ? JSON.stringify(r).slice(0, MAX_FETCH_CHARS) : "No SERP data for that keyword.";
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          await step({ kind: "tool_result", tool: "check_ranking", payload: { error: m } });
+          return `Could not check ranking: ${m}`;
+        }
+      },
+    }),
+
+    read_devto_stats: tool({
+      description:
+        "ANALYTICS — your own dev.to article performance: views, reactions, and comments per article. Use it to learn which of your posts landed and double down on what works.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        await step({ kind: "tool_call", tool: "read_devto_stats", payload: {} });
+        try {
+          const cipher = await getChannelCredentialCipher(client, persona.id, "devto");
+          if (!cipher) return "No dev.to key linked, so I can't read dev.to stats.";
+          const key = decryptPersonaKey(cipher).trim();
+          const res = await fetch("https://dev.to/api/articles/me?per_page=20", {
+            headers: { "api-key": key, Accept: "application/vnd.forem.api-v1+json" },
+            signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+            cache: "no-store",
+          });
+          if (!res.ok) throw new Error(`dev.to API ${res.status}`);
+          const arr = (await res.json()) as Array<Record<string, unknown>>;
+          const items = arr.map((a) => ({
+            title: a.title,
+            url: a.url,
+            views: a.page_views_count,
+            reactions: a.public_reactions_count,
+            comments: a.comments_count,
+            at: a.published_at,
+          }));
+          await step({ kind: "tool_result", tool: "read_devto_stats", payload: { count: items.length } });
+          return items.length ? JSON.stringify(items) : "No dev.to articles yet.";
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          await step({ kind: "tool_result", tool: "read_devto_stats", payload: { error: m } });
+          return `Could not read dev.to stats: ${m}`;
         }
       },
     }),
