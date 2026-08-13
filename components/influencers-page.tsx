@@ -1909,6 +1909,13 @@ function RunsTab({
 // acts, and a "run a shift now" button. No dated backlog; it paces itself.
 // ---------------------------------------------------------------------------
 
+type GoalProgress = {
+  label: string;
+  detail: string;
+  current: number | null;
+  onTrack: boolean | null;
+};
+
 type TickState = {
   cadence: "off" | "daily" | "weekly";
   status: "off" | "waiting" | "due";
@@ -1916,6 +1923,7 @@ type TickState = {
   last_note: string | null;
   last_tick_at: string | null;
   last_session_id: string | null;
+  goals?: GoalProgress[];
 };
 
 function PlanTab({ token, persona }: { token: string; persona: Persona }) {
@@ -2052,6 +2060,37 @@ function PlanTab({ token, persona }: { token: string; persona: Persona }) {
             )}
             <p className="text-xs text-muted-foreground">
               See the actual work in the Runs and Timeline tabs.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {!loading && state?.goals && state.goals.length > 0 && (
+        <Card>
+          <CardContent className="pt-4 space-y-2">
+            <p className="text-xs font-medium uppercase text-muted-foreground">
+              Goals
+            </p>
+            {state.goals.map((g, i) => (
+              <div key={i} className="flex items-center gap-2 text-sm">
+                <Badge
+                  className={
+                    g.onTrack === true
+                      ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                      : g.onTrack === false
+                        ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                        : "bg-muted text-muted-foreground"
+                  }
+                >
+                  {g.onTrack === true ? "on track" : g.onTrack === false ? "behind" : "ongoing"}
+                </Badge>
+                <span className="font-medium">{g.label}</span>
+                <span className="ml-auto text-xs text-muted-foreground">{g.detail}</span>
+              </div>
+            ))}
+            <p className="text-xs text-muted-foreground">
+              The persona sees this progress each shift and steers toward what
+              it&apos;s behind on.
             </p>
           </CardContent>
         </Card>

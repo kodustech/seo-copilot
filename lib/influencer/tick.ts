@@ -19,6 +19,7 @@ import { getSupabaseServiceClient } from "@/lib/supabase-server";
 
 import { runInfluencerAgentSession } from "@/lib/influencer/agent";
 import { alertOperator } from "@/lib/influencer/alerts";
+import { buildGoalsBrief, computeProgress } from "@/lib/influencer/goals";
 import { getModelForPersona } from "@/lib/influencer/model";
 import {
   listActivePersonas,
@@ -92,13 +93,22 @@ const ReflectionSchema = z.object({
     .describe("A short first-person note about what you did and why you'll wait"),
 });
 
-function buildShiftGoal(persona: Persona, allowed: string[]): string {
+function buildShiftGoal(
+  persona: Persona,
+  allowed: string[],
+  goalsBrief: string,
+): string {
   return [
     `This is your shift as ${persona.display_name} (@${persona.handle}).`,
     `Your beat: ${persona.beat}.`,
     `Channels you can post to right now: ${allowed.join(", ")}.`,
-    "Start by calling browse_signals (try 'hackernews', or 'reddit'/'research' for deeper signals) to see what the dev community is discussing today. Pick something current in your beat, open the source with fetch_url to get specifics, then write and queue ONE self-contained piece for ONE of those channels — or engage thoughtfully. For X, that is a single standalone tweet that stands on its own; never a thread or thread pieces. Queue at most one piece. Ground it in something concrete, match your voice, and do NOT repeat something you recently did. When you've done one solid thing, stop.",
-  ].join("\n");
+    goalsBrief,
+    "Start by calling browse_signals (try 'hackernews', or 'reddit'/'research' for deeper signals) to see what the dev community is discussing today. Pick something current in your beat, open the source with fetch_url to get specifics, then write and queue ONE self-contained piece for ONE of those channels — or engage thoughtfully. For X, that is a single standalone tweet that stands on its own; never a thread or thread pieces. Queue at most one piece. Ground it in something concrete, match your voice, and do NOT repeat something you recently did.",
+    "Not every X post is a data-take. Some shifts, post like a dev building in public: what you're digging into right now, a small win or dead end, what you're reading, the grind — a genuine day-in-the-life note in your voice. It makes you a person, not a stats bot.",
+    "When you've done one solid thing, stop.",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 /** Pieces already waiting to publish — used to avoid out-producing the queue. */
@@ -173,11 +183,14 @@ export async function runPersonaTick({
     return { ...base, wait_minutes: BACKLOG_WAIT_MIN, note };
   }
 
+  // Compute goal progress so the shift steers toward what it's behind on.
+  const goalsBrief = buildGoalsBrief(await computeProgress(client, persona, now));
+
   // Do the shift: one real multi-step session, gated to connected channels.
   const run = await runInfluencerAgentSession({
     client,
     persona,
-    goal: buildShiftGoal(persona, allowed),
+    goal: buildShiftGoal(persona, allowed, goalsBrief),
     trigger: "scheduled",
     allowedPlatforms: allowed,
     maxSteps: SHIFT_STEPS,
