@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 
+import { computeProgress } from "@/lib/influencer/goals";
 import { getPersona, updatePersona } from "@/lib/influencer/personas";
 import { cadenceOf, nextActionAt, runPersonaTick } from "@/lib/influencer/tick";
 import { influencerTableMissingMessage, type Persona } from "@/lib/influencer/types";
@@ -62,7 +63,9 @@ export async function GET(
     if (!persona) {
       return NextResponse.json({ error: "Persona not found" }, { status: 404 });
     }
-    return NextResponse.json(tickState(persona, new Date()));
+    const now = new Date();
+    const goals = await computeProgress(client, persona, now);
+    return NextResponse.json({ ...tickState(persona, now), goals });
   } catch (error) {
     return errorResponse(error);
   }
