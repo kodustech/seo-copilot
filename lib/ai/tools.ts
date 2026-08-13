@@ -5975,6 +5975,14 @@ export const sequencePreview = tool({
               contactEmail: p.email,
               contactLinkedin: p.linkedin,
               contactRole: p.role,
+              templateVars: Object.fromEntries(
+                Object.entries(row.cells ?? {})
+                  .filter(
+                    ([key, cell]) =>
+                      key === "public_trigger" && cell.value != null,
+                  )
+                  .map(([key, cell]) => [key, String(cell.value)]),
+              ),
             };
             person_source = `research:${table.slug ?? table.id}`;
             break;
@@ -6070,6 +6078,36 @@ export const sequencePreview = tool({
             : "Tokens left as {{token}} are unfilled for this preview contact. Product tokens (signup_date, trial_days_left, …) only resolve on CRM enrollments — preview with enrollment_id to check them for real."
           : undefined,
       };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed",
+      };
+    }
+  },
+});
+
+export const sequenceRefreshResearchVars = tool({
+  description:
+    "Refresh research-list template variables such as {{public_trigger}} on active research enrollments and re-render unsent tasks. Use after adding a research variable/column or when queued copy still shows an unresolved research token.",
+  inputSchema: z.object({
+    sequence_id: z
+      .string()
+      .optional()
+      .describe("Optional sequence id. Omit to refresh active research enrollments across campaigns."),
+    limit: z.number().optional().describe("Max enrollments to inspect."),
+  }),
+  execute: async ({ sequence_id, limit }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { refreshResearchTemplateVars } = await import(
+        "@/lib/outreach/sequences"
+      );
+      const result = await refreshResearchTemplateVars(client, {
+        sequenceId: sequence_id,
+        limit,
+      });
+      return { success: true as const, ...result };
     } catch (error) {
       return {
         success: false as const,
@@ -7052,6 +7090,7 @@ export function createAgentTools(userEmail?: string) {
     sequenceRestoreSnapshot,
     sequenceDelete,
     sequencePreview,
+    sequenceRefreshResearchVars,
     sequenceEnrollResearch,
     sequenceEnrollCrm,
     sequenceUnenroll,

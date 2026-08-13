@@ -19,7 +19,7 @@ export type TemplateVarSpec = {
   description: string;
   /** Where the value comes from — shown in the editor so it is obvious which
    *  tokens only exist on CRM-sourced enrollments. */
-  source: "contact" | "product";
+  source: "contact" | "research" | "product";
 };
 
 export const CONTACT_TEMPLATE_VARS: TemplateVarSpec[] = [
@@ -30,6 +30,15 @@ export const CONTACT_TEMPLATE_VARS: TemplateVarSpec[] = [
   { token: "role", description: "Contact job title", source: "contact" },
   { token: "email", description: "Contact email", source: "contact" },
   { token: "linkedin", description: "Contact LinkedIn URL", source: "contact" },
+];
+
+/** Only on enrollments created from research lists with these columns filled. */
+export const RESEARCH_TEMPLATE_VARS: TemplateVarSpec[] = [
+  {
+    token: "public_trigger",
+    description: "Dated public event from the research list",
+    source: "research",
+  },
 ];
 
 /** Only on enrollments created from a CRM account with an org_id. */
@@ -62,6 +71,7 @@ export const PRODUCT_TEMPLATE_VARS: TemplateVarSpec[] = [
 
 export const ALL_TEMPLATE_VARS: TemplateVarSpec[] = [
   ...CONTACT_TEMPLATE_VARS,
+  ...RESEARCH_TEMPLATE_VARS,
   ...PRODUCT_TEMPLATE_VARS,
 ];
 
@@ -69,7 +79,8 @@ export const ALL_TEMPLATE_VARS: TemplateVarSpec[] = [
 export const TEMPLATE_TOKEN_HELP = [
   "Tokens: ",
   ALL_TEMPLATE_VARS.map((v) => `{{${v.token}}}`).join(" "),
-  ". Product tokens (tier … suggestions_applied_pct) only resolve on CRM enrollments;",
+  ". Research tokens (public_trigger) only resolve on research-list enrollments;",
+  " product tokens (tier … suggestions_applied_pct) only resolve on CRM enrollments;",
   " a token with no value blocks the send instead of leaving a hole, so never invent",
   " placeholders like [DATE] — use a token or drop the sentence.",
 ].join("");
@@ -213,5 +224,19 @@ export function freezeSignalVars(
     if (d) out[field] = d.toISOString();
   }
 
+  return out;
+}
+
+/** Freeze dynamic research-list cells into template_vars at enroll time. */
+export function freezeResearchVars(
+  cells: Record<string, { value?: unknown } | null | undefined>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const spec of RESEARCH_TEMPLATE_VARS) {
+    const value = cells[spec.token]?.value;
+    if (value === null || value === undefined) continue;
+    const s = String(value).trim();
+    if (s) out[spec.token] = s;
+  }
   return out;
 }
