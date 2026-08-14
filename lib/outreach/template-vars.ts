@@ -39,6 +39,11 @@ export const RESEARCH_TEMPLATE_VARS: TemplateVarSpec[] = [
     description: "Dated public event from the research list",
     source: "research",
   },
+  {
+    token: "public_context_trigger",
+    description: "Formatted public engineering context from the research list",
+    source: "research",
+  },
 ];
 
 /** Only on enrollments created from a CRM account with an org_id. */
