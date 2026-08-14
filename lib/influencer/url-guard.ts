@@ -3,6 +3,17 @@
  * browse, so a manipulated goal could aim it at cloud metadata
  * (169.254.169.254), localhost, or a private host. Require http(s), block known
  * hosts, and reject any host that resolves to a private/reserved address.
+ *
+ * Residual DNS-rebinding gap (accepted): we resolve + check the IPs, then return
+ * the URL by hostname, so the actual fetch/browse re-resolves and could in theory
+ * hit a rebound private IP. We accept this for these tools because (a) `browse`
+ * runs on a REMOTE browser (Browserbase) that re-resolves off our network — we
+ * can't pin an IP there anyway; (b) pinning the IP in `fetchText` would break TLS
+ * SNI / cert validation; (c) both tools only READ public content back into the
+ * model's context — no credentials are sent and no state changes — so a
+ * successful rebind is a bounded info-read, not account/infra compromise; and
+ * (d) it needs attacker-controlled DNS plus precise timing between resolve and
+ * fetch. Pinned-IP fetching is a later hardening if the threat model changes.
  */
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
@@ -22,10 +33,13 @@ export function isPrivateIp(ip: string): boolean {
   }
   const low = ip.toLowerCase();
   if (low === "::1" || low === "::") return true;
-  if (low.startsWith("fe80")) return true; // link-local
-  if (low.startsWith("fc") || low.startsWith("fd")) return true; // unique local
   const mapped = low.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
   if (mapped) return isPrivateIp(mapped[1]);
+  // fc00::/7 unique-local covers fc00–fdff → first hextet starts with fc or fd.
+  if (low.startsWith("fc") || low.startsWith("fd")) return true;
+  // fe80::/10 link-local covers fe80–febf, not just fe80 — mask the top 10 bits.
+  const firstHextet = parseInt(low.split(":")[0] || "0", 16);
+  if (Number.isFinite(firstHextet) && (firstHextet & 0xffc0) === 0xfe80) return true;
   return false;
 }
 
