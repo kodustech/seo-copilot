@@ -21,14 +21,36 @@ export async function runAiColumn(
   client: SupabaseClient,
   rowId: string,
   prompt: string,
+  opts: { sourceColumnKeys?: string[] } = {},
 ): Promise<AiColumnResult> {
   const row = await getRow(client, rowId);
   if (!row) throw new Error("Row not found");
 
+  const sourceCells = (opts.sourceColumnKeys ?? []).map((key) => ({
+    key,
+    value: row.cells?.[key]?.value ?? null,
+  }));
+  const restrictedSources = opts.sourceColumnKeys?.length
+    ? sourceCells
+        .filter((cell) => cell.value !== null && cell.value !== "")
+        .map((cell) => `${cell.key}: ${String(cell.value)}`)
+        .join("\n")
+    : null;
+
+  if (opts.sourceColumnKeys?.length && !restrictedSources) {
+    return {
+      rowId,
+      answer: "Sem contexto público de engenharia para usar no outreach.",
+      booleanAnswer: null,
+      evidence: `No value in source columns: ${opts.sourceColumnKeys.join(", ")}`,
+      sources: [],
+    };
+  }
+
   const sources: Array<{ url: string; title?: string | null }> = [];
   const blobs: string[] = [];
 
-  if (process.env.EXA_API_KEY?.trim()) {
+  if (!restrictedSources && process.env.EXA_API_KEY?.trim()) {
     // Only the homepage scrape needs a domain; the web search keys off the
     // company name, so it must run for domain-less rows too — otherwise the
     // model answers "unknown" because nobody went looking.
@@ -73,8 +95,12 @@ export async function runAiColumn(
     }
   }
 
-  const packRaw = row.packRaw ?? {};
-  blobs.push(`Prior research raw (truncated): ${JSON.stringify(packRaw).slice(0, 4000)}`);
+  if (restrictedSources) {
+    blobs.push(`Allowed column evidence:\n${restrictedSources}`);
+  } else {
+    const packRaw = row.packRaw ?? {};
+    blobs.push(`Prior research raw (truncated): ${JSON.stringify(packRaw).slice(0, 4000)}`);
+  }
 
   const { text } = await generateText({
     model: getModel(),

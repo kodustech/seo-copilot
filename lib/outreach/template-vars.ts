@@ -32,7 +32,7 @@ export const CONTACT_TEMPLATE_VARS: TemplateVarSpec[] = [
   { token: "linkedin", description: "Contact LinkedIn URL", source: "contact" },
 ];
 
-/** Only on enrollments created from research lists with these columns filled. */
+/** Standard research tokens. Any filled text-like research column is also available by key. */
 export const RESEARCH_TEMPLATE_VARS: TemplateVarSpec[] = [
   {
     token: "public_trigger",
@@ -79,7 +79,7 @@ export const ALL_TEMPLATE_VARS: TemplateVarSpec[] = [
 export const TEMPLATE_TOKEN_HELP = [
   "Tokens: ",
   ALL_TEMPLATE_VARS.map((v) => `{{${v.token}}}`).join(" "),
-  ". Research tokens (public_trigger) only resolve on research-list enrollments;",
+  ". Research tokens (including filled research-column keys such as public_trigger) only resolve on research-list enrollments;",
   " product tokens (tier … suggestions_applied_pct) only resolve on CRM enrollments;",
   " a token with no value blocks the send instead of leaving a hole, so never invent",
   " placeholders like [DATE] — use a token or drop the sentence.",
@@ -232,11 +232,12 @@ export function freezeResearchVars(
   cells: Record<string, { value?: unknown } | null | undefined>,
 ): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const spec of RESEARCH_TEMPLATE_VARS) {
-    const value = cells[spec.token]?.value;
+  for (const [key, cell] of Object.entries(cells)) {
+    const value = cell?.value;
     if (value === null || value === undefined) continue;
+    if (typeof value === "object") continue;
     const s = String(value).trim();
-    if (s) out[spec.token] = s;
+    if (s) out[key] = s;
   }
   return out;
 }

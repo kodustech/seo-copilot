@@ -4842,7 +4842,7 @@ export const researchGetTable = tool({
 
 export const researchCreateColumn = tool({
   description:
-    "Create a dynamic column on a research table (Clay-style). enrich.kind: none | ai (needs prompt) | people_field (field: linkedin|email|name|role). Example: contact_linkedin with people_field linkedin.",
+    "Create a dynamic column on a research table (Clay-style). enrich.kind: none | ai (needs prompt; sourceColumnKeys can restrict evidence to named cells) | people_field (field: linkedin|email|name|role). Example: contact_linkedin with people_field linkedin.",
   inputSchema: z.object({
     table_ref: z.string().describe("Table id, slug, or name"),
     label: z.string().describe("Human label, e.g. Contact LinkedIn"),
@@ -4858,6 +4858,7 @@ export const researchCreateColumn = tool({
       .object({
         kind: z.enum(["none", "ai", "people_field"]),
         prompt: z.string().optional(),
+        sourceColumnKeys: z.array(z.string()).optional(),
         field: z.enum(["linkedin", "email", "name", "role"]).optional(),
         runPeopleIfMissing: z.boolean().optional(),
       })
@@ -4917,6 +4918,7 @@ export const researchUpdateColumn = tool({
       .object({
         kind: z.enum(["none", "ai", "people_field"]),
         prompt: z.string().optional(),
+        sourceColumnKeys: z.array(z.string()).optional(),
         field: z.enum(["linkedin", "email", "name", "role"]).optional(),
         runPeopleIfMissing: z.boolean().optional(),
       })
@@ -5977,9 +5979,8 @@ export const sequencePreview = tool({
               contactRole: p.role,
               templateVars: Object.fromEntries(
                 Object.entries(row.cells ?? {})
-                  .filter(
-                    ([key, cell]) =>
-                      key === "public_trigger" && cell.value != null,
+                  .filter(([, cell]) =>
+                    cell.value != null && typeof cell.value !== "object",
                   )
                   .map(([key, cell]) => [key, String(cell.value)]),
               ),
