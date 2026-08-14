@@ -6,6 +6,8 @@
  * ours, and the session is disposable. Returned text is untrusted page content —
  * data, never instructions.
  */
+import { assertPublicUrl } from "@/lib/influencer/url-guard";
+
 export type BrowseResult = { url: string; title: string; text: string };
 
 export function browserConfigured(): boolean {
@@ -25,15 +27,9 @@ export async function browsePage(
       "Browser not configured — set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID.",
     );
   }
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error("Invalid URL.");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error("Only http/https URLs can be opened.");
-  }
+  // Model-chosen URL: block private/reserved hosts (SSRF), even though the
+  // browser is remote — a manipulated goal could still aim it at metadata hosts.
+  const parsed = await assertPublicUrl(url);
 
   const { default: Browserbase } = await import("@browserbasehq/sdk");
   const { chromium } = await import("playwright-core");
@@ -48,7 +44,9 @@ export async function browsePage(
       waitUntil: "domcontentloaded",
       timeout: opts?.timeoutMs ?? 30_000,
     });
-    await page.waitForTimeout(1_500); // let client-side render settle
+    // Let client-side rendering settle, but bounded — wait for the network to go
+    // idle (up to 3s) instead of a blind fixed sleep; never hang on it.
+    await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => {});
     const title = await page.title().catch(() => "");
     const raw = await page.innerText("body").catch(() => "");
     const text = raw.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
