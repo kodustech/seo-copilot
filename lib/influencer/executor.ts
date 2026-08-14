@@ -20,15 +20,33 @@ export interface Executor {
 }
 
 /**
- * Modal adapter — ephemeral sandbox per run, scales to zero.
- * Stub until MODAL creds are configured and the Modal client is wired (Phase C).
+ * E2B adapter — a fresh, isolated, disposable cloud sandbox per run. The command
+ * runs there (never on the app box), and the sandbox is killed afterwards. No
+ * persona secret is ever passed in — only the command string.
  */
-function modalExecutor(): Executor {
+function e2bExecutor(): Executor {
   return {
-    async run(): Promise<ExecResult> {
-      throw new Error(
-        "Modal executor not wired yet (Phase C). Set MODAL_TOKEN_ID / MODAL_TOKEN_SECRET and implement the adapter.",
-      );
+    async run(command, opts): Promise<ExecResult> {
+      const { Sandbox, CommandExitError } = await import("e2b");
+      const sandbox = await Sandbox.create({
+        apiKey: process.env.E2B_API_KEY,
+        timeoutMs: 120_000, // sandbox lifetime
+      });
+      try {
+        const r = await sandbox.commands.run(command, {
+          timeoutMs: opts?.timeout_ms ?? 60_000,
+        });
+        return { stdout: r.stdout, stderr: r.stderr, exit_code: r.exitCode };
+      } catch (err) {
+        // A non-zero exit throws CommandExitError — surface it as a result, not
+        // a tool failure, so the agent sees stderr and the exit code.
+        if (err instanceof CommandExitError) {
+          return { stdout: err.stdout, stderr: err.stderr, exit_code: err.exitCode };
+        }
+        throw err;
+      } finally {
+        await sandbox.kill().catch(() => {});
+      }
     },
   };
 }
@@ -39,8 +57,8 @@ function modalExecutor(): Executor {
  * nothing dangerous can run until an executor exists.
  */
 export function getExecutor(): Executor | null {
-  if (process.env.MODAL_TOKEN_ID && process.env.MODAL_TOKEN_SECRET) {
-    return modalExecutor();
+  if (process.env.E2B_API_KEY) {
+    return e2bExecutor();
   }
   return null;
 }
