@@ -77,7 +77,12 @@ export type ResearchColumnType = "text" | "url" | "email" | "boolean" | "number"
 
 export type ResearchColumnEnrich =
   | { kind: "none" }
-  | { kind: "ai"; prompt: string }
+  | {
+      kind: "ai";
+      prompt: string;
+      /** Optional cell keys that are the complete evidence set for this run. */
+      sourceColumnKeys?: string[];
+    }
   | {
       kind: "people_field";
       /** Pull from top research_people contact; optionally run people waterfall first. */

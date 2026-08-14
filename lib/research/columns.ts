@@ -154,7 +154,16 @@ function parseEnrich(input: unknown): ResearchColumnEnrich {
   if (kind === "ai") {
     const prompt = String(e.prompt ?? "").trim();
     if (!prompt) throw new Error("enrich.kind=ai requires prompt");
-    return { kind: "ai", prompt };
+    const sourceColumnKeys = Array.isArray(e.sourceColumnKeys)
+      ? e.sourceColumnKeys
+          .filter((key): key is string => typeof key === "string")
+          .map(normalizeKey)
+      : undefined;
+    return {
+      kind: "ai",
+      prompt,
+      ...(sourceColumnKeys?.length ? { sourceColumnKeys } : {}),
+    };
   }
   if (kind === "people_field") {
     const field = String(e.field ?? "");
@@ -452,7 +461,9 @@ async function runAiFieldCell(
   column: ResearchColumn,
 ): Promise<ResearchCell> {
   if (column.enrich.kind !== "ai") throw new Error("Not an ai column");
-  const result = await runAiColumn(client, rowId, column.enrich.prompt);
+  const result = await runAiColumn(client, rowId, column.enrich.prompt, {
+    sourceColumnKeys: column.enrich.sourceColumnKeys,
+  });
   // Also write into cells (runAiColumn still writes pack_raw for compat).
   //
   // The column's declared type decides, not whether the model happened to
