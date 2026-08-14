@@ -3172,11 +3172,17 @@ export function SequencesPage() {
                                       <SelectItem value="sample">
                                         Sample · Alex
                                       </SelectItem>
-                                      {enrollments.map((e) => (
-                                        <SelectItem key={e.id} value={e.id}>
-                                          {e.contactName || e.companyName}
-                                        </SelectItem>
-                                      ))}
+                                      {enrollments
+                                        .filter(
+                                          (e) =>
+                                            e.status === "active" ||
+                                            e.status === "paused",
+                                        )
+                                        .map((e) => (
+                                          <SelectItem key={e.id} value={e.id}>
+                                            {e.contactName || e.companyName}
+                                          </SelectItem>
+                                        ))}
                                     </SelectContent>
                                   </Select>
                                 </div>
