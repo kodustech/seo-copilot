@@ -40,9 +40,9 @@ const MIN_WAIT_MIN = 15;
 const MAX_WAIT_MIN = 8 * 60;
 const NO_CHANNEL_WAIT_MIN = 6 * 60;
 const FAILURE_WAIT_MIN = 60;
-// When this many pieces are already waiting to publish, the shift stops adding
-// new posts — but it keeps working (research, memory, engagement).
-const MAX_PENDING = 6;
+// Soft ceiling so a burst can't pile up an unbounded backlog — set high so it
+// almost never bites; the per-channel daily caps do the real pacing.
+const MAX_PENDING = 20;
 
 export type Cadence = "off" | "daily" | "weekly";
 
@@ -141,7 +141,7 @@ function buildShiftGoal(
     "2) Call browse_signals ONCE ('hackernews' is usually enough) and pick the SINGLE most interesting item for your beat.",
     "3) search_memory first (build on past notes), then read AT MOST two REAL sources with fetch_url — use the exact URLs the tools give you, never invent/guess a URL, never re-fetch one you already read. save_memory the concrete study.",
     postBeat,
-    "Not every X post is a data-take. Some shifts, post like a dev building in public: what you're digging into, a small win or dead end, what you're reading, the grind — a genuine day-in-the-life note. It makes you a person, not a stats bot.",
+    "IMPORTANT — be a person, not a stats account. A big chunk of your posts (roughly half) should be MUNDANE, day-in-the-life stuff, not data-takes: what you're poking at right now, a quick reaction to something you saw, a small win or a frustration, what you're reading, coffee-and-code energy. These are SHORT and spontaneous — skip the deep research, just say the thing if you feel like it. Post them freely; they don't need to clear a high bar.",
     "Do several real things this shift — advance a goal, learn from your analytics, post if allowed — then stop.",
   ]
     .filter(Boolean)
