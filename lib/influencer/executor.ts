@@ -20,6 +20,47 @@ export interface Executor {
 }
 
 /**
+ * Modal adapter — a fresh, disposable Modal Sandbox per run (native JS SDK, no
+ * Python). The command runs in the sandbox (never on the app box); the sandbox
+ * is created with NO secrets, so the Modal token and every persona key stay out
+ * of reach of the untrusted command. The sandbox is terminated afterwards.
+ *
+ * Auth via MODAL_TOKEN_ID / MODAL_TOKEN_SECRET (read from env by ModalClient).
+ * Cheapest option: Modal's free tier grants $30/mo of compute and scales to zero.
+ */
+function modalExecutor(): Executor {
+  return {
+    async run(command, opts): Promise<ExecResult> {
+      const { ModalClient } = await import("modal");
+      const modal = new ModalClient(); // MODAL_TOKEN_ID / MODAL_TOKEN_SECRET from env
+      const app = await modal.apps.fromName("persona-sandbox", { createIfMissing: true });
+      const image = modal.images.fromRegistry(
+        process.env.MODAL_SANDBOX_IMAGE || "python:3.13-slim",
+      );
+      const sandbox = await modal.sandboxes.create(app, image, {
+        timeoutMs: 120_000, // sandbox lifetime cap
+      });
+      try {
+        const proc = await sandbox.exec(["bash", "-c", command], {
+          mode: "text",
+          timeoutMs: opts?.timeout_ms ?? 60_000,
+        });
+        // Drain stdout/stderr while waiting for exit — reading concurrently with
+        // wait() avoids a full-pipe deadlock on large output.
+        const [stdout, stderr, exit_code] = await Promise.all([
+          proc.stdout.readText(),
+          proc.stderr.readText(),
+          proc.wait(),
+        ]);
+        return { stdout, stderr, exit_code };
+      } finally {
+        await sandbox.terminate().catch(() => {});
+      }
+    },
+  };
+}
+
+/**
  * E2B adapter — a fresh, isolated, disposable cloud sandbox per run. The command
  * runs there (never on the app box), and the sandbox is killed afterwards. No
  * persona secret is ever passed in — only the command string.
@@ -57,6 +98,10 @@ function e2bExecutor(): Executor {
  * nothing dangerous can run until an executor exists.
  */
 export function getExecutor(): Executor | null {
+  // Modal preferred (cheapest — free $30/mo, scales to zero); E2B as a fallback.
+  if (process.env.MODAL_TOKEN_ID && process.env.MODAL_TOKEN_SECRET) {
+    return modalExecutor();
+  }
   if (process.env.E2B_API_KEY) {
     return e2bExecutor();
   }
