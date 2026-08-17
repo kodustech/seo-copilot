@@ -18,7 +18,14 @@ export function browserConfigured(): boolean {
 
 export async function browsePage(
   url: string,
-  opts?: { timeoutMs?: number; maxChars?: number },
+  opts?: {
+    timeoutMs?: number;
+    maxChars?: number;
+    /** Load a persistent Browserbase context (e.g. a logged-in X session). */
+    contextId?: string;
+    /** Route through Browserbase's residential proxy (needed for X). */
+    proxies?: boolean;
+  },
 ): Promise<BrowseResult> {
   const apiKey = process.env.BROWSERBASE_API_KEY?.trim();
   const projectId = process.env.BROWSERBASE_PROJECT_ID?.trim();
@@ -35,7 +42,14 @@ export async function browsePage(
   const { chromium } = await import("playwright-core");
 
   const bb = new Browserbase({ apiKey });
-  const session = await bb.sessions.create({ projectId });
+  // persist:false — reads must never write the persona's live login state back.
+  const session = await bb.sessions.create({
+    projectId,
+    ...(opts?.contextId
+      ? { browserSettings: { context: { id: opts.contextId, persist: false } } }
+      : {}),
+    ...(opts?.proxies ? { proxies: true } : {}),
+  });
   const browser = await chromium.connectOverCDP(session.connectUrl);
   try {
     const context = browser.contexts()[0] ?? (await browser.newContext());
