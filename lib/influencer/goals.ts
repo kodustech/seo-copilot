@@ -57,13 +57,24 @@ async function publishedThisWeek(
   return count ?? 0;
 }
 
+/** Monday 00:00 UTC of the week `now` falls in — the weekly quota resets here. */
+export function startOfIsoWeek(now: Date): Date {
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const dow = d.getUTCDay(); // 0=Sun..6=Sat
+  const daysSinceMonday = dow === 0 ? 6 : dow - 1;
+  d.setUTCDate(d.getUTCDate() - daysSinceMonday);
+  return d;
+}
+
 export async function computeProgress(
   client: SupabaseClient,
   persona: Persona,
   now: Date,
 ): Promise<GoalProgress[]> {
   const goals = getGoals(persona);
-  const since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  // Calendar week, not a rolling 7-day window: the quota resets every Monday, so
+  // a new week starts BEHIND and the persona feels the pressure to post again.
+  const since = startOfIsoWeek(now).toISOString();
   const out: GoalProgress[] = [];
 
   for (const g of goals) {
