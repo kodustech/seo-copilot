@@ -371,6 +371,32 @@ export async function runInfluencerAgentSession({
         if (!contextId) {
           return "X account not connected yet (no logged-in browser context). Use browse_signals / browse instead.";
         }
+        // This runs a LOGGED-IN session, so restrict it hard: only x.com hosts,
+        // and never account-management / DM / action paths (a manipulated goal
+        // must not reach settings, messages, or GET-triggered actions).
+        let xPath: string;
+        try {
+          const u = new URL(url);
+          const host = u.hostname.toLowerCase().replace(/^\./, "");
+          if (host !== "x.com" && host !== "www.x.com" && !host.endsWith(".x.com")) {
+            return "x_read only opens https://x.com/... URLs (read-only). For other sites use browse.";
+          }
+          xPath = u.pathname.toLowerCase();
+        } catch {
+          return "Invalid URL.";
+        }
+        const BLOCKED_X_PATHS = [
+          "/settings",
+          "/messages",
+          "/compose",
+          "/logout",
+          "/account",
+          "/i/keyboard_shortcuts",
+          "/intent",
+        ];
+        if (BLOCKED_X_PATHS.some((p) => xPath === p || xPath.startsWith(p + "/"))) {
+          return "That X page is off-limits for x_read (account settings, DMs, compose, and actions are blocked). Read timelines, searches, profiles, and tweets only.";
+        }
         await step({ kind: "tool_call", tool: "x_read", payload: { url } });
         try {
           const r = await browsePage(url, {
