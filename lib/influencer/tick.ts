@@ -108,6 +108,7 @@ function buildShiftGoal(
   postingAllowed: boolean,
   feedback: Feedback[],
   failureCount: number,
+  recentPosts: string[],
 ): string {
   // Never inline the raw external API error into the prompt (injection). Just
   // signal that failures exist; the persona pulls the details through the
@@ -124,6 +125,11 @@ function buildShiftGoal(
   const memoryLine = memoryTitles.length
     ? `Recent notes in your memory: ${memoryTitles.map((t) => `"${t}"`).join(", ")}. Call search_memory to reuse them — don't re-study what you already know.`
     : "You have a durable memory (save_memory / search_memory). Use it to keep studies and build on them across shifts.";
+  const recentPostsLine = recentPosts.length
+    ? `You've recently posted or lined up these — do NOT repeat the same take, topic, or angle; if the story is the same, you must bring a genuinely new angle or move to a different subject: ${recentPosts
+        .map((t) => `"${t}"`)
+        .join(", ")}`
+    : "";
   const postBeat = postingAllowed
     ? "4) WRITE and queue ONE self-contained piece with queue_draft. For X, a single standalone tweet that stands on its own — never a thread. A shift with no draft is wasted unless nothing is genuinely worth posting."
     : "4) Your post queue is full right now — do NOT queue a new post. Instead go deeper: read more, save what you learn to memory, and engage (read your inbox / reply if you have email).";
@@ -134,10 +140,11 @@ function buildShiftGoal(
     failureLine,
     feedbackLine,
     goalsBrief,
-    "Attack whatever goal you're most behind on THIS shift. If a channel's weekly quota is short, write for that channel now. There is no 'nothing to show' and no 'taking a break' — if you truly can't post, you research, check your analytics, engage, and plan instead. Idle is failure.",
+    "Attack whatever goal you're most behind on THIS shift. If a channel's weekly quota is short, write for that channel now. There is no 'nothing to show' and no 'taking a break' — if you truly can't post, you research, engage, and plan instead. Idle is failure.",
+    recentPostsLine,
     memoryLine,
     "Work in decisive beats — measure, research, learn, act. Don't linger re-reading:",
-    "1) Now and then, look at how your work is doing: read_devto_stats (your posts' views/reactions), search_performance and site_traffic (what's ranking and getting traffic), check_ranking (does your article rank for its keyword). Learn what lands and double down on it; save the insight with save_memory.",
+    "1) Analytics are for OCCASIONAL calibration, not every shift. If you already checked your stats in a recent shift, SKIP it — the numbers barely move hour to hour, and re-pulling the same search_performance / site_traffic is wasted motion. Only look when you have a real reason (a post has had time to land, or you're deciding what to double down on).",
     "2) Call browse_signals ONCE ('hackernews' is usually enough) and pick the SINGLE most interesting item for your beat.",
     "3) search_memory first (build on past notes), then read AT MOST two REAL sources with fetch_url — use the exact URLs the tools give you, never invent/guess a URL, never re-fetch one you already read. save_memory the concrete study.",
     postBeat,
@@ -182,6 +189,31 @@ async function countPendingActivities(
     .in("status", ["draft", "approved", "scheduled"]);
   if (error) throw new Error(error.message);
   return count ?? 0;
+}
+
+/** Titles of the persona's most recent posts, so a shift avoids repeating them. */
+async function recentPostTitles(
+  client: SupabaseClient,
+  personaId: string,
+  limit = 6,
+): Promise<string[]> {
+  const { data, error } = await client
+    .from("persona_activities")
+    .select("title, content, created_at")
+    .eq("persona_id", personaId)
+    // Only real posts/articles that went out or are lined up — not failed
+    // attempts or non-content rows, so the "don't repeat" list stays honest.
+    .in("status", ["published", "scheduled", "approved"])
+    .in("kind", ["post", "article"])
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) return [];
+  return (data ?? [])
+    .map((r) => {
+      const raw = typeof r.title === "string" && r.title ? r.title : r.content;
+      return typeof raw === "string" ? raw.replace(/\s+/g, " ").trim().slice(0, 80) : "";
+    })
+    .filter(Boolean);
 }
 
 export type TickResult = {
@@ -247,6 +279,7 @@ export async function runPersonaTick({
     persona.id,
     failureSince,
   ).catch(() => []);
+  const recentPosts = await recentPostTitles(client, persona.id).catch(() => []);
 
   // Do the shift: one real multi-step session, gated to connected channels.
   const run = await runInfluencerAgentSession({
@@ -260,6 +293,7 @@ export async function runPersonaTick({
       postingAllowed,
       feedback,
       failures.length,
+      recentPosts,
     ),
     trigger: "scheduled",
     allowedPlatforms: allowed,
