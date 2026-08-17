@@ -126,7 +126,7 @@ function buildShiftGoal(
     ? `Recent notes in your memory: ${memoryTitles.map((t) => `"${t}"`).join(", ")}. Call search_memory to reuse them — don't re-study what you already know.`
     : "You have a durable memory (save_memory / search_memory). Use it to keep studies and build on them across shifts.";
   const recentPostsLine = recentPosts.length
-    ? `You have RECENTLY posted these — do NOT repeat the same take, topic, or angle; if the story is the same, you must bring a genuinely new angle or move to a different subject: ${recentPosts
+    ? `You've recently posted or lined up these — do NOT repeat the same take, topic, or angle; if the story is the same, you must bring a genuinely new angle or move to a different subject: ${recentPosts
         .map((t) => `"${t}"`)
         .join(", ")}`
     : "";
@@ -201,6 +201,10 @@ async function recentPostTitles(
     .from("persona_activities")
     .select("title, content, created_at")
     .eq("persona_id", personaId)
+    // Only real posts/articles that went out or are lined up — not failed
+    // attempts or non-content rows, so the "don't repeat" list stays honest.
+    .in("status", ["published", "scheduled", "approved"])
+    .in("kind", ["post", "article"])
     .order("created_at", { ascending: false })
     .limit(limit);
   if (error) return [];
