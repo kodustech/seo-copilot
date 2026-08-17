@@ -1059,11 +1059,17 @@ export async function scheduleSocialPost({
   scheduledAt,
   socialAccountIds,
   userEmail,
+  mediaIds,
+  mediaUrls,
 }: {
   caption: string;
   scheduledAt: string;
   socialAccountIds: number[];
   userEmail?: string;
+  /** Post-Bridge media ids from uploadImageBytesToPostBridge (uploaded bytes). */
+  mediaIds?: string[];
+  /** Publicly reachable image URLs, attached directly (no upload step). */
+  mediaUrls?: string[];
 }): Promise<ScheduledSocialPost> {
   const trimmedCaption = caption.trim();
   if (!trimmedCaption) {
@@ -1092,6 +1098,10 @@ export async function scheduleSocialPost({
     scheduled_at: scheduledDate.toISOString(),
     social_accounts: normalizedIds,
   };
+  const cleanMediaIds = (mediaIds ?? []).map((m) => m.trim()).filter(Boolean);
+  if (cleanMediaIds.length) payload.media = cleanMediaIds;
+  const cleanMediaUrls = (mediaUrls ?? []).map((m) => m.trim()).filter(Boolean);
+  if (cleanMediaUrls.length) payload.media_urls = cleanMediaUrls;
 
   // Keep argument for compatibility with existing call sites/tools.
   void userEmail;
@@ -1265,6 +1275,31 @@ function normalizeDataUri(value: string | undefined): NormalizedDataUri | null {
     bytes,
     sizeBytes: buffer.byteLength,
   };
+}
+
+/**
+ * Upload raw image bytes (e.g. a Playwright screenshot) to Post-Bridge and get
+ * back a media_id to attach to a post via scheduleSocialPost({ mediaIds }).
+ */
+export async function uploadImageBytesToPostBridge({
+  bytes,
+  mimeType,
+}: {
+  bytes: Buffer;
+  mimeType: string;
+}): Promise<string> {
+  const base64 = bytes.toString("base64");
+  const arrayBuffer = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
+  return uploadGeneratedImageToPostBridge({
+    dataUri: `data:${mimeType};base64,${base64}`,
+    mimeType,
+    base64,
+    bytes: arrayBuffer,
+    sizeBytes: bytes.byteLength,
+  });
 }
 
 function fileExtensionForMimeType(mimeType: string): string {

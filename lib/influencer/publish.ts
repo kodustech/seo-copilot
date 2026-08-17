@@ -8,6 +8,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { scheduleSocialPost } from "@/lib/copilot";
+import { parseImageIntent, resolvePostImage } from "@/lib/influencer/post-image";
 import { decryptPersonaKey } from "@/lib/crypto/persona-secrets";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 
@@ -193,11 +194,18 @@ async function publishViaPostBridge(
     );
   }
 
+  // Attach an image if the draft asked for one (screenshot of a real page, or a
+  // public image URL). Best-effort: a failed image never blocks the text post.
+  const intent = parseImageIntent(activity.content_meta);
+  const media = intent ? await resolvePostImage(intent) : null;
+
   const scheduled = await scheduleSocialPost({
     caption: activity.content,
     // Post-Bridge needs a future timestamp; two minutes out is "now".
     scheduledAt: new Date(Date.now() + 2 * 60 * 1000).toISOString(),
     socialAccountIds: [accountId],
+    mediaIds: media?.mediaIds,
+    mediaUrls: media?.mediaUrls,
   });
 
   return { external_id: scheduled.id, external_url: null };

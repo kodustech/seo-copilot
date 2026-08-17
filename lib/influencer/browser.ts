@@ -69,3 +69,48 @@ export async function browsePage(
     await browser.close().catch(() => {});
   }
 }
+
+export type Screenshot = { bytes: Buffer; mimeType: "image/png" };
+
+/**
+ * Screenshot a real web page — the persona's way to attach REAL evidence to a
+ * post (a benchmark chart, a tool's UI, a tweet, a GitHub diff) instead of an
+ * AI-generated illustration. Returns PNG bytes for upload to the social API.
+ */
+export async function screenshotPage(
+  url: string,
+  opts?: { timeoutMs?: number; fullPage?: boolean; contextId?: string; proxies?: boolean },
+): Promise<Screenshot> {
+  const apiKey = process.env.BROWSERBASE_API_KEY?.trim();
+  const projectId = process.env.BROWSERBASE_PROJECT_ID?.trim();
+  if (!apiKey || !projectId) {
+    throw new Error("Browser not configured — set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID.");
+  }
+  const parsed = await assertPublicUrl(url);
+
+  const { default: Browserbase } = await import("@browserbasehq/sdk");
+  const { chromium } = await import("playwright-core");
+
+  const bb = new Browserbase({ apiKey });
+  const session = await bb.sessions.create({
+    projectId,
+    ...(opts?.contextId
+      ? { browserSettings: { context: { id: opts.contextId, persist: false } } }
+      : {}),
+    ...(opts?.proxies ? { proxies: true } : {}),
+  });
+  const browser = await chromium.connectOverCDP(session.connectUrl);
+  try {
+    const context = browser.contexts()[0] ?? (await browser.newContext());
+    const page = context.pages()[0] ?? (await context.newPage());
+    await page.goto(parsed.toString(), {
+      waitUntil: "domcontentloaded",
+      timeout: opts?.timeoutMs ?? 30_000,
+    });
+    await page.waitForLoadState("networkidle", { timeout: 4_000 }).catch(() => {});
+    const bytes = await page.screenshot({ type: "png", fullPage: opts?.fullPage ?? false });
+    return { bytes, mimeType: "image/png" };
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
