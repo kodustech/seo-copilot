@@ -112,6 +112,7 @@ function buildAgentSystem(
     "PLATFORM FORMAT — match the channel exactly:",
     platformRules(configs),
     "For X specifically: write ONE standalone tweet — a single, self-contained idea in ≤280 characters that makes complete sense on its own. Do NOT write threads or thread pieces: this account posts through a scheduler with no thread support, so every tweet must stand alone. One shift produces one tweet, not a series.",
+    "IMAGES: a post with a real visual lands far harder than a wall of text — and it fits your empirical beat. When a visual genuinely helps, attach one via queue_draft's `image` field: strongly prefer a `screenshot` of the REAL thing (the benchmark chart on its page, the tool's UI, a tweet, a GitHub diff) — real evidence, not an AI illustration. Use `image_url` only for a specific public image (like an article's own figure). Only pass a URL a tool actually returned; never invent one. No fitting visual? Post text — don't force it.",
   ].join("\n");
 }
 
@@ -659,8 +660,22 @@ export async function runInfluencerAgentSession({
           .array(z.object({ q: z.string(), a: z.string() }))
           .optional()
           .describe("Optional FAQ entries for a blog post (aicodereview.io)"),
+        image: z
+          .object({
+            kind: z.enum(["screenshot", "image_url"]),
+            url: z
+              .string()
+              .describe(
+                "For 'screenshot': the page URL to capture. For 'image_url': a direct public image URL (http/https).",
+              ),
+          })
+          .nullable()
+          .optional()
+          .describe(
+            "Optionally attach an image to a social post. 'screenshot' captures a REAL page (a benchmark chart, a tool's UI, a tweet, a GitHub diff) — real evidence, on-brand. 'image_url' attaches a public image URL (e.g. an article's own image). Use it when a visual genuinely strengthens the post.",
+          ),
       }),
-      execute: async ({ kind, platform, title, content, description, category, tags, faq }) => {
+      execute: async ({ kind, platform, title, content, description, category, tags, faq, image }) => {
         await step({ kind: "tool_call", tool: "queue_draft", payload: { kind, platform } });
         // Hard backpressure, enforced live against the running draft counter (not
         // a stale snapshot): 0 = queue is full, don't post; 1 = one post/shift.
@@ -717,6 +732,7 @@ export async function runInfluencerAgentSession({
                 ...(category ? { category } : {}),
                 ...(tags?.length ? { tags } : {}),
                 ...(faq?.length ? { faq } : {}),
+                ...(image?.url ? { image } : {}),
               },
               source_kind: "agent",
               source_ref: session.id,
