@@ -158,6 +158,20 @@ export function resolvePublishDecision({
     };
   }
 
+  // A reply's TARGET is a fleet-amplification vector too: replying to another
+  // persona's tweet is the same coordinated boost, even with no @mention in text.
+  if (isReplyKind(activity.kind)) {
+    const replyTo =
+      typeof activity.content_meta?.reply_to === "string" ? activity.content_meta.reply_to : "";
+    const target = replyTo.match(/x\.com\/([^/?#]+)\/status\//i)?.[1]?.toLowerCase().replace(/^@/, "");
+    if (target && fleetHandles.has(target)) {
+      return {
+        action: "reject",
+        reason: `Fleet amplification blocked: replying to @${target}, another persona of the fleet.`,
+      };
+    }
+  }
+
   const forbidden = violatedForbiddenTopic(activity, persona);
   if (forbidden) {
     return {
@@ -208,10 +222,15 @@ async function publishViaPostBridge(
   activity: PersonaActivity,
   channel: PersonaChannel,
 ): Promise<PublishOutcome> {
-  // A reply/quote isn't a standalone post — Post-Bridge can't reply to a specific
-  // tweet, so drive the logged-in browser to post it under the target. This is
-  // the follower-growth path: showing up under bigger accounts' conversations.
-  if (isReplyKind(activity.kind)) {
+  // Quote-tweets need a different flow than a plain reply; not built yet, so fail
+  // loudly rather than silently posting a bare reply.
+  if (activity.kind === "quote") {
+    throw new Error("Quote-tweets aren't supported yet — use a reply or a standalone post.");
+  }
+  // A reply isn't a standalone post — Post-Bridge can't reply to a specific tweet,
+  // so drive the logged-in browser to post it under the target. This is the
+  // follower-growth path: showing up under bigger accounts' conversations.
+  if (activity.kind === "reply") {
     const replyTo =
       typeof activity.content_meta?.reply_to === "string"
         ? activity.content_meta.reply_to.trim()
@@ -223,7 +242,9 @@ async function publishViaPostBridge(
     if (!r.posted) {
       throw new Error("Reply did not post (composer or submit failed).");
     }
-    return { external_id: null, external_url: replyTo };
+    // external_url would be the persona's reply URL, which the browser can't
+    // reliably capture — leave it null rather than point at the target tweet.
+    return { external_id: null, external_url: null };
   }
 
   const accountId = Number(channel.channel_config.post_bridge_account_id);

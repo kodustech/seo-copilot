@@ -135,14 +135,16 @@ export async function postReplyOnX(
       .first();
     await send.waitFor({ state: "visible", timeout: 10_000 });
     await send.click();
-    // Reply posts when the composer clears / the button goes away.
-    await page
+    // Only claim success once the inline composer actually goes away — otherwise
+    // the reply may not have posted (validation error, rate limit, DOM change).
+    const posted = await page
       .locator('[data-testid="tweetButtonInline"]')
       .first()
       .waitFor({ state: "detached", timeout: 15_000 })
-      .catch(() => {});
-    await page.waitForTimeout(1_500);
-    return { posted: true, composerFound: true };
+      .then(() => true)
+      .catch(() => false);
+    await page.waitForTimeout(1_000);
+    return { posted, composerFound: true };
   } finally {
     await browser.close().catch(() => {});
   }
