@@ -21,17 +21,17 @@ import {
   PROTOCOL_VERSION,
   type McpToolDefinition,
 } from "@/lib/mcp/server";
+import {
+  createJsonRpcHttpResponse,
+  hasPositionalJsonRpcParams,
+  isJsonRpcMessage,
+  isJsonRpcNotification,
+  type JsonRpcMessage,
+} from "@/lib/mcp/http-transport";
 import { resolveMcpAuth } from "@/lib/mcp/tokens";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
-
-interface JsonRpcRequest {
-  jsonrpc: "2.0";
-  id?: string | number | null;
-  method: string;
-  params?: Record<string, unknown>;
-}
 
 type JsonRpcResponse =
   | {
@@ -59,12 +59,22 @@ function jsonRpcError(
 }
 
 async function dispatchRpc(
-  message: JsonRpcRequest,
+  message: JsonRpcMessage,
   tools: McpToolDefinition[]
 ): Promise<JsonRpcResponse> {
   const id = message.id ?? null;
   const method = message.method;
-  const params = message.params ?? {};
+
+  if (hasPositionalJsonRpcParams(message)) {
+    return jsonRpcError(id, -32602, "Positional parameters are not supported");
+  }
+
+  const params =
+    typeof message.params === "object" &&
+    message.params !== null &&
+    !Array.isArray(message.params)
+      ? (message.params as Record<string, unknown>)
+      : {};
 
   switch (method) {
     case "initialize": {
@@ -120,7 +130,7 @@ async function dispatchRpc(
 
     case "notifications/initialized":
     case "notifications/cancelled": {
-      // Notifications have no response.
+      // createJsonRpcHttpResponse suppresses responses for notifications.
       return jsonRpcResult(id, {});
     }
 
@@ -155,14 +165,37 @@ export async function POST(req: Request) {
 
   // Support batched requests (JSON-RPC 2.0 spec).
   if (Array.isArray(body)) {
-    const responses = await Promise.all(
-      (body as JsonRpcRequest[]).map((msg) => dispatchRpc(msg, tools))
+    if (body.length === 0) {
+      return Response.json(jsonRpcError(null, -32600, "Invalid Request"));
+    }
+
+    const dispatched = await Promise.all(
+      body.map(async (value) => {
+        if (!isJsonRpcMessage(value)) {
+          return {
+            notification: false,
+            response: jsonRpcError(null, -32600, "Invalid Request"),
+          };
+        }
+
+        return {
+          notification: isJsonRpcNotification(value),
+          response: await dispatchRpc(value, tools),
+        };
+      })
     );
-    return Response.json(responses);
+    return createJsonRpcHttpResponse(dispatched, true);
   }
 
-  const response = await dispatchRpc(body as JsonRpcRequest, tools);
-  return Response.json(response);
+  if (!isJsonRpcMessage(body)) {
+    return Response.json(jsonRpcError(null, -32600, "Invalid Request"));
+  }
+
+  const response = await dispatchRpc(body, tools);
+  return createJsonRpcHttpResponse(
+    [{ notification: isJsonRpcNotification(body), response }],
+    false
+  );
 }
 
 export async function GET() {
