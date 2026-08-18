@@ -9,6 +9,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { scheduleSocialPost } from "@/lib/copilot";
 import { parseImageIntent, resolvePostImage } from "@/lib/influencer/post-image";
+import { postReplyOnX } from "@/lib/influencer/browser";
 import { decryptPersonaKey } from "@/lib/crypto/persona-secrets";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 
@@ -207,6 +208,24 @@ async function publishViaPostBridge(
   activity: PersonaActivity,
   channel: PersonaChannel,
 ): Promise<PublishOutcome> {
+  // A reply/quote isn't a standalone post — Post-Bridge can't reply to a specific
+  // tweet, so drive the logged-in browser to post it under the target. This is
+  // the follower-growth path: showing up under bigger accounts' conversations.
+  if (isReplyKind(activity.kind)) {
+    const replyTo =
+      typeof activity.content_meta?.reply_to === "string"
+        ? activity.content_meta.reply_to.trim()
+        : "";
+    if (!replyTo) {
+      throw new Error("Reply draft has no reply_to target tweet.");
+    }
+    const r = await postReplyOnX(replyTo, activity.content);
+    if (!r.posted) {
+      throw new Error("Reply did not post (composer or submit failed).");
+    }
+    return { external_id: null, external_url: replyTo };
+  }
+
   const accountId = Number(channel.channel_config.post_bridge_account_id);
   if (!Number.isInteger(accountId) || accountId <= 0) {
     throw new Error(
