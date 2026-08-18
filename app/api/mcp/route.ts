@@ -21,6 +21,7 @@ import {
   PROTOCOL_VERSION,
   type McpToolDefinition,
 } from "@/lib/mcp/server";
+import { createJsonRpcHttpResponse } from "@/lib/mcp/http-transport";
 import { resolveMcpAuth } from "@/lib/mcp/tokens";
 
 export const runtime = "nodejs";
@@ -120,7 +121,7 @@ async function dispatchRpc(
 
     case "notifications/initialized":
     case "notifications/cancelled": {
-      // Notifications have no response.
+      // createJsonRpcHttpResponse suppresses responses for notifications.
       return jsonRpcResult(id, {});
     }
 
@@ -155,14 +156,19 @@ export async function POST(req: Request) {
 
   // Support batched requests (JSON-RPC 2.0 spec).
   if (Array.isArray(body)) {
-    const responses = await Promise.all(
-      (body as JsonRpcRequest[]).map((msg) => dispatchRpc(msg, tools))
+    const messages = body as JsonRpcRequest[];
+    const dispatched = await Promise.all(
+      messages.map(async (message) => ({
+        message,
+        response: await dispatchRpc(message, tools),
+      }))
     );
-    return Response.json(responses);
+    return createJsonRpcHttpResponse(dispatched, true);
   }
 
-  const response = await dispatchRpc(body as JsonRpcRequest, tools);
-  return Response.json(response);
+  const message = body as JsonRpcRequest;
+  const response = await dispatchRpc(message, tools);
+  return createJsonRpcHttpResponse([{ message, response }], false);
 }
 
 export async function GET() {
