@@ -113,6 +113,7 @@ function buildAgentSystem(
     platformRules(configs),
     "For X specifically: write ONE standalone tweet — a single, self-contained idea in ≤280 characters that makes complete sense on its own. Do NOT write threads or thread pieces: this account posts through a scheduler with no thread support, so every tweet must stand alone. One shift produces one tweet, not a series.",
     "IMAGES: a post with a real visual lands far harder than a wall of text — and it fits your empirical beat. When a visual genuinely helps, attach one via queue_draft's `image` field: strongly prefer a `screenshot` of the REAL thing (the benchmark chart on its page, the tool's UI, a tweet, a GitHub diff) — real evidence, not an AI illustration. Use `image_url` only for a specific public image (like an article's own figure). Only pass a URL a tool actually returned; never invent one. No fitting visual? Post text — don't force it.",
+    "GROWING FOLLOWERS: when you're small, posting into your own feed barely reaches anyone — broadcasting is not a growth strategy. The real lever is ENGAGING where the audience already is. Use x_read to find recent, lively tweets from bigger accounts in your beat (open their profiles, or x.com/search?q=<topic>&f=live), then queue a `reply` (kind 'reply', reply_to = that tweet's exact URL from x_read) that adds genuine value: a sharp insight, a hard data point, a useful counterpoint. A strong reply under a big account puts you in front of THEIR audience — that is how a handful of followers becomes real reach. Reply because you have something worth adding, not to be seen. NEVER reply to, quote, or @-mention another persona in your own fleet.",
   ].join("\n");
 }
 
@@ -660,6 +661,13 @@ export async function runInfluencerAgentSession({
           .array(z.object({ q: z.string(), a: z.string() }))
           .optional()
           .describe("Optional FAQ entries for a blog post (aicodereview.io)"),
+        reply_to: z
+          .string()
+          .nullable()
+          .optional()
+          .describe(
+            "For kind 'reply': the FULL URL of the tweet you're replying to (https://x.com/<user>/status/<id>), taken from x_read. Required for a reply.",
+          ),
         image: z
           .object({
             kind: z.enum(["screenshot", "image_url"]),
@@ -675,7 +683,7 @@ export async function runInfluencerAgentSession({
             "Optionally attach an image to a social post. 'screenshot' captures a REAL page (a benchmark chart, a tool's UI, a tweet, a GitHub diff) — real evidence, on-brand. 'image_url' attaches a public image URL (e.g. an article's own image). Use it when a visual genuinely strengthens the post.",
           ),
       }),
-      execute: async ({ kind, platform, title, content, description, category, tags, faq, image }) => {
+      execute: async ({ kind, platform, title, content, description, category, tags, faq, image, reply_to }) => {
         await step({ kind: "tool_call", tool: "queue_draft", payload: { kind, platform } });
         // Hard backpressure, enforced live against the running draft counter (not
         // a stale snapshot): 0 = queue is full, don't post; 1 = one post/shift.
@@ -714,6 +722,14 @@ export async function runInfluencerAgentSession({
             return msg;
           }
         }
+        // A reply must target a specific tweet — the URL from x_read.
+        if (normalizedKind === "reply") {
+          const rt = typeof reply_to === "string" ? reply_to.trim() : "";
+          if (!/^https?:\/\/(www\.)?x\.com\/[^/]+\/status\/\d+/.test(rt)) {
+            await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "reply_missing_target" } });
+            return "A reply needs reply_to = the full https://x.com/<user>/status/<id> URL of the tweet you're replying to. Find a real one with x_read.";
+          }
+        }
         // Honor the channel's automation level: an `auto` channel publishes
         // without review; everything else waits in the queue for a human.
         const autoPublish = channel.automation_level === "auto";
@@ -733,6 +749,7 @@ export async function runInfluencerAgentSession({
                 ...(tags?.length ? { tags } : {}),
                 ...(faq?.length ? { faq } : {}),
                 ...(image?.url ? { image } : {}),
+                ...(reply_to ? { reply_to } : {}),
               },
               source_kind: "agent",
               source_ref: session.id,

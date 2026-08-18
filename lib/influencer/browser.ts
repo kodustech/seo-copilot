@@ -70,6 +70,86 @@ export async function browsePage(
   }
 }
 
+/**
+ * Post a reply to an X tweet as the persona, driving the logged-in session in a
+ * real browser (X has no free write API). This is the follower-growth lever:
+ * showing up with something useful under bigger accounts' posts. Fragile by
+ * nature — it depends on X's DOM — and gated hard (x.com status URLs only,
+ * daily reply cap upstream). `dryRun` reaches the composer without submitting,
+ * so the selectors/auth can be verified without actually posting.
+ */
+export async function postReplyOnX(
+  tweetUrl: string,
+  text: string,
+  opts?: { dryRun?: boolean; timeoutMs?: number },
+): Promise<{ posted: boolean; composerFound: boolean }> {
+  const apiKey = process.env.BROWSERBASE_API_KEY?.trim();
+  const projectId = process.env.BROWSERBASE_PROJECT_ID?.trim();
+  const contextId = process.env.BROWSERBASE_X_CONTEXT_ID?.trim();
+  if (!apiKey || !projectId) throw new Error("Browser not configured.");
+  if (!contextId) throw new Error("X account not connected (no BROWSERBASE_X_CONTEXT_ID).");
+  const body = text.trim();
+  if (!body) throw new Error("Empty reply.");
+
+  const u = new URL(tweetUrl);
+  const host = u.hostname.toLowerCase().replace(/^\./, "");
+  if (host !== "x.com" && host !== "www.x.com" && !host.endsWith(".x.com")) {
+    throw new Error("Reply target must be an x.com status URL.");
+  }
+  if (!/\/status\/\d+/.test(u.pathname)) {
+    throw new Error("Reply target must be a specific tweet (x.com/<user>/status/<id>).");
+  }
+
+  const { default: Browserbase } = await import("@browserbasehq/sdk");
+  const { chromium } = await import("playwright-core");
+  const bb = new Browserbase({ apiKey });
+  const session = await bb.sessions.create({
+    projectId,
+    proxies: true,
+    browserSettings: { context: { id: contextId, persist: false } },
+  });
+  const browser = await chromium.connectOverCDP(session.connectUrl);
+  try {
+    const context = browser.contexts()[0] ?? (await browser.newContext());
+    const page = context.pages()[0] ?? (await context.newPage());
+    await page.goto(u.toString(), {
+      waitUntil: "domcontentloaded",
+      timeout: opts?.timeoutMs ?? 40_000,
+    });
+    await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
+
+    // Focus the inline reply composer and type the reply.
+    const composer = page.locator('[data-testid="tweetTextarea_0"]').first();
+    await composer.waitFor({ state: "visible", timeout: 15_000 });
+    await composer.click();
+    await page.keyboard.type(body, { delay: 15 });
+    await page.waitForTimeout(500);
+
+    if (opts?.dryRun) {
+      return { posted: false, composerFound: true };
+    }
+
+    // Submit — inline reply button, with the standalone compose button as a fallback.
+    const send = page
+      .locator('[data-testid="tweetButtonInline"], [data-testid="tweetButton"]')
+      .first();
+    await send.waitFor({ state: "visible", timeout: 10_000 });
+    await send.click();
+    // Only claim success once the inline composer actually goes away — otherwise
+    // the reply may not have posted (validation error, rate limit, DOM change).
+    const posted = await page
+      .locator('[data-testid="tweetButtonInline"]')
+      .first()
+      .waitFor({ state: "detached", timeout: 15_000 })
+      .then(() => true)
+      .catch(() => false);
+    await page.waitForTimeout(1_000);
+    return { posted, composerFound: true };
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
+
 export type Screenshot = { bytes: Buffer; mimeType: "image/png" };
 
 /**
