@@ -205,7 +205,6 @@ async function publishViaPostBridge(
     scheduledAt: new Date(Date.now() + 2 * 60 * 1000).toISOString(),
     socialAccountIds: [accountId],
     mediaIds: media?.mediaIds,
-    mediaUrls: media?.mediaUrls,
   });
 
   return { external_id: scheduled.id, external_url: null };

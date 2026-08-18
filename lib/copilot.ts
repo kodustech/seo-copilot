@@ -1060,7 +1060,6 @@ export async function scheduleSocialPost({
   socialAccountIds,
   userEmail,
   mediaIds,
-  mediaUrls,
 }: {
   caption: string;
   scheduledAt: string;
@@ -1068,8 +1067,6 @@ export async function scheduleSocialPost({
   userEmail?: string;
   /** Post-Bridge media ids from uploadImageBytesToPostBridge (uploaded bytes). */
   mediaIds?: string[];
-  /** Publicly reachable image URLs, attached directly (no upload step). */
-  mediaUrls?: string[];
 }): Promise<ScheduledSocialPost> {
   const trimmedCaption = caption.trim();
   if (!trimmedCaption) {
@@ -1100,8 +1097,6 @@ export async function scheduleSocialPost({
   };
   const cleanMediaIds = (mediaIds ?? []).map((m) => m.trim()).filter(Boolean);
   if (cleanMediaIds.length) payload.media = cleanMediaIds;
-  const cleanMediaUrls = (mediaUrls ?? []).map((m) => m.trim()).filter(Boolean);
-  if (cleanMediaUrls.length) payload.media_urls = cleanMediaUrls;
 
   // Keep argument for compatibility with existing call sites/tools.
   void userEmail;
