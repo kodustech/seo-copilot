@@ -33,7 +33,12 @@ export type PublishDecision =
   | { action: "publish" }
   | { action: "defer"; until: string; reason: string }
   | { action: "reject"; reason: string }
+  | { action: "discard"; reason: string }
   | { action: "skip"; reason: string };
+
+/** News-reactive X content past this age isn't worth posting — a 2-day-old
+ *  "hot take" is stale. Evergreen articles (blog/devto) never expire. */
+const STALE_X_HOURS = 36;
 
 export function dayStartUtcIso(now: Date): string {
   return new Date(
@@ -158,6 +163,21 @@ export function resolvePublishDecision({
       action: "reject",
       reason: `Touches forbidden topic "${forbidden}".`,
     };
+  }
+
+  // Freshness: an X take that has sat past its due time for too long is stale
+  // news — discard it rather than defer it again (deferring only makes it
+  // staler). Measure from scheduled_at when set (a deliberately future-scheduled
+  // post is only stale once it has sat past ITS date), else from created_at.
+  if (channel.platform === "x") {
+    const dueAt = activity.scheduled_at ?? activity.created_at;
+    const ageMs = now.getTime() - new Date(dueAt).getTime();
+    if (Number.isFinite(ageMs) && ageMs > STALE_X_HOURS * 60 * 60 * 1000) {
+      return {
+        action: "discard",
+        reason: `Stale: past its post time by ~${Math.round(ageMs / 3_600_000)}h, the news has moved on.`,
+      };
+    }
   }
 
   const cap = isReplyKind(activity.kind)
@@ -484,6 +504,15 @@ export async function runInfluencerPublishCron(
     if (decision.action === "reject") {
       await updateActivity(client, activity.id, {
         status: "failed",
+        error: decision.reason,
+      });
+      summary.rejected += 1;
+      continue;
+    }
+
+    if (decision.action === "discard") {
+      await updateActivity(client, activity.id, {
+        status: "discarded",
         error: decision.reason,
       });
       summary.rejected += 1;
