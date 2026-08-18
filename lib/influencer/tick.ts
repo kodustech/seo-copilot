@@ -40,9 +40,11 @@ const MIN_WAIT_MIN = 15;
 const MAX_WAIT_MIN = 8 * 60;
 const NO_CHANNEL_WAIT_MIN = 6 * 60;
 const FAILURE_WAIT_MIN = 60;
-// Soft ceiling so a burst can't pile up an unbounded backlog — set high so it
-// almost never bites; the per-channel daily caps do the real pacing.
-const MAX_PENDING = 20;
+// Soft ceiling on the unpublished buffer, sized to ~one day of the combined
+// daily caps (X 8 + devto 2 + blog 1). Kept small on purpose: a bigger buffer
+// just becomes a multi-day backlog of stale takes that publish days late and
+// freeze new production. The per-channel daily caps still do the real pacing.
+const MAX_PENDING = 12;
 
 export type Cadence = "off" | "daily" | "weekly";
 
