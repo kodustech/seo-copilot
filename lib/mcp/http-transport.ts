@@ -29,14 +29,23 @@ export function isJsonRpcMessage(value: unknown): value is JsonRpcMessage {
     return false;
   }
 
+  if (!Object.prototype.hasOwnProperty.call(message, "params")) {
+    return true;
+  }
+
   return (
-    !Object.prototype.hasOwnProperty.call(message, "params") ||
-    (typeof message.params === "object" && message.params !== null)
+    message.params === null ||
+    message.params === undefined ||
+    typeof message.params === "object"
   );
 }
 
 export function isJsonRpcNotification(message: JsonRpcMessage): boolean {
   return !Object.prototype.hasOwnProperty.call(message, "id");
+}
+
+export function hasPositionalJsonRpcParams(message: JsonRpcMessage): boolean {
+  return Array.isArray(message.params);
 }
 
 /**

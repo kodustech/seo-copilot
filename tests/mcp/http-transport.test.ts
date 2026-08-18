@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createJsonRpcHttpResponse,
+  hasPositionalJsonRpcParams,
   isJsonRpcMessage,
   isJsonRpcNotification,
 } from "../../lib/mcp/http-transport";
@@ -18,6 +19,26 @@ describe("JSON-RPC message validation", () => {
     expect(isJsonRpcNotification(notification)).toBe(true);
     expect(isJsonRpcMessage(request)).toBe(true);
     expect(isJsonRpcNotification(request)).toBe(false);
+  });
+
+  it("accepts null params and identifies positional params", () => {
+    const nullParams = {
+      jsonrpc: "2.0" as const,
+      id: 1,
+      method: "ping",
+      params: null,
+    };
+    const positionalParams = {
+      jsonrpc: "2.0" as const,
+      id: 2,
+      method: "ping",
+      params: [],
+    };
+
+    expect(isJsonRpcMessage(nullParams)).toBe(true);
+    expect(hasPositionalJsonRpcParams(nullParams)).toBe(false);
+    expect(isJsonRpcMessage(positionalParams)).toBe(true);
+    expect(hasPositionalJsonRpcParams(positionalParams)).toBe(true);
   });
 
   it.each([

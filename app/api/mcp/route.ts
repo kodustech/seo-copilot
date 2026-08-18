@@ -23,6 +23,7 @@ import {
 } from "@/lib/mcp/server";
 import {
   createJsonRpcHttpResponse,
+  hasPositionalJsonRpcParams,
   isJsonRpcMessage,
   isJsonRpcNotification,
   type JsonRpcMessage,
@@ -63,6 +64,11 @@ async function dispatchRpc(
 ): Promise<JsonRpcResponse> {
   const id = message.id ?? null;
   const method = message.method;
+
+  if (hasPositionalJsonRpcParams(message)) {
+    return jsonRpcError(id, -32602, "Positional parameters are not supported");
+  }
+
   const params =
     typeof message.params === "object" &&
     message.params !== null &&
