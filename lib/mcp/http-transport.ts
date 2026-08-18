@@ -1,6 +1,42 @@
+export interface JsonRpcMessage {
+  jsonrpc: "2.0";
+  id?: string | number | null;
+  method: string;
+  params?: unknown;
+}
+
 interface DispatchedMessage<T> {
-  message: object;
+  notification: boolean;
   response: T;
+}
+
+export function isJsonRpcMessage(value: unknown): value is JsonRpcMessage {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const message = value as Record<string, unknown>;
+  if (message.jsonrpc !== "2.0" || typeof message.method !== "string") {
+    return false;
+  }
+
+  if (
+    Object.prototype.hasOwnProperty.call(message, "id") &&
+    message.id !== null &&
+    typeof message.id !== "string" &&
+    typeof message.id !== "number"
+  ) {
+    return false;
+  }
+
+  return (
+    !Object.prototype.hasOwnProperty.call(message, "params") ||
+    (typeof message.params === "object" && message.params !== null)
+  );
+}
+
+export function isJsonRpcNotification(message: JsonRpcMessage): boolean {
+  return !Object.prototype.hasOwnProperty.call(message, "id");
 }
 
 /**
@@ -12,7 +48,7 @@ export function createJsonRpcHttpResponse<T>(
   batched: boolean
 ): Response {
   const responses = dispatched
-    .filter(({ message }) => Object.prototype.hasOwnProperty.call(message, "id"))
+    .filter(({ notification }) => !notification)
     .map(({ response }) => response);
 
   if (responses.length === 0) {

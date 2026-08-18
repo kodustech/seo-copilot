@@ -1,13 +1,43 @@
 import { describe, expect, it } from "vitest";
 
-import { createJsonRpcHttpResponse } from "../../lib/mcp/http-transport";
+import {
+  createJsonRpcHttpResponse,
+  isJsonRpcMessage,
+  isJsonRpcNotification,
+} from "../../lib/mcp/http-transport";
+
+describe("JSON-RPC message validation", () => {
+  it("accepts requests and notifications", () => {
+    const notification = {
+      jsonrpc: "2.0" as const,
+      method: "notifications/initialized",
+    };
+    const request = { jsonrpc: "2.0" as const, id: null, method: "ping" };
+
+    expect(isJsonRpcMessage(notification)).toBe(true);
+    expect(isJsonRpcNotification(notification)).toBe(true);
+    expect(isJsonRpcMessage(request)).toBe(true);
+    expect(isJsonRpcNotification(request)).toBe(false);
+  });
+
+  it.each([
+    null,
+    [],
+    { jsonrpc: "1.0", id: 1, method: "ping" },
+    { jsonrpc: "2.0", id: 1 },
+    { jsonrpc: "2.0", id: true, method: "ping" },
+    { jsonrpc: "2.0", id: 1, method: "ping", params: "invalid" },
+  ])("rejects invalid messages: %j", (message) => {
+    expect(isJsonRpcMessage(message)).toBe(false);
+  });
+});
 
 describe("createJsonRpcHttpResponse", () => {
   it("accepts initialized without returning a JSON-RPC response", async () => {
     const response = createJsonRpcHttpResponse(
       [
         {
-          message: { jsonrpc: "2.0", method: "notifications/initialized" },
+          notification: true,
           response: { jsonrpc: "2.0", id: null, result: {} },
         },
       ],
@@ -22,7 +52,7 @@ describe("createJsonRpcHttpResponse", () => {
     const response = createJsonRpcHttpResponse(
       [
         {
-          message: { jsonrpc: "2.0", method: "notifications/unknown" },
+          notification: true,
           response: {
             jsonrpc: "2.0",
             id: null,
@@ -41,11 +71,11 @@ describe("createJsonRpcHttpResponse", () => {
     const response = createJsonRpcHttpResponse(
       [
         {
-          message: { jsonrpc: "2.0", method: "notifications/initialized" },
+          notification: true,
           response: { jsonrpc: "2.0", id: null, result: {} },
         },
         {
-          message: { jsonrpc: "2.0", id: 7, method: "ping" },
+          notification: false,
           response: { jsonrpc: "2.0", id: 7, result: {} },
         },
       ],
@@ -62,11 +92,11 @@ describe("createJsonRpcHttpResponse", () => {
     const response = createJsonRpcHttpResponse(
       [
         {
-          message: { jsonrpc: "2.0", method: "notifications/initialized" },
+          notification: true,
           response: { jsonrpc: "2.0", id: null, result: {} },
         },
         {
-          message: { jsonrpc: "2.0", method: "notifications/cancelled" },
+          notification: true,
           response: { jsonrpc: "2.0", id: null, result: {} },
         },
       ],
@@ -81,7 +111,7 @@ describe("createJsonRpcHttpResponse", () => {
     const response = createJsonRpcHttpResponse(
       [
         {
-          message: { jsonrpc: "2.0", id: null, method: "ping" },
+          notification: false,
           response: { jsonrpc: "2.0", id: null, result: {} },
         },
       ],

@@ -21,18 +21,16 @@ import {
   PROTOCOL_VERSION,
   type McpToolDefinition,
 } from "@/lib/mcp/server";
-import { createJsonRpcHttpResponse } from "@/lib/mcp/http-transport";
+import {
+  createJsonRpcHttpResponse,
+  isJsonRpcMessage,
+  isJsonRpcNotification,
+  type JsonRpcMessage,
+} from "@/lib/mcp/http-transport";
 import { resolveMcpAuth } from "@/lib/mcp/tokens";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
-
-interface JsonRpcRequest {
-  jsonrpc: "2.0";
-  id?: string | number | null;
-  method: string;
-  params?: Record<string, unknown>;
-}
 
 type JsonRpcResponse =
   | {
@@ -60,12 +58,17 @@ function jsonRpcError(
 }
 
 async function dispatchRpc(
-  message: JsonRpcRequest,
+  message: JsonRpcMessage,
   tools: McpToolDefinition[]
 ): Promise<JsonRpcResponse> {
   const id = message.id ?? null;
   const method = message.method;
-  const params = message.params ?? {};
+  const params =
+    typeof message.params === "object" &&
+    message.params !== null &&
+    !Array.isArray(message.params)
+      ? (message.params as Record<string, unknown>)
+      : {};
 
   switch (method) {
     case "initialize": {
@@ -156,19 +159,37 @@ export async function POST(req: Request) {
 
   // Support batched requests (JSON-RPC 2.0 spec).
   if (Array.isArray(body)) {
-    const messages = body as JsonRpcRequest[];
+    if (body.length === 0) {
+      return Response.json(jsonRpcError(null, -32600, "Invalid Request"));
+    }
+
     const dispatched = await Promise.all(
-      messages.map(async (message) => ({
-        message,
-        response: await dispatchRpc(message, tools),
-      }))
+      body.map(async (value) => {
+        if (!isJsonRpcMessage(value)) {
+          return {
+            notification: false,
+            response: jsonRpcError(null, -32600, "Invalid Request"),
+          };
+        }
+
+        return {
+          notification: isJsonRpcNotification(value),
+          response: await dispatchRpc(value, tools),
+        };
+      })
     );
     return createJsonRpcHttpResponse(dispatched, true);
   }
 
-  const message = body as JsonRpcRequest;
-  const response = await dispatchRpc(message, tools);
-  return createJsonRpcHttpResponse([{ message, response }], false);
+  if (!isJsonRpcMessage(body)) {
+    return Response.json(jsonRpcError(null, -32600, "Invalid Request"));
+  }
+
+  const response = await dispatchRpc(body, tools);
+  return createJsonRpcHttpResponse(
+    [{ notification: isJsonRpcNotification(body), response }],
+    false
+  );
 }
 
 export async function GET() {
