@@ -165,14 +165,17 @@ export function resolvePublishDecision({
     };
   }
 
-  // Freshness: an X take that's been waiting too long is stale news — discard it
-  // rather than defer it another day (deferring only makes it staler).
+  // Freshness: an X take that has sat past its due time for too long is stale
+  // news — discard it rather than defer it again (deferring only makes it
+  // staler). Measure from scheduled_at when set (a deliberately future-scheduled
+  // post is only stale once it has sat past ITS date), else from created_at.
   if (channel.platform === "x") {
-    const ageMs = now.getTime() - new Date(activity.created_at).getTime();
+    const dueAt = activity.scheduled_at ?? activity.created_at;
+    const ageMs = now.getTime() - new Date(dueAt).getTime();
     if (Number.isFinite(ageMs) && ageMs > STALE_X_HOURS * 60 * 60 * 1000) {
       return {
         action: "discard",
-        reason: `Stale: queued ~${Math.round(ageMs / 3_600_000)}h ago, the news has moved on.`,
+        reason: `Stale: past its post time by ~${Math.round(ageMs / 3_600_000)}h, the news has moved on.`,
       };
     }
   }
