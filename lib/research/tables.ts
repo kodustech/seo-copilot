@@ -1,6 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { getDefaultRubricId, getRubric, listRubrics } from "@/lib/research/rubrics";
+import {
+  getDefaultRubricId,
+  getRubric,
+  listRubrics,
+  resolveRubric,
+} from "@/lib/research/rubrics";
 import type {
   ResearchCell,
   ResearchColumn,
@@ -222,6 +227,37 @@ export async function getTable(
     .select("id", { count: "exact", head: true })
     .eq("table_id", id);
   return mapTable(data as TableRow, count ?? 0);
+}
+
+/**
+ * Set the buyer personas people-enrichment targets for this table. Stored on
+ * the per-table rubric copy (rubric_json.default_personas); a built-in rubric
+ * is copied into rubric_json first so the override survives. Returns the
+ * personas as saved.
+ */
+export async function updateTablePersonas(
+  client: SupabaseClient,
+  id: string,
+  personas: string[],
+): Promise<string[]> {
+  const cleaned = [
+    ...new Set(personas.map((p) => p.trim()).filter(Boolean)),
+  ].slice(0, 10);
+  if (cleaned.length === 0) {
+    throw new Error("personas must contain at least one role");
+  }
+  const table = await getTable(client, id);
+  if (!table) throw new Error(`Research table ${id} not found`);
+  const rubric = resolveRubric(table);
+  const next: Rubric = { ...rubric, default_personas: cleaned };
+  const { error } = await client
+    .from("research_tables")
+    .update({ rubric_json: next, updated_at: new Date().toISOString() })
+    .eq("id", table.id);
+  if (error) {
+    throw new Error(`Failed to update table personas: ${error.message}`);
+  }
+  return cleaned;
 }
 
 export async function deleteTable(
