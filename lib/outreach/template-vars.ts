@@ -35,6 +35,11 @@ export const CONTACT_TEMPLATE_VARS: TemplateVarSpec[] = [
 /** Standard research tokens. Any filled text-like research column is also available by key. */
 export const RESEARCH_TEMPLATE_VARS: TemplateVarSpec[] = [
   {
+    token: "article_title",
+    description: "Title of the source article from the research list",
+    source: "research",
+  },
+  {
     token: "public_trigger",
     description: "Dated public event from the research list",
     source: "research",
