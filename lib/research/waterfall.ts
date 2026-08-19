@@ -492,12 +492,24 @@ export async function ninjapearPeopleDetailed(
       `[research/waterfall] ${domain}: dropped ${dropped} provider hit(s) outside personas [${personas.join(", ")}]`,
     );
   }
-  // Verify more than we need so employment misses do not leave the row empty.
-  const top = employees.slice(0, Math.max(max, 1) * 2);
+  // Walk the whole candidate list and stop at `max` kept, so a dropped
+  // candidate (employment miss, unverified title-less hit) does not starve a
+  // valid one further down. Paid lookups are bounded by `maxProbes`: with no
+  // drops this is exactly `max` probes, as before.
+  const want = Math.max(max, 1);
+  const maxProbes = want * 3;
+  let probes = 0;
   const out: WaterfallPerson[] = [];
 
-  for (const e of top) {
-    if (out.length >= Math.max(max, 1)) break;
+  for (const e of employees) {
+    if (out.length >= want) break;
+    if (probes >= maxProbes) {
+      console.info(
+        `[research/waterfall] ${domain}: stopped after ${probes} provider probes with ${out.length}/${want} kept`,
+      );
+      break;
+    }
+    probes += 1;
     const name = [e.first_name, e.last_name].filter(Boolean).join(" ");
     let email: string | null = null;
     let role = e.role || null;
