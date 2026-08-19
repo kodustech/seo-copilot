@@ -471,7 +471,9 @@ export async function ninjapearPeopleDetailed(
         seen.add(key);
         // Provider role search is fuzzy; keep only titles that are actually
         // a persona hit. Titles that matched nothing used to be kept as-is.
-        if (!roleMatchesPersonas(e.role, personas)) {
+        // Same rule as the other providers: an empty title is unknown, not
+        // rejected — employment verification below still has to pass.
+        if (!keepByPersona({ role: e.role || null }, personas)) {
           dropped += 1;
           continue;
         }
