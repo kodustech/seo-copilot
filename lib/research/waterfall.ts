@@ -681,6 +681,9 @@ async function enrichPeopleViaNinjapear(
         // Prefer richer title from profile when available
         role = hit.employment.role;
       }
+    } else if (hit.employment.unknown) {
+      // Profile carried no work history: unverified, not a miss.
+      notes = appendNote(notes, "employment_unknown:ninjapear");
     } else {
       notes = appendNote(
         notes,
