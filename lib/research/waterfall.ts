@@ -564,6 +564,10 @@ export async function ninjapearPeopleDetailed(
               `canonical_name:${hit.profile.full_name}`,
             );
           }
+        } else if (hit.employment.unknown) {
+          // Profile has no work history: nothing to check, so this is the
+          // same as a null lookup — a known persona title stays, flagged.
+          notes = appendNote(notes, "employment_unknown:ninjapear");
         } else {
           // Profile says this person does not work here. Drop instead of
           // keeping a flagged contact — a wrong lead costs more than a gap.
