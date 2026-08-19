@@ -504,6 +504,11 @@ export async function ninjapearPeopleDetailed(
     let notes: string | null = "source:ninjapear_search";
     let confidence = 0.6;
     let providerUsed = "ninjapear";
+    // A title-less hit passed the persona filter as "unknown"; it only stays
+    // if the profile confirms employment. A known persona title may stay on
+    // a null lookup (provider down), the unknown one may not.
+    const roleKnown = Boolean(e.role && e.role.trim());
+    let employmentVerified = false;
 
     try {
       email = await findWorkEmail({
@@ -531,6 +536,7 @@ export async function ninjapearPeopleDetailed(
       if (hit) {
         providerUsed = "ninjapear+profile";
         if (hit.employment.ok) {
+          employmentVerified = true;
           const tag = hit.employment.current
             ? "employment_current:ninjapear"
             : "employment_ok:ninjapear";
@@ -560,6 +566,13 @@ export async function ninjapearPeopleDetailed(
       }
     } catch (err) {
       console.warn("[research/waterfall] person profile failed:", err);
+    }
+
+    if (!roleKnown && !employmentVerified) {
+      console.info(
+        `[research/waterfall] ${domain}: dropped ${name} — no title and employment not verified`,
+      );
+      continue;
     }
 
     out.push({
