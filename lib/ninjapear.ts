@@ -371,6 +371,10 @@ function companyNameMatches(
 
 export type EmploymentMatch = {
   ok: boolean;
+  /** True when the profile carried no work history at all, so nothing could
+   *  be checked. Callers must treat this as "unverified", not as a miss:
+   *  the person may well work there. */
+  unknown?: boolean;
   /** True when match is a current role (end_date null). */
   current: boolean;
   role: string | null;
@@ -391,6 +395,7 @@ export function matchEmploymentAtCompany(
   if (experiences.length === 0) {
     return {
       ok: false,
+      unknown: true,
       current: false,
       role: null,
       companyName: null,
