@@ -40,8 +40,16 @@ export async function POST(
         return NextResponse.json(result);
       }
       case "people": {
+        // Body: { onlyIfPass?: boolean, personas?: string[] } — personas
+        // override the table's rubric personas for this run only.
+        const personas = Array.isArray(body.personas)
+          ? body.personas.filter(
+              (p: unknown): p is string => typeof p === "string" && p.trim() !== "",
+            )
+          : undefined;
         const people = await enrichPeopleForRow(client, id, {
           onlyIfPass: body.onlyIfPass === true,
+          personas: personas && personas.length > 0 ? personas : undefined,
         });
         return NextResponse.json({ people });
       }

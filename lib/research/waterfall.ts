@@ -18,6 +18,12 @@ import {
   type NinjapearEmployee,
 } from "@/lib/ninjapear";
 import { getCached, setCache, domainCacheKey } from "@/lib/research/cache";
+import {
+  expandSearchRoles,
+  personasCacheTag,
+  rankPerson,
+  roleMatchesPersonas,
+} from "@/lib/research/personas";
 import { resolveRubric } from "@/lib/research/rubrics";
 import {
   getRow,
@@ -40,18 +46,17 @@ export type WaterfallPerson = {
   notes: string | null;
 };
 
-const ROLE_HINTS =
-  /head of eng|engineering manager|eng manager|cto|vp eng|vp of eng|qa lead|sdet|founder|co-founder|chief technology|director of eng|quality/i;
-
-function rankPerson(role: string | null, personas: string[]): number {
-  if (!role) return 0;
-  const lower = role.toLowerCase();
-  let score = 0;
-  for (const p of personas) {
-    if (lower.includes(p.toLowerCase())) score += 10;
-  }
-  if (ROLE_HINTS.test(role)) score += 5;
-  return score;
+/**
+ * Keep a discovered person only when their title is a persona hit or unknown.
+ * A known title that matches no persona ("Software Engineer" when we asked
+ * for founders) is dropped — this is what used to let unrelated people in.
+ */
+function keepByPersona(
+  p: { role: string | null },
+  personas: string[],
+): boolean {
+  if (!p.role || !p.role.trim()) return true;
+  return roleMatchesPersonas(p.role, personas);
 }
 
 function appendNote(notes: string | null, bit: string): string {
@@ -74,6 +79,9 @@ export async function enrichPeopleForRow(
     maxPeople?: number;
     verifyEmails?: boolean;
     onlyIfPass?: boolean;
+    /** Override the table's rubric personas for this run (e.g. founder,
+     *  sócio comercial, head of delivery for a partner list). */
+    personas?: string[];
   } = {},
 ): Promise<WaterfallPerson[]> {
   const row = await getRow(client, rowId);
@@ -98,11 +106,13 @@ export async function enrichPeopleForRow(
 
   const table = await getTable(client, row.tableId);
   const rubric = table ? resolveRubric(table) : null;
-  const personas = rubric?.default_personas ?? [
-    "Head of Engineering",
-    "CTO",
-    "Founder",
-  ];
+  const overridePersonas = (opts.personas ?? [])
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const personas =
+    overridePersonas.length > 0
+      ? overridePersonas
+      : (rubric?.default_personas ?? ["Head of Engineering", "CTO", "Founder"]);
   // Soft cap for NEW discoveries only — existing people are never dropped.
   const maxPeople = opts.maxPeople ?? 3;
 
@@ -120,8 +130,12 @@ export async function enrichPeopleForRow(
     notes: p.notes,
   }));
 
-  // v3: NinjaPear person profile employment + multi-persona search
-  const cacheKey = domainCacheKey(row.domain, "people:v3");
+  // v4: persona-filtered providers; key carries the persona set so a persona
+  // change on the table (or an override) never serves another table's people.
+  const cacheKey = domainCacheKey(
+    row.domain,
+    `people:v4:${personasCacheTag(personas)}`,
+  );
   const cached = await getCached<WaterfallPerson[]>(client, cacheKey);
   // Never wipe existing with cache alone — merge cache into what we already have.
   if (cached && cached.length > 0 && existingAsWaterfall.length === 0) {
@@ -174,6 +188,7 @@ export async function enrichPeopleForRow(
               : 0.35,
       notes: c.notes,
     }))
+    .filter((p) => keepByPersona(p, personas))
     .sort(
       (a, b) =>
         rankPerson(b.role, personas) - rankPerson(a.role, personas) ||
@@ -215,7 +230,9 @@ export async function enrichPeopleForRow(
     (people.length === 0 || people.every((p) => !p.email))
   ) {
     try {
-      const hunterPeople = await hunterDomainSearch(row.domain, maxPeople);
+      const hunterPeople = (
+        await hunterDomainSearch(row.domain, maxPeople)
+      ).filter((p) => keepByPersona(p, personas));
       if (hunterPeople.length > 0) {
         people = mergePeople(people, hunterPeople, cap, personas);
       }
@@ -434,19 +451,14 @@ export async function ninjapearPeopleDetailed(
   if (!ninjapearEnabled())
     return { people: [], searched: false, disabled: true };
 
-  const rolesToTry = [
-    ...new Set(
-      personas
-        .map((p) => p.trim())
-        .filter(Boolean)
-        .slice(0, 3),
-    ),
-  ];
+  // Persona + its other-language synonym, capped (each search costs credits).
+  const rolesToTry = expandSearchRoles(personas, 6);
   if (rolesToTry.length === 0) rolesToTry.push("CTO");
 
   const seen = new Set<string>();
   const employees: NinjapearEmployee[] = [];
   let searched = false;
+  let dropped = 0;
 
   for (const role of rolesToTry) {
     if (employees.length >= max * 2) break;
@@ -457,6 +469,14 @@ export async function ninjapearPeopleDetailed(
         const key = `${e.first_name}|${e.last_name ?? ""}`.toLowerCase();
         if (!e.first_name || seen.has(key)) continue;
         seen.add(key);
+        // Provider role search is fuzzy; keep only titles that are actually
+        // a persona hit. Titles that matched nothing used to be kept as-is.
+        // Same rule as the other providers: an empty title is unknown, not
+        // rejected — employment verification below still has to pass.
+        if (!keepByPersona({ role: e.role || null }, personas)) {
+          dropped += 1;
+          continue;
+        }
         employees.push(e);
       }
     } catch (err) {
@@ -467,16 +487,40 @@ export async function ninjapearPeopleDetailed(
     }
   }
 
-  const top = employees.slice(0, Math.max(max, 1));
+  if (dropped > 0) {
+    console.info(
+      `[research/waterfall] ${domain}: dropped ${dropped} provider hit(s) outside personas [${personas.join(", ")}]`,
+    );
+  }
+  // Walk the whole candidate list and stop at `max` kept, so a dropped
+  // candidate (employment miss, unverified title-less hit) does not starve a
+  // valid one further down. Paid lookups are bounded by `maxProbes`: with no
+  // drops this is exactly `max` probes, as before.
+  const want = Math.max(max, 1);
+  const maxProbes = want * 3;
+  let probes = 0;
   const out: WaterfallPerson[] = [];
 
-  for (const e of top) {
+  for (const e of employees) {
+    if (out.length >= want) break;
+    if (probes >= maxProbes) {
+      console.info(
+        `[research/waterfall] ${domain}: stopped after ${probes} provider probes with ${out.length}/${want} kept`,
+      );
+      break;
+    }
+    probes += 1;
     const name = [e.first_name, e.last_name].filter(Boolean).join(" ");
     let email: string | null = null;
     let role = e.role || null;
     let notes: string | null = "source:ninjapear_search";
     let confidence = 0.6;
     let providerUsed = "ninjapear";
+    // A title-less hit passed the persona filter as "unknown"; it only stays
+    // if the profile confirms employment. A known persona title may stay on
+    // a null lookup (provider down), the unknown one may not.
+    const roleKnown = Boolean(e.role && e.role.trim());
+    let employmentVerified = false;
 
     try {
       email = await findWorkEmail({
@@ -504,6 +548,7 @@ export async function ninjapearPeopleDetailed(
       if (hit) {
         providerUsed = "ninjapear+profile";
         if (hit.employment.ok) {
+          employmentVerified = true;
           const tag = hit.employment.current
             ? "employment_current:ninjapear"
             : "employment_ok:ninjapear";
@@ -520,12 +565,12 @@ export async function ninjapearPeopleDetailed(
             );
           }
         } else {
-          notes = appendNote(
-            notes,
-            `employment_miss:ninjapear:${hit.employment.evidence}`,
+          // Profile says this person does not work here. Drop instead of
+          // keeping a flagged contact — a wrong lead costs more than a gap.
+          console.info(
+            `[research/waterfall] ${domain}: dropped ${name} (${e.role}) — employment miss: ${hit.employment.evidence}`,
           );
-          // Still keep the search hit — search is company-scoped, but flag it
-          confidence = Math.min(confidence, 0.55);
+          continue;
         }
         if (hit.profile.x_profile_url) {
           notes = appendNote(notes, `x:${hit.profile.x_profile_url}`);
@@ -533,6 +578,13 @@ export async function ninjapearPeopleDetailed(
       }
     } catch (err) {
       console.warn("[research/waterfall] person profile failed:", err);
+    }
+
+    if (!roleKnown && !employmentVerified) {
+      console.info(
+        `[research/waterfall] ${domain}: dropped ${name} — no title and employment not verified`,
+      );
+      continue;
     }
 
     out.push({
@@ -814,7 +866,7 @@ async function hunterDomainSearch(
 export async function enrichPeopleForRows(
   client: SupabaseClient,
   rowIds: string[],
-  opts: { onlyIfPass?: boolean; maxPeople?: number } = {},
+  opts: { onlyIfPass?: boolean; maxPeople?: number; personas?: string[] } = {},
 ): Promise<{ ok: number; failed: number; totalPeople: number }> {
   let ok = 0;
   let failed = 0;

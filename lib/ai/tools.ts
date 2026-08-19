@@ -4710,7 +4710,7 @@ export const researchFindIcp = tool({
 
 export const researchEnrichPeople = tool({
   description:
-    "Find buyer personas (people/leads) for companies in a research table: team-page scrape + email guess, then NinjaPear/Hunter if needed. Targets rubric personas (e.g. CTO, Head of Eng, QA Lead). Use onlyIfPass=false for pre-qualified CSV lists that were not ICP-scored yet. Long-running — prefer small batches (max 15 in agent).",
+    "Find buyer personas (people/leads) for companies in a research table: team-page scrape + email guess, then NinjaPear/Hunter if needed. Targets the table's personas (rubric default_personas, editable with researchSetPersonas) or the `personas` passed here; titles match PT/EN synonyms (Founder also hits Fundador/Sócio). People whose title matches no persona, or whose profile says they do not work at the company, are dropped rather than kept as low-confidence. Use onlyIfPass=false for pre-qualified CSV lists that were not ICP-scored yet. Long-running — prefer small batches (max 15 in agent).",
   inputSchema: z.object({
     table_ref: z.string().optional().describe("Table id, slug, or name"),
     table_id: z.string().optional().describe("Deprecated alias for table_ref"),
@@ -4730,8 +4730,14 @@ export const researchEnrichPeople = tool({
       .array(z.string())
       .optional()
       .describe("Optional explicit row ids; if omitted, takes from table"),
+    personas: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Override the table's personas for this call only, e.g. ['Founder', 'CEO', 'Sócio comercial', 'Head of Delivery']. To change them permanently use researchSetPersonas.",
+      ),
   }),
-  execute: async ({ table_ref, table_id, only_if_pass, max_rows, max_people, row_ids }) => {
+  execute: async ({ table_ref, table_id, only_if_pass, max_rows, max_people, row_ids, personas }) => {
     try {
       const client = getSupabaseServiceClient();
       const { enrichPeopleForRows } = await import("@/lib/research/waterfall");
@@ -4766,6 +4772,7 @@ export const researchEnrichPeople = tool({
       const result = await enrichPeopleForRows(client, ids, {
         onlyIfPass: only_if_pass !== false,
         maxPeople: max_people ?? 3,
+        personas: personas && personas.length > 0 ? personas : undefined,
       });
 
       // Return a small sample of people found for agent visibility
@@ -4816,7 +4823,14 @@ export const researchGetTable = tool({
     try {
       const client = getSupabaseServiceClient();
       const { resolveTable } = await import("@/lib/research/columns");
+      const { resolveRubric } = await import("@/lib/research/rubrics");
       const table = await resolveTable(client, table_ref);
+      let personas: string[] = [];
+      try {
+        personas = resolveRubric(table).default_personas;
+      } catch {
+        /* unreadable rubric — leave personas empty */
+      }
       return {
         success: true as const,
         table: {
@@ -4826,6 +4840,7 @@ export const researchGetTable = tool({
           description: table.description,
           row_count: table.rowCount,
           columns: table.columns,
+          personas,
           open_url: table.slug
             ? `/research?table=${encodeURIComponent(table.slug)}`
             : `/research?table=${table.id}`,
@@ -4835,6 +4850,41 @@ export const researchGetTable = tool({
       return {
         success: false as const,
         message: error instanceof Error ? error.message : "Table not found",
+      };
+    }
+  },
+});
+
+export const researchSetPersonas = tool({
+  description:
+    "Set the buyer personas that people enrichment targets for a research table (who to find at each company, e.g. ['Founder', 'CEO', 'Sócio comercial', 'Head of Delivery'] for a partner list, or ['CTO', 'VP Engineering', 'Head of Platform'] for a buyer list). Replaces the table's current personas; up to 10. Titles are matched with PT/EN synonyms. Run researchEnrichPeople afterwards — already-saved people are kept, new finds follow the new personas.",
+  inputSchema: z.object({
+    table_ref: z.string().describe("Table id, slug, or unique name"),
+    personas: z
+      .array(z.string())
+      .min(1)
+      .max(10)
+      .describe("Roles to target, most important first"),
+  }),
+  execute: async ({ table_ref, personas }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { resolveTable } = await import("@/lib/research/columns");
+      const { updateTablePersonas } = await import("@/lib/research/tables");
+      const table = await resolveTable(client, table_ref);
+      const saved = await updateTablePersonas(client, table.id, personas);
+      return {
+        success: true as const,
+        table_id: table.id,
+        table_slug: table.slug,
+        personas: saved,
+        note: "Saved on the table's rubric. Call researchEnrichPeople to find people with these personas.",
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "Failed to set personas",
       };
     }
   },
@@ -7072,6 +7122,7 @@ export function createAgentTools(userEmail?: string) {
     // registered on the agent — product primitive is move by row_ids only.
     researchFindIcp,
     researchEnrichPeople,
+    researchSetPersonas,
     researchGetTable,
     researchCreateColumn,
     researchUpdateColumn,
