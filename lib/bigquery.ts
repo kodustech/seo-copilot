@@ -208,6 +208,85 @@ export async function describeDataset(dataset?: string): Promise<{
 }
 
 /**
+ * The SQL with comments removed, for the read-only check only — the query
+ * that runs is the original.
+ *
+ * The keyword guard below used to run over the raw text, so a comment was
+ * enough to trip it: collect.ts once explained that NULL keys "drop out of
+ * COUNT(DISTINCT)" and the product-signals sweep failed every run for twelve
+ * days with "Mutating statements are not allowed". Comments are the place
+ * people write prose, and prose uses "create", "update" and "drop" freely.
+ *
+ * Walks the text rather than regex-replacing so a `--` or `/*` inside a string
+ * literal is left alone: otherwise `SELECT '--'; DROP TABLE x` would lose its
+ * DROP to the "comment" and pass. BigQuery comments: `--`, `#`, `/* ... *\/`.
+ */
+export function stripSqlComments(sql: string): string {
+  let out = "";
+  let i = 0;
+  const n = sql.length;
+  while (i < n) {
+    const ch = sql[i];
+    const next = sql[i + 1];
+    if (ch === "'" || ch === '"' || ch === "`") {
+      // String / identifier literal: copy through the closing quote, honouring
+      // backslash escapes and doubled quotes.
+      const quote = ch;
+      let j = i + 1;
+      while (j < n) {
+        if (sql[j] === "\\") {
+          j += 2;
+          continue;
+        }
+        if (sql[j] === quote) {
+          if (sql[j + 1] === quote) {
+            j += 2;
+            continue;
+          }
+          break;
+        }
+        j += 1;
+      }
+      out += sql.slice(i, Math.min(j + 1, n));
+      i = j + 1;
+      continue;
+    }
+    if ((ch === "-" && next === "-") || ch === "#") {
+      const end = sql.indexOf("\n", i);
+      // Keep the newline so `\b` boundaries and line structure survive.
+      i = end === -1 ? n : end;
+      out += " ";
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      const end = sql.indexOf("*/", i + 2);
+      i = end === -1 ? n : end + 2;
+      out += " ";
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+/** Throws unless `sql` is a single read-only SELECT / WITH ... SELECT. */
+export function assertReadOnlyBigQuerySql(sql: string): void {
+  const code = stripSqlComments(sql).trim();
+
+  // Safety: only allow SELECT statements
+  if (!/^(SELECT|WITH)\s/i.test(code)) {
+    throw new Error("Only SELECT (or WITH ... SELECT) queries are allowed.");
+  }
+
+  // Block dangerous keywords
+  const blocked = /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|MERGE|GRANT|REVOKE)\b/i;
+  if (blocked.test(code)) {
+    throw new Error("Mutating statements are not allowed. Only read-only queries.");
+  }
+}
+
+/**
  * Executes a read-only BigQuery SQL query with safety checks.
  */
 export async function queryBigQuery(
@@ -215,17 +294,7 @@ export async function queryBigQuery(
   maxRows = 100,
 ): Promise<{ rows: Record<string, unknown>[]; totalRows: number }> {
   const trimmed = sql.trim();
-
-  // Safety: only allow SELECT statements
-  if (!/^(SELECT|WITH)\s/i.test(trimmed)) {
-    throw new Error("Only SELECT (or WITH ... SELECT) queries are allowed.");
-  }
-
-  // Block dangerous keywords
-  const blocked = /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|MERGE|GRANT|REVOKE)\b/i;
-  if (blocked.test(trimmed)) {
-    throw new Error("Mutating statements are not allowed. Only read-only queries.");
-  }
+  assertReadOnlyBigQuerySql(trimmed);
 
   // Enforce LIMIT
   const hasLimit = /\bLIMIT\s+\d+/i.test(trimmed);

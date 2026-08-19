@@ -140,7 +140,7 @@ export async function collectOrgFacts(): Promise<CollectedOrg[]> {
              -- push, so reviews_30d runs several times ahead of "PRs reviewed".
              -- The key is repositoryId+number because pullRequestNumber alone
              -- repeats across repos. Rows missing either side collapse to NULL
-             -- and drop out of COUNT(DISTINCT) — an execution we cannot pin to a
+             -- and fall out of COUNT(DISTINCT) — an execution we cannot pin to a
              -- PR should not become one, and FORMAT() would have bucketed them
              -- all under the literal string "NULL" instead.
              COUNT(DISTINCT IF(
