@@ -49,6 +49,7 @@ export async function PATCH(req: Request, ctx: Ctx) {
         name: body.name,
         description: body.description,
         status: body.status,
+        tags: body.tags,
         defaultFromEmail: body.defaultFromEmail,
         mailboxId: body.mailboxId,
       }).catch(async () => {
@@ -62,6 +63,7 @@ export async function PATCH(req: Request, ctx: Ctx) {
       name: body.name,
       description: body.description,
       status: body.status,
+      tags: body.tags,
       defaultFromEmail: body.defaultFromEmail,
       mailboxId: body.mailboxId,
     });

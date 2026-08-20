@@ -25,6 +25,7 @@ import {
   Trash2,
   Users,
   Workflow,
+  X,
 } from "lucide-react";
 
 import { AutoEnrollDialog } from "@/components/auto-enroll-dialog";
@@ -63,6 +64,7 @@ type Sequence = {
   name: string;
   description: string | null;
   status: string;
+  tags?: string[];
   stepCount?: number;
   enrollmentCount?: number;
 };
@@ -695,6 +697,152 @@ function Segmented<T extends string>({
   );
 }
 
+// ── Tags ───────────────────────────────────────────────────────────
+
+/** Client-side mirror of the server's tag rules, so the chip you see is the
+ *  chip that gets stored. The server still re-normalizes as the authority. */
+function cleanTag(s: string): string {
+  return s.trim().replace(/\s+/g, " ").slice(0, 32);
+}
+
+const MAX_TAGS = 20;
+
+/**
+ * Free-form tag input: chips you can remove, plus a combobox that both offers
+ * tags already used on other campaigns and lets you create a new one on the
+ * spot. No management screen — a tag exists because a campaign wears it.
+ */
+function TagEditor({
+  value,
+  suggestions,
+  onChange,
+}: {
+  value: string[];
+  suggestions: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [input, setInput] = useState("");
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const has = (t: string) =>
+    value.some((v) => v.toLowerCase() === t.toLowerCase());
+
+  const add = (raw: string) => {
+    const t = cleanTag(raw);
+    setInput("");
+    if (!t || has(t) || value.length >= MAX_TAGS) return;
+    onChange([...value, t]);
+  };
+  const remove = (t: string) => onChange(value.filter((v) => v !== t));
+
+  const matches = useMemo(() => {
+    const q = input.trim().toLowerCase();
+    return suggestions
+      .filter((s) => !has(s))
+      .filter((s) => (q ? s.toLowerCase().includes(q) : true))
+      .slice(0, 8);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestions, input, value]);
+
+  const canCreate = input.trim().length > 0 && !has(cleanTag(input));
+  const atCap = value.length >= MAX_TAGS;
+
+  return (
+    <div className="relative w-full">
+      <div
+        className={cn(
+          "flex flex-wrap items-center gap-1.5 rounded-lg border border-border bg-background px-2 py-1.5",
+          "focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/20",
+        )}
+        onClick={() => inputRef.current?.focus()}
+      >
+        {value.map((t) => (
+          <span
+            key={t}
+            className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-xs font-medium text-foreground"
+          >
+            {t}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                remove(t);
+              }}
+              className="text-muted-foreground transition-colors hover:text-foreground"
+              aria-label={`Remove tag ${t}`}
+            >
+              <X className="size-3" />
+            </button>
+          </span>
+        ))}
+        <input
+          ref={inputRef}
+          value={input}
+          disabled={atCap}
+          onChange={(e) => {
+            setInput(e.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === ",") {
+              e.preventDefault();
+              add(input);
+            } else if (e.key === "Backspace" && !input && value.length > 0) {
+              remove(value[value.length - 1]);
+            } else if (e.key === "Escape") {
+              setOpen(false);
+            }
+          }}
+          placeholder={
+            atCap
+              ? `Max ${MAX_TAGS} tags`
+              : value.length === 0
+                ? "Add tags…"
+                : ""
+          }
+          className="min-w-24 flex-1 bg-transparent px-0.5 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
+          aria-label="Add a tag"
+        />
+      </div>
+
+      {open && !atCap && (canCreate || matches.length > 0) && (
+        <div className="absolute left-0 top-full z-20 mt-1 max-h-60 w-full min-w-56 overflow-auto rounded-lg border border-border bg-popover py-1 text-popover-foreground shadow-md">
+          {canCreate && (
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => add(input)}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-muted"
+            >
+              <Plus className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="truncate">
+                Create{" "}
+                <span className="font-medium text-foreground">
+                  {cleanTag(input)}
+                </span>
+              </span>
+            </button>
+          )}
+          {matches.map((s) => (
+            <button
+              key={s}
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => add(s)}
+              className="block w-full truncate px-3 py-1.5 text-left text-sm hover:bg-muted"
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Sequences list: filters + row ──────────────────────────────────
 
 type SeqStatusFilter = "all" | "active" | "draft" | "paused" | "archived";
@@ -769,6 +917,23 @@ function SequenceRow({
           {!running && (
             <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
               {sequence.status}
+            </span>
+          )}
+          {(sequence.tags ?? []).length > 0 && (
+            <span className="hidden shrink-0 items-center gap-1 sm:flex">
+              {(sequence.tags ?? []).slice(0, 2).map((t) => (
+                <span
+                  key={t}
+                  className="max-w-28 truncate rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+                >
+                  {t}
+                </span>
+              ))}
+              {(sequence.tags ?? []).length > 2 && (
+                <span className="text-[10px] text-muted-foreground/50">
+                  +{(sequence.tags ?? []).length - 2}
+                </span>
+              )}
             </span>
           )}
         </span>
@@ -850,6 +1015,7 @@ export function SequencesPage() {
   // without them the only way to find the live one is to read every card.
   const [seqQuery, setSeqQuery] = useState("");
   const [seqStatus, setSeqStatus] = useState<SeqStatusFilter>("all");
+  const [seqTags, setSeqTags] = useState<string[]>([]);
   const [tables, setTables] = useState<ResearchTable[]>([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
@@ -873,6 +1039,7 @@ export function SequencesPage() {
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editStatus, setEditStatus] = useState("draft");
+  const [editTags, setEditTags] = useState<string[]>([]);
   const [editMailboxId, setEditMailboxId] = useState("default");
   const [editSteps, setEditSteps] = useState<StepDraft[]>([]);
   const [editLoading, setEditLoading] = useState(false);
@@ -1004,6 +1171,11 @@ export function SequencesPage() {
       setEditName(data.sequence?.name ?? "");
       setEditDescription(data.sequence?.description ?? "");
       setEditStatus(data.sequence?.status ?? "draft");
+      setEditTags(
+        Array.isArray(data.sequence?.tags)
+          ? (data.sequence.tags as string[])
+          : [],
+      );
       setEditMailboxId(data.sequence?.mailboxId ?? data.sequence?.mailbox_id ?? "default");
       setSequenceHealth((data.health as SequenceHealth) ?? null);
       const enrRaw = (data.enrollments ?? []) as Record<string, unknown>[];
@@ -1341,6 +1513,49 @@ export function SequencesPage() {
     }
   };
 
+  /**
+   * Tags persist on every add/remove (like status), not on the Save button —
+   * Save only shows on the Steps tab, and tags should be editable from any
+   * tab. The full array is sent each time so the last write wins cleanly, and
+   * the optimistic update is reconciled with the server's normalized result.
+   */
+  const saveTags = async (next: string[]) => {
+    if (!token || !editingId) return;
+    const prev = editTags;
+    setEditTags(next);
+    setError(null);
+    try {
+      const res = await fetch(`/api/outreach/sequences/${editingId}`, {
+        method: "PATCH",
+        headers: headers(),
+        body: JSON.stringify({ tags: next }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setEditTags(prev);
+        setError(
+          (data as { error?: string }).error ??
+            "Could not save tags — is the tags column migrated?",
+        );
+        return;
+      }
+      const saved = (data as { sequence?: { tags?: string[] } }).sequence?.tags;
+      if (Array.isArray(saved)) setEditTags(saved);
+      // Keep the list (and its filter chips / autocomplete) in sync with the
+      // new tag without a full-page churn on every keystroke.
+      setSequences((prevSeqs) =>
+        prevSeqs.map((s) =>
+          s.id === editingId
+            ? { ...s, tags: Array.isArray(saved) ? saved : next }
+            : s,
+        ),
+      );
+    } catch {
+      setEditTags(prev);
+      setError("Could not save tags");
+    }
+  };
+
   const updateStep = (key: string, patch: Partial<StepDraft>) => {
     setEditSteps((prev) => {
       const idx = prev.findIndex((s) => s.key === key);
@@ -1613,17 +1828,33 @@ export function SequencesPage() {
     return c;
   }, [sequences]);
 
+  // Every tag in use across all campaigns, with how many carry it. Powers both
+  // the editor's autocomplete and the list's filter chips, so a tag typed on
+  // one campaign is immediately offerable on the next.
+  const allTags = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const s of sequences)
+      for (const t of s.tags ?? []) counts.set(t, (counts.get(t) ?? 0) + 1);
+    return [...counts.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([tag, count]) => ({ tag, count }));
+  }, [sequences]);
+  const allTagNames = useMemo(() => allTags.map((t) => t.tag), [allTags]);
+
   const visibleSequences = useMemo(() => {
     const q = seqQuery.trim().toLowerCase();
     return sequences.filter((s) => {
       if (seqStatus !== "all" && s.status !== seqStatus) return false;
+      // OR across selected tags: a campaign matches if it carries any of them.
+      if (seqTags.length > 0 && !(s.tags ?? []).some((t) => seqTags.includes(t)))
+        return false;
       if (!q) return true;
       return (
         s.name.toLowerCase().includes(q) ||
         (s.description ?? "").toLowerCase().includes(q)
       );
     });
-  }, [sequences, seqQuery, seqStatus]);
+  }, [sequences, seqQuery, seqStatus, seqTags]);
 
   // Running first, then the rest in the order the API returned (most recently
   // updated). Sorting the whole list by status would bury a draft you edited
@@ -1643,7 +1874,14 @@ export function SequencesPage() {
     if (seqStatus !== "all" && (seqCounts[seqStatus] ?? 0) === 0) {
       setSeqStatus("all");
     }
-  }, [loading, seqStatus, seqCounts]);
+    // A tag selected in the filter that no longer exists on any campaign (last
+    // carrier deleted or retagged) would otherwise strand the list on empty
+    // with a chip you can't even see to unclick.
+    if (seqTags.length > 0) {
+      const live = seqTags.filter((t) => allTagNames.includes(t));
+      if (live.length !== seqTags.length) setSeqTags(live);
+    }
+  }, [loading, seqStatus, seqCounts, seqTags, allTagNames]);
 
   const activityLabel = (t: QueueTask) => {
     if (t.channel === "linkedin") {
@@ -1841,6 +2079,18 @@ export function SequencesPage() {
               >
                 <Trash2 className="size-3.5" />
               </Button>
+            </div>
+          </div>
+
+          {/* Tags — persist immediately, editable from any tab. */}
+          <div className="mx-auto mt-2.5 flex max-w-6xl items-center gap-2">
+            <span className="shrink-0 text-xs text-muted-foreground">Tags</span>
+            <div className="min-w-0 max-w-lg flex-1">
+              <TagEditor
+                value={editTags}
+                suggestions={allTagNames}
+                onChange={(next) => void saveTags(next)}
+              />
             </div>
           </div>
 
@@ -3428,32 +3678,89 @@ export function SequencesPage() {
               what is live right now. Both hidden below four sequences — a
               filter bar over three rows is furniture. */}
           {sequences.length > 3 && (
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="relative min-w-48 flex-1">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={seqQuery}
-                  onChange={(e) => setSeqQuery(e.target.value)}
-                  placeholder="Search sequences…"
-                  aria-label="Search sequences by name or description"
-                  className="h-8 pl-8 text-sm"
-                />
-              </div>
-              <Segmented
-                value={seqStatus}
-                onChange={setSeqStatus}
-                options={[
-                  { value: "all" as const, label: `All ${sequences.length}` },
-                  // Only statuses that exist get a chip: an "Archived 0" button
-                  // is a control that can only ever empty the list.
-                  ...SEQ_STATUS_ORDER.filter((s) => (seqCounts[s] ?? 0) > 0).map(
-                    (s) => ({
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative min-w-48 flex-1">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={seqQuery}
+                    onChange={(e) => setSeqQuery(e.target.value)}
+                    placeholder="Search sequences…"
+                    aria-label="Search sequences by name or description"
+                    className="h-8 pl-8 text-sm"
+                  />
+                </div>
+                <Segmented
+                  value={seqStatus}
+                  onChange={setSeqStatus}
+                  options={[
+                    { value: "all" as const, label: `All ${sequences.length}` },
+                    // Only statuses that exist get a chip: an "Archived 0" button
+                    // is a control that can only ever empty the list.
+                    ...SEQ_STATUS_ORDER.filter(
+                      (s) => (seqCounts[s] ?? 0) > 0,
+                    ).map((s) => ({
                       value: s as SeqStatusFilter,
                       label: `${SEQ_STATUS_LABEL[s]} ${seqCounts[s]}`,
-                    }),
-                  ),
-                ]}
-              />
+                    })),
+                  ]}
+                />
+              </div>
+
+              {/* Tag filter — OR across selections. Only rendered once at least
+                  one campaign is tagged; a "Tags" row with nothing to pick is
+                  furniture. */}
+              {allTags.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="mr-0.5 text-xs text-muted-foreground">
+                    Tags
+                  </span>
+                  {allTags.map(({ tag, count }) => {
+                    const active = seqTags.includes(tag);
+                    return (
+                      <button
+                        key={tag}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() =>
+                          setSeqTags((prev) =>
+                            prev.includes(tag)
+                              ? prev.filter((t) => t !== tag)
+                              : [...prev, tag],
+                          )
+                        }
+                        className={cn(
+                          "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                          active
+                            ? "bg-foreground text-background"
+                            : "bg-muted text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {tag}
+                        <span
+                          className={cn(
+                            "tabular-nums",
+                            active
+                              ? "text-background/70"
+                              : "text-muted-foreground/60",
+                          )}
+                        >
+                          {count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                  {seqTags.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setSeqTags([])}
+                      className="ml-0.5 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -3498,6 +3805,7 @@ export function SequencesPage() {
                 onClick={() => {
                   setSeqQuery("");
                   setSeqStatus("all");
+                  setSeqTags([]);
                 }}
               >
                 Clear filters

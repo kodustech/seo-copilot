@@ -27,6 +27,8 @@ export type OutreachSequence = {
   name: string;
   description: string | null;
   status: SequenceStatus;
+  /** Free-form labels for grouping/filtering campaigns. Never null: `[]` when unset. */
+  tags: string[];
   defaultFromEmail: string | null;
   mailboxId: string | null;
   createdByEmail: string | null;

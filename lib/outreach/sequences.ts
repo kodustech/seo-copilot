@@ -46,12 +46,39 @@ function mapSequence(r: Record<string, unknown>): OutreachSequence {
     name: r.name as string,
     description: (r.description as string | null) ?? null,
     status: r.status as SequenceStatus,
+    // Tolerates a DB where the column is not there yet (falls back to []), so
+    // the list keeps working before the migration lands; only writing tags
+    // needs the column.
+    tags: Array.isArray(r.tags) ? (r.tags as string[]) : [],
     defaultFromEmail: (r.default_from_email as string | null) ?? null,
     mailboxId: (r.mailbox_id as string | null) ?? null,
     createdByEmail: (r.created_by_email as string | null) ?? null,
     createdAt: r.created_at as string,
     updatedAt: r.updated_at as string,
   };
+}
+
+/**
+ * Server-side authority for what a tag list may contain. Trims and collapses
+ * whitespace, drops empties, dedupes case-insensitively (keeping the first
+ * spelling seen), caps each tag at 32 chars and the set at 20 — so a typo in
+ * the client can never write an unbounded or dirty array.
+ */
+function normalizeTags(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of input) {
+    if (typeof raw !== "string") continue;
+    const t = raw.trim().replace(/\s+/g, " ").slice(0, 32);
+    if (!t) continue;
+    const key = t.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(t);
+    if (out.length >= 20) break;
+  }
+  return out;
 }
 
 function mapStep(r: Record<string, unknown>): OutreachSequenceStep {
@@ -599,6 +626,7 @@ export async function updateSequence(
     name?: string;
     description?: string | null;
     status?: SequenceStatus;
+    tags?: string[];
     defaultFromEmail?: string | null;
     mailboxId?: string | null;
   },
@@ -608,6 +636,7 @@ export async function updateSequence(
   if (patch.name != null) body.name = patch.name.trim();
   if (patch.description !== undefined) body.description = patch.description;
   if (patch.status != null) body.status = patch.status;
+  if (patch.tags !== undefined) body.tags = normalizeTags(patch.tags);
   if (patch.defaultFromEmail !== undefined) {
     body.default_from_email = patch.defaultFromEmail;
   }
