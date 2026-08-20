@@ -90,7 +90,9 @@ type QueueTask = {
   renderedSubject: string | null;
   scheduledFor?: string;
   meta: Record<string, unknown>;
+  sequenceId?: string | null;
   sequenceName?: string | null;
+  sequenceTags?: string[] | null;
   enrollment?: {
     companyName: string;
     domain: string | null;
@@ -1010,6 +1012,9 @@ export function SequencesPage() {
   const [activityFilter, setActivityFilter] = useState<
     "all" | "linkedin" | "email"
   >("all");
+  // Today tab: filter the day's work down to one initiative's tags (OR), the
+  // same idea as the Sequences list but scoped to what is actually due today.
+  const [queueTags, setQueueTags] = useState<string[]>([]);
   // Sequences tab: eleven cadences of identical visual weight, one of them
   // running. Search and a status filter are what make that list workable —
   // without them the only way to find the live one is to read every card.
@@ -1850,10 +1855,30 @@ export function SequencesPage() {
     window.open(gmail.toString(), "_blank", "noopener,noreferrer");
   };
 
+  // Tags carried by the work actually due today, with a count — so the Today
+  // filter only ever offers a tag that has something to work behind it.
+  const queueTagOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const t of tasks)
+      for (const tag of t.sequenceTags ?? [])
+        counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    return [...counts.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([tag, count]) => ({ tag, count }));
+  }, [tasks]);
+
   const filteredTasks = useMemo(() => {
-    if (activityFilter === "all") return tasks;
-    return tasks.filter((t) => t.channel === activityFilter);
-  }, [tasks, activityFilter]);
+    return tasks.filter((t) => {
+      if (activityFilter !== "all" && t.channel !== activityFilter) return false;
+      // OR across selected tags, on the task's sequence tags.
+      if (
+        queueTags.length > 0 &&
+        !(t.sequenceTags ?? []).some((tag) => queueTags.includes(tag))
+      )
+        return false;
+      return true;
+    });
+  }, [tasks, activityFilter, queueTags]);
 
   // An empty queue has nothing to filter, and the chip row hides itself when
   // readyTotal hits 0 — so a user sitting on "Email" when the last task clears
@@ -1867,7 +1892,15 @@ export function SequencesPage() {
     if (activityFilter !== "all" && (stats?.readyTotal ?? tasks.length) === 0) {
       setActivityFilter("all");
     }
-  }, [loading, activityFilter, stats, tasks.length]);
+    // Same strand guard for tags: a tag whose last due task just cleared (or
+    // that dropped off the queue on reload) must not leave a selected chip the
+    // user can no longer see to unclick.
+    if (queueTags.length > 0) {
+      const available = new Set(queueTagOptions.map((o) => o.tag));
+      const live = queueTags.filter((t) => available.has(t));
+      if (live.length !== queueTags.length) setQueueTags(live);
+    }
+  }, [loading, activityFilter, stats, tasks.length, queueTags, queueTagOptions]);
 
   // Per-sequence counts for today, keyed for the row. The queue endpoint
   // already computes them for the Today tab — the list was simply not reading
@@ -3995,6 +4028,58 @@ export function SequencesPage() {
             ))}
           </div>
 
+          {/* Tag filter — narrows the day's work to one initiative (OR). Only
+              the tags with something due today are offered. */}
+          {queueTagOptions.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="mr-0.5 text-xs text-muted-foreground">Tags</span>
+              {queueTagOptions.map(({ tag, count }) => {
+                const active = queueTags.includes(tag);
+                return (
+                  <button
+                    key={tag}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() =>
+                      setQueueTags((prev) =>
+                        prev.includes(tag)
+                          ? prev.filter((t) => t !== tag)
+                          : [...prev, tag],
+                      )
+                    }
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
+                      active
+                        ? "bg-foreground text-background"
+                        : "bg-muted text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {tag}
+                    <span
+                      className={cn(
+                        "tabular-nums",
+                        active
+                          ? "text-background/70"
+                          : "text-muted-foreground/60",
+                      )}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+              {queueTags.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setQueueTags([])}
+                  className="ml-0.5 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          )}
+
           {loading && tasks.length === 0 ? (
             <div className="py-16 text-center text-sm text-muted-foreground">
               <Loader2 className="mr-2 inline size-4 animate-spin" />
@@ -4006,23 +4091,45 @@ export function SequencesPage() {
             // available, and celebrates having nothing to do. What is useful
             // here is the way out, so that is all that stays.
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-1 py-6 text-sm text-muted-foreground">
-              <span>
-                {activityFilter === "all"
-                  ? "Delayed steps will appear here as they come due."
-                  : "No work of this kind due — try All."}
-              </span>
-              {activityFilter === "all" ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEnrollSeqId(sequences[0]?.id ?? "");
-                    setEnrollOpen(true);
-                  }}
-                  className="font-medium text-foreground underline underline-offset-4 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                >
-                  Enroll a list
-                </button>
-              ) : null}
+              {queueTags.length > 0 ? (
+                // A tag filter is the likely reason work is hidden while the
+                // queue is not actually empty, so offer the way back to it
+                // before anything else.
+                <>
+                  <span>
+                    No work due for{" "}
+                    {queueTags.map((t) => `“${t}”`).join(" / ")}
+                    {activityFilter !== "all" ? " in this channel" : ""}.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setQueueTags([])}
+                    className="font-medium text-foreground underline underline-offset-4 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                  >
+                    Clear tag filter
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span>
+                    {activityFilter === "all"
+                      ? "Delayed steps will appear here as they come due."
+                      : "No work of this kind due — try All."}
+                  </span>
+                  {activityFilter === "all" ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEnrollSeqId(sequences[0]?.id ?? "");
+                        setEnrollOpen(true);
+                      }}
+                      className="font-medium text-foreground underline underline-offset-4 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                    >
+                      Enroll a list
+                    </button>
+                  ) : null}
+                </>
+              )}
             </div>
           ) : (
             <div className="space-y-3">

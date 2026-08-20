@@ -100,5 +100,7 @@ export type OutreachSendTask = {
   // joined
   enrollment?: OutreachEnrollment;
   step?: OutreachSequenceStep;
+  sequenceId?: string | null;
   sequenceName?: string | null;
+  sequenceTags?: string[];
 };
