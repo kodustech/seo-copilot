@@ -1036,6 +1036,18 @@ export function SequencesPage() {
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
 
   const [editingId, setEditingId] = useState<string | null>(null);
+  // Latest editingId readable from inside async closures (a tag save that
+  // resolves after you have navigated to another sequence must not write its
+  // result onto the one now open).
+  const editingIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    editingIdRef.current = editingId;
+  }, [editingId]);
+  // Per-sequence tag-save ordering. tagSaveTicket is the generation guard (only
+  // the newest save reconciles the UI); tagSaveChain serializes the PATCHes so
+  // the DB lands them in the order the edits were made.
+  const tagSaveTicket = useRef(0);
+  const tagSaveChain = useRef<Promise<void>>(Promise.resolve());
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editStatus, setEditStatus] = useState("draft");
@@ -1515,45 +1527,69 @@ export function SequencesPage() {
 
   /**
    * Tags persist on every add/remove (like status), not on the Save button —
-   * Save only shows on the Steps tab, and tags should be editable from any
-   * tab. The full array is sent each time so the last write wins cleanly, and
-   * the optimistic update is reconciled with the server's normalized result.
+   * Save only shows on the Steps tab, and tags should be editable from any tab.
+   *
+   * Each edit sends the FULL desired array, so the correct end state is simply
+   * "whatever the last edit said." Getting there safely under rapid clicks
+   * takes three guards, the same generation-guard idea load() uses:
+   *   - serialize the PATCHes onto a chain, so the DB lands them in order and
+   *     an older write can't be the one that sticks;
+   *   - coalesce: a save superseded before it runs is skipped entirely — the
+   *     newer save already carries the full array, so the intermediate write is
+   *     pure waste;
+   *   - drop stale responses: only the newest ticket, still on the same
+   *     sequence, may reconcile editTags / the list with the server result.
    */
-  const saveTags = async (next: string[]) => {
+  const saveTags = (next: string[]) => {
     if (!token || !editingId) return;
+    const seq = editingId;
+    const ticket = ++tagSaveTicket.current;
     const prev = editTags;
-    setEditTags(next);
+    setEditTags(next); // optimistic, in click order
     setError(null);
-    try {
-      const res = await fetch(`/api/outreach/sequences/${editingId}`, {
-        method: "PATCH",
-        headers: headers(),
-        body: JSON.stringify({ tags: next }),
+    tagSaveChain.current = tagSaveChain.current
+      .catch(() => {})
+      .then(async () => {
+        // A newer edit already superseded this one — its PATCH carries the full
+        // array, so skip this write instead of racing it.
+        if (ticket !== tagSaveTicket.current) return;
+        try {
+          const res = await fetch(`/api/outreach/sequences/${seq}`, {
+            method: "PATCH",
+            headers: headers(),
+            body: JSON.stringify({ tags: next }),
+          });
+          const data = await res.json().catch(() => ({}));
+          // Superseded while in flight, or you left for another sequence.
+          if (ticket !== tagSaveTicket.current || editingIdRef.current !== seq)
+            return;
+          if (!res.ok) {
+            setEditTags(prev);
+            setError(
+              (data as { error?: string }).error ??
+                "Could not save tags — is the tags column migrated?",
+            );
+            return;
+          }
+          const saved = (data as { sequence?: { tags?: string[] } }).sequence
+            ?.tags;
+          if (Array.isArray(saved)) setEditTags(saved);
+          // Keep the list (its filter chips / autocomplete) in sync without a
+          // full reload on every keystroke.
+          setSequences((prevSeqs) =>
+            prevSeqs.map((s) =>
+              s.id === seq
+                ? { ...s, tags: Array.isArray(saved) ? saved : next }
+                : s,
+            ),
+          );
+        } catch {
+          if (ticket === tagSaveTicket.current && editingIdRef.current === seq) {
+            setEditTags(prev);
+            setError("Could not save tags");
+          }
+        }
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setEditTags(prev);
-        setError(
-          (data as { error?: string }).error ??
-            "Could not save tags — is the tags column migrated?",
-        );
-        return;
-      }
-      const saved = (data as { sequence?: { tags?: string[] } }).sequence?.tags;
-      if (Array.isArray(saved)) setEditTags(saved);
-      // Keep the list (and its filter chips / autocomplete) in sync with the
-      // new tag without a full-page churn on every keystroke.
-      setSequences((prevSeqs) =>
-        prevSeqs.map((s) =>
-          s.id === editingId
-            ? { ...s, tags: Array.isArray(saved) ? saved : next }
-            : s,
-        ),
-      );
-    } catch {
-      setEditTags(prev);
-      setError("Could not save tags");
-    }
   };
 
   const updateStep = (key: string, patch: Partial<StepDraft>) => {
@@ -2089,7 +2125,7 @@ export function SequencesPage() {
               <TagEditor
                 value={editTags}
                 suggestions={allTagNames}
-                onChange={(next) => void saveTags(next)}
+                onChange={saveTags}
               />
             </div>
           </div>
