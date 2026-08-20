@@ -1718,17 +1718,21 @@ export async function listReadyQueue(
         .filter(Boolean),
     ),
   ];
-  const seqMeta = new Map<string, { name: string; status: SequenceStatus }>();
+  const seqMeta = new Map<
+    string,
+    { name: string; status: SequenceStatus; tags: string[] }
+  >();
   if (seqIds.length > 0) {
     const { data: seqs, error: seqErr } = await client
       .from("outreach_sequences")
-      .select("id, name, status")
+      .select("id, name, status, tags")
       .in("id", seqIds);
     if (seqErr) throw new Error(seqErr.message);
     for (const s of seqs ?? []) {
       seqMeta.set(s.id as string, {
         name: (s.name as string) ?? "Sequence",
         status: (s.status as SequenceStatus) ?? "draft",
+        tags: Array.isArray(s.tags) ? (s.tags as string[]) : [],
       });
     }
   }
@@ -1740,7 +1744,9 @@ export async function listReadyQueue(
     const meta = seqMeta.get(enr.sequenceId);
     if (!meta || meta.status !== "active") continue;
     t.enrollment = enr;
+    t.sequenceId = enr.sequenceId;
     t.sequenceName = meta.name;
+    t.sequenceTags = meta.tags;
     const step = stepById.get(t.stepId);
     if (step) t.step = step;
     live.push(t);
