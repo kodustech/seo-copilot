@@ -1043,10 +1043,11 @@ export function SequencesPage() {
   useEffect(() => {
     editingIdRef.current = editingId;
   }, [editingId]);
-  // Per-sequence tag-save ordering. tagSaveTicket is the generation guard (only
-  // the newest save reconciles the UI); tagSaveChain serializes the PATCHes so
-  // the DB lands them in the order the edits were made.
-  const tagSaveTicket = useRef(0);
+  // Tag-save ordering. tagSaveTickets is a per-sequence generation counter, so
+  // only the newest save for a given sequence reconciles the UI — and an edit
+  // on one sequence can never cancel a pending save for another. tagSaveChain
+  // serializes the PATCHes so the DB lands them in edit order.
+  const tagSaveTickets = useRef<Map<string, number>>(new Map());
   const tagSaveChain = useRef<Promise<void>>(Promise.resolve());
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
@@ -1543,28 +1544,37 @@ export function SequencesPage() {
   const saveTags = (next: string[]) => {
     if (!token || !editingId) return;
     const seq = editingId;
-    const ticket = ++tagSaveTicket.current;
-    const prev = editTags;
+    const ticket = (tagSaveTickets.current.get(seq) ?? 0) + 1;
+    tagSaveTickets.current.set(seq, ticket);
+    const isLatest = () => tagSaveTickets.current.get(seq) === ticket;
+    // Roll back to the server truth (the persisted tags in the list), never the
+    // optimistic editTags: a coalesced burst can leave editTags holding a value
+    // the server never saved, and reverting to that would restore a phantom tag.
+    const serverTruth = sequences.find((s) => s.id === seq)?.tags ?? editTags;
     setEditTags(next); // optimistic, in click order
     setError(null);
     tagSaveChain.current = tagSaveChain.current
       .catch(() => {})
       .then(async () => {
-        // A newer edit already superseded this one — its PATCH carries the full
-        // array, so skip this write instead of racing it.
-        if (ticket !== tagSaveTicket.current) return;
+        // Superseded by a newer edit on THIS sequence before we ran — that
+        // PATCH carries the full array, so skip this one instead of racing it.
+        if (!isLatest()) return;
+        const ctrl = new AbortController();
+        // A hung request must not wedge the chain (and every later tag save)
+        // forever — abort it after 15s so the chain always advances.
+        const timer = window.setTimeout(() => ctrl.abort(), 15000);
         try {
           const res = await fetch(`/api/outreach/sequences/${seq}`, {
             method: "PATCH",
             headers: headers(),
             body: JSON.stringify({ tags: next }),
+            signal: ctrl.signal,
           });
           const data = await res.json().catch(() => ({}));
           // Superseded while in flight, or you left for another sequence.
-          if (ticket !== tagSaveTicket.current || editingIdRef.current !== seq)
-            return;
+          if (!isLatest() || editingIdRef.current !== seq) return;
           if (!res.ok) {
-            setEditTags(prev);
+            setEditTags(serverTruth);
             setError(
               (data as { error?: string }).error ??
                 "Could not save tags — is the tags column migrated?",
@@ -1584,10 +1594,12 @@ export function SequencesPage() {
             ),
           );
         } catch {
-          if (ticket === tagSaveTicket.current && editingIdRef.current === seq) {
-            setEditTags(prev);
+          if (isLatest() && editingIdRef.current === seq) {
+            setEditTags(serverTruth);
             setError("Could not save tags");
           }
+        } finally {
+          window.clearTimeout(timer);
         }
       });
   };
