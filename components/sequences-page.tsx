@@ -1049,6 +1049,12 @@ export function SequencesPage() {
   // serializes the PATCHes so the DB lands them in edit order.
   const tagSaveTickets = useRef<Map<string, number>>(new Map());
   const tagSaveChain = useRef<Promise<void>>(Promise.resolve());
+  // The last server-confirmed tags for the sequence open in the editor: what
+  // openEditor loaded, then whatever each successful save returned. This is the
+  // rollback target on a failed save — reliable in a way neither the optimistic
+  // editTags (may hold a coalesced, never-saved value) nor the list-load-time
+  // `sequences` snapshot (may predate what the editor loaded) is.
+  const lastSavedTagsRef = useRef<string[]>([]);
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editStatus, setEditStatus] = useState("draft");
@@ -1184,11 +1190,12 @@ export function SequencesPage() {
       setEditName(data.sequence?.name ?? "");
       setEditDescription(data.sequence?.description ?? "");
       setEditStatus(data.sequence?.status ?? "draft");
-      setEditTags(
-        Array.isArray(data.sequence?.tags)
-          ? (data.sequence.tags as string[])
-          : [],
-      );
+      const loadedTags = Array.isArray(data.sequence?.tags)
+        ? (data.sequence.tags as string[])
+        : [];
+      setEditTags(loadedTags);
+      // Freshest server truth for this sequence — the rollback baseline.
+      lastSavedTagsRef.current = loadedTags;
       setEditMailboxId(data.sequence?.mailboxId ?? data.sequence?.mailbox_id ?? "default");
       setSequenceHealth((data.health as SequenceHealth) ?? null);
       const enrRaw = (data.enrollments ?? []) as Record<string, unknown>[];
@@ -1547,12 +1554,12 @@ export function SequencesPage() {
     const ticket = (tagSaveTickets.current.get(seq) ?? 0) + 1;
     tagSaveTickets.current.set(seq, ticket);
     const isLatest = () => tagSaveTickets.current.get(seq) === ticket;
-    // Roll back to the server truth (the persisted tags in the list), never the
-    // optimistic editTags: a coalesced burst can leave editTags holding a value
-    // the server never saved, and reverting to that would restore a phantom tag.
-    const serverTruth = sequences.find((s) => s.id === seq)?.tags ?? editTags;
     setEditTags(next); // optimistic, in click order
     setError(null);
+    // Only touch the editor field while this sequence is still the one open —
+    // but the shared list row and the confirmed-tags baseline belong to `seq`
+    // regardless of where the user navigated, so they always reconcile.
+    const onEditor = () => editingIdRef.current === seq;
     tagSaveChain.current = tagSaveChain.current
       .catch(() => {})
       .then(async () => {
@@ -1571,10 +1578,12 @@ export function SequencesPage() {
             signal: ctrl.signal,
           });
           const data = await res.json().catch(() => ({}));
-          // Superseded while in flight, or you left for another sequence.
-          if (!isLatest() || editingIdRef.current !== seq) return;
+          // Superseded while in flight — a newer save owns the outcome.
+          if (!isLatest()) return;
           if (!res.ok) {
-            setEditTags(serverTruth);
+            // Revert the editor to the last confirmed server tags (never the
+            // optimistic value); the confirmed baseline itself is unchanged.
+            if (onEditor()) setEditTags(lastSavedTagsRef.current);
             setError(
               (data as { error?: string }).error ??
                 "Could not save tags — is the tags column migrated?",
@@ -1583,19 +1592,18 @@ export function SequencesPage() {
           }
           const saved = (data as { sequence?: { tags?: string[] } }).sequence
             ?.tags;
-          if (Array.isArray(saved)) setEditTags(saved);
-          // Keep the list (its filter chips / autocomplete) in sync without a
-          // full reload on every keystroke.
+          const applied = Array.isArray(saved) ? saved : next;
+          lastSavedTagsRef.current = applied;
+          if (onEditor() && Array.isArray(saved)) setEditTags(saved);
+          // Reconcile the shared list row even after navigating away: the save
+          // already landed on the server, so the filter chips / autocomplete
+          // must not go stale. Updating one row can't clobber another editor.
           setSequences((prevSeqs) =>
-            prevSeqs.map((s) =>
-              s.id === seq
-                ? { ...s, tags: Array.isArray(saved) ? saved : next }
-                : s,
-            ),
+            prevSeqs.map((s) => (s.id === seq ? { ...s, tags: applied } : s)),
           );
         } catch {
-          if (isLatest() && editingIdRef.current === seq) {
-            setEditTags(serverTruth);
+          if (isLatest()) {
+            if (onEditor()) setEditTags(lastSavedTagsRef.current);
             setError("Could not save tags");
           }
         } finally {
