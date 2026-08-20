@@ -715,17 +715,18 @@ const SEQ_STATUS_LABEL: Record<Exclude<SeqStatusFilter, "all">, string> = {
 };
 
 /**
- * One sequence, in one glance.
+ * One sequence, one row.
  *
- * The card this replaces spent five lines and a full-width description on
- * every sequence, so eleven of them scrolled past three screens and a running
- * cadence looked exactly like a draft nobody has finished. Here status carries
- * the row: a running sequence gets the accent rail, full-contrast name and its
- * live numbers; everything else recedes.
+ * A divided list, not a stack of cards. Nineteen bordered boxes all read as
+ * nineteen equal things, and the one that is actually running gets lost among
+ * them; the old row also leaned on a 2px side-stripe to mark it, which is
+ * invisible and, at that width, just noise. Here the rows share a container
+ * and a hairline divider, the leading dot carries status, and only the running
+ * cadences get a full-contrast name. Everything a draft has to say recedes.
  *
- * Only counts that exist are rendered. A row saying "0 due · 0 sent" is two
- * more zeros and no decision — the numbers appear when there is something to
- * know.
+ * The three numbers live in fixed columns so the eye reads straight down them.
+ * Only "due" is allowed to raise its voice, because it is the one that asks you
+ * to do something today; the rest stay quiet until there is something to know.
  */
 function SequenceRow({
   sequence,
@@ -745,71 +746,79 @@ function SequenceRow({
       type="button"
       onClick={onOpen}
       className={cn(
-        "group flex w-full items-center gap-3 overflow-hidden rounded-lg border text-left transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        running
-          ? "border-emerald-500/25 bg-emerald-500/[0.04] hover:border-emerald-500/45"
-          : "border-border bg-card/40 hover:border-foreground/20 hover:bg-card",
+        "group flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors",
+        "hover:bg-muted/40",
+        "focus-visible:relative focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
       )}
     >
-      <span
-        aria-hidden
-        className={cn(
-          "h-full w-0.5 shrink-0 self-stretch",
-          running ? "bg-emerald-500/70" : "bg-transparent",
-        )}
-      />
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5 py-2.5">
+      <span className="shrink-0 self-center">
+        <StatusDot status={sequence.status} />
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="flex min-w-0 items-center gap-2">
-          <StatusDot status={sequence.status} />
           <span
             className={cn(
               "truncate text-sm",
               running
                 ? "font-medium text-foreground"
-                : "text-foreground/80 group-hover:text-foreground",
+                : "text-foreground/70 group-hover:text-foreground",
             )}
           >
             {sequence.name}
           </span>
           {!running && (
-            <span className="shrink-0 text-[11px] capitalize text-muted-foreground">
+            <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
               {sequence.status}
             </span>
           )}
         </span>
         {sequence.description ? (
-          <span className="truncate text-xs text-muted-foreground">
+          <span className="truncate text-xs text-muted-foreground/60">
             {sequence.description}
           </span>
         ) : null}
       </span>
 
-      {/* Numbers in fixed slots so the eye can read down the column instead of
-          hunting for them at a different x-position on every row. */}
-      <span className="hidden shrink-0 items-center gap-4 text-xs tabular-nums text-muted-foreground sm:flex">
-        <span className="w-14 text-right" title={`${sequence.stepCount ?? 0} steps`}>
+      {/* Fixed columns so the eye reads straight down them, and importance
+          escalates rightward toward the chevron: structure, then reach, then
+          the one thing due today. */}
+      <span className="hidden shrink-0 items-center gap-5 sm:flex">
+        <span
+          className="w-16 text-right text-xs tabular-nums text-muted-foreground/60"
+          title={`${sequence.stepCount ?? 0} steps in this cadence`}
+        >
           {sequence.stepCount ?? 0} steps
         </span>
         <span
-          className={cn("w-16 text-right", enrolled > 0 && "text-foreground")}
-          title={`${enrolled} people currently in this sequence`}
+          className={cn(
+            "w-20 text-right text-xs tabular-nums",
+            enrolled > 0 ? "text-foreground/80" : "text-muted-foreground/40",
+          )}
+          title={`${enrolled} people currently enrolled`}
         >
           {enrolled} active
         </span>
-        <span className="w-20 text-right">
+        <span className="flex w-20 justify-end">
           {due > 0 ? (
-            <span className="text-amber-300" title="Steps waiting in today's queue">
-              {due} due today
+            <span
+              className="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium tabular-nums text-amber-700 dark:text-amber-400"
+              title="Steps waiting in today's queue"
+            >
+              {due} due
             </span>
           ) : sent > 0 ? (
-            <span title="Emails auto-sent today">{sent} sent today</span>
+            <span
+              className="text-xs tabular-nums text-muted-foreground"
+              title="Emails auto-sent today"
+            >
+              {sent} sent
+            </span>
           ) : (
-            <span className="text-muted-foreground/40">—</span>
+            <span className="text-xs text-muted-foreground/30">—</span>
           )}
         </span>
       </span>
-      <ChevronRight className="mr-3 size-4 shrink-0 text-muted-foreground/50 transition-colors group-hover:text-foreground" />
+      <ChevronRight className="size-4 shrink-0 text-muted-foreground/30 transition-colors group-hover:text-muted-foreground/70" />
     </button>
   );
 }
@@ -2310,14 +2319,13 @@ export function SequencesPage() {
               </div>
             ) : (
               <div className="overflow-hidden rounded-xl border border-border">
-                <div className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_88px_minmax(0,0.9fr)_minmax(0,1fr)_80px_100px] gap-2 border-b border-border bg-muted/40 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                <div className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_84px_116px_minmax(0,1.2fr)_212px] gap-3 border-b border-border bg-muted/40 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                   <span>Person</span>
                   <span>Company</span>
                   <span>Status</span>
                   <span>Progress</span>
                   <span>Current step</span>
-                  <span>Next</span>
-                  <span />
+                  <span className="text-right">Actions</span>
                 </div>
                 <ul className="divide-y divide-border">
                   {filteredPeople.map((e) => {
@@ -2327,7 +2335,7 @@ export function SequencesPage() {
                       <li key={e.id} className="text-sm">
                         <div
                           className={cn(
-                            "grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_88px_minmax(0,0.9fr)_minmax(0,1fr)_80px_100px] items-center gap-2 px-4 py-3",
+                            "grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_84px_116px_minmax(0,1.2fr)_212px] items-center gap-3 px-4 py-3",
                             expanded && "bg-muted/20",
                           )}
                         >
@@ -2437,22 +2445,20 @@ export function SequencesPage() {
                                 ? "Finished"
                                 : stepLabel(e.currentStepPosition)}
                             </p>
+                            {e.status === "active" && e.nextRunAt ? (
+                              <p className="truncate text-[11px] tabular-nums text-muted-foreground">
+                                Next{" "}
+                                {new Date(e.nextRunAt).toLocaleDateString(
+                                  undefined,
+                                  { month: "short", day: "numeric" },
+                                )}
+                              </p>
+                            ) : null}
                             {e.lastError && (
                               <p className="truncate text-destructive">
                                 {e.lastError}
                               </p>
                             )}
-                          </div>
-                          <div className="text-xs tabular-nums text-muted-foreground">
-                            {e.status === "active" && e.nextRunAt
-                              ? new Date(e.nextRunAt).toLocaleDateString(
-                                  undefined,
-                                  {
-                                    month: "short",
-                                    day: "numeric",
-                                  },
-                                )
-                              : "—"}
                           </div>
                           <div>
                             <div className="flex items-center justify-end gap-0.5">
@@ -3318,16 +3324,22 @@ export function SequencesPage() {
             Sequences
           </h1>
           <p className="mt-1 max-w-xl text-sm text-pretty text-muted-foreground">
-            Today&apos;s outreach work first. Build cadences, enroll lists,
-            execute LinkedIn + email from one board.
+            Build cadences, enroll lists, and run LinkedIn and email from one
+            board.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="outline" onClick={() => void load()}>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => void load()}
+            aria-label="Refresh"
+            title="Refresh"
+            className="text-muted-foreground"
+          >
             <RefreshCw
               className={cn("size-3.5", loading && "animate-spin")}
             />
-            Refresh
           </Button>
           <Button
             size="sm"
@@ -3445,7 +3457,7 @@ export function SequencesPage() {
             </div>
           )}
 
-          <div className="min-h-0 flex-1 space-y-1.5 overflow-auto pb-8">
+          <div className="min-h-0 flex-1 overflow-auto pb-8">
           {loading && sequences.length === 0 ? (
             <div className="py-16 text-center text-sm text-muted-foreground">
               <Loader2 className="mr-2 inline size-4 animate-spin" />
@@ -3492,37 +3504,57 @@ export function SequencesPage() {
               </Button>
             </div>
           ) : (
-            <>
-              {/* Grouped only when both groups exist and nothing is filtering:
-                  a heading over the single group you asked for is a label for
-                  a decision you already made. */}
-              {runningSequences.length > 0 && restSequences.length > 0 && (
-                <p className="px-0.5 pb-0.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  Running
-                </p>
+            // Each group is one bordered container with hairline dividers — a
+            // list, not a heap of cards. The heading only appears when both
+            // groups exist; over a single group it would just label a decision
+            // you already made with the filter.
+            <div className="space-y-6">
+              {runningSequences.length > 0 && (
+                <section className="space-y-2">
+                  {restSequences.length > 0 && (
+                    <h2 className="flex items-center gap-2 px-0.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      <span className="size-1.5 rounded-full bg-emerald-500" />
+                      Running
+                      <span className="tabular-nums text-muted-foreground/50">
+                        {runningSequences.length}
+                      </span>
+                    </h2>
+                  )}
+                  <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card/50">
+                    {runningSequences.map((s) => (
+                      <SequenceRow
+                        key={s.id}
+                        sequence={s}
+                        today={todayBySequence.get(s.id)}
+                        onOpen={() => void openEditor(s.id)}
+                      />
+                    ))}
+                  </div>
+                </section>
               )}
-              {runningSequences.map((s) => (
-                <SequenceRow
-                  key={s.id}
-                  sequence={s}
-                  today={todayBySequence.get(s.id)}
-                  onOpen={() => void openEditor(s.id)}
-                />
-              ))}
-              {runningSequences.length > 0 && restSequences.length > 0 && (
-                <p className="px-0.5 pb-0.5 pt-4 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  Not running · {restSequences.length}
-                </p>
+              {restSequences.length > 0 && (
+                <section className="space-y-2">
+                  {runningSequences.length > 0 && (
+                    <h2 className="flex items-center gap-2 px-0.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      Not running
+                      <span className="tabular-nums text-muted-foreground/50">
+                        {restSequences.length}
+                      </span>
+                    </h2>
+                  )}
+                  <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card/50">
+                    {restSequences.map((s) => (
+                      <SequenceRow
+                        key={s.id}
+                        sequence={s}
+                        today={todayBySequence.get(s.id)}
+                        onOpen={() => void openEditor(s.id)}
+                      />
+                    ))}
+                  </div>
+                </section>
               )}
-              {restSequences.map((s) => (
-                <SequenceRow
-                  key={s.id}
-                  sequence={s}
-                  today={todayBySequence.get(s.id)}
-                  onOpen={() => void openEditor(s.id)}
-                />
-              ))}
-            </>
+            </div>
           )}
           </div>
         </div>
@@ -3664,14 +3696,14 @@ export function SequencesPage() {
                   <div
                     key={t.id}
                     className={cn(
-                      "overflow-hidden rounded-xl border bg-card shadow-sm",
+                      "overflow-hidden rounded-xl border bg-card",
                       isLi
                         ? "border-[#0A66C2]/25"
                         : "border-border",
                     )}
                   >
                     <div className="flex flex-wrap items-center gap-3 border-b border-border bg-muted/20 px-4 py-2.5">
-                      <span className="flex size-6 items-center justify-center rounded-full bg-foreground text-[11px] font-semibold tabular-nums text-background">
+                      <span className="flex size-6 items-center justify-center rounded-full bg-muted text-[11px] font-semibold tabular-nums text-muted-foreground ring-1 ring-inset ring-border">
                         {idx + 1}
                       </span>
                       <div
