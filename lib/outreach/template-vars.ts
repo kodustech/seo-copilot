@@ -49,6 +49,11 @@ export const RESEARCH_TEMPLATE_VARS: TemplateVarSpec[] = [
     description: "Formatted public engineering context from the research list",
     source: "research",
   },
+  {
+    token: "context_pitch_angle",
+    description: "Ready-to-use outreach context from the research list",
+    source: "research",
+  },
 ];
 
 /** Only on enrollments created from a CRM account with an org_id. */
