@@ -25,6 +25,9 @@ AS $$
    WHERE id = p_company_id;
 $$;
 
+REVOKE EXECUTE ON FUNCTION bump_outreach_counters(UUID, TIMESTAMPTZ, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION bump_outreach_counters(UUID, TIMESTAMPTZ, TEXT) TO authenticated, service_role;
+
 -- One transaction for a manual touch: the timeline and the card counters can
 -- never disagree because one write succeeded and the other did not.
 CREATE OR REPLACE FUNCTION record_crm_outreach(
@@ -109,5 +112,5 @@ BEGIN
 END;
 $$;
 
-REVOKE EXECUTE ON FUNCTION record_crm_outreach(UUID, TEXT, TIMESTAMPTZ, TEXT, UUID, TEXT, TEXT) FROM anon;
+REVOKE EXECUTE ON FUNCTION record_crm_outreach(UUID, TEXT, TIMESTAMPTZ, TEXT, UUID, TEXT, TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION record_crm_outreach(UUID, TEXT, TIMESTAMPTZ, TEXT, UUID, TEXT, TEXT) TO authenticated, service_role;
