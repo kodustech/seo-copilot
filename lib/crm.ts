@@ -92,6 +92,25 @@ export const COMPANY_PREP_VALUES: CompanyPrep[] = [
   "parked",
 ];
 
+/** Where an outbound touch happened. Stored on the activity and denormalised
+ *  onto the company for the accounts list. */
+export type CrmOutreachChannel =
+  | "email"
+  | "linkedin"
+  | "whatsapp"
+  | "slack"
+  | "phone"
+  | "other";
+
+export const CRM_OUTREACH_CHANNELS: CrmOutreachChannel[] = [
+  "email",
+  "linkedin",
+  "whatsapp",
+  "slack",
+  "phone",
+  "other",
+];
+
 export type CrmCompany = {
   id: string;
   name: string;
@@ -123,6 +142,9 @@ export type CrmCompany = {
   /** Last time an outbound message actually went out to this account.
    *  Distinct from lastActivityAt, which the signal sweep moves constantly. */
   lastOutreachAt: string | null;
+  /** Channel of the latest outbound touch. Optional while the database and the
+   *  in-progress Drizzle port catch up with the migration that introduced it. */
+  lastOutreachChannel?: string | null;
   outreachSentCount: number;
   notes: string | null;
   lastActivityAt: string | null;
@@ -293,6 +315,7 @@ type CompanyRow = {
   source: CompanySource | null;
   prep_status?: string | null;
   last_outreach_at?: string | null;
+  last_outreach_channel?: string | null;
   outreach_sent_count?: number | null;
   notes: string | null;
   last_activity_at: string | null;
@@ -337,6 +360,7 @@ function rowToCompany(row: CompanyRow): CrmCompany {
     // constraint is what actually bounds the set.
     prepStatus: (row.prep_status ?? "not_started") as CompanyPrep,
     lastOutreachAt: row.last_outreach_at ?? null,
+    lastOutreachChannel: row.last_outreach_channel ?? null,
     outreachSentCount: Number(row.outreach_sent_count ?? 0),
     notes: row.notes,
     lastActivityAt: row.last_activity_at,
@@ -1664,6 +1688,59 @@ export async function deleteComment(
 }
 
 // ---------------------------------------------------------------------------
+// Manual outreach
+// ---------------------------------------------------------------------------
+
+export type RecordManualOutreachInput = {
+  channel: CrmOutreachChannel;
+  contactId?: string | null;
+  contactName?: string | null;
+  note?: string | null;
+  sentAt?: string | null;
+};
+
+/**
+ * Record a message sent outside a managed sequence.
+ *
+ * The database function writes the timeline event and the denormalised account
+ * counters in one transaction. Comments are deliberately not treated as
+ * outreach: a research note and a message that actually left the company are
+ * different facts, and conflating them is what made the board say "never
+ * contacted" after a manual email had been logged.
+ */
+export async function recordManualOutreach(
+  client: SupabaseClient,
+  companyId: string,
+  input: RecordManualOutreachInput,
+  actorEmail?: string | null,
+): Promise<CrmCompany> {
+  if (!CRM_OUTREACH_CHANNELS.includes(input.channel)) {
+    throw new Error(`Invalid outreach channel: ${input.channel}`);
+  }
+
+  const at = input.sentAt ? new Date(input.sentAt) : new Date();
+  if (Number.isNaN(at.getTime())) throw new Error("sentAt must be a valid date");
+  if (at.getTime() > Date.now() + 5 * 60_000) {
+    throw new Error("sentAt cannot be in the future");
+  }
+
+  const { error } = await client.rpc("record_crm_outreach", {
+    p_company_id: companyId,
+    p_channel: input.channel,
+    p_sent_at: at.toISOString(),
+    p_actor_email: trimOrNull(actorEmail),
+    p_contact_id: trimOrNull(input.contactId),
+    p_contact_name: trimOrNull(input.contactName),
+    p_note: trimOrNull(input.note),
+  });
+  if (error) throw new Error(`Failed to record outreach: ${error.message}`);
+
+  const company = await getCompany(client, companyId);
+  if (!company) throw new Error("Company not found");
+  return company;
+}
+
+// ---------------------------------------------------------------------------
 // Activities
 // ---------------------------------------------------------------------------
 
@@ -1688,25 +1765,47 @@ export async function listActivities(
 
 export async function getCompanyStats(
   client: SupabaseClient,
-): Promise<{ total: number; byStatus: Record<string, number>; stale: number }> {
+): Promise<{
+  total: number;
+  byStatus: Record<string, number>;
+  byPrep: Record<string, number>;
+  open: number;
+  stale: number;
+}> {
   const companies = await listCompanies(client, {
     limit: 1000,
     includeSequences: false,
   });
   const byStatus: Record<string, number> = {};
+  const byPrep: Record<string, number> = {};
+  const openStatuses = new Set<CompanyStatus>([
+    "lead",
+    "engaged",
+    "qualified",
+    "poc",
+    "negotiation",
+  ]);
+  let open = 0;
   let stale = 0;
   for (const c of companies) {
     byStatus[c.status] = (byStatus[c.status] || 0) + 1;
-    if (c.isStale) stale++;
+    byPrep[c.prepStatus] = (byPrep[c.prepStatus] || 0) + 1;
+    // Parked is intentionally outside the working pipeline. It stays in the
+    // CRM and in the status totals, but must not create work or inflate the
+    // number of open accounts.
+    if (c.prepStatus !== "parked" && openStatuses.has(c.status)) open++;
+    if (c.prepStatus !== "parked" && c.isStale) stale++;
   }
-  return { total: companies.length, byStatus, stale };
+  return { total: companies.length, byStatus, byPrep, open, stale };
 }
 
 export async function getStaleCompanies(
   client: SupabaseClient,
 ): Promise<CompanyWithIdle[]> {
-  // The idle cron's own list — it reads status and idleDays, never sequences.
+  // Parked accounts are intentionally dormant. They stay searchable, but they
+  // must not re-enter the work queue through an idle notification.
   return listCompanies(client, {
+    prepStatus: ["not_started", "enriched", "ready"],
     staleOnly: true,
     limit: 1000,
     includeSequences: false,

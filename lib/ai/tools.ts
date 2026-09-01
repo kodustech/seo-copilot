@@ -84,6 +84,7 @@ import {
   createCompany,
   updateCompany,
   createComment,
+  recordManualOutreach,
   listContacts,
   createContact,
   updateContact,
@@ -96,9 +97,11 @@ import {
   COMPANY_STATUSES,
   COMPANY_PRIORITIES,
   COMPANY_PREP_VALUES,
+  CRM_OUTREACH_CHANNELS,
   type CompanyStatus,
   type CompanyPriority,
   type CompanyPrep,
+  type CrmOutreachChannel,
 } from "@/lib/crm";
 import { getProductSignals } from "@/lib/crm-signals";
 import { TEMPLATE_TOKEN_HELP } from "@/lib/outreach/template-vars";
@@ -3430,6 +3433,9 @@ export const listCrmCompanies = tool({
           idle_days: c.idleDays,
           is_stale: c.isStale,
           last_activity_at: c.lastActivityAt,
+          last_outreach_at: c.lastOutreachAt,
+          last_outreach_channel: c.lastOutreachChannel ?? null,
+          outreach_sent_count: c.outreachSentCount,
         })),
       };
     } catch (error) {
@@ -3529,6 +3535,7 @@ export const getCrmCompany = tool({
           properties: company.properties,
           last_activity_at: company.lastActivityAt,
           last_outreach_at: company.lastOutreachAt,
+          last_outreach_channel: company.lastOutreachChannel ?? null,
           outreach_sent_count: company.outreachSentCount,
           // icp_gate reason, dev_count_source, employee_count — how the sweep
           // decided this account was worth creating.
@@ -3923,6 +3930,66 @@ export const addCrmComment = tool({
       return {
         success: false as const,
         message: error instanceof Error ? error.message : "Failed to add comment",
+      };
+    }
+  },
+});
+
+export const logCrmOutreach = tool({
+  description:
+    "Record an email, LinkedIn message, WhatsApp message, Slack message, phone call, or other outbound touch that was sent manually. Use this instead of addCrmComment when a message actually left Kodus: it updates last_outreach_at, the channel, the sent counter, and the activity timeline. This logs only; it does not send anything.",
+  inputSchema: z.object({
+    id: z.string().describe("CRM company id"),
+    channel: z
+      .enum(CRM_OUTREACH_CHANNELS as [CrmOutreachChannel, ...CrmOutreachChannel[]])
+      .describe("Channel used for the manual touch"),
+    contact_id: z.string().optional().describe("Existing CRM contact id"),
+    contact_name: z
+      .string()
+      .optional()
+      .describe("Contact name when there is no CRM contact id"),
+    note: z.string().optional().describe("Optional short context about the touch"),
+    sent_at: z
+      .string()
+      .optional()
+      .describe("ISO timestamp. Defaults to now; may be historical, never future"),
+    user_email: z.string().optional().describe("Person who sent the message"),
+  }),
+  execute: async ({
+    id,
+    channel,
+    contact_id,
+    contact_name,
+    note,
+    sent_at,
+    user_email,
+  }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const company = await recordManualOutreach(
+        client,
+        id,
+        {
+          channel,
+          contactId: contact_id,
+          contactName: contact_name,
+          note,
+          sentAt: sent_at,
+        },
+        user_email,
+      );
+      return {
+        success: true as const,
+        company_id: company.id,
+        last_outreach_at: company.lastOutreachAt,
+        last_outreach_channel: company.lastOutreachChannel ?? null,
+        outreach_sent_count: company.outreachSentCount,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "Failed to record outreach",
       };
     }
   },
@@ -7168,6 +7235,7 @@ export function createAgentTools(userEmail?: string) {
     updateCrmField,
     deleteCrmField,
     addCrmComment,
+    logCrmOutreach,
     crmGetCompanyEmails,
     researchListTables,
     researchCreateTable,

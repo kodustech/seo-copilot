@@ -2615,6 +2615,7 @@ async function recordOutreachOnCrm(
     const { error } = await client.rpc("bump_outreach_counters", {
       p_company_id: companyId,
       p_sent_at: opts.sentAt,
+      p_channel: opts.channel,
     });
     if (error) throw new Error(error.message);
   } catch (err) {
