@@ -12,6 +12,7 @@ import {
   Sparkles,
   RefreshCw,
   Search,
+  Send,
   Settings2,
   Trash2,
   X,
@@ -29,11 +30,13 @@ import { cn } from "@/lib/utils";
 import {
   COMPANY_PRIORITIES,
   COMPANY_STATUSES,
+  CRM_OUTREACH_CHANNELS,
   type CompanyPrep,
   type CompanyPriority,
   type CompanySequence,
   type CompanyStatus,
   type CompanyWithIdle,
+  type CrmOutreachChannel,
   type CrmActivity,
   type CrmComment,
   type CrmContact,
@@ -334,13 +337,171 @@ function EnrollInSequence({
   );
 }
 
+function localDateTimeValue(date = new Date()): string {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function LogOutreachButton({
+  companyId,
+  contacts,
+  authFetch,
+  onLogged,
+}: {
+  companyId: string;
+  contacts: CrmContact[];
+  authFetch: (url: string, init?: RequestInit) => Promise<Response>;
+  onLogged: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [channel, setChannel] = useState<CrmOutreachChannel>("email");
+  const [contactId, setContactId] = useState("none");
+  const [sentAt, setSentAt] = useState(() => localDateTimeValue());
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    const at = new Date(sentAt);
+    if (Number.isNaN(at.getTime())) {
+      setError("Choose a valid date and time.");
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await authFetch(`/api/crm/companies/${companyId}/outreach`, {
+        method: "POST",
+        body: JSON.stringify({
+          channel,
+          contactId: contactId === "none" ? null : contactId,
+          sentAt: at.toISOString(),
+          note: note.trim() || null,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error ?? "Failed to record outreach");
+      setOpen(false);
+      setNote("");
+      setSentAt(localDateTimeValue());
+      onLogged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to record outreach");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => setOpen(true)}
+        className="h-7 gap-1.5 border-white/10"
+      >
+        <Send className="size-3.5" />
+        Log outreach
+      </Button>
+      <Dialog
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (!next) setError(null);
+        }}
+      >
+        <DialogContent className="max-w-md border-white/10 bg-neutral-950 text-white">
+          <DialogHeader>
+            <DialogTitle className="text-balance">Log manual outreach</DialogTitle>
+          </DialogHeader>
+          <p className="text-pretty text-sm text-neutral-400">
+            Use this when a message was sent outside a managed sequence. It updates
+            the account card and timeline.
+          </p>
+          <div className="space-y-3">
+            <Field label="Channel">
+              <Select
+                value={channel}
+                onValueChange={(value) =>
+                  setChannel(value as CrmOutreachChannel)
+                }
+              >
+                <SelectTrigger className="border-white/10 bg-neutral-900">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CRM_OUTREACH_CHANNELS.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {outreachChannelLabel(value)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Contact">
+              <Select value={contactId} onValueChange={setContactId}>
+                <SelectTrigger className="border-white/10 bg-neutral-900">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No specific contact</SelectItem>
+                  {contacts.map((contact) => (
+                    <SelectItem key={contact.id} value={contact.id}>
+                      {contact.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Sent at">
+              <Input
+                type="datetime-local"
+                value={sentAt}
+                max={localDateTimeValue()}
+                onChange={(event) => setSentAt(event.target.value)}
+                className="border-white/10 bg-neutral-900"
+              />
+            </Field>
+            <Field label="Note (optional)">
+              <Textarea
+                value={note}
+                onChange={(event) => setNote(event.target.value)}
+                rows={3}
+                placeholder="What was sent or what should happen next"
+                className="border-white/10 bg-neutral-900"
+              />
+            </Field>
+            {error ? <p className="text-sm text-red-300">{error}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void submit()}
+              disabled={saving || !sentAt}
+              className="bg-white text-neutral-900 hover:bg-neutral-200"
+            >
+              {saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+              Save outreach
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 function OutreachCell({
   count,
   lastAt,
+  channel,
   sequences,
 }: {
   count: number;
   lastAt: string | null;
+  channel: string | null;
   sequences: CompanySequence[];
 }) {
   const days =
@@ -359,6 +520,7 @@ function OutreachCell({
       )}
       {count > 0 && when ? (
         <span className="whitespace-nowrap text-sm text-neutral-300">
+          {channel ? `${outreachChannelLabel(channel)} · ` : ""}
           {count} sent <span className="text-neutral-500">· {when}</span>
         </span>
       ) : (
@@ -432,6 +594,19 @@ const CHANNEL_OPTIONS = [
   "agent",
   "manual",
 ] as const;
+
+const OUTREACH_CHANNEL_LABELS: Record<string, string> = {
+  email: "Email",
+  linkedin: "LinkedIn",
+  whatsapp: "WhatsApp",
+  slack: "Slack",
+  phone: "Phone",
+  other: "Other",
+};
+
+function outreachChannelLabel(channel: string): string {
+  return OUTREACH_CHANNEL_LABELS[channel] ?? channel;
+}
 
 const DEPLOYMENT_LABELS: Record<string, { label: string; className: string }> = {
   cloud: { label: "cloud", className: "bg-sky-500/15 text-sky-300" },
@@ -531,15 +706,19 @@ export function CrmPage() {
   const [stats, setStats] = useState<{
     total: number;
     byStatus: Record<string, number>;
+    byPrep: Record<string, number>;
+    open: number;
     stale: number;
-  }>({ total: 0, byStatus: {}, stale: 0 });
+  }>({ total: 0, byStatus: {}, byPrep: {}, open: 0, stale: 0 });
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [statusFilter, setStatusFilter] = useState<CompanyStatus | "all">("all");
   const [tierFilter, setTierFilter] = useState<string>("all");
-  const [prepFilter, setPrepFilter] = useState<string>("all");
+  // Parked accounts remain searchable, but they are not work. Keep them out of
+  // the default page so the first screen answers "what can I act on?".
+  const [prepFilter, setPrepFilter] = useState<string>("active");
   const [view, setView] = useState<"list" | "board">("list");
   // Defaults to prep because that is the work that exists: 85 of 107 accounts
   // sit in `lead`, so a status board is one tall column and seven empty ones.
@@ -611,7 +790,10 @@ export function CrmPage() {
       if (statusFilter !== "all") params.set("status", statusFilter);
       if (tierFilter !== "all") params.set("tier", tierFilter);
       // "todo" is the review queue: the two states nobody has judged yet.
-      if (prepFilter === "todo") params.set("prepStatus", "not_started,enriched");
+      if (prepFilter === "active")
+        params.set("prepStatus", "not_started,enriched,ready");
+      else if (prepFilter === "todo")
+        params.set("prepStatus", "not_started,enriched");
       else if (prepFilter !== "all") params.set("prepStatus", prepFilter);
       if (channelFilter !== "all") params.set("source", channelFilter);
       if (deploymentFilter !== "all") params.set("deployment", deploymentFilter);
@@ -622,7 +804,15 @@ export function CrmPage() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Failed to load");
       setCompanies(json.companies ?? []);
-      setStats(json.stats ?? { total: 0, byStatus: {}, stale: 0 });
+      setStats(
+        json.stats ?? {
+          total: 0,
+          byStatus: {},
+          byPrep: {},
+          open: 0,
+          stale: 0,
+        },
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load");
     } finally {
@@ -731,19 +921,13 @@ export function CrmPage() {
         <StatTile label="Accounts" value={stats.total} />
         <StatTile label="Customers" value={stats.byStatus.customer ?? 0} accent="emerald" />
         <StatTile
-          label="Open stage"
-          value={
-            (stats.byStatus.lead ?? 0) +
-            (stats.byStatus.engaged ?? 0) +
-            (stats.byStatus.qualified ?? 0) +
-            (stats.byStatus.poc ?? 0) +
-            (stats.byStatus.negotiation ?? 0)
-          }
+          label="Active pipeline"
+          value={stats.open}
           accent="sky"
         />
         <button onClick={() => setStaleOnly((v) => !v)} className="text-left">
           <StatTile
-            label="Idle (needs attention)"
+            label="Needs attention"
             value={stats.stale}
             accent="amber"
             active={staleOnly}
@@ -831,6 +1015,7 @@ export function CrmPage() {
             <SelectValue placeholder="Prep" />
           </SelectTrigger>
           <SelectContent>
+            <SelectItem value="active">Active (parked hidden)</SelectItem>
             <SelectItem value="all">All prep states</SelectItem>
             {/* The review queue, as one click: everything the machine has
                 processed and a human has not yet judged. */}
@@ -917,6 +1102,17 @@ export function CrmPage() {
           onOpen={(c) => setSelectedId(c.id)}
           renderCardMeta={(c) => (
             <>
+              {groupBy !== "prep" ? (
+                <Badge
+                  title={prepLabel(c.prepStatus).hint}
+                  className={cn(
+                    "border-0 text-[11px] font-normal",
+                    prepLabel(c.prepStatus).className,
+                  )}
+                >
+                  {prepLabel(c.prepStatus).label}
+                </Badge>
+              ) : null}
               {c.tier && TIER_LABELS[c.tier] ? (
                 <Badge
                   title={TIER_LABELS[c.tier].hint}
@@ -935,7 +1131,11 @@ export function CrmPage() {
               ) : null}
               <span className="text-[11px] text-neutral-600">
                 {c.outreachSentCount > 0
-                  ? `${c.outreachSentCount} sent`
+                  ? `${
+                      c.lastOutreachChannel
+                        ? `${outreachChannelLabel(c.lastOutreachChannel)} · `
+                        : ""
+                    }${c.outreachSentCount} sent · ${formatRelative(c.lastOutreachAt)}`
                   : "never contacted"}
               </span>
               {(c.sequences ?? []).length > 0 ? (
@@ -1113,6 +1313,7 @@ export function CrmPage() {
                     <OutreachCell
                       count={c.outreachSentCount}
                       lastAt={c.lastOutreachAt}
+                      channel={c.lastOutreachChannel ?? null}
                       sequences={c.sequences ?? []}
                     />
                   </TableCell>
@@ -1241,8 +1442,8 @@ function StatTile({
         active && "border-amber-500/40 bg-amber-500/[0.06]",
       )}
     >
-      <p className="text-[11px] uppercase tracking-wide text-neutral-500">{label}</p>
-      <p className={cn("mt-0.5 text-2xl font-semibold", accentClass)}>{value}</p>
+      <p className="text-[11px] uppercase text-neutral-500">{label}</p>
+      <p className={cn("mt-0.5 text-2xl font-semibold tabular-nums", accentClass)}>{value}</p>
     </div>
   );
 }
@@ -1706,6 +1907,17 @@ function CompanyDrawer({
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {company ? (
+              <LogOutreachButton
+                companyId={company.id}
+                contacts={contacts}
+                authFetch={authFetch}
+                onLogged={() => {
+                  onChanged();
+                  void load();
+                }}
+              />
+            ) : null}
             {company ? (
               <EnrollInSequence
                 company={company}
