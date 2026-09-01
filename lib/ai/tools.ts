@@ -88,6 +88,8 @@ import {
   createContact,
   updateContact,
   archiveContact,
+  archiveCompany,
+  restoreCompany,
   listComments,
   listActivities,
   listCompanySequences,
@@ -3717,6 +3719,64 @@ export const updateCrmCompany = tool({
   },
 });
 
+export const archiveCrmCompany = tool({
+  description:
+    "Exclude an account from the CRM — a duplicate, a dead deal, a company that asked out. Archives rather than hard-deletes, on purpose: a deleted account is recreated by the next product-signals sweep (it looks the domain up, finds nothing, and re-adds it), while an archived one is still found and left alone. The account disappears from listCrmCompanies and getCrmCompany, but its contacts, comments and timeline ride along on the same row so the exclusion stays reviewable and restoreCrmCompany is a real undo. Use restoreCrmCompany to bring it back.",
+  inputSchema: z.object({
+    id: z.string().describe("Company id (from listCrmCompanies / getCrmCompany)"),
+    user_email: z
+      .string()
+      .optional()
+      .describe("Acting user's email (recorded as actor on the timeline)"),
+  }),
+  execute: async ({ id, user_email }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const company = await archiveCompany(client, id, user_email);
+      return {
+        success: true as const,
+        id: company.id,
+        name: company.name,
+        archived: true as const,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to archive company",
+      };
+    }
+  },
+});
+
+export const restoreCrmCompany = tool({
+  description:
+    "Undo an account exclusion made with archiveCrmCompany: the account returns to every list and the product-signals sweep resumes maintaining its tier. Its contacts, comments and timeline were never removed, so this is a restore rather than a re-import.",
+  inputSchema: z.object({
+    id: z.string().describe("Company id of an archived account"),
+    user_email: z
+      .string()
+      .optional()
+      .describe("Acting user's email (recorded as actor on the timeline)"),
+  }),
+  execute: async ({ id, user_email }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const company = await restoreCompany(client, id, user_email);
+      return {
+        success: true as const,
+        id: company.id,
+        name: company.name,
+        archived: false as const,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message: error instanceof Error ? error.message : "Failed to restore company",
+      };
+    }
+  },
+});
+
 export const listCrmFields = tool({
   description:
     "List workspace CRM custom field definitions (Notion-style properties on accounts): key, label, type, select options.",
@@ -7101,6 +7161,8 @@ export function createAgentTools(userEmail?: string) {
     archiveCrmContact,
     createCrmCompany,
     updateCrmCompany,
+    archiveCrmCompany,
+    restoreCrmCompany,
     listCrmFields,
     createCrmField,
     updateCrmField,
