@@ -398,6 +398,19 @@ async function reconcileEnrollmentForReplyClass(
     }
 
     if (HUMAN_REPLY_CLASSES.includes(label)) {
+      // A LinkedIn thread keeps years of history. A human reply that predates
+      // this enrollment answered an older campaign, not this one; marking the
+      // enrollment replied would count a 2024 "no" as a 2026 reply and stop a
+      // cadence nobody answered. Same rule the inbox sync applies.
+      const { data: pair } = await client
+        .from("outreach_reply_threads")
+        .select("last_inbound_at, enrollment:outreach_enrollments!inner(created_at)")
+        .eq("id", threadId)
+        .maybeSingle();
+      const lastInbound = pair?.last_inbound_at ? Date.parse(String(pair.last_inbound_at)) : 0;
+      const enrolledAt = (pair as { enrollment?: { created_at?: string } | null } | null)?.enrollment?.created_at;
+      if (enrolledAt && lastInbound && lastInbound < Date.parse(enrolledAt)) return false;
+
       // Idempotent: the enrollment is almost always already `replied`. What
       // this adds is the revive the sync withheld — now that a human is known
       // to have answered, an excluded account may come back.
@@ -481,18 +494,36 @@ async function classifyOne(
           "(empty)",
       ].join("\n");
 
-      const { object } = await generateObject({
-        model: getModel(),
-        schema: ClassificationSchema,
-        system: SYSTEM,
-        prompt,
-      });
+      try {
+        const { object } = await generateObject({
+          model: getModel(),
+          schema: ClassificationSchema,
+          system: SYSTEM,
+          prompt,
+        });
 
-      label = object.reply_class;
-      confidence = object.confidence;
-      reason = object.reason.trim().slice(0, 280);
-      model = process.env.AI_PROVIDER?.toLowerCase() || "kimi";
-      result.byModel++;
+        label = object.reply_class;
+        confidence = object.confidence;
+        reason = object.reason.trim().slice(0, 280);
+        model = process.env.AI_PROVIDER?.toLowerCase() || "kimi";
+        result.byModel++;
+      } catch (err) {
+        // A LinkedIn DM has no autoresponders and no bounces: an inbound
+        // message there is a person, whatever it says. When the model is
+        // down (suspended account, outage) label it neutral at low
+        // confidence so the reply counts as human in the metrics instead of
+        // sitting unclassified until billing is sorted. `force` re-labels
+        // these once the model is back. Email keeps waiting: an unlabeled
+        // autoresponder counted as human would be worse than a gap.
+        if ((thread.channel ?? "email") !== "linkedin") throw err;
+        label = "neutral";
+        confidence = 0.3;
+        reason = `LinkedIn inbound; model unavailable: ${
+          err instanceof Error ? err.message.slice(0, 120) : "error"
+        }`;
+        model = "rule:model-unavailable";
+        result.byRule++;
+      }
     }
 
     // Freshness guard. The label was computed from the messages as they were

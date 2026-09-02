@@ -95,6 +95,107 @@ export async function findEnrollmentsByLinkedInIdentities(
 
 type EnrollmentHit = Awaited<ReturnType<typeof findEnrollmentsByLinkedInIdentities>>[number];
 
+/**
+ * A LinkedIn message we sent by hand (the step failed on Unipile, or the
+ * operator typed it in LinkedIn) leaves no send task, so the enrollment never
+ * counts as contacted and the account shows "Never". The chat has our
+ * outbound messages with timestamps: mark the enrollment's pending LinkedIn
+ * tasks as sent, in order, one per message after the enrollment started, and
+ * write the send onto the CRM account like a machine send would.
+ */
+async function reconcileManualLinkedInSends(
+  client: SupabaseClient,
+  enrollment: EnrollmentHit,
+  outboundTimestamps: string[],
+  companyId: string | null,
+): Promise<number> {
+  const startedAt = enrollment.createdAt ? Date.parse(enrollment.createdAt) : 0;
+  const ours = outboundTimestamps
+    .filter((t) => Date.parse(t) >= startedAt)
+    .sort((a, b) => Date.parse(a) - Date.parse(b));
+  if (ours.length === 0) return 0;
+  const { data: tasks } = await client
+    .from("outreach_send_tasks")
+    .select("id,status,scheduled_for")
+    .eq("enrollment_id", enrollment.id)
+    .eq("channel", "linkedin")
+    .neq("status", "sent")
+    .neq("status", "cancelled")
+    .order("scheduled_for", { ascending: true });
+  const pending = tasks ?? [];
+  // Messages already accounted for: sent LinkedIn tasks on this enrollment.
+  const { count: alreadySent } = await client
+    .from("outreach_send_tasks")
+    .select("id", { count: "exact", head: true })
+    .eq("enrollment_id", enrollment.id)
+    .eq("channel", "linkedin")
+    .eq("status", "sent");
+  const toRecord = ours.slice(alreadySent ?? 0);
+  if (toRecord.length === 0) return 0;
+
+  // Steps to hang created tasks on when the enrollment has none left
+  // (paused early, or the task rows were never generated).
+  let linkedinSteps: Array<{ id: string; position: number }> = [];
+  if (pending.length < toRecord.length && enrollment.sequenceId) {
+    const { data: steps } = await client
+      .from("outreach_sequence_steps")
+      .select("id,position")
+      .eq("sequence_id", enrollment.sequenceId)
+      .eq("channel", "linkedin")
+      .order("position", { ascending: true });
+    linkedinSteps = (steps ?? []) as Array<{ id: string; position: number }>;
+  }
+
+  let marked = 0;
+  for (let i = 0; i < toRecord.length; i++) {
+    const sentAt = toRecord[i];
+    if (i < pending.length) {
+      const { error } = await client
+        .from("outreach_send_tasks")
+        .update({
+          status: "sent",
+          sent_at: sentAt,
+          provider: "linkedin_manual",
+          error: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", pending[i].id as string);
+      if (error) continue;
+    } else {
+      const step = linkedinSteps[Math.min(i, linkedinSteps.length - 1)];
+      if (!step) break;
+      const { error } = await client.from("outreach_send_tasks").insert({
+        enrollment_id: enrollment.id,
+        step_id: step.id,
+        channel: "linkedin",
+        mode: "semi",
+        status: "sent",
+        scheduled_for: sentAt,
+        sent_at: sentAt,
+        provider: "linkedin_manual",
+        meta: { reconciled_from_chat: true },
+      });
+      if (error) continue;
+    }
+    marked += 1;
+    if (companyId) {
+      try {
+        const { logActivity } = await import("@/lib/crm");
+        await logActivity(client, companyId, "outreach_sent", {
+          summary: `LinkedIn sent to ${enrollment.contactName ?? "contact"} (manual, from chat)`,
+          meta: { channel: "linkedin", enrollment_id: enrollment.id, sequence_id: enrollment.sequenceId, reconciled_from_chat: true },
+          actorEmail: null,
+          touch: false,
+        });
+        await client.rpc("bump_outreach_counters", { p_company_id: companyId, p_sent_at: sentAt, p_channel: "linkedin" });
+      } catch {
+        /* bookkeeping only */
+      }
+    }
+  }
+  return marked;
+}
+
 function normalizeName(s: string | null | undefined): string {
   return (s ?? "")
     .toLowerCase()
@@ -763,6 +864,30 @@ export async function syncUnipileLinkedInInbox(
         // the same thread as the 2026 sequence and marked it replied, which
         // put five silent accounts in the reply count and moved them to
         // engaged in the CRM.
+        // Our own messages in this chat: manual sends the engine never saw.
+        const outboundTs = messages
+          .filter((m) => m.isSender && m.timestamp)
+          .map((m) => m.timestamp as string);
+        if (outboundTs.length) {
+          for (const enr of stoppable) {
+            try {
+              const { data: enrRow } = await client
+                .from("outreach_enrollments")
+                .select("crm_company_id")
+                .eq("id", enr.id)
+                .maybeSingle();
+              await reconcileManualLinkedInSends(
+                client,
+                enr,
+                outboundTs,
+                (enrRow?.crm_company_id as string | null) ?? null,
+              );
+            } catch (err) {
+              console.warn("[unipile] reconcile manual sends failed", enr.id, err);
+            }
+          }
+        }
+
         const latestInbound = inbound.reduce((max, m) => {
           const t = m.timestamp ? Date.parse(m.timestamp) : 0;
           return t > max ? t : max;
