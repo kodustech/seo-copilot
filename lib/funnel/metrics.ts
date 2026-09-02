@@ -582,15 +582,18 @@ async function coldOutbound(
       rows,
     },
   );
+  // Replies are counted at the enrollment (status "replied", set by the email
+  // and LinkedIn inbox syncs). Bounces get their own status, so they never
+  // land here; an email autoresponder can, until the classifier runs.
   const replies = node(
     "ob_replies",
     "Respostas de empresa nova",
-    humanReplies,
-    humanReplies == null ? `${repliedStatus} com status replied` : `cold: ${humanReplies}`,
+    repliedStatus,
+    `cold: ${repliedStatus}${humanReplies != null && humanReplies !== repliedStatus ? ` · classificadas humanas: ${humanReplies}` : ""}`,
     {
-      source: "Motor de sequência (outbound_metrics, respostas humanas)",
+      source: "Motor de sequência (enrollments com status replied; e-mail e LinkedIn)",
       definition:
-        "Respostas humanas em sequências cold, excluindo auto-reply e bounce. Rede (indicação, champion) não passa pelo motor e é registrada no CRM.",
+        "Pessoas de sequência cold que responderam, por e-mail ou LinkedIn. Bounce não entra. Rede (indicação, champion) não passa pelo motor e é registrada no CRM.",
       columns: ["company", "contact", "sequence", "status", "step", "enrolled"],
       rows: rows.filter((r) => r.status === "replied"),
     },
@@ -601,7 +604,7 @@ async function coldOutbound(
     facts: {
       ob_completed: `${pct(completed + repliedStatus, people)} completaram`,
     },
-    counts: { people, bounced, completed: completed + repliedStatus, humanReplies },
+    counts: { people, bounced, completed: completed + repliedStatus, humanReplies: repliedStatus },
   };
 }
 
