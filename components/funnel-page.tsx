@@ -364,9 +364,9 @@ export function Diagram({
         strokeWidth={1.5}
         markerEnd="url(#funnel-arrow)"
       />
-      <RateLabel rate={rate("reply_to_meeting")} x={C3 + BW / 2 + 10} y={R[1] + BH + 26} />
+      <RateLabel rate={rate("reply_to_conversation")} x={C3 + BW / 2 + 10} y={R[1] + BH + 26} />
       <text x={C3 + BW / 2 + 10} y={R[1] + BH + 43} fontSize={12.5} fill={MUTED}>
-        {f.ob_new_conversations ?? ""} · + rede
+        entra na espinha em Conversa; reunião é a etapa seguinte
       </text>
 
       {/* red markers: computed, never hard-coded */}

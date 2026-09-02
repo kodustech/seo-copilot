@@ -1090,6 +1090,16 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
       opp.has(c.status) ||
       ch.some((a) => a.company_id === c.id && (a.to === "meeting" || opp.has(a.to ?? ""))),
   );
+  const repliedInConversation = repliedCrm.filter((c) => c.status !== "lead" && c.status !== "lost" && c.status !== "churned");
+  rates.push(
+    rate(
+      "reply_to_conversation",
+      cold ? `resposta → conversa: ${repliedInConversation.length} de ${repliedCrm.length} empresas em engaged ou além` : "resposta → conversa",
+      cold ? repliedInConversation.length : null,
+      cold ? repliedCrm.length : null,
+      "resposta → conversa",
+    ),
+  );
   rates.push(
     rate(
       "reply_to_meeting",
