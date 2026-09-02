@@ -93,6 +93,72 @@ export async function findEnrollmentsByLinkedInIdentities(
   return hits;
 }
 
+type EnrollmentHit = Awaited<ReturnType<typeof findEnrollmentsByLinkedInIdentities>>[number];
+
+function normalizeName(s: string | null | undefined): string {
+  return (s ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Fallback when no enrollment carries the attendee's LinkedIn identity: match
+ * by full name among recent enrollments. Most research-table enrollments have
+ * no contact_linkedin, or a vanity URL that never equals the provider id the
+ * chat exposes, so identity matching alone left most replies unmatched and
+ * the sequences "paused" by hand. First + last name must both agree; a bare
+ * first name is not a match.
+ */
+export async function findEnrollmentsByContactName(
+  client: SupabaseClient,
+  name: string | null | undefined,
+  opts?: { sinceDays?: number },
+): Promise<EnrollmentHit[]> {
+  const wanted = normalizeName(name);
+  const parts = wanted.split(" ");
+  if (parts.length < 2) return [];
+  const since = new Date(Date.now() - (opts?.sinceDays ?? 120) * 86_400_000).toISOString();
+  const { data, error } = await client
+    .from("outreach_enrollments")
+    .select(
+      "id, status, sequence_id, contact_linkedin, contact_name, contact_email, company_name, created_at",
+    )
+    .not("contact_name", "is", null)
+    .gte("created_at", since)
+    .order("updated_at", { ascending: false })
+    .limit(3000);
+  if (error) throw new Error(error.message);
+  const hits: EnrollmentHit[] = [];
+  for (const row of data ?? []) {
+    const n = normalizeName(row.contact_name as string);
+    const p = n.split(" ");
+    if (p.length < 2) continue;
+    // "Bruno Henrique" on the enrollment, "Bruno Henrique Ramos Fernandes"
+    // on LinkedIn: the shorter name as a prefix of the longer one counts.
+    const same =
+      n === wanted ||
+      wanted.startsWith(`${n} `) ||
+      n.startsWith(`${wanted} `) ||
+      (p[0] === parts[0] && p[p.length - 1] === parts[parts.length - 1]);
+    if (!same) continue;
+    hits.push({
+      id: row.id as string,
+      status: row.status as string,
+      sequenceId: (row.sequence_id as string | null) ?? null,
+      contactLinkedin: (row.contact_linkedin as string | null) ?? null,
+      contactName: (row.contact_name as string | null) ?? null,
+      contactEmail: (row.contact_email as string | null) ?? null,
+      companyName: (row.company_name as string) || "",
+      createdAt: (row.created_at as string | null) ?? null,
+    });
+  }
+  return hits;
+}
+
 /**
  * Upsert LinkedIn DM into outreach_reply_threads / messages so it appears in Replies.
  * Uses gmail_thread_id column to store Unipile chat_id (provider thread key).
@@ -498,7 +564,7 @@ export async function syncUnipileLinkedInInbox(
     };
   }
 
-  const chatLimit = Math.min(80, Math.max(5, opts?.chatLimit ?? 40));
+  const chatLimit = Math.min(300, Math.max(5, opts?.chatLimit ?? 40));
   const messagesPerChat = Math.min(40, Math.max(5, opts?.messagesPerChat ?? 20));
 
   let accounts = 0;
@@ -514,10 +580,19 @@ export async function syncUnipileLinkedInInbox(
     accounts = liAccounts.length;
 
     for (const account of liAccounts) {
-      const { items: chats } = await listUnipileChats({
-        accountId: account.id,
-        limit: chatLimit,
-      });
+      // Unipile pages at 100; follow the cursor until chatLimit so a busy
+      // inbox (150+ chats a fortnight) is not cut at the first page.
+      const chats: Awaited<ReturnType<typeof listUnipileChats>>["items"] = [];
+      let cursor: string | null = null;
+      do {
+        const page = await listUnipileChats({
+          accountId: account.id,
+          limit: Math.min(100, chatLimit - chats.length),
+          cursor,
+        });
+        chats.push(...page.items);
+        cursor = page.cursor;
+      } while (cursor && chats.length < chatLimit);
 
       for (const chat of chats) {
         chatsScanned += 1;
@@ -576,10 +651,13 @@ export async function syncUnipileLinkedInInbox(
           identities,
         );
 
-        const enrollments = await findEnrollmentsByLinkedInIdentities(
+        let enrollments = await findEnrollmentsByLinkedInIdentities(
           client,
           expanded,
         );
+        if (enrollments.length === 0 && other?.name) {
+          enrollments = await findEnrollmentsByContactName(client, other.name);
+        }
         if (enrollments.length === 0) continue;
 
         const stoppable = enrollments.filter(
@@ -668,6 +746,8 @@ export async function syncUnipileLinkedInInbox(
               contactEmail: primary.contactEmail,
               contactLinkedin: primary.contactLinkedin ?? contactLinkedin,
               companyName: primary.companyName,
+              // The name fallback still means "matched through the LinkedIn
+              // chat"; matched_how has a CHECK constraint and no value for it.
               matchedHow: "linkedin_profile",
             });
             threadIds.add(upserted.threadId);
