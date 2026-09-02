@@ -812,7 +812,9 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     .sort((a, b) => b[1].n - a[1].n)
     .map(([k, v]) => `${k.replace("AZURE_REPOS", "Azure").replace("GITHUB", "GitHub").replace("GITLAB", "GitLab").replace("BITBUCKET", "Bitbucket")} ${v.icp}/${v.n}`)
     .join(" · ");
-  facts.non_github = `não-GitHub: ${nonGithub.length} cadastros, ${nonGithub.filter((s) => s.icp).length} ICP`;
+  // A lever we chose, not a stage: it gets a target on the label and never
+  // competes for the red marker.
+  facts.non_github = `não-GitHub: ${nonGithub.length} cadastros, ${nonGithub.filter((s) => s.icp).length} ICP${TARGETS.non_github_signups ? ` → ${TARGETS.non_github_signups}` : ""}`;
   const icpFreeMail = all.filter((s) => s.icp && !s.corporate);
   facts.icp_free_mail = icpFreeMail.length
     ? `+${icpFreeMail.length} ICP com e-mail gratuito, fora da conta`
@@ -1146,9 +1148,6 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   consider("icp", nodes.icp.value, nodes.icp.target, plain, "entra pouca empresa grande", [
     signups ? `${icpProxy.length} de ${corporate.length} cadastros têm ${ICP_MIN_MEMBERS}+ devs` : "",
     facts.non_github ?? "",
-  ]);
-  consider("connected", signups ? nonGithub.length : null, TARGETS.non_github_signups, plain, "cadastro GitLab/Azure/Bitbucket", [
-    facts.platform_split ?? "",
   ]);
   consider("conversations", nodes.conversations.value, nodes.conversations.target, plain, "poucas conversas", [
     rates.find((r) => r.id === "touch_48h")?.label ?? "",
