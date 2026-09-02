@@ -253,7 +253,7 @@ async function searchNodes(
 
   const impressionsNode = node(
     "impressions",
-    `Impressões nas ${QUALIFIED_PAGES.length} páginas (Google)`,
+    `Impressões (Google, ${QUALIFIED_PAGES.length} páginas)`,
     impressions,
     `${impressions.toLocaleString("pt-BR")} · posição média ${wpos.toFixed(1)}`,
     {
@@ -309,7 +309,7 @@ async function llmReferralNode(periodStart: string, periodEnd: string): Promise<
     const users = rows.reduce((s, r) => s + num(r.users), 0);
     return node(
       "llm_referral",
-      "Referral de LLM (ChatGPT, Claude, Perplexity)",
+      "Referral de LLM",
       users,
       `${users} usuários (GA4)`,
       {
@@ -1010,7 +1010,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     "arr",
     "ARR",
     customerArr || null,
-    customerArr ? `R$ ${Math.round(customerArr).toLocaleString("pt-BR")} (CRM)` : "arr não preenchido no CRM",
+    customerArr ? `R$ ${Math.round(customerArr).toLocaleString("pt-BR")} (CRM)` : "sem arr no CRM",
     {
       target: TARGETS.arr_brl,
       source: "CRM (soma de arr nas contas customer)",
@@ -1175,6 +1175,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     rates.find((r) => r.id === "conv_to_opp")?.label ?? "",
   ]);
   const closedNoArr = closed.filter((c) => byId.get(c.company_id)?.arr == null).length;
+  facts.closed_note = closedNoArr ? `${closedNoArr} conta${closedNoArr === 1 ? "" : "s"} fechada${closedNoArr === 1 ? "" : "s"} sem arr no CRM` : "";
   consider("closed", nodes.closed.value, nodes.closed.target, brl, "fechado abaixo da meta", [
     closedNoArr ? `${closedNoArr} conta${closedNoArr === 1 ? "" : "s"} fechada${closedNoArr === 1 ? "" : "s"} sem arr no CRM` : "",
     rates.find((r) => r.id === "opp_active")?.label ?? "",

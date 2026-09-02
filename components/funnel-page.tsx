@@ -25,23 +25,23 @@ import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
-// Layout. Same grid as docs/funil-2026-09-01.excalidraw in kodus-growth, so the
-// page and the drawing read the same way.
+// Layout. Three entry lanes on top (self-hosted, inbound, outbound), one
+// horizontal commercial band below that every entry drops into. Same grid as
+// docs/funil-2026-09-01.excalidraw in kodus-growth.
 // ---------------------------------------------------------------------------
 
 const W = 1600;
-const H = 1220;
+const H = 930;
 const BW = 300;
 const BH = 60;
 const C1 = 60;
-const C2 = 460;
-const C3 = 980;
-// Rows are 120 apart: 60 of box and 60 of arrow, enough for two label lines
-// plus the 8px a red outline adds above the next box.
-const GAP = 60;
-const R = [180, 300, 420, 540] as const;
-const SY = [680, 800, 920] as const;
-const FY = SY[2] + BH + 64;
+const C2 = 560;
+const C3 = 1180;
+const R = [150, 250, 350, 450] as const;
+/** Commercial band: y of the boxes and x of each box. */
+const BY = 700;
+const BX = [60, 400, 740, 1080, 1380] as const;
+const BWB = 280;
 
 const INK = "var(--foreground)";
 const MUTED = "var(--muted-foreground)";
@@ -49,6 +49,8 @@ const CARD = "var(--card)";
 const TINT = "var(--accent)";
 const CRIT = "var(--destructive)";
 const VALUE = "var(--primary)";
+const GOOD = "#1f7a4d";
+const WARN = "#a8690f";
 
 type Pt = { x: number; y: number };
 
@@ -110,27 +112,11 @@ function Box({
       }}
       style={{ cursor: "pointer" }}
     >
-      <rect
-        x={x}
-        y={y}
-        width={w}
-        height={BH}
-        rx={6}
-        fill={spine ? TINT : CARD}
-        stroke={selected ? VALUE : INK}
-        strokeWidth={selected ? 2.5 : 1.5}
-      />
+      <rect x={x} y={y} width={w} height={BH} rx={6} fill={spine ? TINT : CARD} stroke={selected ? VALUE : INK} strokeWidth={selected ? 2.5 : 1.5} />
       <text x={x + 12} y={y + 25} fontSize={15} fontWeight={600} fill={INK}>
         {node.title}
       </text>
-      <text
-        x={x + 12}
-        y={y + 47}
-        fontSize={13.5}
-        fontFamily="var(--font-mono), ui-monospace, monospace"
-        fontWeight={500}
-        fill={notMeasured ? MUTED : VALUE}
-      >
+      <text x={x + 12} y={y + 47} fontSize={13.5} fontFamily="var(--font-mono), ui-monospace, monospace" fontWeight={500} fill={notMeasured ? MUTED : VALUE}>
         {node.display}
         {notMeasured ? "" : fmtTarget(node)}
       </text>
@@ -138,82 +124,29 @@ function Box({
   );
 }
 
-function Arrow({ from, to, label, lx, ly }: { from: Pt; to: Pt; label?: string; lx?: number; ly?: number }) {
-  return (
-    <>
-      <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={INK} strokeWidth={1.5} markerEnd="url(#funnel-arrow)" />
-      {label ? (
-        <text x={lx ?? (from.x + to.x) / 2 + 10} y={ly ?? (from.y + to.y) / 2 + 4} fontSize={12.5} fill={MUTED}>
-          {label}
-        </text>
-      ) : null}
-    </>
-  );
+function Arrow({ from, to }: { from: Pt; to: Pt }) {
+  return <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={INK} strokeWidth={1.5} markerEnd="url(#funnel-arrow)" />;
 }
 
-function Down({ x, y, label, second }: { x: number; y: number; label?: string; second?: string }) {
-  return (
-    <>
-      <Arrow from={{ x: x + BW / 2, y: y + BH }} to={{ x: x + BW / 2, y: y + BH + GAP }} />
-      {label ? (
-        <text x={x + BW / 2 + 10} y={y + BH + (second ? 20 : 34)} fontSize={12.5} fill={MUTED}>
-          {label}
-        </text>
-      ) : null}
-      {second ? (
-        <text x={x + BW / 2 + 10} y={y + BH + 38} fontSize={12} fill={MUTED}>
-          {second}
-        </text>
-      ) : null}
-    </>
-  );
+function Elbow({ points }: { points: Pt[] }) {
+  return <polyline points={points.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke={INK} strokeWidth={1.5} markerEnd="url(#funnel-arrow)" />;
 }
 
-function Gargalo({
-  x,
-  y,
-  w = BW,
-  lines,
-  side,
-}: {
-  x: number;
-  y: number;
-  w?: number;
-  lines: string[];
-  side: "left" | "right";
-}) {
-  const tx = side === "left" ? x - 18 : x + w + 18;
-  const anchor = side === "left" ? "end" : "start";
+function Gargalo({ x, y, w = BW, lines, side, dy = 0 }: { x: number; y: number; w?: number; lines: string[]; side: "left" | "right" | "bottom"; dy?: number }) {
+  const tx = side === "left" ? x - 18 : side === "right" ? x + w + 18 : x + w / 2;
+  const anchor = side === "left" ? "end" : side === "right" ? "start" : "middle";
+  const ty = side === "bottom" ? y + BH + 22 + dy : y + BH / 2 - 8;
   return (
     <>
       <rect x={x - 8} y={y - 8} width={w + 16} height={BH + 16} rx={9} fill="none" stroke={CRIT} strokeWidth={2.5} />
       {lines.map((t, i) => (
-        <text key={i} x={tx} y={y + BH / 2 - 8 + i * 18} fontSize={13} fontWeight={i === 0 ? 600 : 500} fill={CRIT} textAnchor={anchor}>
+        <text key={i} x={tx} y={ty + i * 18} fontSize={13} fontWeight={i === 0 ? 600 : 500} fill={CRIT} textAnchor={anchor}>
           {i === 0 ? `GARGALO · ${t}` : t}
         </text>
       ))}
     </>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Diagram
-// ---------------------------------------------------------------------------
-
-const GOOD = "#1f7a4d";
-const WARN = "#a8690f";
-
-/** Where a red marker goes for each stage, and which side has room for text. */
-const MARKER_SLOTS: Record<string, { x: number; y: number; w?: number; side: "left" | "right" }> = {
-  signups: { x: C2, y: R[1], side: "left" },
-  connected: { x: C2, y: R[2], side: "right" },
-  icp: { x: C2, y: R[3], side: "right" },
-  conversations: { x: C2, y: SY[0], side: "left" },
-  meetings: { x: C2, y: SY[1], side: "left" },
-  opportunities: { x: C2, y: SY[2], side: "left" },
-  closed: { x: C2, y: FY, side: "left" },
-  ob_replies: { x: C3, y: R[1], side: "right" },
-};
 
 function statusColor(status: FunnelRate["status"]): string {
   if (status === "good") return GOOD;
@@ -222,15 +155,21 @@ function statusColor(status: FunnelRate["status"]): string {
   return MUTED;
 }
 
-/** Arrow label built from a rate: text plus a dot when it sits outside the market band. */
-function RateLabel({ rate, x, y, size = 12.5 }: { rate: FunnelRate | undefined; x: number; y: number; size?: number }) {
+/** Arrow label built from a rate: a dot when it sits outside the market band. */
+function RateLabel({ rate, x, y, size = 12.5, anchor = "start" }: { rate: FunnelRate | undefined; x: number; y: number; size?: number; anchor?: "start" | "middle" | "end" }) {
   if (!rate) return null;
   const flagged = rate.status === "good" || rate.status === "warn" || rate.status === "crit";
   const text = rate.value == null ? `${rate.label}: não medido` : rate.label;
+  const full = `${text}${flagged && rate.note ? ` · ${rate.note}` : ""}`;
+  // Right-anchored labels get colour instead of a dot: the dot would need the
+  // rendered text width, which SVG does not give us before layout.
+  const showDot = flagged && anchor !== "end";
+  const dotX = anchor === "middle" ? x - 8 - full.length * 3.1 : x + 4;
+  const fill = rate.value == null ? CRIT : anchor === "end" && flagged ? statusColor(rate.status) : MUTED;
   return (
     <>
-      {flagged ? <circle cx={x + 4} cy={y - 4} r={4} fill={statusColor(rate.status)} /> : null}
-      <text x={flagged ? x + 12 : x} y={y} fontSize={size} fill={rate.value == null ? CRIT : MUTED}>
+      {showDot ? <circle cx={dotX} cy={y - 4} r={4} fill={statusColor(rate.status)} /> : null}
+      <text x={anchor === "start" && flagged ? x + 12 : x} y={y} fontSize={size} fill={fill} textAnchor={anchor}>
         {text}
         {flagged && rate.note ? ` · ${rate.note}` : ""}
       </text>
@@ -238,24 +177,50 @@ function RateLabel({ rate, x, y, size = 12.5 }: { rate: FunnelRate | undefined; 
   );
 }
 
-export function Diagram({
-  data,
-  selected,
-  onSelect,
-}: {
-  data: FunnelData;
-  selected: string | null;
-  onSelect: (id: string) => void;
-}) {
+// ---------------------------------------------------------------------------
+// Diagram
+// ---------------------------------------------------------------------------
+
+/** Where a red marker goes for each stage, and which side has room for text. */
+const MARKER_SLOTS: Record<string, { x: number; y: number; w?: number; side: "left" | "right" | "bottom"; dy?: number }> = {
+  signups: { x: C2, y: R[1], side: "left" },
+  connected: { x: C2, y: R[2], side: "right" },
+  icp: { x: C2, y: R[3], side: "right" },
+  ob_replies: { x: C3, y: R[1], side: "bottom" },
+  conversations: { x: BX[0], y: BY, w: BWB, side: "bottom", dy: 66 },
+  meetings: { x: BX[1], y: BY, w: BWB, side: "bottom", dy: 66 },
+  opportunities: { x: BX[2], y: BY, w: BWB, side: "bottom", dy: 66 },
+  closed: { x: BX[3], y: BY, w: BWB, side: "bottom", dy: 66 },
+};
+
+/** Position of the platform pages, read from the impressions rows. */
+function platformLever(n: Record<string, FunnelNode>): string {
+  const rows = n.impressions?.rows ?? [];
+  const pos = (needle: string) => {
+    const r = rows.find((row) => String(row.page ?? "").includes(needle));
+    return r ? Number(r.position).toFixed(0) : null;
+  };
+  const parts = [
+    ["gitlab", pos("gitlab-code-review")],
+    ["azure", pos("azure-devops")],
+    ["bitbucket", pos("bitbucket")],
+    ["self-hosted", pos("self-hosted-ai")],
+  ].filter(([, v]) => v != null);
+  return parts.length ? `posição: ${parts.map(([k, v]) => `${k} ${v}`).join(" · ")}` : "";
+}
+
+export function Diagram({ data, selected, onSelect }: { data: FunnelData; selected: string | null; onSelect: (id: string) => void }) {
   const n = data.nodes;
   const f = data.facts;
   const rate = (id: string) => data.rates.find((r) => r.id === id);
   const box = (id: string, x: number, y: number, extra: { w?: number; spine?: boolean } = {}) => (
     <Box x={x} y={y} w={extra.w} spine={extra.spine} node={n[id]} selected={selected === id} onSelect={onSelect} />
   );
+  const lever = platformLever(n);
+  const convTop = { x: BX[0] + BWB / 2, y: BY - 2 };
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Funil Kodus com números do mês" className="h-auto w-full min-w-[960px]">
+    <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Funil Kodus: três entradas que caem numa faixa comercial única" className="h-auto w-full min-w-[960px]">
       <defs>
         <marker id="funnel-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
           <path d="M0,0 L10,5 L0,10 z" fill={INK} />
@@ -263,80 +228,46 @@ export function Diagram({
       </defs>
 
       {/* headers */}
-      <text x={C2} y={22} fontSize={12.5} fill={MUTED}>
-        INBOUND CLOUD · tudo por mês · % na seta = corte da etapa
-        {data.elapsed < 1 ? ` · mês em curso: metas pró-rata (${Math.round(data.elapsed * 100)}%)` : ""}
+      <text x={C1} y={52} fontSize={12.5} fill={MUTED}>SELF-HOSTED</text>
+      <text x={C2} y={26} fontSize={12.5} fill={MUTED}>
+        INBOUND CLOUD · por mês{data.elapsed < 1 ? ` · mês em curso, metas pró-rata (${Math.round(data.elapsed * 100)}%)` : ""}
       </text>
-      <text x={C1} y={148} fontSize={12.5} fill={MUTED}>
-        SELF-HOSTED
-      </text>
-      <text x={C3} y={132} fontSize={12.5} fill={MUTED}>
-        OUTBOUND · só empresa nova (não cadastrada)
-      </text>
+      <text x={C3} y={52} fontSize={12.5} fill={MUTED}>OUTBOUND · empresa nova, cold</text>
 
-      {/* top sources */}
-      {box("impressions", C2 - 150, 40, { w: 340 })}
-      <Arrow from={{ x: C2 - 150 + 170, y: 100 }} to={{ x: C2 + BW / 2 - 40, y: R[0] - 2 }} />
-      <RateLabel rate={rate("ctr")} x={C2 - 40} y={130} />
-      {box("llm_referral", C2 + 220, 40, { w: 380 })}
-      <Arrow from={{ x: C2 + 220 + 190, y: 100 }} to={{ x: C2 + BW / 2 + 40, y: R[0] - 2 }} />
-      <text x={C2 + BW / 2 + 70} y={130} fontSize={12.5} fill={MUTED}>
-        fora dos cliques (GSC conta só Google)
-      </text>
+      {/* inbound sources */}
+      {box("impressions", C2 - 160, 40, { w: 300 })}
+      {box("llm_referral", C2 + 180, 40, { w: 300 })}
+      <Arrow from={{ x: C2 - 10, y: 100 }} to={{ x: C2 + BW / 2 - 30, y: R[0] - 2 }} />
+      <Arrow from={{ x: C2 + 330, y: 100 }} to={{ x: C2 + BW / 2 + 30, y: R[0] - 2 }} />
+      <RateLabel rate={rate("ctr")} x={C2 - 150} y={122} size={12} />
+      {lever ? (
+        <>
+          <text x={C1} y={78} fontSize={13} fontWeight={600} fill={CRIT}>ALAVANCA · páginas de plataforma</text>
+          <text x={C1} y={96} fontSize={12.5} fill={CRIT}>{lever}</text>
+          <text x={C1} y={112} fontSize={12.5} fill={CRIT}>teto: 50 a 140 buscas/mês por termo (US)</text>
+        </>
+      ) : null}
 
-      {/* inbound spine */}
+      {/* inbound lane */}
       {box("visits", C2, R[0])}
-      <Arrow from={{ x: C2 + BW / 2, y: R[0] + BH }} to={{ x: C2 + BW / 2, y: R[0] + BH + GAP }} />
-      <RateLabel rate={rate("visit_to_signup")} x={C2 + BW / 2 + 10} y={R[0] + BH + 20} />
-      <RateLabel rate={rate("survey")} x={C2 + BW / 2 + 10} y={R[0] + BH + 38} size={12} />
-
+      <Arrow from={{ x: C2 + BW / 2, y: R[0] + BH }} to={{ x: C2 + BW / 2, y: R[1] }} />
+      <RateLabel rate={rate("visit_to_signup")} x={C2 + BW / 2 + 10} y={R[0] + BH + 16} size={12} />
+      <RateLabel rate={rate("survey")} x={C2 + BW / 2 + 10} y={R[0] + BH + 32} size={12} />
       {box("signups", C2, R[1])}
-      <Down x={C2} y={R[1]} />
-      <RateLabel rate={rate("connected")} x={C2 + BW / 2 + 10} y={R[1] + BH + 34} />
-
+      <Arrow from={{ x: C2 + BW / 2, y: R[1] + BH }} to={{ x: C2 + BW / 2, y: R[2] }} />
+      <RateLabel rate={rate("connected")} x={C2 + BW / 2 + 10} y={R[1] + BH + 24} />
       {box("connected", C2, R[2])}
-      <Down x={C2} y={R[2]} />
-      <RateLabel rate={rate("icp_share")} x={C2 + BW / 2 + 10} y={R[2] + BH + 20} />
-      <text x={C2 + BW / 2 + 10} y={R[2] + BH + 38} fontSize={12} fill={MUTED}>
+      <Arrow from={{ x: C2 + BW / 2, y: R[2] + BH }} to={{ x: C2 + BW / 2, y: R[3] }} />
+      <RateLabel rate={rate("icp_share")} x={C2 + BW / 2 + 10} y={R[2] + BH + 16} size={12} />
+      <text x={C2 + BW / 2 + 10} y={R[2] + BH + 32} fontSize={12} fill={MUTED}>
         {[f.platform_split, f.icp_free_mail].filter(Boolean).join(" · ")}
       </text>
-
       {box("icp", C2, R[3], { spine: true })}
-      <Arrow from={{ x: C2 + BW / 2, y: R[3] + BH }} to={{ x: C2 + BW / 2, y: SY[0] }} />
-      <RateLabel rate={rate("touch_48h")} x={C2 + BW / 2 + 10} y={R[3] + BH + 34} />
 
-      {box("conversations", C2, SY[0], { spine: true })}
-      <Down x={C2} y={SY[0]} />
-      <RateLabel rate={rate("conv_to_meeting")} x={C2 + BW / 2 + 10} y={SY[0] + BH + 20} />
-      <RateLabel rate={rate("conv_to_opp")} x={C2 + BW / 2 + 10} y={SY[0] + BH + 38} size={12} />
-
-      {box("meetings", C2, SY[1], { spine: true })}
-      <Down x={C2} y={SY[1]} />
-      <RateLabel rate={rate("meeting_to_opp")} x={C2 + BW / 2 + 10} y={SY[1] + BH + 34} />
-
-      {box("opportunities", C2, SY[2], { spine: true })}
-      <Arrow from={{ x: C2 + BW / 2, y: SY[2] + BH }} to={{ x: C2 + BW / 2, y: FY }} />
-      <RateLabel rate={rate("opp_active")} x={C2 + BW / 2 + 10} y={SY[2] + BH + 34} />
-
-      {box("closed", C2, FY, { spine: true })}
-      <Arrow from={{ x: C2 + BW / 2, y: FY + BH }} to={{ x: C2 + BW / 2, y: FY + 100 }} />
-      {box("arr", C2, FY + 100, { spine: true })}
-
-      {/* self-hosted */}
+      {/* self-hosted lane */}
       {box("sh_instances", C1, R[0])}
-      <Arrow from={{ x: C1 + 50, y: R[0] + BH }} to={{ x: C1 + 50, y: R[3] }} />
-      <text x={C1 + 60} y={R[0] + BH + 34} fontSize={12.5} fill={MUTED}>
-        pedidos de trial: {n.sh_trial?.value ?? "?"}
-      </text>
-      {box("sh_trial", C1, R[3])}
-      <Arrow from={{ x: C1 + BW, y: R[3] + BH / 2 }} to={{ x: C2 - 2, y: R[3] + BH / 2 }} />
-      <polyline
-        points={`${C1 + BW / 2},${R[0]} ${C1 + BW / 2},${R[0] - 12} ${C3 + BW / 2},${R[0] - 12} ${C3 + BW / 2},${R[0] - 2}`}
-        fill="none"
-        stroke={INK}
-        strokeWidth={1.5}
-        markerEnd="url(#funnel-arrow)"
-      />
+      <Arrow from={{ x: C1 + BW / 2, y: R[0] + BH }} to={{ x: C1 + BW / 2, y: R[3] }} />
+      <text x={C1 + BW / 2 + 10} y={R[0] + BH + 18} fontSize={12.5} fill={MUTED}>pedidos de trial: {n.sh_trial?.value ?? "?"}</text>
       <g
         role="button"
         tabIndex={0}
@@ -346,34 +277,49 @@ export function Diagram({
         }}
         style={{ cursor: "pointer" }}
       >
-        <text x={C1 + BW / 2 + 12} y={R[0] - 18} fontSize={12.5} fill={selected === "sh_found" ? VALUE : MUTED} textDecoration="underline">
+        <text x={C1 + BW / 2 + 10} y={R[0] + BH + 36} fontSize={12} fill={selected === "sh_found" ? VALUE : MUTED} textDecoration="underline">
           {f.sh_found ?? ""}
         </text>
       </g>
+      {box("sh_trial", C1, R[3])}
+      <Arrow from={{ x: C1 + BW, y: R[3] + BH / 2 }} to={{ x: C2 - 2, y: R[3] + BH / 2 }} />
 
-      {/* outbound */}
+      {/* outbound lane */}
       {box("ob_contacts", C3, R[0])}
-      <Down x={C3} y={R[0]} />
-      <RateLabel rate={rate("cold_bounce")} x={C3 + BW / 2 + 10} y={R[0] + BH + 20} />
-      <RateLabel rate={rate("cold_reply")} x={C3 + BW / 2 + 10} y={R[0] + BH + 38} size={12} />
+      <Arrow from={{ x: C3 + BW / 2, y: R[0] + BH }} to={{ x: C3 + BW / 2, y: R[1] }} />
+      <RateLabel rate={rate("cold_reply")} x={C3 + BW / 2 - 10} y={R[0] + BH + 16} size={12} anchor="end" />
+      <RateLabel rate={rate("cold_bounce")} x={C3 + BW / 2 - 10} y={R[0] + BH + 32} size={12} anchor="end" />
       {box("ob_replies", C3, R[1])}
-      <polyline
-        points={`${C3 + BW / 2},${R[1] + BH} ${C3 + BW / 2},${SY[0] + BH / 2} ${C2 + BW + 2},${SY[0] + BH / 2}`}
-        fill="none"
-        stroke={INK}
-        strokeWidth={1.5}
-        markerEnd="url(#funnel-arrow)"
-      />
-      <RateLabel rate={rate("reply_to_conversation")} x={C3 + BW / 2 + 10} y={R[1] + BH + 26} />
-      <text x={C3 + BW / 2 + 10} y={R[1] + BH + 43} fontSize={12.5} fill={MUTED}>
-        entra na espinha em Conversa; reunião é a etapa seguinte
+
+      {/* commercial band */}
+      <rect x={30} y={BY - 70} width={W - 60} height={260} rx={10} fill="none" stroke={MUTED} strokeWidth={1} strokeDasharray="6 5" />
+      <text x={48} y={BY - 50} fontSize={12.5} fill={MUTED}>
+        COMERCIAL · a mesma régua pra inbound, self-hosted e outbound · conversa → reunião → oportunidade → fechado
       </text>
+      {box("conversations", BX[0], BY, { w: BWB, spine: true })}
+      {box("meetings", BX[1], BY, { w: BWB, spine: true })}
+      {box("opportunities", BX[2], BY, { w: BWB, spine: true })}
+      {box("closed", BX[3], BY, { w: BWB, spine: true })}
+      {box("arr", BX[4], BY, { w: 180, spine: true })}
+      {[0, 1, 2, 3].map((i) => (
+        <Arrow key={i} from={{ x: BX[i] + BWB, y: BY + BH / 2 }} to={{ x: BX[i + 1] - 2, y: BY + BH / 2 }} />
+      ))}
+      <RateLabel rate={rate("conv_to_meeting")} x={(BX[0] + BWB + BX[1]) / 2} y={BY + BH + 20} size={11.5} anchor="middle" />
+      <RateLabel rate={rate("meeting_to_opp")} x={(BX[1] + BWB + BX[2]) / 2} y={BY + BH + 20} size={11.5} anchor="middle" />
+      <RateLabel rate={rate("opp_active")} x={(BX[2] + BWB + BX[3]) / 2} y={BY + BH + 20} size={11.5} anchor="middle" />
+      <RateLabel rate={rate("conv_to_opp")} x={BX[0]} y={BY + BH + 44} size={12} />
+
+      {/* entries dropping into Conversa */}
+      <Elbow points={[{ x: C2 + BW / 2, y: R[3] + BH }, { x: C2 + BW / 2, y: BY - 40 }, { x: convTop.x, y: BY - 40 }, convTop]} />
+      <RateLabel rate={rate("touch_48h")} x={C2 + BW / 2 + 10} y={R[3] + BH + 20} size={12} />
+      <Elbow points={[{ x: C3 + BW / 2, y: R[1] + BH + 80 }, { x: C3 + BW / 2, y: BY - 40 }, { x: convTop.x, y: BY - 40 }, convTop]} />
+      <RateLabel rate={rate("reply_to_conversation")} x={C3 + BW / 2 - 10} y={R[1] + BH + 96} size={12} anchor="end" />
 
       {/* red markers: computed, never hard-coded */}
       {data.bottlenecks.map((b) => {
         const slot = MARKER_SLOTS[b.nodeId];
         if (!slot) return null;
-        return <Gargalo key={b.nodeId} x={slot.x} y={slot.y} w={slot.w} side={slot.side} lines={b.lines} />;
+        return <Gargalo key={b.nodeId} x={slot.x} y={slot.y} w={slot.w} side={slot.side} dy={slot.dy} lines={b.lines} />;
       })}
     </svg>
   );
