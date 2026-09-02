@@ -500,7 +500,14 @@ async function coldOutbound(
   contacts: FunnelNode;
   replies: FunnelNode;
   facts: Record<string, string>;
-  counts: { people: number; bounced: number; completed: number; humanReplies: number | null } | null;
+  counts: {
+    people: number;
+    bounced: number;
+    completed: number;
+    humanReplies: number | null;
+    classifiedHuman: number | null;
+  } | null;
+  repliedDomains: string[];
 }> {
   const { data: seqs, error } = await client
     .from("outreach_sequences")
@@ -516,6 +523,7 @@ async function coldOutbound(
       replies: node("ob_replies", "Respostas de empresa nova", null, "não medido"),
       facts: {},
       counts: null,
+      repliedDomains: [],
     };
   }
 
@@ -541,6 +549,32 @@ async function coldOutbound(
   const completed = byStatus("completed");
   const bounced = byStatus("bounced");
   const repliedStatus = byStatus("replied");
+  const repliedEnrollments = enrollments.filter((e) => e.status === "replied");
+  const repliedDomains = new Set(
+    repliedEnrollments.map((e) => String(e.domain ?? "").toLowerCase()).filter(Boolean),
+  );
+
+  // Which channel carried each reply: the inbox syncs open one thread per
+  // enrollment, tagged email or linkedin.
+  const byChannel: Record<string, number> = {};
+  if (repliedEnrollments.length) {
+    const { data: threads } = await client
+      .from("outreach_reply_threads")
+      .select("enrollment_id,channel")
+      .in("enrollment_id", repliedEnrollments.map((e) => e.id as string));
+    const seenEnr = new Set<string>();
+    for (const t of threads ?? []) {
+      const id = String(t.enrollment_id);
+      if (seenEnr.has(id)) continue;
+      seenEnr.add(id);
+      const ch = String(t.channel ?? "?");
+      byChannel[ch] = (byChannel[ch] ?? 0) + 1;
+    }
+  }
+  const channelText = Object.entries(byChannel)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `${k === "linkedin" ? "LinkedIn" : k === "email" ? "e-mail" : k} ${v}`)
+    .join(" · ");
 
   // Human replies come from the outbound_metrics RPC (it classifies threads);
   // the enrollment status "replied" also counts auto-replies and bounces.
@@ -589,7 +623,7 @@ async function coldOutbound(
     "ob_replies",
     "Respostas de empresa nova",
     repliedStatus,
-    `cold: ${repliedStatus}${humanReplies != null && humanReplies !== repliedStatus ? ` · classificadas humanas: ${humanReplies}` : ""}`,
+    `cold: ${repliedStatus}${channelText ? ` (${channelText})` : ""}`,
     {
       source: "Motor de sequência (enrollments com status replied; e-mail e LinkedIn)",
       definition:
@@ -604,7 +638,8 @@ async function coldOutbound(
     facts: {
       ob_completed: `${pct(completed + repliedStatus, people)} completaram`,
     },
-    counts: { people, bounced, completed: completed + repliedStatus, humanReplies: repliedStatus },
+    counts: { people, bounced, completed: completed + repliedStatus, humanReplies: repliedStatus, classifiedHuman: humanReplies },
+    repliedDomains: [...repliedDomains],
   };
 }
 
@@ -994,6 +1029,23 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     nodes.ob_replies = node("ob_replies", "Respostas de empresa nova", null, "não medido");
   }
   const cc = cold?.counts ?? null;
+  // Reply → opportunity for cold: replied companies whose CRM account is now
+  // (or was moved this month into) qualified, poc or negotiation.
+  const repliedCrm = (cold?.repliedDomains ?? [])
+    .map((d) => crm.find((c) => (c.domain ?? "").toLowerCase() === d))
+    .filter((c): c is CrmCompanyLite => Boolean(c));
+  const repliedToOpp = repliedCrm.filter(
+    (c) => opp.has(c.status) || ch.some((a) => a.company_id === c.id && opp.has(a.to ?? "")),
+  );
+  rates.push(
+    rate(
+      "reply_to_opp",
+      cold ? `resposta → oportunidade: ${repliedToOpp.length} de ${repliedCrm.length} empresas` : "resposta → oportunidade",
+      cold ? repliedToOpp.length : null,
+      cold ? repliedCrm.length : null,
+      "resposta → oportunidade",
+    ),
+  );
   rates.push(rate("cold_bounce", cc ? `bounce ${pct(cc.bounced, cc.people)}` : "bounce", cc ? cc.bounced : null, cc ? cc.people : null, "bounce"));
   rates.push(
     rate(

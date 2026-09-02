@@ -358,11 +358,9 @@ export function Diagram({
         strokeWidth={1.5}
         markerEnd="url(#funnel-arrow)"
       />
-      <text x={C3 + BW / 2 + 10} y={R[1] + BH + 26} fontSize={12.5} fill={MUTED}>
-        {f.ob_new_conversations ?? ""}
-      </text>
+      <RateLabel rate={rate("reply_to_opp")} x={C3 + BW / 2 + 10} y={R[1] + BH + 26} />
       <text x={C3 + BW / 2 + 10} y={R[1] + BH + 43} fontSize={12.5} fill={MUTED}>
-        + rede: champion que trocou de empresa
+        {f.ob_new_conversations ?? ""} · + rede
       </text>
 
       {/* red markers: computed, never hard-coded */}
