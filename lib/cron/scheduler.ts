@@ -303,7 +303,25 @@ async function runCrmMeetingsCron(): Promise<void> {
   );
 }
 
+async function runFunnelGoalsCron(): Promise<void> {
+  const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
+  const { syncFunnelGoals } = await import("@/lib/funnel/goals");
+  const { fetchFunnel } = await import("@/lib/funnel/metrics");
+  const res = await syncFunnelGoals(getSupabaseServiceClient(), fetchFunnel);
+  console.log(
+    `[cron] funnel-goals: ${res.goals} goal(s), ${res.updated} updated` +
+      (res.skipped.length ? `, skipped: ${res.skipped.join("; ")}` : "") +
+      (res.errors.length ? `, errors: ${res.errors.join("; ")}` : ""),
+  );
+}
+
 const JOBS: JobDefinition[] = [
+  {
+    // Daily 06:00 UTC (03:00 BRT): write measured funnel numbers into goals.
+    name: "funnel-goals",
+    schedule: "0 6 * * *",
+    run: runFunnelGoalsCron,
+  },
   {
     // Every 2 h: match calendar events to CRM accounts (reply → meeting).
     name: "crm-meetings",

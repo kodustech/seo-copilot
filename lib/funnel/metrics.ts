@@ -4,6 +4,8 @@ import { queryBigQuery } from "@/lib/bigquery";
 import { fetchOutboundMetrics } from "@/lib/outreach/metrics";
 import { isTelemetryConfigured, runTelemetryQuery } from "@/lib/telemetry-pg";
 
+import { goalOverlay } from "./goals";
+
 import {
   BOTTLENECK_RATIO,
   COLD_MIN_CONTACTS_FOR_VERDICT,
@@ -48,6 +50,10 @@ export type FunnelNode = {
   rows: FunnelRow[];
   /** Extra tables for the drawer (a different row shape than `rows`). */
   extra?: { title: string; columns: string[]; rows: FunnelRow[] }[];
+  /** Goal bound to this stage for the month, when one exists. */
+  goal?: { id: string; title: string; target: number };
+  /** Bets running on that goal. */
+  bets?: { id: string; title: string; status: string; decisionAt: string; hypothesis: string; metric: string }[];
 };
 
 export type RateStatus = "good" | "ok" | "warn" | "crit" | "na";
@@ -1299,6 +1305,28 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   facts.ob_new_conversations = changes
     ? `empresa nova em conversa: ${newCompanyConvs.length} (sem cadastro no produto)${SHOW_TARGETS ? ` → ${TARGETS.ob_companies_in_conversation}` : ""}`
     : "";
+
+  // Targets come from Goals bound to a funnel metric; bets ride along so the
+  // drawer shows what is being tried on that stage.
+  try {
+    const overlay = await goalOverlay(client, month);
+    for (const [id, t] of Object.entries(overlay.targets)) {
+      const n = nodes[id];
+      if (!n) continue;
+      n.goal = { id: t.goalId, title: t.title, target: t.target };
+      n.target = t.target;
+      n.bets = (overlay.bets[id] ?? []).map((b) => ({
+        id: b.id,
+        title: b.title,
+        status: b.status,
+        decisionAt: b.decisionAt,
+        hypothesis: b.hypothesis,
+        metric: b.metric,
+      }));
+    }
+  } catch (err) {
+    errors.push(`goals: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   return {
     month,

@@ -382,6 +382,29 @@ function Drawer({ node, onClose }: { node: FunnelNode; onClose: () => void }) {
           </Table>
         )}
       </div>
+      {node.goal ? (
+        <div className="border-t px-4 py-3 text-sm">
+          <p className="text-xs font-medium text-muted-foreground">Meta</p>
+          <p>
+            {node.goal.title}: {node.value == null ? "?" : fmtCell(node.value)} de {fmtCell(node.goal.target)}
+          </p>
+          {node.bets && node.bets.length > 0 ? (
+            <ul className="mt-2 space-y-1">
+              {node.bets.map((b) => (
+                <li key={b.id} className="text-xs">
+                  <span className={cn("mr-2 rounded px-1.5 py-0.5", b.status === "active" ? "bg-emerald-500/20 text-emerald-300" : b.status === "queued" ? "bg-neutral-500/20 text-neutral-300" : b.status === "won" ? "bg-sky-500/20 text-sky-300" : b.status === "lost" ? "bg-red-500/20 text-red-300" : "bg-violet-500/20 text-violet-300")}>
+                    {b.status}
+                  </span>
+                  <span className="font-medium">{b.title}</span>
+                  <span className="text-muted-foreground"> · decide em {b.decisionAt} · prova: {b.metric}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-1 text-xs text-muted-foreground">Sem apostas nesta meta.</p>
+          )}
+        </div>
+      ) : null}
       {node.extra?.map((section) => (
         <div key={section.title} className="border-t">
           <p className="px-4 pt-3 text-xs font-medium text-muted-foreground">{section.title}</p>

@@ -138,6 +138,7 @@ export async function POST(req: Request) {
           : null,
       projectRef: typeof body.projectRef === "string" ? body.projectRef : null,
       notes: typeof body.notes === "string" ? body.notes : null,
+      funnelMetric: typeof body.funnelMetric === "string" ? body.funnelMetric : null,
       createdByEmail: userEmail,
     });
     return NextResponse.json({ goal }, { status: 201 });

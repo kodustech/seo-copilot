@@ -1,0 +1,96 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+import { listBets, type Bet } from "@/lib/bets";
+import { listGoals, updateGoal, type Goal } from "@/lib/goals";
+
+import type { FunnelData } from "./metrics";
+
+/**
+ * Funnel metrics a goal may target. Only stages the funnel measures every
+ * month qualify: a goal on anything else would have nobody to write its
+ * progress.
+ */
+export const FUNNEL_METRICS: { id: string; label: string; unit: string }[] = [
+  { id: "visits", label: "Visitas qualificadas", unit: "cliques" },
+  { id: "signups", label: "Cadastros com e-mail corporativo", unit: "cadastros" },
+  { id: "icp", label: "ICP (20+ devs)", unit: "contas" },
+  { id: "sh_trial", label: "Self-hosted: pediu trial", unit: "pedidos" },
+  { id: "ob_contacts", label: "Outbound: contatos novos", unit: "pessoas" },
+  { id: "ob_replies", label: "Outbound: respostas", unit: "respostas" },
+  { id: "conversations", label: "Conversas (engaged)", unit: "contas" },
+  { id: "meetings", label: "Reuniões", unit: "reuniões" },
+  { id: "opportunities", label: "Oportunidades", unit: "contas" },
+  { id: "self_serve", label: "Pagou sozinho (self-serve)", unit: "contas" },
+  { id: "closed", label: "Fechado (R$)", unit: "R$" },
+];
+
+export function isFunnelMetric(id: string | null | undefined): boolean {
+  return Boolean(id) && FUNNEL_METRICS.some((m) => m.id === id);
+}
+
+/** Goals whose period covers the given month and that target a funnel metric. */
+export async function goalsForMonth(client: SupabaseClient, month: string): Promise<Goal[]> {
+  const all = await listGoals(client, { periodScope: "all", status: "active", limit: 500 });
+  const start = `${month}-01`;
+  return all.filter(
+    (g) => g.funnelMetric && isFunnelMetric(g.funnelMetric) && g.periodStart <= start && g.periodEnd >= start,
+  );
+}
+
+/** Targets and bets per funnel node, for the page. */
+export async function goalOverlay(
+  client: SupabaseClient,
+  month: string,
+): Promise<{ targets: Record<string, { goalId: string; title: string; target: number }>; bets: Record<string, Bet[]> }> {
+  const goals = await goalsForMonth(client, month);
+  const targets: Record<string, { goalId: string; title: string; target: number }> = {};
+  const bets: Record<string, Bet[]> = {};
+  for (const g of goals) {
+    const id = g.funnelMetric as string;
+    // One goal per metric per month; the first (oldest) wins if two exist.
+    if (!targets[id]) targets[id] = { goalId: g.id, title: g.title, target: g.targetCount };
+    const list = await listBets(client, { goalId: g.id });
+    bets[id] = [...(bets[id] ?? []), ...list];
+  }
+  return { targets, bets };
+}
+
+/**
+ * Write the measured value of each funnel-bound goal into current_count.
+ * Runs weekly (cron) and on demand. The funnel is computed once per month
+ * that any goal touches.
+ */
+export async function syncFunnelGoals(
+  client: SupabaseClient,
+  fetchFunnel: (client: SupabaseClient, month: string) => Promise<FunnelData>,
+): Promise<{ goals: number; updated: number; skipped: string[]; errors: string[] }> {
+  const all = await listGoals(client, { periodScope: "all", status: "active", limit: 500 });
+  const bound = all.filter((g) => isFunnelMetric(g.funnelMetric));
+  const byMonth = new Map<string, FunnelData>();
+  let updated = 0;
+  const skipped: string[] = [];
+  const errors: string[] = [];
+  for (const g of bound) {
+    const month = g.periodStart.slice(0, 7);
+    try {
+      let funnel = byMonth.get(month);
+      if (!funnel) {
+        funnel = await fetchFunnel(client, month);
+        byMonth.set(month, funnel);
+      }
+      const node = funnel.nodes[g.funnelMetric as string];
+      if (!node || node.value == null) {
+        skipped.push(`${g.title}: ${g.funnelMetric} não medido em ${month}`);
+        continue;
+      }
+      const value = Math.round(node.value);
+      if (value !== g.currentCount) {
+        await updateGoal(client, g.id, { currentCount: value });
+        updated += 1;
+      }
+    } catch (err) {
+      errors.push(`${g.title}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return { goals: bound.length, updated, skipped, errors };
+}

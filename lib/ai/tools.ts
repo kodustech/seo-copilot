@@ -64,6 +64,7 @@ import {
   updateWorkItem,
   deleteWorkItem,
 } from "@/lib/kanban";
+import { createBet, listBets, updateBet, type BetStatus } from "@/lib/bets";
 import {
   listGoals,
   createGoal,
@@ -2771,6 +2772,12 @@ function createCreateGoalTool(userEmail?: string) {
         ),
       projectRef: z.string().optional(),
       notes: z.string().optional(),
+      funnelMetric: z
+        .string()
+        .optional()
+        .describe(
+          "Bind the goal to a funnel stage the funnel measures (visits, signups, icp, sh_trial, ob_contacts, ob_replies, conversations, meetings, opportunities, self_serve, closed). Progress is then written by the funnel sync, not by hand.",
+        ),
       linkTaskIds: z
         .array(z.string())
         .optional()
@@ -2795,6 +2802,7 @@ function createCreateGoalTool(userEmail?: string) {
       responsibleEmail,
       projectRef,
       notes,
+      funnelMetric,
       linkTaskIds,
       linkTaskTitles,
     }: {
@@ -2810,6 +2818,7 @@ function createCreateGoalTool(userEmail?: string) {
       responsibleEmail?: string;
       projectRef?: string;
       notes?: string;
+      funnelMetric?: string;
       linkTaskIds?: string[];
       linkTaskTitles?: string[];
     }) => {
@@ -2836,6 +2845,7 @@ function createCreateGoalTool(userEmail?: string) {
           responsibleEmail: responsibleEmail ?? null,
           projectRef: projectRef ?? null,
           notes: notes ?? null,
+          funnelMetric: funnelMetric ?? null,
           createdByEmail: userEmail ?? "agent@kodus.io",
         });
 
@@ -2901,6 +2911,11 @@ const updateGoalTool = tool({
     responsibleEmail: z.string().nullable().optional(),
     projectRef: z.string().nullable().optional(),
     notes: z.string().nullable().optional(),
+    funnelMetric: z
+      .string()
+      .nullable()
+      .optional()
+      .describe("Funnel stage id to bind (see createGoal); null unbinds."),
   }),
   execute: async ({
     goalId,
@@ -2921,6 +2936,7 @@ const updateGoalTool = tool({
     responsibleEmail?: string | null;
     projectRef?: string | null;
     notes?: string | null;
+    funnelMetric?: string | null;
   }) => {
     try {
       const client = getSupabaseServiceClient();
@@ -2947,6 +2963,119 @@ const updateGoalTool = tool({
         success: false as const,
         message: error instanceof Error ? error.message : "Error updating goal.",
       };
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Bets: what we run to move a goal. Not tasks.
+// ---------------------------------------------------------------------------
+
+const listBetsTool = tool({
+  description:
+    "List bets (hypothesis + action + proving metric + decision date) running on goals. Filter by goal (id or partial title) or status: queued, active, won, lost, operation. At most 3 bets are active at a time.",
+  inputSchema: z.object({
+    goalId: z.string().optional(),
+    goalTitle: z.string().optional(),
+    status: z.enum(["queued", "active", "won", "lost", "operation"]).optional(),
+  }),
+  execute: async ({ goalId, goalTitle, status }: { goalId?: string; goalTitle?: string; status?: BetStatus }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      let gid = goalId;
+      if (!gid && goalTitle) {
+        const ref = await resolveGoalRef(client, { goalTitle });
+        if (!ref.ok) return { success: false as const, ...ref };
+        gid = ref.goal.id;
+      }
+      const bets = await listBets(client, { goalId: gid, status });
+      return { success: true as const, count: bets.length, bets };
+    } catch (error) {
+      return { success: false as const, message: error instanceof Error ? error.message : "Error listing bets." };
+    }
+  },
+});
+
+const createBetTool = tool({
+  description:
+    "Create a bet on a goal. Requires all four fields: hypothesis (if we do X, metric Y moves because...), action (what exactly will be done), metric (the number that proves it, with threshold), decisionAt (YYYY-MM-DD when the verdict is due). Refused as active when 3 bets are already active; pass status 'queued' to park it.",
+  inputSchema: z.object({
+    goalId: z.string().optional(),
+    goalTitle: z.string().optional(),
+    title: z.string(),
+    hypothesis: z.string(),
+    action: z.string(),
+    metric: z.string(),
+    decisionAt: z.string().describe("YYYY-MM-DD"),
+    status: z.enum(["queued", "active"]).optional(),
+    notes: z.string().optional(),
+    user_email: z.string().optional(),
+  }),
+  execute: async ({
+    goalId,
+    goalTitle,
+    title,
+    hypothesis,
+    action,
+    metric,
+    decisionAt,
+    status,
+    notes,
+    user_email,
+  }: {
+    goalId?: string;
+    goalTitle?: string;
+    title: string;
+    hypothesis: string;
+    action: string;
+    metric: string;
+    decisionAt: string;
+    status?: "queued" | "active";
+    notes?: string;
+    user_email?: string;
+  }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const ref = await resolveGoalRef(client, { goalId, goalTitle });
+      if (!ref.ok) return { success: false as const, ...ref };
+      const bet = await createBet(client, {
+        goalId: ref.goal.id,
+        title,
+        hypothesis,
+        action,
+        metric,
+        decisionAt,
+        status,
+        notes: notes ?? null,
+        createdByEmail: user_email ?? "agent@kodus.io",
+      });
+      return { success: true as const, bet };
+    } catch (error) {
+      return { success: false as const, message: error instanceof Error ? error.message : "Error creating bet." };
+    }
+  },
+});
+
+const decideBetTool = tool({
+  description:
+    "Decide or move a bet: status won, lost, operation (became routine work), active (start a queued bet; refused when 3 are active) or queued. Give a one-line verdict when deciding won or lost.",
+  inputSchema: z.object({
+    betId: z.string(),
+    status: z.enum(["queued", "active", "won", "lost", "operation"]),
+    verdict: z.string().optional(),
+    notes: z.string().optional(),
+  }),
+  execute: async ({ betId, status, verdict, notes }: { betId: string; status: BetStatus; verdict?: string; notes?: string }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const bet = await updateBet(client, betId, {
+        status,
+        ...(verdict !== undefined ? { verdict } : {}),
+        ...(notes !== undefined ? { notes } : {}),
+      });
+      return { success: true as const, bet };
+    } catch (error) {
+      return { success: false as const, message: error instanceof Error ? error.message : "Error updating bet." };
     }
   },
 });
@@ -7226,6 +7355,9 @@ export function createAgentTools(userEmail?: string) {
     listKanbanCards,
     listGoals: listGoalsTool,
     createGoal: createCreateGoalTool(userEmail),
+    listBets: listBetsTool,
+    createBet: createBetTool,
+    decideBet: decideBetTool,
     updateGoal: updateGoalTool,
     deleteGoal: deleteGoalTool,
     incrementGoalProgress: incrementGoalProgressTool,

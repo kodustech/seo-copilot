@@ -20,6 +20,8 @@ import {
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
+import { FUNNEL_METRICS } from "@/lib/funnel/goals";
+import type { Bet, BetStatus } from "@/lib/bets";
 import {
   GOAL_KINDS,
   GOAL_PRIORITIES,
@@ -849,6 +851,8 @@ function GoalCard({
         )}
       </div>
 
+      <BetsSection goal={goal} token={token} />
+
       {picking && (
         <TaskPickerDialog
           token={token}
@@ -1070,6 +1074,9 @@ function GoalFormDialog({
   const [description, setDescription] = useState(initial?.description ?? "");
   const [unit, setUnit] = useState(initial?.unit ?? "");
   const [kind, setKind] = useState<GoalKind>(initial?.kind ?? "output");
+  // A goal bound to a funnel metric gets its progress from the funnel sync;
+  // "current" becomes read-only and the unit follows the metric.
+  const [funnelMetric, setFunnelMetric] = useState<string>(initial?.funnelMetric ?? "none");
   // Only used in create mode: "none" = one-off goal, otherwise create a
   // recurrence rule that materializes a goal each period.
   const [repeat, setRepeat] = useState<GoalCadence | "none">("none");
@@ -1160,6 +1167,7 @@ function GoalFormDialog({
         responsibleEmail: responsibleEmail || null,
         projectRef: projectRef.trim() || null,
         notes: notes.trim() || null,
+        funnelMetric: funnelMetric === "none" ? null : funnelMetric,
       };
       const url =
         mode === "create" ? "/api/goals" : `/api/goals/${initial?.id}`;
@@ -1208,6 +1216,31 @@ function GoalFormDialog({
               className="border-white/10 bg-neutral-900 text-sm"
             />
           </Field>
+          <Field label="Métrica do funil">
+            <Select
+              value={funnelMetric}
+              onValueChange={(v) => {
+                setFunnelMetric(v);
+                const m = FUNNEL_METRICS.find((x) => x.id === v);
+                if (m) setUnit(m.unit);
+              }}
+            >
+              <SelectTrigger className="border-white/10 bg-neutral-900 text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+                <SelectItem value="none">Nenhuma (progresso manual ou por tasks)</SelectItem>
+                {FUNNEL_METRICS.map((m) => (
+                  <SelectItem key={m.id} value={m.id}>
+                    {m.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[10px] leading-snug text-neutral-600">
+              Meta atrelada a um número que o funil mede. O progresso vem do funil todo dia, sem digitar.
+            </p>
+          </Field>
           <div className="grid grid-cols-3 gap-3">
             <Field label="Target *">
               <Input
@@ -1222,6 +1255,8 @@ function GoalFormDialog({
                 value={current}
                 onChange={(e) => setCurrent(e.target.value)}
                 inputMode="numeric"
+                disabled={funnelMetric !== "none"}
+                title={funnelMetric !== "none" ? "Escrito pelo funil" : undefined}
                 className="border-white/10 bg-neutral-900 text-sm"
               />
             </Field>
@@ -1770,6 +1805,148 @@ function RecurrenceFormDialog({
     </Dialog>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Bets: what we run to move a goal. Separate from tasks on purpose.
+// ---------------------------------------------------------------------------
+
+const BET_STATUS_LABEL: Record<BetStatus, { label: string; className: string }> = {
+  queued: { label: "na fila", className: "bg-neutral-500/20 text-neutral-300" },
+  active: { label: "ativa", className: "bg-emerald-500/20 text-emerald-300" },
+  won: { label: "ganhou", className: "bg-sky-500/20 text-sky-300" },
+  lost: { label: "perdeu", className: "bg-red-500/20 text-red-300" },
+  operation: { label: "virou operação", className: "bg-violet-500/20 text-violet-300" },
+};
+
+function BetsSection({ goal, token }: { goal: Goal; token: string | null }) {
+  const [bets, setBets] = useState<Bet[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [form, setForm] = useState({ title: "", hypothesis: "", action: "", metric: "", decisionAt: "" });
+
+  const headers = useMemo(
+    () => ({ Authorization: `Bearer ${token ?? ""}`, "Content-Type": "application/json" }),
+    [token],
+  );
+
+  const load = useCallback(async () => {
+    if (!token) return;
+    const res = await fetch(`/api/goals/${goal.id}/bets`, { headers });
+    const json = await res.json();
+    if (res.ok) setBets(json.bets as Bet[]);
+    setLoaded(true);
+  }, [token, goal.id, headers]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const decide = async (bet: Bet, status: BetStatus) => {
+    setError(null);
+    const verdict = status === "won" || status === "lost" ? window.prompt("Veredito em uma linha (o que o número mostrou):", bet.verdict ?? "") : bet.verdict;
+    const res = await fetch(`/api/bets/${bet.id}`, { method: "PATCH", headers, body: JSON.stringify({ status, verdict }) });
+    const json = await res.json();
+    if (!res.ok) {
+      setError(json.error ?? "Falhou");
+      return;
+    }
+    void load();
+  };
+
+  const create = async () => {
+    setError(null);
+    setCreating(true);
+    try {
+      const res = await fetch(`/api/goals/${goal.id}/bets`, { method: "POST", headers, body: JSON.stringify(form) });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "Falhou");
+      setForm({ title: "", hypothesis: "", action: "", metric: "", decisionAt: "" });
+      setOpen(false);
+      void load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falhou");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const active = bets.filter((b) => b.status === "active").length;
+  const overdue = bets.filter((b) => b.status === "active" && b.decisionAt < new Date().toISOString().slice(0, 10));
+
+  return (
+    <div className="mt-3 border-t border-white/10 pt-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-neutral-400">
+          {loaded ? `${bets.length} aposta${bets.length === 1 ? "" : "s"} · ${active} ativa${active === 1 ? "" : "s"}` : "Apostas"}
+          {overdue.length > 0 ? <span className="ml-2 text-amber-300">· {overdue.length} com decisão vencida</span> : null}
+        </p>
+        <button onClick={() => setOpen((v) => !v)} className="text-xs text-violet-300 hover:text-violet-200">
+          {open ? "fechar" : "+ aposta"}
+        </button>
+      </div>
+      {error ? <p className="mt-1 text-xs text-red-300">{error}</p> : null}
+      {bets.length > 0 ? (
+        <ul className="mt-2 space-y-2">
+          {bets.map((b) => (
+            <li key={b.id} className="rounded-md border border-white/10 bg-white/[0.03] p-2 text-xs">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <span className={cn("mr-2 rounded px-1.5 py-0.5", BET_STATUS_LABEL[b.status].className)}>{BET_STATUS_LABEL[b.status].label}</span>
+                  <span className="font-medium text-neutral-100">{b.title}</span>
+                  <p className="mt-1 text-neutral-400">
+                    <span className="text-neutral-500">Hipótese:</span> {b.hypothesis}
+                  </p>
+                  <p className="text-neutral-400">
+                    <span className="text-neutral-500">Ação:</span> {b.action}
+                  </p>
+                  <p className="text-neutral-400">
+                    <span className="text-neutral-500">Prova:</span> {b.metric} · <span className="text-neutral-500">decide em</span> {b.decisionAt}
+                  </p>
+                  {b.verdict ? <p className="mt-1 text-neutral-300">Veredito: {b.verdict}</p> : null}
+                </div>
+                {b.status === "active" || b.status === "queued" ? (
+                  <div className="flex shrink-0 flex-col gap-1">
+                    {b.status === "queued" ? (
+                      <button onClick={() => decide(b, "active")} className="rounded border border-emerald-500/30 px-2 py-0.5 text-emerald-300 hover:bg-emerald-500/10">ativar</button>
+                    ) : (
+                      <>
+                        <button onClick={() => decide(b, "won")} className="rounded border border-sky-500/30 px-2 py-0.5 text-sky-300 hover:bg-sky-500/10">ganhou</button>
+                        <button onClick={() => decide(b, "lost")} className="rounded border border-red-500/30 px-2 py-0.5 text-red-300 hover:bg-red-500/10">perdeu</button>
+                        <button onClick={() => decide(b, "operation")} className="rounded border border-violet-500/30 px-2 py-0.5 text-violet-300 hover:bg-violet-500/10">virou operação</button>
+                      </>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : loaded ? (
+        <p className="mt-1 text-xs text-neutral-600">Nenhuma aposta ainda. Uma aposta é hipótese + ação + métrica que prova + data da decisão.</p>
+      ) : null}
+      {open ? (
+        <div className="mt-2 space-y-2 rounded-md border border-white/10 bg-neutral-950 p-2">
+          <Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Título curto" className="border-white/10 bg-neutral-900 text-sm" />
+          <Textarea value={form.hypothesis} onChange={(e) => setForm({ ...form, hypothesis: e.target.value })} placeholder="Hipótese: se a gente fizer X, o número Y sobe porque..." rows={2} className="border-white/10 bg-neutral-900 text-sm" />
+          <Textarea value={form.action} onChange={(e) => setForm({ ...form, action: e.target.value })} placeholder="Ação: o que exatamente vai ser feito, por quem" rows={2} className="border-white/10 bg-neutral-900 text-sm" />
+          <div className="grid grid-cols-2 gap-2">
+            <Input value={form.metric} onChange={(e) => setForm({ ...form, metric: e.target.value })} placeholder="Métrica que prova (ex: resposta cold ≥ 3%)" className="border-white/10 bg-neutral-900 text-sm" />
+            <Input type="date" value={form.decisionAt} onChange={(e) => setForm({ ...form, decisionAt: e.target.value })} className="border-white/10 bg-neutral-900 text-sm" />
+          </div>
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setOpen(false)} className="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200">cancelar</button>
+            <button onClick={create} disabled={creating} className="rounded bg-violet-500/20 px-3 py-1 text-xs text-violet-200 hover:bg-violet-500/30 disabled:opacity-50">
+              {creating ? "salvando..." : "criar aposta"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 
 function Field({
   label,
