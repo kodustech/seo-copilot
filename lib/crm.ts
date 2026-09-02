@@ -18,6 +18,13 @@ export type CompanyStatus =
    *  reply on its own is neither. Exists so "never heard from them" and "the
    *  conversation is live" stop sharing one bucket. */
   | "engaged"
+  /** A meeting is on the calendar or just happened and the account has not
+   *  earned `qualified` yet (the four fields are still missing). Set by the
+   *  calendar sync when an event carries an attendee from the account's
+   *  domain, or by hand. Not a mandatory stop: inbound accounts routinely go
+   *  engaged → qualified on a written conversation, and self-serve ones go
+   *  lead → customer without anyone talking to us. */
+  | "meeting"
   | "qualified"
   /** Assisted evaluation run with us: agreed scope, criteria, often a bake-off
    *  against a competitor. NOT the product's self-serve trial — that is the t0
@@ -45,6 +52,7 @@ export type CompanySource =
 export const COMPANY_STATUSES: CompanyStatus[] = [
   "lead",
   "engaged",
+  "meeting",
   "qualified",
   "poc",
   "negotiation",
@@ -142,6 +150,9 @@ export type CrmCompany = {
   /** Last time an outbound message actually went out to this account.
    *  Distinct from lastActivityAt, which the signal sweep moves constantly. */
   lastOutreachAt: string | null;
+  /** Start of the next meeting with the account, or of the latest one once it
+   *  has passed. Written by the calendar sync; null when no event matched. */
+  meetingAt: string | null;
   /** Channel of the latest outbound touch. Optional while the database and the
    *  in-progress Drizzle port catch up with the migration that introduced it. */
   lastOutreachChannel?: string | null;
@@ -315,6 +326,7 @@ type CompanyRow = {
   source: CompanySource | null;
   prep_status?: string | null;
   last_outreach_at?: string | null;
+  meeting_at?: string | null;
   last_outreach_channel?: string | null;
   outreach_sent_count?: number | null;
   notes: string | null;
@@ -360,6 +372,7 @@ function rowToCompany(row: CompanyRow): CrmCompany {
     // constraint is what actually bounds the set.
     prepStatus: (row.prep_status ?? "not_started") as CompanyPrep,
     lastOutreachAt: row.last_outreach_at ?? null,
+    meetingAt: row.meeting_at ?? null,
     lastOutreachChannel: row.last_outreach_channel ?? null,
     outreachSentCount: Number(row.outreach_sent_count ?? 0),
     notes: row.notes,
@@ -1308,6 +1321,56 @@ export async function promoteEnrollmentToCrm(
     });
   } catch (err) {
     console.warn("[crm] logActivity on promote failed:", err);
+  }
+
+  // Link the enrollment and carry over the sends that happened before the
+  // account existed. Research-table enrollments start with no
+  // crm_company_id, so recordOutreachOnCrm had nowhere to write: the account
+  // a reply creates showed "Not in a sequence · Never" on the very list that
+  // exists to answer "have we written to them". The `.is(null)` guard makes
+  // this run once per enrollment, so the second promote pass (classifier)
+  // does not double the counters.
+  try {
+    const { data: linked } = await client
+      .from("outreach_enrollments")
+      .update({ crm_company_id: result.company.id, updated_at: new Date().toISOString() })
+      .eq("id", enrollment.id)
+      .is("crm_company_id", null)
+      .select("id");
+    if (linked && linked.length > 0) {
+      const { data: tasks } = await client
+        .from("outreach_send_tasks")
+        .select("channel,sent_at")
+        .eq("enrollment_id", enrollment.id)
+        .eq("status", "sent")
+        .not("sent_at", "is", null)
+        .order("sent_at", { ascending: true });
+      const who = enrollment.contactName ?? enrollment.contactEmail ?? "contact";
+      for (const t of tasks ?? []) {
+        const channel = String(t.channel);
+        const sentAt = String(t.sent_at);
+        await logActivity(client, result.company.id, "outreach_sent", {
+          summary: `${channel === "linkedin" ? "LinkedIn" : "Email"} sent to ${who}`,
+          meta: {
+            channel,
+            enrollment_id: enrollment.id,
+            sequence_id: enrollment.sequenceId,
+            contact_email: enrollment.contactEmail,
+            backfilled_on_promote: true,
+          },
+          actorEmail: null,
+          touch: false,
+        });
+        const { error } = await client.rpc("bump_outreach_counters", {
+          p_company_id: result.company.id,
+          p_sent_at: sentAt,
+          p_channel: channel,
+        });
+        if (error) throw new Error(error.message);
+      }
+    }
+  } catch (err) {
+    console.warn("[crm] enrollment link/backfill on promote failed:", err);
   }
 
   return {

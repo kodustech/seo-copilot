@@ -84,6 +84,7 @@ const CLASS_COLORS: Record<string, string> = {
 const PIPELINE_ORDER = [
   "lead",
   "engaged",
+  "meeting",
   "qualified",
   "poc",
   "negotiation",

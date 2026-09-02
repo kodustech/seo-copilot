@@ -912,6 +912,20 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
       rows: convs.map(crmRow),
     },
   );
+  const meetings = firstTo((c) => c.to === "meeting");
+  nodes.meetings = node(
+    "meetings",
+    "Reunião",
+    changes ? meetings.length : null,
+    changes ? `${meetings.length}` : "não medido",
+    {
+      source: "CRM (status_change → meeting; o calendário move a conta sozinho)",
+      definition:
+        "Contas que entraram em meeting no mês: reunião no calendário com convidado do domínio da conta, ou movida à mão. Etapa não obrigatória: inbound pode ir de conversa direto pra oportunidade.",
+      columns: crmCols,
+      rows: meetings.map(crmRow),
+    },
+  );
   nodes.opportunities = node(
     "opportunities",
     "Oportunidade",
@@ -955,6 +969,28 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     ),
   );
   rates.push(rate("conv_to_opp", changes ? `${pct(opps.length, convs.length)} viram oportunidade` : "viram oportunidade", changes ? opps.length : null, changes ? convs.length : null, "conversa → oportunidade"));
+  const meetingIds = new Set(meetings.map((m) => m.company_id));
+  const oppsViaMeeting = opps.filter((o) => o.from === "meeting" || meetingIds.has(o.company_id));
+  rates.push(
+    rate(
+      "conv_to_meeting",
+      changes ? `${pct(meetings.length, convs.length)} marcam reunião (${meetings.length} de ${convs.length})` : "marcam reunião",
+      changes ? meetings.length : null,
+      changes ? convs.length : null,
+      "conversa → reunião",
+    ),
+  );
+  rates.push(
+    rate(
+      "meeting_to_opp",
+      changes
+        ? `${oppsViaMeeting.length} de ${meetings.length} reuniões viram oportunidade · ${opps.length - oppsViaMeeting.length} oportunidade${opps.length - oppsViaMeeting.length === 1 ? "" : "s"} sem reunião`
+        : "reunião → oportunidade",
+      changes ? oppsViaMeeting.length : null,
+      changes ? meetings.length : null,
+      "reunião → oportunidade",
+    ),
+  );
 
   // ARR: current paying base is not a monthly flow; we show the target only
   // and the sum of arr on customer accounts as the CRM sees it.
@@ -1037,10 +1073,25 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   const repliedToOpp = repliedCrm.filter(
     (c) => opp.has(c.status) || ch.some((a) => a.company_id === c.id && opp.has(a.to ?? "")),
   );
+  const repliedToMeeting = repliedCrm.filter(
+    (c) =>
+      c.status === "meeting" ||
+      opp.has(c.status) ||
+      ch.some((a) => a.company_id === c.id && (a.to === "meeting" || opp.has(a.to ?? ""))),
+  );
+  rates.push(
+    rate(
+      "reply_to_meeting",
+      cold ? `resposta → reunião: ${repliedToMeeting.length} de ${repliedCrm.length} empresas` : "resposta → reunião",
+      cold ? repliedToMeeting.length : null,
+      cold ? repliedCrm.length : null,
+      "resposta → reunião",
+    ),
+  );
   rates.push(
     rate(
       "reply_to_opp",
-      cold ? `resposta → oportunidade: ${repliedToOpp.length} de ${repliedCrm.length} empresas` : "resposta → oportunidade",
+      cold ? `resposta → oportunidade: ${repliedToOpp.length} de ${repliedCrm.length}` : "resposta → oportunidade",
       cold ? repliedToOpp.length : null,
       cold ? repliedCrm.length : null,
       "resposta → oportunidade",

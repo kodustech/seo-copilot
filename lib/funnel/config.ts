@@ -104,6 +104,8 @@ export const RATE_BANDS: Record<string, RateBand> = {
   conv_to_opp: { lo: 0.3, hi: 0.5, loose: true },
   opp_active: { lo: 1, hi: 1 },
   cold_reply: { lo: 0.03, hi: 0.08 },
+  // Cold reply → booked meeting. Outbound benchmarks put it around a third.
+  reply_to_meeting: { lo: 0.25, hi: 0.4 },
   cold_bounce: { lo: 0.0, hi: 0.03, inverted: true },
   survey: { lo: 0.9, hi: 1 },
 };

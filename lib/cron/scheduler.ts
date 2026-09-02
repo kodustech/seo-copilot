@@ -292,7 +292,24 @@ async function runPersonaTickCron(): Promise<void> {
   }
 }
 
+async function runCrmMeetingsCron(): Promise<void> {
+  const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
+  const { syncCalendarMeetings } = await import("@/lib/crm-meetings");
+  const res = await syncCalendarMeetings(getSupabaseServiceClient());
+  console.log(
+    `[cron] crm-meetings: ${res.mailboxes} mailbox(es), ${res.eventsScanned} events, ${res.eventsMatched} matched, ${res.companiesTouched} accounts, ${res.statusMoved} moved to meeting` +
+      (res.skippedNoScope.length ? `, no calendar scope: ${res.skippedNoScope.join(", ")}` : "") +
+      (res.errors.length ? `, errors: ${res.errors.length}` : ""),
+  );
+}
+
 const JOBS: JobDefinition[] = [
+  {
+    // Every 2 h: match calendar events to CRM accounts (reply → meeting).
+    name: "crm-meetings",
+    schedule: "30 */2 * * *",
+    run: runCrmMeetingsCron,
+  },
   {
     name: "scheduled-jobs",
     schedule: "0 * * * *",

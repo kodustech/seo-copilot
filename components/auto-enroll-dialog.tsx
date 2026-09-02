@@ -57,7 +57,7 @@ const TRIGGERS = [
   "broken_activation",
   "never_connected",
 ];
-const STATUSES = ["lead", "engaged", "qualified", "poc", "negotiation"];
+const STATUSES = ["lead", "engaged", "meeting", "qualified", "poc", "negotiation"];
 
 export function AutoEnrollDialog({
   sequenceId,

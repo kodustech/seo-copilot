@@ -30,7 +30,7 @@ import { cn } from "@/lib/utils";
 // ---------------------------------------------------------------------------
 
 const W = 1600;
-const H = 1100;
+const H = 1220;
 const BW = 300;
 const BH = 60;
 const C1 = 60;
@@ -40,8 +40,8 @@ const C3 = 980;
 // plus the 8px a red outline adds above the next box.
 const GAP = 60;
 const R = [180, 300, 420, 540] as const;
-const SY = [680, 800] as const;
-const FY = SY[1] + BH + 64;
+const SY = [680, 800, 920] as const;
+const FY = SY[2] + BH + 64;
 
 const INK = "var(--foreground)";
 const MUTED = "var(--muted-foreground)";
@@ -209,7 +209,8 @@ const MARKER_SLOTS: Record<string, { x: number; y: number; w?: number; side: "le
   connected: { x: C2, y: R[2], side: "right" },
   icp: { x: C2, y: R[3], side: "right" },
   conversations: { x: C2, y: SY[0], side: "left" },
-  opportunities: { x: C2, y: SY[1], side: "left" },
+  meetings: { x: C2, y: SY[1], side: "left" },
+  opportunities: { x: C2, y: SY[2], side: "left" },
   closed: { x: C2, y: FY, side: "left" },
   ob_replies: { x: C3, y: R[1], side: "right" },
 };
@@ -306,11 +307,16 @@ export function Diagram({
 
       {box("conversations", C2, SY[0], { spine: true })}
       <Down x={C2} y={SY[0]} />
-      <RateLabel rate={rate("conv_to_opp")} x={C2 + BW / 2 + 10} y={SY[0] + BH + 34} />
+      <RateLabel rate={rate("conv_to_meeting")} x={C2 + BW / 2 + 10} y={SY[0] + BH + 20} />
+      <RateLabel rate={rate("conv_to_opp")} x={C2 + BW / 2 + 10} y={SY[0] + BH + 38} size={12} />
 
-      {box("opportunities", C2, SY[1], { spine: true })}
-      <Arrow from={{ x: C2 + BW / 2, y: SY[1] + BH }} to={{ x: C2 + BW / 2, y: FY }} />
-      <RateLabel rate={rate("opp_active")} x={C2 + BW / 2 + 10} y={SY[1] + BH + 34} />
+      {box("meetings", C2, SY[1], { spine: true })}
+      <Down x={C2} y={SY[1]} />
+      <RateLabel rate={rate("meeting_to_opp")} x={C2 + BW / 2 + 10} y={SY[1] + BH + 34} />
+
+      {box("opportunities", C2, SY[2], { spine: true })}
+      <Arrow from={{ x: C2 + BW / 2, y: SY[2] + BH }} to={{ x: C2 + BW / 2, y: FY }} />
+      <RateLabel rate={rate("opp_active")} x={C2 + BW / 2 + 10} y={SY[2] + BH + 34} />
 
       {box("closed", C2, FY, { spine: true })}
       <Arrow from={{ x: C2 + BW / 2, y: FY + BH }} to={{ x: C2 + BW / 2, y: FY + 100 }} />
@@ -358,7 +364,7 @@ export function Diagram({
         strokeWidth={1.5}
         markerEnd="url(#funnel-arrow)"
       />
-      <RateLabel rate={rate("reply_to_opp")} x={C3 + BW / 2 + 10} y={R[1] + BH + 26} />
+      <RateLabel rate={rate("reply_to_meeting")} x={C3 + BW / 2 + 10} y={R[1] + BH + 26} />
       <text x={C3 + BW / 2 + 10} y={R[1] + BH + 43} fontSize={12.5} fill={MUTED}>
         {f.ob_new_conversations ?? ""} · + rede
       </text>
