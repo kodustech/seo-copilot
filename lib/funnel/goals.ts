@@ -28,12 +28,20 @@ export function isFunnelMetric(id: string | null | undefined): boolean {
   return Boolean(id) && FUNNEL_METRICS.some((m) => m.id === id);
 }
 
-/** Goals whose period covers the given month and that target a funnel metric. */
+/**
+ * Goals drawn on the funnel for a given month: bound to a funnel metric and
+ * with a period that IS that month. A weekly goal is synced (below) but not
+ * drawn on the monthly canvas; its number would be a different window.
+ */
 export async function goalsForMonth(client: SupabaseClient, month: string): Promise<Goal[]> {
   const all = await listGoals(client, { periodScope: "all", status: "active", limit: 500 });
-  const start = `${month}-01`;
   return all.filter(
-    (g) => g.funnelMetric && isFunnelMetric(g.funnelMetric) && g.periodStart <= start && g.periodEnd >= start,
+    (g) =>
+      g.funnelMetric &&
+      isFunnelMetric(g.funnelMetric) &&
+      g.periodStart.slice(0, 7) === month &&
+      g.periodEnd.slice(0, 7) === month &&
+      g.periodStart.endsWith("-01"),
   );
 }
 
@@ -66,21 +74,23 @@ export async function syncFunnelGoals(
 ): Promise<{ goals: number; updated: number; skipped: string[]; errors: string[] }> {
   const all = await listGoals(client, { periodScope: "all", status: "active", limit: 500 });
   const bound = all.filter((g) => isFunnelMetric(g.funnelMetric));
-  const byMonth = new Map<string, FunnelData>();
+  // One funnel computation per distinct period (week, month, whatever the
+  // goal says), so a weekly goal gets its own week, not the month around it.
+  const byPeriod = new Map<string, FunnelData>();
   let updated = 0;
   const skipped: string[] = [];
   const errors: string[] = [];
   for (const g of bound) {
-    const month = g.periodStart.slice(0, 7);
+    const period = `${g.periodStart}..${g.periodEnd}`;
     try {
-      let funnel = byMonth.get(month);
+      let funnel = byPeriod.get(period);
       if (!funnel) {
-        funnel = await fetchFunnel(client, month);
-        byMonth.set(month, funnel);
+        funnel = await fetchFunnel(client, period);
+        byPeriod.set(period, funnel);
       }
       const node = funnel.nodes[g.funnelMetric as string];
       if (!node || node.value == null) {
-        skipped.push(`${g.title}: ${g.funnelMetric} não medido em ${month}`);
+        skipped.push(`${g.title}: ${g.funnelMetric} não medido em ${period}`);
         continue;
       }
       const value = Math.round(node.value);

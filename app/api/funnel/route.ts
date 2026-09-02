@@ -23,7 +23,8 @@ export async function GET(req: Request) {
 
   const url = new URL(req.url);
   const raw = url.searchParams.get("month")?.trim();
-  const month = raw && /^\d{4}-\d{2}$/.test(raw) ? raw : defaultMonth();
+  const month =
+    raw && (/^\d{4}-\d{2}$/.test(raw) || /^\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2}$/.test(raw)) ? raw : defaultMonth();
 
   try {
     const funnel = await fetchFunnel(client, month);

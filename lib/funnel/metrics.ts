@@ -123,24 +123,38 @@ function sqlList(values: string[]): string {
   return values.map((v) => `'${v.replace(/'/g, "\\'")}'`).join(", ");
 }
 
-/** Resolve "YYYY-MM" to an inclusive day range, capped at today. */
-export function monthRange(month: string): {
+/**
+ * Resolve a period spec to an inclusive day range, capped at today.
+ * Accepts "YYYY-MM" (a month) or "YYYY-MM-DD..YYYY-MM-DD" (any range, so a
+ * weekly goal gets the funnel of its own week).
+ */
+export function monthRange(spec: string): {
   periodStart: string;
   periodEnd: string;
   nextStart: string;
   elapsed: number;
 } {
-  if (!/^\d{4}-\d{2}$/.test(month)) throw new Error(`Invalid month: ${month}`);
-  const [y, m] = month.split("-").map(Number);
-  const start = new Date(Date.UTC(y, m - 1, 1));
-  const next = new Date(Date.UTC(y, m, 1));
-  const today = new Date();
-  const lastDay = new Date(next.getTime() - 24 * 60 * 60 * 1000);
-  const end = lastDay > today ? today : lastDay;
   const iso = (d: Date) => d.toISOString().slice(0, 10);
-  const daysInMonth = Math.round((next.getTime() - start.getTime()) / 86_400_000);
+  let start: Date;
+  let next: Date; // exclusive end
+  const range = spec.match(/^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$/);
+  if (range) {
+    start = new Date(`${range[1]}T00:00:00Z`);
+    next = new Date(new Date(`${range[2]}T00:00:00Z`).getTime() + 86_400_000);
+    if (!(next > start)) throw new Error(`Invalid period: ${spec}`);
+  } else if (/^\d{4}-\d{2}$/.test(spec)) {
+    const [y, m] = spec.split("-").map(Number);
+    start = new Date(Date.UTC(y, m - 1, 1));
+    next = new Date(Date.UTC(y, m, 1));
+  } else {
+    throw new Error(`Invalid period: ${spec}`);
+  }
+  const today = new Date();
+  const lastDay = new Date(next.getTime() - 86_400_000);
+  const end = lastDay > today ? today : lastDay;
+  const daysInPeriod = Math.round((next.getTime() - start.getTime()) / 86_400_000);
   const daysElapsed = Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1;
-  const elapsed = Math.min(1, Math.max(1 / daysInMonth, daysElapsed / daysInMonth));
+  const elapsed = Math.min(1, Math.max(1 / daysInPeriod, daysElapsed / daysInPeriod));
   return { periodStart: iso(start), periodEnd: iso(end), nextStart: iso(next), elapsed };
 }
 
@@ -562,22 +576,67 @@ async function coldOutbound(
   const byStatus = (s: string) => enrollments.filter((e) => e.status === s).length;
   const completed = byStatus("completed");
   const bounced = byStatus("bounced");
-  const repliedStatus = byStatus("replied");
-  const repliedEnrollments = enrollments.filter((e) => e.status === "replied");
+  // Replies are counted by WHEN the person wrote back, not by when they were
+  // enrolled: a weekly goal on replies wants the replies of that week, and a
+  // reply to the previous batch belongs to the period it landed in. A LinkedIn
+  // thread keeps years of history, so the thread's first_inbound_at can predate
+  // this campaign; the reply date is the inbound message itself.
+  const { data: coldThreads } = await client
+    .from("outreach_reply_threads")
+    .select("id,enrollment_id,channel,reply_class")
+    .in("sequence_id", coldIds)
+    .not("enrollment_id", "is", null);
+  // Bounces and autoresponders are inbound messages too; the rule-based
+  // classifier labels them without a model, so they can be dropped here.
+  const candidateThreads = (coldThreads ?? []).filter(
+    (t) => t.reply_class !== "bounce" && t.reply_class !== "auto_reply",
+  );
+  const threadIds = candidateThreads.map((t) => String(t.id));
+  const inboundInPeriod = new Map<string, string>(); // thread id → first reply in period
+  for (let i = 0; i < threadIds.length; i += 200) {
+    const { data: msgs } = await client
+      .from("outreach_reply_messages")
+      .select("thread_id,internal_date")
+      .in("thread_id", threadIds.slice(i, i + 200))
+      .eq("direction", "inbound")
+      .gte("internal_date", `${periodStart}T00:00:00Z`)
+      .lt("internal_date", `${nextStart}T00:00:00Z`);
+    for (const m of msgs ?? []) {
+      const id = String(m.thread_id);
+      const at = String(m.internal_date);
+      const prev = inboundInPeriod.get(id);
+      if (!prev || at < prev) inboundInPeriod.set(id, at);
+    }
+  }
+  const humanThreads = candidateThreads.filter((t) => inboundInPeriod.has(String(t.id)));
+  const repliedAt = new Map<string, string>(); // enrollment id → first reply in period
+  for (const t of humanThreads) {
+    const id = String(t.enrollment_id);
+    const at = inboundInPeriod.get(String(t.id))!;
+    const prev = repliedAt.get(id);
+    if (!prev || at < prev) repliedAt.set(id, at);
+  }
+  const repliedIds = [...new Set(humanThreads.map((t) => String(t.enrollment_id)))];
+  const enrolledById = new Map(enrollments.map((e) => [String(e.id), e]));
+  const missing = repliedIds.filter((id) => !enrolledById.has(id));
+  if (missing.length) {
+    const { data: extra } = await client
+      .from("outreach_enrollments")
+      .select("id,sequence_id,status,company_name,domain,contact_name,contact_email,current_step_position,created_at")
+      .in("id", missing);
+    for (const e of extra ?? []) enrolledById.set(String(e.id), e);
+  }
+  const repliedEnrollments = repliedIds.map((id) => enrolledById.get(id)).filter((e): e is NonNullable<typeof e> => Boolean(e));
+  const repliedStatus = repliedEnrollments.length;
   const repliedDomains = new Set(
     repliedEnrollments.map((e) => String(e.domain ?? "").toLowerCase()).filter(Boolean),
   );
 
-  // Which channel carried each reply: the inbox syncs open one thread per
-  // enrollment, tagged email or linkedin.
+  // Which channel carried each reply: one thread per enrollment.
   const byChannel: Record<string, number> = {};
-  if (repliedEnrollments.length) {
-    const { data: threads } = await client
-      .from("outreach_reply_threads")
-      .select("enrollment_id,channel")
-      .in("enrollment_id", repliedEnrollments.map((e) => e.id as string));
+  {
     const seenEnr = new Set<string>();
-    for (const t of threads ?? []) {
+    for (const t of humanThreads) {
       const id = String(t.enrollment_id);
       if (seenEnr.has(id)) continue;
       seenEnr.add(id);
@@ -630,20 +689,27 @@ async function coldOutbound(
       rows,
     },
   );
-  // Replies are counted at the enrollment (status "replied", set by the email
-  // and LinkedIn inbox syncs). Bounces get their own status, so they never
-  // land here; an email autoresponder can, until the classifier runs.
   const replies = node(
     "ob_replies",
     "Respostas de empresa nova",
     repliedStatus,
     `cold: ${repliedStatus}${channelText ? ` (${channelText})` : ""}`,
     {
-      source: "Motor de sequência (enrollments com status replied; e-mail e LinkedIn)",
+      source: "Caixas de e-mail e LinkedIn (Unipile), mensagens recebidas ligadas a uma sequência cold",
       definition:
-        "Pessoas de sequência cold que responderam, por e-mail ou LinkedIn. Bounce não entra. Rede (indicação, champion) não passa pelo motor e é registrada no CRM.",
-      columns: ["company", "contact", "sequence", "status", "step", "enrolled"],
-      rows: rows.filter((r) => r.status === "replied"),
+        "Pessoas de sequência cold que escreveram de volta no período, por e-mail ou LinkedIn, mesmo que tenham sido abordadas antes. Bounce e resposta automática não entram. Rede (indicação, champion) não passa pelo motor e é registrada no CRM.",
+      columns: ["company", "contact", "sequence", "replied", "enrolled"],
+      rows: repliedEnrollments.map((e) => ({
+        company: str(e.company_name),
+        domain: str(e.domain),
+        contact: str(e.contact_name),
+        email: str(e.contact_email),
+        sequence: seqName.get(String(e.sequence_id)) ?? null,
+        status: str(e.status),
+        step: num(e.current_step_position),
+        replied: (repliedAt.get(String(e.id)) ?? "").slice(0, 10) || null,
+        enrolled: String(e.created_at).slice(0, 10),
+      })),
     },
   );
   return {
@@ -1309,7 +1375,8 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   // Targets come from Goals bound to a funnel metric; bets ride along so the
   // drawer shows what is being tried on that stage.
   try {
-    const overlay = await goalOverlay(client, month);
+    // Goals are drawn only on a month view; a custom range has no goal overlay.
+    const overlay = /^\d{4}-\d{2}$/.test(month) ? await goalOverlay(client, month) : { targets: {}, bets: {} };
     for (const [id, t] of Object.entries(overlay.targets)) {
       const n = nodes[id];
       if (!n) continue;
