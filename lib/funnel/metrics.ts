@@ -5,6 +5,8 @@ import { fetchOutboundMetrics } from "@/lib/outreach/metrics";
 import { isTelemetryConfigured, runTelemetryQuery } from "@/lib/telemetry-pg";
 
 import {
+  BOTTLENECK_RATIO,
+  COLD_MIN_CONTACTS_FOR_VERDICT,
   COLD_SEQUENCE_PATTERNS,
   FREE_MAIL_DOMAINS,
   HEAD_TERMS,
@@ -12,9 +14,11 @@ import {
   ICP_MIN_MEMBERS,
   ICP_VERIFIED_FIELD,
   LLM_SOURCES,
+  MAX_BOTTLENECKS,
   OPPORTUNITY_IDLE_DAYS,
   OPPORTUNITY_STATUSES,
   QUALIFIED_PAGES,
+  RATE_BANDS,
   SELF_HOSTED_ACTIVE_DAYS,
   SELF_HOSTED_MIN_PRS_7D,
   TARGETS,
@@ -43,14 +47,37 @@ export type FunnelNode = {
   rows: FunnelRow[];
 };
 
+export type RateStatus = "good" | "ok" | "warn" | "crit" | "na";
+
+/** A rate between two stages, judged against a market band when one exists. */
+export type FunnelRate = {
+  id: string;
+  /** Text for the arrow, already formatted. */
+  label: string;
+  value: number | null;
+  status: RateStatus;
+  /** Why it got that status (band, or "não medido"). */
+  note: string;
+};
+
+/** A red marker: the stage furthest from what the month needs. */
+export type Bottleneck = {
+  nodeId: string;
+  lines: string[];
+};
+
 export type FunnelData = {
   month: string;
   periodStart: string;
   periodEnd: string;
+  /** Share of the month elapsed (1 for a closed month). Targets are pro-rated by it. */
+  elapsed: number;
   generatedAt: string;
   nodes: Record<string, FunnelNode>;
-  /** Free-form facts for the arrow labels (rates, breakdowns). */
+  /** Free-form facts for the arrow labels (breakdowns). */
   facts: Record<string, string>;
+  rates: FunnelRate[];
+  bottlenecks: Bottleneck[];
   errors: string[];
 };
 
@@ -92,6 +119,7 @@ export function monthRange(month: string): {
   periodStart: string;
   periodEnd: string;
   nextStart: string;
+  elapsed: number;
 } {
   if (!/^\d{4}-\d{2}$/.test(month)) throw new Error(`Invalid month: ${month}`);
   const [y, m] = month.split("-").map(Number);
@@ -101,7 +129,37 @@ export function monthRange(month: string): {
   const lastDay = new Date(next.getTime() - 24 * 60 * 60 * 1000);
   const end = lastDay > today ? today : lastDay;
   const iso = (d: Date) => d.toISOString().slice(0, 10);
-  return { periodStart: iso(start), periodEnd: iso(end), nextStart: iso(next) };
+  const daysInMonth = Math.round((next.getTime() - start.getTime()) / 86_400_000);
+  const daysElapsed = Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1;
+  const elapsed = Math.min(1, Math.max(1 / daysInMonth, daysElapsed / daysInMonth));
+  return { periodStart: iso(start), periodEnd: iso(end), nextStart: iso(next), elapsed };
+}
+
+/** Judge a fraction against a market band. */
+function judge(id: string, value: number | null): { status: RateStatus; note: string } {
+  if (value == null) return { status: "na", note: "não medido" };
+  const band = RATE_BANDS[id];
+  if (!band) return { status: "ok", note: "" };
+  const fmt = (x: number) => `${Math.round(x * 100)}%`;
+  const ref = band.lo === band.hi ? `mercado: ${fmt(band.lo)}` : `mercado ${fmt(band.lo)} a ${fmt(band.hi)}`;
+  if (band.inverted) {
+    if (value <= band.hi) return { status: "good", note: `${ref} ou menos` };
+    if (value <= band.hi * 3) return { status: "warn", note: `acima do ${ref}` };
+    return { status: "crit", note: `muito acima do ${ref}` };
+  }
+  if (value < band.lo) return { status: "warn", note: `abaixo do ${ref}` };
+  if (value > band.hi) {
+    return band.loose
+      ? { status: "warn", note: `acima do ${ref}: definição frouxa` }
+      : { status: "good", note: `acima do ${ref}` };
+  }
+  return { status: "ok", note: `no ${ref}` };
+}
+
+function rate(id: string, label: string, part: number | null, whole: number | null, nullLabel?: string): FunnelRate {
+  const value = part == null || whole == null || whole === 0 ? null : part / whole;
+  const { status, note } = judge(id, value);
+  return { id, label: value == null && nullLabel ? nullLabel : label, value, status, note };
 }
 
 function node(
@@ -438,7 +496,12 @@ async function coldOutbound(
   client: SupabaseClient,
   periodStart: string,
   nextStart: string,
-): Promise<{ contacts: FunnelNode; replies: FunnelNode; facts: Record<string, string> }> {
+): Promise<{
+  contacts: FunnelNode;
+  replies: FunnelNode;
+  facts: Record<string, string>;
+  counts: { people: number; bounced: number; completed: number; humanReplies: number | null } | null;
+}> {
   const { data: seqs, error } = await client
     .from("outreach_sequences")
     .select("id,name,status");
@@ -452,6 +515,7 @@ async function coldOutbound(
       contacts: node("ob_contacts", "Contatos novos (cold)", null, "nenhuma sequência cold"),
       replies: node("ob_replies", "Respostas de empresa nova", null, "não medido"),
       facts: {},
+      counts: null,
     };
   }
 
@@ -535,8 +599,9 @@ async function coldOutbound(
     contacts,
     replies,
     facts: {
-      ob_delivery: `bounce ${pct(bounced, people)} · ${pct(completed + repliedStatus, people)} completaram`,
+      ob_completed: `${pct(completed + repliedStatus, people)} completaram`,
     },
+    counts: { people, bounced, completed: completed + repliedStatus, humanReplies },
   };
 }
 
@@ -597,10 +662,11 @@ async function selfHostedInstances(): Promise<FunnelNode> {
 // ---------------------------------------------------------------------------
 
 export async function fetchFunnel(client: SupabaseClient, month: string): Promise<FunnelData> {
-  const { periodStart, periodEnd, nextStart } = monthRange(month);
+  const { periodStart, periodEnd, nextStart, elapsed } = monthRange(month);
   const errors: string[] = [];
   const facts: Record<string, string> = {};
   const nodes: Record<string, FunnelNode> = {};
+  const rates: FunnelRate[] = [];
 
   const settle = async <T,>(label: string, p: Promise<T>): Promise<T | null> => {
     try {
@@ -627,8 +693,9 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   if (search) {
     nodes.impressions = search.impressions;
     nodes.visits = search.visits;
-    Object.assign(facts, search.facts);
+    rates.push(rate("ctr", `CTR ${pct(search.visits.value ?? 0, search.impressions.value ?? 0)}`, search.visits.value, search.impressions.value, "CTR"));
   } else {
+    rates.push(rate("ctr", "CTR", null, null));
     nodes.impressions = node("impressions", "Impressões", null, "não medido");
     nodes.visits = node("visits", "Visitas qualificadas", null, "não medido");
   }
@@ -686,11 +753,24 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     if (s.icp) byPlatform[key].icp += 1;
   }
   const nonGithub = connected.filter((s) => s.platform && s.platform !== "GITHUB");
-  facts.connected_rate = signups ? `${pct(connected.length, corporate.length)} conectam o git` : "";
-  facts.icp_rate = signups
-    ? `${pct(icpProxy.length, connected.length)} passam o proxy (${icpProxy.length} de ${connected.length})`
-    : "";
+  // Clicks and signups are different populations (signups come from every
+  // source), so there is no measured visit → signup rate until the signup
+  // carries its landing page.
+  rates.push(rate("visit_to_signup", "visita → cadastro", null, null));
+  rates.push(
+    rate("connected", signups ? `${pct(connected.length, corporate.length)} conectam o git` : "conectam o git", signups ? connected.length : null, signups ? corporate.length : null, "conectam o git"),
+  );
+  rates.push(
+    rate(
+      "icp_share",
+      signups ? `${pct(icpProxy.length, connected.length)} passam o proxy (${icpProxy.length} de ${connected.length})` : "passam o proxy",
+      signups ? icpProxy.length : null,
+      signups ? connected.length : null,
+      "passam o proxy",
+    ),
+  );
   facts.platform_split = Object.entries(byPlatform)
+    .filter(([, v]) => v.n >= 2 || v.icp > 0)
     .sort((a, b) => b[1].n - a[1].n)
     .map(([k, v]) => `${k.replace("AZURE_REPOS", "Azure").replace("GITHUB", "GitHub").replace("GITLAB", "GitLab").replace("BITBUCKET", "Bitbucket")} ${v.icp}/${v.n}`)
     .join(" · ");
@@ -699,9 +779,8 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   facts.icp_free_mail = icpFreeMail.length
     ? `+${icpFreeMail.length} ICP com e-mail gratuito, fora da conta`
     : "";
-  facts.survey = signups
-    ? `survey respondido: ${pct(all.filter((s) => s.survey_source).length, all.length)}`
-    : "";
+  const answered = all.filter((s) => s.survey_source).length;
+  rates.push(rate("survey", signups ? `survey respondido: ${pct(answered, all.length)}` : "survey respondido", signups ? answered : null, signups ? all.length : null, "survey respondido"));
 
   // ICP: proxy from product, verified from the CRM field when it exists.
   const crm = companies ?? [];
@@ -749,9 +828,15 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
       return t >= created && t - created <= 48 * 60 * 60 * 1000;
     });
   });
-  facts.touch = signups
-    ? `toque humano em 48 h: ${touched.length} de ${icpProxy.length} (atividade no CRM)`
-    : "";
+  rates.push(
+    rate(
+      "touch_48h",
+      signups ? `toque humano em 48 h: ${touched.length} de ${icpProxy.length} (atividade no CRM)` : "toque humano em 48 h",
+      signups ? touched.length : null,
+      signups ? icpProxy.length : null,
+      "toque humano em 48 h",
+    ),
+  );
   const opp = new Set<string>(OPPORTUNITY_STATUSES);
   const firstTo = (pred: (c: StatusChange) => boolean) => {
     const seen = new Map<string, StatusChange>();
@@ -822,8 +907,16 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   const openOpps = crm.filter((c) => opp.has(c.status));
   const idleCut = Date.now() - OPPORTUNITY_IDLE_DAYS * 24 * 60 * 60 * 1000;
   const idle = openOpps.filter((c) => !c.last_activity_at || new Date(c.last_activity_at).getTime() < idleCut);
-  facts.open_opps = `abertas agora: ${openOpps.length} · sem atividade há ${OPPORTUNITY_IDLE_DAYS} d: ${idle.length}`;
-  facts.conv_to_opp = changes ? `${pct(opps.length, convs.length)} viram oportunidade` : "";
+  rates.push(
+    rate(
+      "opp_active",
+      `abertas agora: ${openOpps.length} · com atividade em ${OPPORTUNITY_IDLE_DAYS} d: ${openOpps.length - idle.length}`,
+      companies ? openOpps.length - idle.length : null,
+      companies ? openOpps.length : null,
+      "nenhuma oportunidade aberta",
+    ),
+  );
+  rates.push(rate("conv_to_opp", changes ? `${pct(opps.length, convs.length)} viram oportunidade` : "viram oportunidade", changes ? opps.length : null, changes ? convs.length : null, "conversa → oportunidade"));
 
   // ARR: current paying base is not a monthly flow; we show the target only
   // and the sum of arr on customer accounts as the CRM sees it.
@@ -897,20 +990,104 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     nodes.ob_contacts = node("ob_contacts", "Contatos novos (cold)", null, "não medido");
     nodes.ob_replies = node("ob_replies", "Respostas de empresa nova", null, "não medido");
   }
+  const cc = cold?.counts ?? null;
+  rates.push(rate("cold_bounce", cc ? `bounce ${pct(cc.bounced, cc.people)}` : "bounce", cc ? cc.bounced : null, cc ? cc.people : null, "bounce"));
+  rates.push(
+    rate(
+      "cold_reply",
+      cc && cc.humanReplies != null ? `resposta humana: ${pct(cc.humanReplies, cc.people)} (${cc.humanReplies} de ${cc.people})` : "resposta humana",
+      cc ? cc.humanReplies : null,
+      cc ? cc.people : null,
+      "resposta humana",
+    ),
+  );
   // New companies in conversation via outbound = engaged this month with a
   // company that is not linked to a product org (never signed up).
   const newCompanyConvs = convs.filter((c) => !byId.get(c.company_id)?.org_id);
+  const newCompanyNode = node(
+    "ob_new_conversations",
+    "Empresa nova em conversa",
+    changes ? newCompanyConvs.length : null,
+    changes ? `${newCompanyConvs.length}` : "não medido",
+    { target: TARGETS.ob_companies_in_conversation },
+  );
+
+  // ---- Bottlenecks: the target stages furthest below what the month needs.
+  // Targets are pro-rated for the current month so day 3 does not read as a
+  // disaster. Cold with zero replies on a real volume is a bottleneck on its
+  // own, because no ratio captures "nobody answers".
+  type Candidate = { nodeId: string; ratio: number; lines: string[] };
+  const candidates: Candidate[] = [];
+  const consider = (
+    nodeId: string,
+    value: number | null,
+    target: number | null,
+    fmt: (n: number) => string,
+    label: string,
+    detail: string[],
+  ) => {
+    if (value == null || target == null || target <= 0) return;
+    // Less than a week in, every target-based ratio is noise.
+    if (elapsed < 0.2) return;
+    const need = target * elapsed;
+    const ratio = value / need;
+    if (ratio >= BOTTLENECK_RATIO) return;
+    const needText = elapsed < 1 ? `${fmt(Math.round(need))} até aqui (${fmt(target)} no mês)` : fmt(target);
+    candidates.push({ nodeId, ratio, lines: [`${label}: ${fmt(value)} de ${needText}`, ...detail.filter(Boolean)] });
+  };
+  const plain = (n: number) => `${n}`;
+  const brl = (n: number) => `R$ ${Math.round(n / 1000)}k`;
+  consider("icp", nodes.icp.value, nodes.icp.target, plain, "entra pouca empresa grande", [
+    signups ? `${icpProxy.length} de ${corporate.length} cadastros têm ${ICP_MIN_MEMBERS}+ devs` : "",
+    facts.non_github ?? "",
+  ]);
+  consider("connected", signups ? nonGithub.length : null, TARGETS.non_github_signups, plain, "cadastro GitLab/Azure/Bitbucket", [
+    facts.platform_split ?? "",
+  ]);
+  consider("conversations", nodes.conversations.value, nodes.conversations.target, plain, "poucas conversas", [
+    rates.find((r) => r.id === "touch_48h")?.label ?? "",
+  ]);
+  consider("opportunities", nodes.opportunities.value, nodes.opportunities.target, plain, "poucas oportunidades", [
+    rates.find((r) => r.id === "conv_to_opp")?.label ?? "",
+  ]);
+  const closedNoArr = closed.filter((c) => byId.get(c.company_id)?.arr == null).length;
+  consider("closed", nodes.closed.value, nodes.closed.target, brl, "fechado abaixo da meta", [
+    closedNoArr ? `${closedNoArr} conta${closedNoArr === 1 ? "" : "s"} fechada${closedNoArr === 1 ? "" : "s"} sem arr no CRM` : "",
+    rates.find((r) => r.id === "opp_active")?.label ?? "",
+  ]);
+  consider("ob_replies", newCompanyNode.value, newCompanyNode.target, plain, "pouca empresa nova em conversa", [
+    cc ? `cold: ${cc.humanReplies ?? "?"} respostas em ${cc.people} contatos` : "",
+  ]);
+  if (cc && cc.humanReplies === 0 && cc.people >= COLD_MIN_CONTACTS_FOR_VERDICT) {
+    const lo = Math.round(cc.people * RATE_BANDS.cold_reply.lo);
+    const hi = Math.round(cc.people * RATE_BANDS.cold_reply.hi);
+    candidates.push({
+      nodeId: "ob_replies",
+      ratio: 0,
+      lines: ["cold não responde", `0 de ${cc.people} respondem; mercado 3 a 8% = ${lo} a ${hi}`, "volume existe; mensagem, lista ou canal não"],
+    });
+  }
+  const seen = new Set<string>();
+  const bottlenecks: Bottleneck[] = candidates
+    .sort((a, b) => a.ratio - b.ratio)
+    .filter((c) => (seen.has(c.nodeId) ? false : (seen.add(c.nodeId), true)))
+    .slice(0, MAX_BOTTLENECKS)
+    .map((c) => ({ nodeId: c.nodeId, lines: c.lines }));
+
   facts.ob_new_conversations = changes
-    ? `empresa nova em conversa: ${newCompanyConvs.length} (sem cadastro no produto)`
+    ? `empresa nova em conversa: ${newCompanyConvs.length} (sem cadastro no produto) → ${TARGETS.ob_companies_in_conversation}`
     : "";
 
   return {
     month,
     periodStart,
     periodEnd,
+    elapsed,
     generatedAt: new Date().toISOString(),
     nodes,
     facts,
+    rates,
+    bottlenecks,
     errors,
   };
 }

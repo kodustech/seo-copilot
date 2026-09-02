@@ -20,7 +20,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { FunnelCell, FunnelData, FunnelNode } from "@/lib/funnel/metrics";
+import type { FunnelCell, FunnelData, FunnelNode, FunnelRate } from "@/lib/funnel/metrics";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
 
@@ -197,6 +197,43 @@ function Gargalo({
 // Diagram
 // ---------------------------------------------------------------------------
 
+const GOOD = "#1f7a4d";
+const WARN = "#a8690f";
+
+/** Where a red marker goes for each stage, and which side has room for text. */
+const MARKER_SLOTS: Record<string, { x: number; y: number; w?: number; side: "left" | "right" }> = {
+  signups: { x: C2, y: R[1], side: "left" },
+  connected: { x: C2, y: R[2], side: "right" },
+  icp: { x: C2, y: R[3], side: "right" },
+  conversations: { x: C2, y: SY[0], side: "left" },
+  opportunities: { x: C2, y: SY[1], side: "left" },
+  closed: { x: C2, y: FY, side: "left" },
+  ob_replies: { x: C3, y: R[1], side: "right" },
+};
+
+function statusColor(status: FunnelRate["status"]): string {
+  if (status === "good") return GOOD;
+  if (status === "warn") return WARN;
+  if (status === "crit") return CRIT;
+  return MUTED;
+}
+
+/** Arrow label built from a rate: text plus a dot when it sits outside the market band. */
+function RateLabel({ rate, x, y, size = 12.5 }: { rate: FunnelRate | undefined; x: number; y: number; size?: number }) {
+  if (!rate) return null;
+  const flagged = rate.status === "good" || rate.status === "warn" || rate.status === "crit";
+  const text = rate.value == null ? `${rate.label}: não medido` : rate.label;
+  return (
+    <>
+      {flagged ? <circle cx={x + 4} cy={y - 4} r={4} fill={statusColor(rate.status)} /> : null}
+      <text x={flagged ? x + 12 : x} y={y} fontSize={size} fill={rate.value == null ? CRIT : MUTED}>
+        {text}
+        {flagged && rate.note ? ` · ${rate.note}` : ""}
+      </text>
+    </>
+  );
+}
+
 export function Diagram({
   data,
   selected,
@@ -208,11 +245,7 @@ export function Diagram({
 }) {
   const n = data.nodes;
   const f = data.facts;
-  const icp = n.icp;
-  const signups = n.signups;
-  const entryBottleneck =
-    icp?.value != null && icp.target != null && signups?.value != null && icp.value < icp.target;
-  const coldBottleneck = n.ob_replies?.value === 0 && (n.ob_contacts?.value ?? 0) > 0;
+  const rate = (id: string) => data.rates.find((r) => r.id === id);
   const box = (id: string, x: number, y: number, extra: { w?: number; spine?: boolean } = {}) => (
     <Box x={x} y={y} w={extra.w} spine={extra.spine} node={n[id]} selected={selected === id} onSelect={onSelect} />
   );
@@ -228,6 +261,7 @@ export function Diagram({
       {/* headers */}
       <text x={C2} y={22} fontSize={12.5} fill={MUTED}>
         INBOUND CLOUD · tudo por mês · % na seta = corte da etapa
+        {data.elapsed < 1 ? ` · mês em curso: metas pró-rata (${Math.round(data.elapsed * 100)}%)` : ""}
       </text>
       <text x={C1} y={148} fontSize={12.5} fill={MUTED}>
         SELF-HOSTED
@@ -239,9 +273,7 @@ export function Diagram({
       {/* top sources */}
       {box("impressions", C2 - 150, 40, { w: 340 })}
       <Arrow from={{ x: C2 - 150 + 170, y: 100 }} to={{ x: C2 + BW / 2 - 40, y: R[0] - 2 }} />
-      <text x={C2 - 40} y={130} fontSize={12.5} fill={MUTED}>
-        {f.ctr ?? ""}
-      </text>
+      <RateLabel rate={rate("ctr")} x={C2 - 40} y={130} />
       {box("llm_referral", C2 + 220, 40, { w: 380 })}
       <Arrow from={{ x: C2 + 220 + 190, y: 100 }} to={{ x: C2 + BW / 2 + 40, y: R[0] - 2 }} />
       <text x={C2 + BW / 2 + 70} y={130} fontSize={12.5} fill={MUTED}>
@@ -251,45 +283,31 @@ export function Diagram({
       {/* inbound spine */}
       {box("visits", C2, R[0])}
       <Arrow from={{ x: C2 + BW / 2, y: R[0] + BH }} to={{ x: C2 + BW / 2, y: R[0] + BH + 40 }} />
-      <text x={C2 + BW / 2 + 10} y={R[0] + BH + 14} fontSize={12} fontWeight={600} fill={CRIT}>
-        MEDIÇÃO QUE FALTA · visita → cadastro
-      </text>
-      <text x={C2 + BW / 2 + 10} y={R[0] + BH + 29} fontSize={11.5} fill={CRIT}>
-        landing page no cadastro · {f.survey ?? ""}
-      </text>
+      <RateLabel rate={rate("visit_to_signup")} x={C2 + BW / 2 + 10} y={R[0] + BH + 17} />
+      <RateLabel rate={rate("survey")} x={C2 + BW / 2 + 10} y={R[0] + BH + 33} size={12} />
 
       {box("signups", C2, R[1])}
-      {entryBottleneck && icp && signups ? (
-        <Gargalo
-          x={C2}
-          y={R[1]}
-          side="left"
-          lines={[
-            "entra pouca empresa grande",
-            `${icp.value} de ${signups.value} cadastros têm ${20}+ devs`,
-            `precisa ${icp.target}/mês · ${f.non_github ?? ""}`,
-          ]}
-        />
-      ) : null}
-      <Down x={C2} y={R[1]} label={f.connected_rate} />
+      <Down x={C2} y={R[1]} />
+      <RateLabel rate={rate("connected")} x={C2 + BW / 2 + 10} y={R[1] + BH + 24} />
 
       {box("connected", C2, R[2])}
-      <Down x={C2} y={R[2]} label={f.icp_rate} second={f.platform_split} />
+      <Down x={C2} y={R[2]} />
+      <RateLabel rate={rate("icp_share")} x={C2 + BW / 2 + 10} y={R[2] + BH + 17} />
+      <text x={C2 + BW / 2 + 10} y={R[2] + BH + 34} fontSize={12} fill={MUTED}>
+        {[f.platform_split, f.icp_free_mail].filter(Boolean).join(" · ")}
+      </text>
 
       {box("icp", C2, R[3], { spine: true })}
       <Arrow from={{ x: C2 + BW / 2, y: R[3] + BH }} to={{ x: C2 + BW / 2, y: SY[0] }} />
-      <text x={C2 + BW / 2 + 10} y={R[3] + BH + 22} fontSize={12.5} fill={MUTED}>
-        {f.touch ?? ""}
-      </text>
+      <RateLabel rate={rate("touch_48h")} x={C2 + BW / 2 + 10} y={R[3] + BH + 22} />
 
       {box("conversations", C2, SY[0], { spine: true })}
-      <Down x={C2} y={SY[0]} label={f.conv_to_opp} />
+      <Down x={C2} y={SY[0]} />
+      <RateLabel rate={rate("conv_to_opp")} x={C2 + BW / 2 + 10} y={SY[0] + BH + 24} />
 
       {box("opportunities", C2, SY[1], { spine: true })}
       <Arrow from={{ x: C2 + BW / 2, y: SY[1] + BH }} to={{ x: C2 + BW / 2, y: FY }} />
-      <text x={C2 + BW / 2 + 10} y={SY[1] + BH + 22} fontSize={12.5} fill={MUTED}>
-        oportunidade → fechado: {f.open_opps ?? ""}
-      </text>
+      <RateLabel rate={rate("opp_active")} x={C2 + BW / 2 + 10} y={SY[1] + BH + 22} />
 
       {box("closed", C2, FY, { spine: true })}
       <Arrow from={{ x: C2 + BW / 2, y: FY + BH }} to={{ x: C2 + BW / 2, y: FY + 100 }} />
@@ -326,16 +344,10 @@ export function Diagram({
 
       {/* outbound */}
       {box("ob_contacts", C3, R[0])}
-      <Down x={C3} y={R[0]} label={f.ob_delivery} />
+      <Down x={C3} y={R[0]} />
+      <RateLabel rate={rate("cold_bounce")} x={C3 + BW / 2 + 10} y={R[0] + BH + 17} />
+      <RateLabel rate={rate("cold_reply")} x={C3 + BW / 2 + 10} y={R[0] + BH + 33} size={12} />
       {box("ob_replies", C3, R[1])}
-      {coldBottleneck && n.ob_replies && n.ob_contacts ? (
-        <Gargalo
-          x={C3}
-          y={R[1]}
-          side="right"
-          lines={["cold não responde", `0 de ${n.ob_contacts.value} respondem; mercado 3 a 8%`, "volume existe; mensagem, lista ou canal não"]}
-        />
-      ) : null}
       <polyline
         points={`${C3 + BW / 2},${R[1] + BH} ${C3 + BW / 2},${SY[0] + BH / 2} ${C2 + BW + 2},${SY[0] + BH / 2}`}
         fill="none"
@@ -349,6 +361,13 @@ export function Diagram({
       <text x={C3 + BW / 2 + 10} y={R[1] + BH + 38} fontSize={12.5} fill={MUTED}>
         + rede: champion que trocou de empresa
       </text>
+
+      {/* red markers: computed, never hard-coded */}
+      {data.bottlenecks.map((b) => {
+        const slot = MARKER_SLOTS[b.nodeId];
+        if (!slot) return null;
+        return <Gargalo key={b.nodeId} x={slot.x} y={slot.y} w={slot.w} side={slot.side} lines={b.lines} />;
+      })}
     </svg>
   );
 }

@@ -15,6 +15,8 @@ async function main() {
     console.log(`--- ${id}`);
     for (const r of f.nodes[id]?.rows ?? []) console.log(JSON.stringify(r));
   }
+  console.log("rates:"); for (const r of f.rates) console.log(`  ${r.id.padEnd(16)} ${r.status.padEnd(5)} ${r.label}  ${r.note}`);
+  console.log("bottlenecks:", JSON.stringify(f.bottlenecks, null, 1));
   console.log("facts:", f.facts);
   if (f.errors.length) console.log("errors:", f.errors);
 }

@@ -91,6 +91,30 @@ export const SELF_HOSTED_ACTIVE_DAYS = 14;
 /** Opportunity with no activity for this many days is flagged. */
 export const OPPORTUNITY_IDLE_DAYS = 14;
 
+/**
+ * Market reference bands for the arrow rates, as fractions. Inside the band
+ * is normal; below is orange; above is green. `inverted` flips that (a bounce
+ * rate above the band is bad). `loose` marks a rate where being far above the
+ * band means the definition is loose, not that we are great.
+ */
+export type RateBand = { lo: number; hi: number; inverted?: boolean; loose?: boolean };
+export const RATE_BANDS: Record<string, RateBand> = {
+  connected: { lo: 0.4, hi: 0.6 },
+  touch_48h: { lo: 1, hi: 1 },
+  conv_to_opp: { lo: 0.3, hi: 0.5, loose: true },
+  opp_active: { lo: 1, hi: 1 },
+  cold_reply: { lo: 0.03, hi: 0.08 },
+  cold_bounce: { lo: 0.0, hi: 0.03, inverted: true },
+  survey: { lo: 0.9, hi: 1 },
+};
+
+/** A target stage below this share of its (pro-rated) target is a bottleneck. */
+export const BOTTLENECK_RATIO = 0.6;
+/** How many red markers at most. The page is about the worst two, not a heatmap. */
+export const MAX_BOTTLENECKS = 2;
+/** Cold replies at zero with at least this many contacts is a bottleneck on its own. */
+export const COLD_MIN_CONTACTS_FOR_VERDICT = 50;
+
 /** Monthly targets. null = no target set. */
 export const TARGETS: Record<string, number | null> = {
   icp: 12,
