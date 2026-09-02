@@ -47,6 +47,7 @@ export async function findEnrollmentsByLinkedInIdentities(
     contactName: string | null;
     contactEmail: string | null;
     companyName: string;
+    createdAt: string | null;
   }>
 > {
   if (identities.length === 0) return [];
@@ -56,7 +57,7 @@ export async function findEnrollmentsByLinkedInIdentities(
   const { data, error } = await client
     .from("outreach_enrollments")
     .select(
-      "id, status, sequence_id, contact_linkedin, contact_name, contact_email, company_name",
+      "id, status, sequence_id, contact_linkedin, contact_name, contact_email, company_name, created_at",
     )
     .not("contact_linkedin", "is", null)
     .order("updated_at", { ascending: false })
@@ -71,6 +72,7 @@ export async function findEnrollmentsByLinkedInIdentities(
     contactName: string | null;
     contactEmail: string | null;
     companyName: string;
+    createdAt: string | null;
   }> = [];
 
   for (const row of data ?? []) {
@@ -84,6 +86,7 @@ export async function findEnrollmentsByLinkedInIdentities(
         contactName: (row.contact_name as string | null) ?? null,
         contactEmail: (row.contact_email as string | null) ?? null,
         companyName: (row.company_name as string) || "",
+        createdAt: (row.created_at as string | null) ?? null,
       });
     }
   }
@@ -674,13 +677,24 @@ export async function syncUnipileLinkedInInbox(
           }
         }
 
-        // Stop sequences for matched enrollments (inbound present)
+        // Stop sequences for matched enrollments, but only when the person
+        // wrote back AFTER this enrollment started. A LinkedIn chat keeps the
+        // whole history: a "não, nossos desafios são outros" from 2024 sat in
+        // the same thread as the 2026 sequence and marked it replied, which
+        // put five silent accounts in the reply count and moved them to
+        // engaged in the CRM.
+        const latestInbound = inbound.reduce((max, m) => {
+          const t = m.timestamp ? Date.parse(m.timestamp) : 0;
+          return t > max ? t : max;
+        }, 0);
         for (const enr of stoppable) {
           if (enrollmentsStopped.has(enr.id)) continue;
           if (enr.status === "replied") {
             enrollmentsStopped.add(enr.id);
             continue;
           }
+          const startedAt = enr.createdAt ? Date.parse(enr.createdAt) : 0;
+          if (!latestInbound || latestInbound < startedAt) continue;
           try {
             await markEnrollmentReplied(client, enr.id, {
               revive: false,
