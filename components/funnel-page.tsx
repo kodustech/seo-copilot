@@ -425,6 +425,35 @@ function Drawer({ node, onClose }: { node: FunnelNode; onClose: () => void }) {
           </Table>
         )}
       </div>
+      {node.extra?.map((section) => (
+        <div key={section.title} className="border-t">
+          <p className="px-4 pt-3 text-xs font-medium text-muted-foreground">{section.title}</p>
+          <div className="overflow-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  {section.columns.map((c) => (
+                    <TableHead key={c} className="whitespace-nowrap text-xs">
+                      {c}
+                    </TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {section.rows.map((row, i) => (
+                  <TableRow key={i}>
+                    {section.columns.map((c) => (
+                      <TableCell key={c} className="whitespace-nowrap text-xs">
+                        {fmtCell(row[c] ?? null)}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      ))}
       <div className="border-t p-3 text-xs text-muted-foreground">{node.rows.length} linha{node.rows.length === 1 ? "" : "s"}</div>
     </aside>
   );

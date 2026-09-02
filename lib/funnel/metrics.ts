@@ -45,6 +45,8 @@ export type FunnelNode = {
   definition: string;
   columns: string[];
   rows: FunnelRow[];
+  /** Extra tables for the drawer (a different row shape than `rows`). */
+  extra?: { title: string; columns: string[]; rows: FunnelRow[] }[];
 };
 
 export type RateStatus = "good" | "ok" | "warn" | "crit" | "na";
@@ -260,6 +262,13 @@ async function searchNodes(
         "Impressões e posição média ponderada das páginas de intenção. A média é puxada pelas páginas genéricas; olhe a posição por página e por termo.",
       columns: ["page", "impressions", "clicks", "ctr", "position"],
       rows: pageRows,
+      extra: [
+        {
+          title: "Termos-cabeça das páginas de plataforma (a alavanca é a posição)",
+          columns: ["query", "page", "impressions", "clicks", "position"],
+          rows: headRows,
+        },
+      ],
     },
   );
   const visitsNode = node(
@@ -270,8 +279,8 @@ async function searchNodes(
     {
       source: "Google Search Console, cliques por página",
       definition: "Cliques do Google nas páginas de intenção. Não inclui referral de LLM nem tráfego direto.",
-      columns: ["query", "page", "impressions", "clicks", "position"],
-      rows: headRows,
+      columns: ["page", "clicks", "impressions", "ctr", "position"],
+      rows: [...pageRows].sort((a, b) => Number(b.clicks) - Number(a.clicks)),
     },
   );
   return {
