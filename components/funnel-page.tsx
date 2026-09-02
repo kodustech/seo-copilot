@@ -453,8 +453,7 @@ export function FunnelPage() {
         <div>
           <h1 className="text-xl font-semibold">Funil</h1>
           <p className="text-sm text-muted-foreground">
-            Só números medidos. &quot;Não medido&quot; onde não há fonte. Clique numa caixa pra ver as contas por trás.
-            {data ? ` Período ${data.periodStart} a ${data.periodEnd}.` : ""}
+            {data ? `Período ${data.periodStart} a ${data.periodEnd}. ` : ""}Clique numa caixa pra ver as contas por trás.
           </p>
         </div>
         <div className="flex items-center gap-2">
