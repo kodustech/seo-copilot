@@ -19,6 +19,7 @@ import {
   OPPORTUNITY_STATUSES,
   QUALIFIED_PAGES,
   RATE_BANDS,
+  SHOW_TARGETS,
   SELF_HOSTED_ACTIVE_DAYS,
   SELF_HOSTED_MIN_PRS_7D,
   TARGETS,
@@ -176,7 +177,7 @@ function node(
     title,
     value,
     display,
-    target: TARGETS[id] ?? null,
+    target: SHOW_TARGETS ? (TARGETS[id] ?? null) : null,
     source: "",
     definition: "",
     columns: [],
@@ -857,7 +858,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     .join(" · ");
   // A lever we chose, not a stage: it gets a target on the label and never
   // competes for the red marker.
-  facts.non_github = `não-GitHub: ${nonGithub.length} cadastros, ${nonGithub.filter((s) => s.icp).length} ICP${TARGETS.non_github_signups ? ` → ${TARGETS.non_github_signups}` : ""}`;
+  facts.non_github = `não-GitHub: ${nonGithub.length} cadastros, ${nonGithub.filter((s) => s.icp).length} ICP${SHOW_TARGETS && TARGETS.non_github_signups ? ` → ${TARGETS.non_github_signups}` : ""}`;
   const icpFreeMail = all.filter((s) => s.icp && !s.corporate);
   facts.icp_free_mail = icpFreeMail.length
     ? `+${icpFreeMail.length} ICP com e-mail gratuito, fora da conta`
@@ -999,7 +1000,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
       ? `R$ ${Math.round(closedArr).toLocaleString("pt-BR")} · ${closed.length} conta${closed.length === 1 ? "" : "s"}`
       : "não medido",
     {
-      target: TARGETS.closed_brl,
+      target: SHOW_TARGETS ? TARGETS.closed_brl : null,
       source: "CRM (status_change → customer, campo arr da conta)",
       definition: "Soma do campo arr das contas que viraram customer no mês. Sem arr preenchido, a conta conta zero.",
       columns: crmCols,
@@ -1068,7 +1069,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   rates.push(
     rate(
       "conv_to_meeting",
-      changes ? `${pct(meetings.length, convs.length)} marcam reunião (${meetings.length} de ${convs.length})` : "marcam reunião",
+      changes ? `${meetings.length} de ${convs.length} conversas marcaram reunião` : "marcam reunião",
       changes ? meetings.length : null,
       changes ? convs.length : null,
       "conversa → reunião",
@@ -1078,7 +1079,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     rate(
       "meeting_to_opp",
       changes
-        ? `${oppsViaMeeting.length} de ${meetings.length} reuniões viram oportunidade · ${opps.length - oppsViaMeeting.length} oportunidade${opps.length - oppsViaMeeting.length === 1 ? "" : "s"} sem reunião`
+        ? `${oppsViaMeeting.length} de ${opps.length} oportunidades passaram por reunião`
         : "reunião → oportunidade",
       changes ? oppsViaMeeting.length : null,
       changes ? meetings.length : null,
@@ -1095,7 +1096,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     customerArr || null,
     customerArr ? `R$ ${Math.round(customerArr).toLocaleString("pt-BR")} (CRM)` : "sem arr no CRM",
     {
-      target: TARGETS.arr_brl,
+      target: SHOW_TARGETS ? TARGETS.arr_brl : null,
       source: "CRM (soma de arr nas contas customer)",
       definition: "Depende do campo arr estar preenchido em cada conta customer. Stripe e billing não entram aqui.",
       columns: ["company", "domain", "arr", "deployment"],
@@ -1220,7 +1221,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     "Empresa nova em conversa",
     changes ? newCompanyConvs.length : null,
     changes ? `${newCompanyConvs.length}` : "não medido",
-    { target: TARGETS.ob_companies_in_conversation },
+    { target: SHOW_TARGETS ? TARGETS.ob_companies_in_conversation : null },
   );
 
   // ---- Bottlenecks: the target stages furthest below what the month needs.
@@ -1237,6 +1238,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     label: string,
     detail: string[],
   ) => {
+    if (!SHOW_TARGETS) return;
     if (value == null || target == null || target <= 0) return;
     // Less than a week in, every target-based ratio is noise.
     if (elapsed < 0.2) return;
@@ -1276,6 +1278,13 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
       lines: ["cold não responde", `0 de ${cc.people} respondem; mercado 3 a 8% = ${lo} a ${hi}`, "volume existe; mensagem, lista ou canal não"],
     });
   }
+  // Without targets, a rate far outside its market band is the only other
+  // thing that earns the red outline.
+  const RATE_NODE: Record<string, string> = { cold_bounce: "ob_contacts", cold_reply: "ob_replies", connected: "signups", touch_48h: "icp" };
+  for (const r of rates) {
+    if (r.status !== "crit" || !RATE_NODE[r.id]) continue;
+    candidates.push({ nodeId: RATE_NODE[r.id], ratio: 0.1, lines: [r.label, r.note] });
+  }
   const seen = new Set<string>();
   const bottlenecks: Bottleneck[] = candidates
     .sort((a, b) => a.ratio - b.ratio)
@@ -1284,7 +1293,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     .map((c) => ({ nodeId: c.nodeId, lines: c.lines }));
 
   facts.ob_new_conversations = changes
-    ? `empresa nova em conversa: ${newCompanyConvs.length} (sem cadastro no produto) → ${TARGETS.ob_companies_in_conversation}`
+    ? `empresa nova em conversa: ${newCompanyConvs.length} (sem cadastro no produto)${SHOW_TARGETS ? ` → ${TARGETS.ob_companies_in_conversation}` : ""}`
     : "";
 
   return {

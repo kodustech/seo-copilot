@@ -117,6 +117,14 @@ export const MAX_BOTTLENECKS = 2;
 /** Cold replies at zero with at least this many contacts is a bottleneck on its own. */
 export const COLD_MIN_CONTACTS_FOR_VERDICT = 50;
 
+/**
+ * Targets are off the canvas for now: the funnel shows measured numbers only.
+ * When targets come back they should be read from seo-copilot Goals, not
+ * from this file. While false, TARGETS below is ignored and bottlenecks come
+ * only from market bands (rates in `crit`) and the cold zero-reply rule.
+ */
+export const SHOW_TARGETS = false;
+
 /** Monthly targets. null = no target set. */
 export const TARGETS: Record<string, number | null> = {
   icp: 12,

@@ -31,7 +31,7 @@ import { cn } from "@/lib/utils";
 // ---------------------------------------------------------------------------
 
 const W = 1600;
-const H = 930;
+const H = 960;
 const BW = 300;
 const BH = 60;
 const C1 = 60;
@@ -41,10 +41,14 @@ const R = [150, 250, 350] as const;
 /** Self-serve box: paid without a conversation, off to the right of ICP. */
 const SSX = 900;
 const SSY = 470;
-/** Commercial band: y of the boxes and x of each box. */
+/** Commercial band: y of the boxes and x of each box. Reunião sits below
+ *  the Conversa → Oportunidade arrow as a side box: not every account goes
+ *  through it, so it cannot be in line. */
 const BY = 700;
-const BX = [60, 440, 820, 1200] as const;
+const BX = [60, 640, 1220] as const;
 const BWB = 320;
+const MX = 350;
+const MY = BY + 110;
 
 const INK = "var(--foreground)";
 const MUTED = "var(--muted-foreground)";
@@ -135,10 +139,11 @@ function Elbow({ points }: { points: Pt[] }) {
   return <polyline points={points.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke={INK} strokeWidth={1.5} markerEnd="url(#funnel-arrow)" />;
 }
 
-function Gargalo({ x, y, w = BW, lines, side, dy = 0 }: { x: number; y: number; w?: number; lines: string[]; side: "left" | "right" | "bottom"; dy?: number }) {
+function Gargalo({ x, y, w = BW, lines, side, dy = 0 }: { x: number; y: number; w?: number; lines: string[]; side: "left" | "right" | "bottom" | "top"; dy?: number }) {
   const tx = side === "left" ? x - 18 : side === "right" ? x + w + 18 : x + w / 2;
   const anchor = side === "left" ? "end" : side === "right" ? "start" : "middle";
-  const ty = side === "bottom" ? y + BH + 22 + dy : y + BH / 2 - 8;
+  const ty =
+    side === "bottom" ? y + BH + 22 + dy : side === "top" ? y - 14 - 18 * (lines.length - 1) - dy : y + BH / 2 - 8;
   return (
     <>
       <rect x={x - 8} y={y - 8} width={w + 16} height={BH + 16} rx={9} fill="none" stroke={CRIT} strokeWidth={2.5} />
@@ -185,14 +190,15 @@ function RateLabel({ rate, x, y, size = 12.5, anchor = "start", compact = false 
 // ---------------------------------------------------------------------------
 
 /** Where a red marker goes for each stage, and which side has room for text. */
-const MARKER_SLOTS: Record<string, { x: number; y: number; w?: number; side: "left" | "right" | "bottom"; dy?: number }> = {
+const MARKER_SLOTS: Record<string, { x: number; y: number; w?: number; side: "left" | "right" | "bottom" | "top"; dy?: number }> = {
   signups: { x: C2, y: R[1], side: "left" },
   icp: { x: C2, y: R[2], side: "right" },
+  ob_contacts: { x: C3, y: R[0], side: "left" },
   ob_replies: { x: C3, y: R[1], side: "bottom" },
-  conversations: { x: BX[0], y: BY, w: BWB, side: "bottom", dy: 66 },
-  meetings: { x: BX[1], y: BY, w: BWB, side: "bottom", dy: 66 },
-  opportunities: { x: BX[2], y: BY, w: BWB, side: "bottom", dy: 66 },
-  closed: { x: BX[3], y: BY, w: BWB, side: "bottom", dy: 66 },
+  conversations: { x: BX[0], y: BY, w: BWB, side: "top" },
+  meetings: { x: MX, y: MY, w: BWB, side: "bottom" },
+  opportunities: { x: BX[1], y: BY, w: BWB, side: "top" },
+  closed: { x: BX[2], y: BY, w: BWB, side: "top" },
 };
 
 /** Position of the platform pages, read from the impressions rows. */
@@ -232,7 +238,7 @@ export function Diagram({ data, selected, onSelect }: { data: FunnelData; select
       {/* headers */}
       <text x={C1} y={52} fontSize={12.5} fill={MUTED}>SELF-HOSTED</text>
       <text x={C2} y={26} fontSize={12.5} fill={MUTED}>
-        INBOUND CLOUD · por mês{data.elapsed < 1 ? ` · mês em curso, metas pró-rata (${Math.round(data.elapsed * 100)}%)` : ""}
+        INBOUND CLOUD · por mês{data.elapsed < 1 ? ` · mês em curso (${Math.round(data.elapsed * 100)}%)` : ""}
       </text>
       <text x={C3} y={52} fontSize={12.5} fill={MUTED}>OUTBOUND · empresa nova, cold</text>
 
@@ -283,35 +289,40 @@ export function Diagram({ data, selected, onSelect }: { data: FunnelData; select
       {/* outbound lane */}
       {box("ob_contacts", C3, R[0])}
       <Arrow from={{ x: C3 + BW / 2, y: R[0] + BH }} to={{ x: C3 + BW / 2, y: R[1] }} />
-      <RateLabel rate={rate("cold_reply")} x={C3 + BW / 2 - 10} y={R[0] + BH + 16} size={12} anchor="end" compact />
-      <RateLabel rate={rate("cold_bounce")} x={C3 + BW / 2 - 10} y={R[0] + BH + 32} size={12} anchor="end" compact />
+      <RateLabel rate={rate("cold_reply")} x={C3 + BW / 2 - 10} y={R[0] + BH + 22} size={11} anchor="end" compact />
+      <RateLabel rate={rate("cold_bounce")} x={C3 + BW / 2 - 10} y={R[0] + BH + 35} size={11} anchor="end" compact />
       {box("ob_replies", C3, R[1])}
 
       {/* commercial band */}
-      <rect x={30} y={BY - 70} width={W - 60} height={260} rx={10} fill="none" stroke={MUTED} strokeWidth={1} strokeDasharray="6 5" />
-      <text x={48} y={BY - 50} fontSize={12.5} fill={MUTED}>COMERCIAL</text>
+      <rect x={30} y={BY - 100} width={W - 60} height={340} rx={10} fill="none" stroke={MUTED} strokeWidth={1} strokeDasharray="6 5" />
+      <text x={48} y={BY - 82} fontSize={12.5} fill={MUTED}>COMERCIAL</text>
       {box("conversations", BX[0], BY, { w: BWB, spine: true })}
-      {box("meetings", BX[1], BY, { w: BWB, spine: true })}
-      {box("opportunities", BX[2], BY, { w: BWB, spine: true })}
-      {box("closed", BX[3], BY, { w: BWB, spine: true })}
-      {[0, 1, 2].map((i) => (
+      {box("opportunities", BX[1], BY, { w: BWB, spine: true })}
+      {box("closed", BX[2], BY, { w: BWB, spine: true })}
+      {[0, 1].map((i) => (
         <Arrow key={i} from={{ x: BX[i] + BWB, y: BY + BH / 2 }} to={{ x: BX[i + 1] - 2, y: BY + BH / 2 }} />
       ))}
-      <RateLabel rate={rate("conv_to_meeting")} x={(BX[0] + BWB + BX[1]) / 2} y={BY + BH + 20} size={11.5} anchor="middle" compact />
-      <RateLabel rate={rate("meeting_to_opp")} x={(BX[1] + BWB + BX[2]) / 2} y={BY + BH + 20} size={11.5} anchor="middle" compact />
-      <RateLabel rate={rate("opp_active")} x={(BX[2] + BWB + BX[3]) / 2} y={BY + BH + 20} size={11.5} anchor="middle" compact />
+      <RateLabel rate={rate("conv_to_opp")} x={(BX[0] + BWB + BX[1]) / 2} y={BY + BH / 2 - 10} size={11.5} anchor="middle" compact />
+      <RateLabel rate={rate("opp_active")} x={(BX[1] + BWB + BX[2]) / 2} y={BY + BH / 2 - 10} size={11.5} anchor="middle" compact />
+
+      {/* Reunião: a side box, not a mandatory stop */}
+      {box("meetings", MX, MY, { w: BWB, spine: true })}
+      <Elbow points={[{ x: BX[0] + BWB - 60, y: BY + BH }, { x: BX[0] + BWB - 60, y: MY + BH / 2 }, { x: MX - 2, y: MY + BH / 2 }]} />
+      <Elbow points={[{ x: MX + BWB, y: MY + BH / 2 }, { x: BX[1] + 60, y: MY + BH / 2 }, { x: BX[1] + 60, y: BY + BH + 2 }]} />
+      <RateLabel rate={rate("conv_to_meeting")} x={MX - 10} y={MY + BH / 2 - 10} size={11.5} anchor="end" compact />
+      <RateLabel rate={rate("meeting_to_opp")} x={MX + BWB + 10} y={MY + BH / 2 - 10} size={11.5} compact />
 
       {/* entries dropping into Conversa */}
-      <Elbow points={[{ x: C2 + BW / 2, y: R[2] + BH }, { x: C2 + BW / 2, y: BY - 40 }, { x: convTop.x, y: BY - 40 }, convTop]} />
+      <Elbow points={[{ x: C2 + BW / 2, y: R[2] + BH }, { x: C2 + BW / 2, y: BY - 72 }, { x: convTop.x, y: BY - 72 }, convTop]} />
       <RateLabel rate={rate("touch_48h")} x={C2 + BW / 2 - 10} y={R[2] + BH + 24} size={12} anchor="end" compact />
 
       {/* self-serve: paid without a conversation, straight to Fechado */}
       <Elbow points={[{ x: C2 + BW - 30, y: R[2] + BH }, { x: C2 + BW - 30, y: SSY + BH / 2 }, { x: SSX - 2, y: SSY + BH / 2 }]} />
       {box("self_serve", SSX, SSY, { w: 300 })}
-      <Elbow points={[{ x: SSX + 150, y: SSY + BH }, { x: SSX + 150, y: BY - 20 }, { x: BX[3] + BWB / 2, y: BY - 20 }, { x: BX[3] + BWB / 2, y: BY - 2 }]} />
+      <Elbow points={[{ x: SSX + 150, y: SSY + BH }, { x: SSX + 150, y: BY - 60 }, { x: BX[2] + BWB / 2, y: BY - 60 }, { x: BX[2] + BWB / 2, y: BY - 2 }]} />
 
-      <Elbow points={[{ x: C3 + BW / 2, y: R[1] + BH + 80 }, { x: C3 + BW / 2, y: BY - 40 }, { x: convTop.x, y: BY - 40 }, convTop]} />
-      <RateLabel rate={rate("reply_to_conversation")} x={C3 + BW / 2 - 10} y={BY - 90} size={11.5} anchor="end" compact />
+      <Elbow points={[{ x: C3 + BW / 2, y: R[1] + BH + 80 }, { x: C3 + BW / 2, y: BY - 72 }, { x: convTop.x, y: BY - 72 }, convTop]} />
+      <RateLabel rate={rate("reply_to_conversation")} x={C3 + BW / 2 - 10} y={BY - 118} size={11.5} anchor="end" compact />
 
       {/* red markers: computed, never hard-coded */}
       {data.bottlenecks.map((b) => {
