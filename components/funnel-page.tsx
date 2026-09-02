@@ -30,14 +30,17 @@ import { cn } from "@/lib/utils";
 // ---------------------------------------------------------------------------
 
 const W = 1600;
-const H = 1020;
+const H = 1100;
 const BW = 300;
 const BH = 60;
 const C1 = 60;
 const C2 = 460;
 const C3 = 980;
-const R = [180, 280, 380, 480] as const;
-const SY = [620, 720] as const;
+// Rows are 120 apart: 60 of box and 60 of arrow, enough for two label lines
+// plus the 8px a red outline adds above the next box.
+const GAP = 60;
+const R = [180, 300, 420, 540] as const;
+const SY = [680, 800] as const;
 const FY = SY[1] + BH + 64;
 
 const INK = "var(--foreground)";
@@ -151,14 +154,14 @@ function Arrow({ from, to, label, lx, ly }: { from: Pt; to: Pt; label?: string; 
 function Down({ x, y, label, second }: { x: number; y: number; label?: string; second?: string }) {
   return (
     <>
-      <Arrow from={{ x: x + BW / 2, y: y + BH }} to={{ x: x + BW / 2, y: y + BH + 40 }} />
+      <Arrow from={{ x: x + BW / 2, y: y + BH }} to={{ x: x + BW / 2, y: y + BH + GAP }} />
       {label ? (
-        <text x={x + BW / 2 + 10} y={y + BH + (second ? 17 : 24)} fontSize={12.5} fill={MUTED}>
+        <text x={x + BW / 2 + 10} y={y + BH + (second ? 20 : 34)} fontSize={12.5} fill={MUTED}>
           {label}
         </text>
       ) : null}
       {second ? (
-        <text x={x + BW / 2 + 10} y={y + BH + 34} fontSize={12} fill={MUTED}>
+        <text x={x + BW / 2 + 10} y={y + BH + 38} fontSize={12} fill={MUTED}>
           {second}
         </text>
       ) : null}
@@ -282,32 +285,32 @@ export function Diagram({
 
       {/* inbound spine */}
       {box("visits", C2, R[0])}
-      <Arrow from={{ x: C2 + BW / 2, y: R[0] + BH }} to={{ x: C2 + BW / 2, y: R[0] + BH + 40 }} />
-      <RateLabel rate={rate("visit_to_signup")} x={C2 + BW / 2 + 10} y={R[0] + BH + 17} />
-      <RateLabel rate={rate("survey")} x={C2 + BW / 2 + 10} y={R[0] + BH + 33} size={12} />
+      <Arrow from={{ x: C2 + BW / 2, y: R[0] + BH }} to={{ x: C2 + BW / 2, y: R[0] + BH + GAP }} />
+      <RateLabel rate={rate("visit_to_signup")} x={C2 + BW / 2 + 10} y={R[0] + BH + 20} />
+      <RateLabel rate={rate("survey")} x={C2 + BW / 2 + 10} y={R[0] + BH + 38} size={12} />
 
       {box("signups", C2, R[1])}
       <Down x={C2} y={R[1]} />
-      <RateLabel rate={rate("connected")} x={C2 + BW / 2 + 10} y={R[1] + BH + 24} />
+      <RateLabel rate={rate("connected")} x={C2 + BW / 2 + 10} y={R[1] + BH + 34} />
 
       {box("connected", C2, R[2])}
       <Down x={C2} y={R[2]} />
-      <RateLabel rate={rate("icp_share")} x={C2 + BW / 2 + 10} y={R[2] + BH + 17} />
-      <text x={C2 + BW / 2 + 10} y={R[2] + BH + 34} fontSize={12} fill={MUTED}>
+      <RateLabel rate={rate("icp_share")} x={C2 + BW / 2 + 10} y={R[2] + BH + 20} />
+      <text x={C2 + BW / 2 + 10} y={R[2] + BH + 38} fontSize={12} fill={MUTED}>
         {[f.platform_split, f.icp_free_mail].filter(Boolean).join(" · ")}
       </text>
 
       {box("icp", C2, R[3], { spine: true })}
       <Arrow from={{ x: C2 + BW / 2, y: R[3] + BH }} to={{ x: C2 + BW / 2, y: SY[0] }} />
-      <RateLabel rate={rate("touch_48h")} x={C2 + BW / 2 + 10} y={R[3] + BH + 22} />
+      <RateLabel rate={rate("touch_48h")} x={C2 + BW / 2 + 10} y={R[3] + BH + 34} />
 
       {box("conversations", C2, SY[0], { spine: true })}
       <Down x={C2} y={SY[0]} />
-      <RateLabel rate={rate("conv_to_opp")} x={C2 + BW / 2 + 10} y={SY[0] + BH + 24} />
+      <RateLabel rate={rate("conv_to_opp")} x={C2 + BW / 2 + 10} y={SY[0] + BH + 34} />
 
       {box("opportunities", C2, SY[1], { spine: true })}
       <Arrow from={{ x: C2 + BW / 2, y: SY[1] + BH }} to={{ x: C2 + BW / 2, y: FY }} />
-      <RateLabel rate={rate("opp_active")} x={C2 + BW / 2 + 10} y={SY[1] + BH + 22} />
+      <RateLabel rate={rate("opp_active")} x={C2 + BW / 2 + 10} y={SY[1] + BH + 34} />
 
       {box("closed", C2, FY, { spine: true })}
       <Arrow from={{ x: C2 + BW / 2, y: FY + BH }} to={{ x: C2 + BW / 2, y: FY + 100 }} />
@@ -316,7 +319,7 @@ export function Diagram({
       {/* self-hosted */}
       {box("sh_instances", C1, R[0])}
       <Arrow from={{ x: C1 + 50, y: R[0] + BH }} to={{ x: C1 + 50, y: R[3] }} />
-      <text x={C1 + 60} y={R[0] + BH + 24} fontSize={12.5} fill={MUTED}>
+      <text x={C1 + 60} y={R[0] + BH + 34} fontSize={12.5} fill={MUTED}>
         pedidos de trial: {n.sh_trial?.value ?? "?"}
       </text>
       {box("sh_trial", C1, R[3])}
@@ -345,8 +348,8 @@ export function Diagram({
       {/* outbound */}
       {box("ob_contacts", C3, R[0])}
       <Down x={C3} y={R[0]} />
-      <RateLabel rate={rate("cold_bounce")} x={C3 + BW / 2 + 10} y={R[0] + BH + 17} />
-      <RateLabel rate={rate("cold_reply")} x={C3 + BW / 2 + 10} y={R[0] + BH + 33} size={12} />
+      <RateLabel rate={rate("cold_bounce")} x={C3 + BW / 2 + 10} y={R[0] + BH + 20} />
+      <RateLabel rate={rate("cold_reply")} x={C3 + BW / 2 + 10} y={R[0] + BH + 38} size={12} />
       {box("ob_replies", C3, R[1])}
       <polyline
         points={`${C3 + BW / 2},${R[1] + BH} ${C3 + BW / 2},${SY[0] + BH / 2} ${C2 + BW + 2},${SY[0] + BH / 2}`}
@@ -355,10 +358,10 @@ export function Diagram({
         strokeWidth={1.5}
         markerEnd="url(#funnel-arrow)"
       />
-      <text x={C3 + BW / 2 + 10} y={R[1] + BH + 22} fontSize={12.5} fill={MUTED}>
+      <text x={C3 + BW / 2 + 10} y={R[1] + BH + 26} fontSize={12.5} fill={MUTED}>
         {f.ob_new_conversations ?? ""}
       </text>
-      <text x={C3 + BW / 2 + 10} y={R[1] + BH + 38} fontSize={12.5} fill={MUTED}>
+      <text x={C3 + BW / 2 + 10} y={R[1] + BH + 43} fontSize={12.5} fill={MUTED}>
         + rede: champion que trocou de empresa
       </text>
 
