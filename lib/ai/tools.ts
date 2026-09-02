@@ -3634,7 +3634,7 @@ export const createCrmCompany = tool({
 
 export const updateCrmCompany = tool({
   description:
-    "Update a CRM company — status, priority, owner, dev_count, org link, industry, notes, or custom properties (key → value; null clears a key). List field defs with listCrmFields.",
+    "Update a CRM company — status, priority, owner, dev_count, arr (contract value per year, BRL), org link, industry, notes, or custom properties (key → value; null clears a key). List field defs with listCrmFields.",
   inputSchema: z.object({
     id: z.string().describe("Company id"),
     status: z.enum(COMPANY_STATUSES as unknown as [string, ...string[]]).optional(),
@@ -3654,6 +3654,11 @@ export const updateCrmCompany = tool({
       .describe("How the account runs Kodus; null clears it"),
     industry: z.string().nullable().optional(),
     dev_count: z.number().nullable().optional(),
+    arr: z
+      .number()
+      .nullable()
+      .optional()
+      .describe("Annual contract value in BRL. The funnel sums it when the account becomes a customer."),
     notes: z.string().nullable().optional(),
     properties: z
       .record(
@@ -3676,6 +3681,7 @@ export const updateCrmCompany = tool({
     deployment,
     industry,
     dev_count,
+    arr,
     notes,
     properties,
     user_email,
@@ -3703,6 +3709,7 @@ export const updateCrmCompany = tool({
           ...(deployment !== undefined ? { deployment } : {}),
           ...(industry !== undefined ? { industry } : {}),
           ...(dev_count !== undefined ? { devCount: dev_count } : {}),
+          ...(arr !== undefined ? { arr } : {}),
           ...(notes !== undefined ? { notes } : {}),
           properties,
         },

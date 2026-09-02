@@ -2297,6 +2297,7 @@ function OverviewTab({
   const [devCount, setDevCount] = useState(
     company.devCount != null ? String(company.devCount) : "",
   );
+  const [arr, setArr] = useState(company.arr != null ? String(company.arr) : "");
   const [notes, setNotes] = useState(company.notes ?? "");
 
   // Keep local fields in sync when the drawer company changes.
@@ -2305,6 +2306,7 @@ function OverviewTab({
     setDomain(company.domain ?? "");
     setIndustry(company.industry ?? "");
     setDevCount(company.devCount != null ? String(company.devCount) : "");
+    setArr(company.arr != null ? String(company.arr) : "");
     setNotes(company.notes ?? "");
   }, [
     company.id,
@@ -2312,6 +2314,7 @@ function OverviewTab({
     company.domain,
     company.industry,
     company.devCount,
+    company.arr,
     company.notes,
   ]);
 
@@ -2463,6 +2466,25 @@ function OverviewTab({
           <p className="mt-1 text-[11px] text-neutral-500">
             Engineering headcount (ICP). Not Kodus product seats — those are
             on the Product tab.
+          </p>
+        </Field>
+        <Field label="ARR (R$ / year)">
+          <Input
+            type="number"
+            min={0}
+            step={1000}
+            value={arr}
+            onChange={(e) => setArr(e.target.value)}
+            onBlur={() => {
+              const current = company.arr != null ? String(company.arr) : "";
+              if (arr !== current) onPatch({ arr: arr.trim() ? Number(arr) : null });
+            }}
+            placeholder="ex: 129000"
+            className="border-white/10 bg-neutral-900"
+          />
+          <p className="mt-1 text-[11px] text-neutral-500">
+            Contract value per year, in BRL. The funnel sums this when the
+            account becomes a customer; empty counts as zero.
           </p>
         </Field>
       </div>
