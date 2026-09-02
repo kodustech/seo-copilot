@@ -704,6 +704,39 @@ async function selfHostedInstances(): Promise<FunnelNode> {
   }
 }
 
+type SelfServeRow = { org_id: string; name: string; plan: string; seats: number; first_assigned: string };
+
+/**
+ * Accounts that started paying in the month, from billing: the first user
+ * license ever assigned on a paid plan. Billing keeps no status history, so
+ * this is the closest thing to "became a customer" the data offers.
+ */
+async function selfServePaid(periodStart: string, nextStart: string): Promise<SelfServeRow[]> {
+  const sql = `
+    WITH first_lic AS (
+      SELECT ol.organizationId, ol.planType, ol.subscriptionStatus, ol.totalLicenses, MIN(ul.assignedAt) AS first_assigned
+      FROM \`${BQ}.kodus_billing.user_licenses\` ul
+      JOIN \`${BQ}.kodus_billing.organization_licenses\` ol ON ol.id = ul.organizationLicenseId
+      WHERE ol.planType NOT LIKE 'free%'
+      GROUP BY 1, 2, 3, 4
+    )
+    SELECT f.organizationId AS org_id, o.name, f.planType AS plan, f.totalLicenses AS seats, DATE(f.first_assigned) AS first_assigned
+    FROM first_lic f
+    JOIN \`${BQ}.kodus_postgres.organizations\` o ON o.uuid = f.organizationId
+    WHERE f.subscriptionStatus = 'active' AND f.totalLicenses > 0
+      AND f.first_assigned >= '${periodStart}' AND f.first_assigned < '${nextStart}'
+    ORDER BY f.first_assigned
+    LIMIT 200`;
+  const { rows } = await queryBigQuery(sql, 200);
+  return rows.map((r) => ({
+    org_id: str(r.org_id) ?? "",
+    name: str(r.name) ?? "",
+    plan: str(r.plan) ?? "",
+    seats: num(r.seats),
+    first_assigned: str(r.first_assigned) ?? "",
+  }));
+}
+
 // ---------------------------------------------------------------------------
 // Assemble
 // ---------------------------------------------------------------------------
@@ -724,7 +757,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     }
   };
 
-  const [search, llm, signups, companies, changes, verifiedField, cold, sh] =
+  const [search, llm, signups, companies, changes, verifiedField, cold, sh, paid] =
     await Promise.all([
       settle("search", searchNodes(periodStart, periodEnd)),
       settle("llm", llmReferralNode(periodStart, periodEnd)),
@@ -734,6 +767,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
       settle("crm_field", hasVerifiedField(client)),
       settle("outbound", coldOutbound(client, periodStart, nextStart)),
       settle("telemetry", selfHostedInstances()),
+      settle("billing", selfServePaid(periodStart, nextStart)),
     ]);
 
   // Search
@@ -856,6 +890,13 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
         crm_status: byOrg.get(s.org_id)?.status ?? null,
         verified: isVerified(byOrg.get(s.org_id)?.properties ?? null),
       })),
+      extra: [
+        {
+          title: `Conectaram o git no mês (${connected.length} de ${corporate.length})`,
+          columns: signupCols,
+          rows: connected.map(toRow),
+        },
+      ],
     },
   );
 
@@ -880,7 +921,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   rates.push(
     rate(
       "touch_48h",
-      signups ? `toque humano em 48 h: ${touched.length} de ${icpProxy.length} (atividade no CRM)` : "toque humano em 48 h",
+      signups ? `toque humano em 48 h: ${touched.length} de ${icpProxy.length}` : "toque humano em 48 h",
       signups ? touched.length : null,
       signups ? icpProxy.length : null,
       "toque humano em 48 h",
@@ -963,6 +1004,48 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
       definition: "Soma do campo arr das contas que viraram customer no mês. Sem arr preenchido, a conta conta zero.",
       columns: crmCols,
       rows: closed.map(crmRow),
+      extra: [
+        {
+          title: `ARR na base (CRM, soma de arr nas contas customer): R$ ${Math.round(crm.filter((c) => c.status === "customer").reduce((s, c) => s + (c.arr ?? 0), 0)).toLocaleString("pt-BR")}`,
+          columns: ["company", "domain", "arr", "deployment"],
+          rows: crm
+            .filter((c) => c.status === "customer")
+            .sort((a, b) => (b.arr ?? 0) - (a.arr ?? 0))
+            .map((c) => ({ company: c.name, domain: c.domain, arr: c.arr, deployment: c.deployment })),
+        },
+      ],
+    },
+  );
+
+  // Self-serve: paid without a conversation. Cross with the CRM so an
+  // account that was in a conversation is not counted twice.
+  const paidRows = paid ?? [];
+  const inConversation = new Set(
+    crm.filter((c) => c.org_id && c.status !== "lead").map((c) => c.org_id as string),
+  );
+  const selfServe = paidRows.filter((r) => !inConversation.has(r.org_id));
+  const paidRow = (r: SelfServeRow): FunnelRow => ({ name: r.name, plan: r.plan, seats: r.seats, first_assigned: r.first_assigned });
+  nodes.self_serve = node(
+    "self_serve",
+    "Pagou sozinho (self-serve)",
+    paid ? selfServe.length : null,
+    paid ? `${selfServe.length} conta${selfServe.length === 1 ? "" : "s"} · ${selfServe.reduce((a, r) => a + r.seats, 0)} seats` : "não medido",
+    {
+      source: "Billing (BigQuery kodus_billing: primeira licença atribuída num plano pago)",
+      definition:
+        "Contas que começaram a pagar no mês sem passar por conversa no CRM. Billing não guarda histórico; a data é a da primeira licença atribuída.",
+      columns: ["name", "plan", "seats", "first_assigned"],
+      rows: selfServe.map(paidRow),
+      extra:
+        paidRows.length !== selfServe.length
+          ? [
+              {
+                title: "Começaram a pagar no mês depois de uma conversa (contam em Fechado)",
+                columns: ["name", "plan", "seats", "first_assigned"],
+                rows: paidRows.filter((r) => inConversation.has(r.org_id)).map(paidRow),
+              },
+            ]
+          : undefined,
     },
   );
 
@@ -1094,7 +1177,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   rates.push(
     rate(
       "reply_to_conversation",
-      cold ? `resposta → conversa: ${repliedInConversation.length} de ${repliedCrm.length} empresas em engaged ou além` : "resposta → conversa",
+      cold ? `resposta → conversa: ${repliedInConversation.length} de ${repliedCrm.length} empresas` : "resposta → conversa",
       cold ? repliedInConversation.length : null,
       cold ? repliedCrm.length : null,
       "resposta → conversa",

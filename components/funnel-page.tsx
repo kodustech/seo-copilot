@@ -37,11 +37,14 @@ const BH = 60;
 const C1 = 60;
 const C2 = 560;
 const C3 = 1180;
-const R = [150, 250, 350, 450] as const;
+const R = [150, 250, 350] as const;
+/** Self-serve box: paid without a conversation, off to the right of ICP. */
+const SSX = 900;
+const SSY = 470;
 /** Commercial band: y of the boxes and x of each box. */
 const BY = 700;
-const BX = [60, 400, 740, 1080, 1380] as const;
-const BWB = 280;
+const BX = [60, 440, 820, 1200] as const;
+const BWB = 320;
 
 const INK = "var(--foreground)";
 const MUTED = "var(--muted-foreground)";
@@ -184,8 +187,7 @@ function RateLabel({ rate, x, y, size = 12.5, anchor = "start" }: { rate: Funnel
 /** Where a red marker goes for each stage, and which side has room for text. */
 const MARKER_SLOTS: Record<string, { x: number; y: number; w?: number; side: "left" | "right" | "bottom"; dy?: number }> = {
   signups: { x: C2, y: R[1], side: "left" },
-  connected: { x: C2, y: R[2], side: "right" },
-  icp: { x: C2, y: R[3], side: "right" },
+  icp: { x: C2, y: R[2], side: "right" },
   ob_replies: { x: C3, y: R[1], side: "bottom" },
   conversations: { x: BX[0], y: BY, w: BWB, side: "bottom", dy: 66 },
   meetings: { x: BX[1], y: BY, w: BWB, side: "bottom", dy: 66 },
@@ -255,18 +257,16 @@ export function Diagram({ data, selected, onSelect }: { data: FunnelData; select
       <RateLabel rate={rate("survey")} x={C2 + BW / 2 + 10} y={R[0] + BH + 32} size={12} />
       {box("signups", C2, R[1])}
       <Arrow from={{ x: C2 + BW / 2, y: R[1] + BH }} to={{ x: C2 + BW / 2, y: R[2] }} />
-      <RateLabel rate={rate("connected")} x={C2 + BW / 2 + 10} y={R[1] + BH + 24} />
-      {box("connected", C2, R[2])}
-      <Arrow from={{ x: C2 + BW / 2, y: R[2] + BH }} to={{ x: C2 + BW / 2, y: R[3] }} />
-      <RateLabel rate={rate("icp_share")} x={C2 + BW / 2 + 10} y={R[2] + BH + 16} size={12} />
-      <text x={C2 + BW / 2 + 10} y={R[2] + BH + 32} fontSize={12} fill={MUTED}>
-        {[f.platform_split, f.icp_free_mail].filter(Boolean).join(" · ")}
+      <RateLabel rate={rate("connected")} x={C2 + BW / 2 + 10} y={R[1] + BH + 15} size={11.5} />
+      <RateLabel rate={rate("icp_share")} x={C2 + BW / 2 + 10} y={R[1] + BH + 29} size={11.5} />
+      {box("icp", C2, R[2], { spine: true })}
+      <text x={C2 + BW / 2 - 10} y={R[2] + BH + 18} fontSize={12} fill={MUTED} textAnchor="end">
+        {f.platform_split ?? ""}
       </text>
-      {box("icp", C2, R[3], { spine: true })}
 
       {/* self-hosted lane */}
       {box("sh_instances", C1, R[0])}
-      <Arrow from={{ x: C1 + BW / 2, y: R[0] + BH }} to={{ x: C1 + BW / 2, y: R[3] }} />
+      <Arrow from={{ x: C1 + BW / 2, y: R[0] + BH }} to={{ x: C1 + BW / 2, y: R[2] }} />
       <text x={C1 + BW / 2 + 10} y={R[0] + BH + 18} fontSize={12.5} fill={MUTED}>pedidos de trial: {n.sh_trial?.value ?? "?"}</text>
       <g
         role="button"
@@ -281,8 +281,8 @@ export function Diagram({ data, selected, onSelect }: { data: FunnelData; select
           {f.sh_found ?? ""}
         </text>
       </g>
-      {box("sh_trial", C1, R[3])}
-      <Arrow from={{ x: C1 + BW, y: R[3] + BH / 2 }} to={{ x: C2 - 2, y: R[3] + BH / 2 }} />
+      {box("sh_trial", C1, R[2])}
+      <Arrow from={{ x: C1 + BW, y: R[2] + BH / 2 }} to={{ x: C2 - 2, y: R[2] + BH / 2 }} />
 
       {/* outbound lane */}
       {box("ob_contacts", C3, R[0])}
@@ -300,8 +300,7 @@ export function Diagram({ data, selected, onSelect }: { data: FunnelData; select
       {box("meetings", BX[1], BY, { w: BWB, spine: true })}
       {box("opportunities", BX[2], BY, { w: BWB, spine: true })}
       {box("closed", BX[3], BY, { w: BWB, spine: true })}
-      {box("arr", BX[4], BY, { w: 180, spine: true })}
-      {[0, 1, 2, 3].map((i) => (
+      {[0, 1, 2].map((i) => (
         <Arrow key={i} from={{ x: BX[i] + BWB, y: BY + BH / 2 }} to={{ x: BX[i + 1] - 2, y: BY + BH / 2 }} />
       ))}
       <RateLabel rate={rate("conv_to_meeting")} x={(BX[0] + BWB + BX[1]) / 2} y={BY + BH + 20} size={11.5} anchor="middle" />
@@ -310,10 +309,17 @@ export function Diagram({ data, selected, onSelect }: { data: FunnelData; select
       <RateLabel rate={rate("conv_to_opp")} x={BX[0]} y={BY + BH + 44} size={12} />
 
       {/* entries dropping into Conversa */}
-      <Elbow points={[{ x: C2 + BW / 2, y: R[3] + BH }, { x: C2 + BW / 2, y: BY - 40 }, { x: convTop.x, y: BY - 40 }, convTop]} />
-      <RateLabel rate={rate("touch_48h")} x={C2 + BW / 2 + 10} y={R[3] + BH + 20} size={12} />
+      <Elbow points={[{ x: C2 + BW / 2, y: R[2] + BH }, { x: C2 + BW / 2, y: BY - 40 }, { x: convTop.x, y: BY - 40 }, convTop]} />
+      <RateLabel rate={rate("touch_48h")} x={C2 + BW / 2 - 10} y={R[2] + BH + 36} size={12} anchor="end" />
+      <text x={C2 + BW / 2 - 10} y={R[2] + BH + 52} fontSize={12} fill={MUTED} textAnchor="end">respondeu ao toque → Conversa</text>
+
+      {/* self-serve: paid without a conversation, straight to Fechado */}
+      <Elbow points={[{ x: C2 + BW - 30, y: R[2] + BH }, { x: C2 + BW - 30, y: SSY + BH / 2 }, { x: SSX - 2, y: SSY + BH / 2 }]} />
+      {box("self_serve", SSX, SSY, { w: 300 })}
+      <Elbow points={[{ x: SSX + 150, y: SSY + BH }, { x: SSX + 150, y: BY - 20 }, { x: BX[3] + BWB / 2, y: BY - 20 }, { x: BX[3] + BWB / 2, y: BY - 2 }]} />
+      <text x={SSX + 160} y={SSY + BH + 40} fontSize={12} fill={MUTED}>sem conversa → Fechado</text>
       <Elbow points={[{ x: C3 + BW / 2, y: R[1] + BH + 80 }, { x: C3 + BW / 2, y: BY - 40 }, { x: convTop.x, y: BY - 40 }, convTop]} />
-      <RateLabel rate={rate("reply_to_conversation")} x={C3 + BW / 2 - 10} y={R[1] + BH + 96} size={12} anchor="end" />
+      <RateLabel rate={rate("reply_to_conversation")} x={C3 + BW / 2 + 10} y={R[1] + BH + 96} size={11.5} />
 
       {/* red markers: computed, never hard-coded */}
       {data.bottlenecks.map((b) => {
