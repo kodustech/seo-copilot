@@ -159,11 +159,12 @@ function statusColor(status: FunnelRate["status"]): string {
 }
 
 /** Arrow label built from a rate: a dot when it sits outside the market band. */
-function RateLabel({ rate, x, y, size = 12.5, anchor = "start" }: { rate: FunnelRate | undefined; x: number; y: number; size?: number; anchor?: "start" | "middle" | "end" }) {
+function RateLabel({ rate, x, y, size = 12.5, anchor = "start", compact = false }: { rate: FunnelRate | undefined; x: number; y: number; size?: number; anchor?: "start" | "middle" | "end"; compact?: boolean }) {
   if (!rate) return null;
   const flagged = rate.status === "good" || rate.status === "warn" || rate.status === "crit";
   const text = rate.value == null ? `${rate.label}: não medido` : rate.label;
-  const full = `${text}${flagged && rate.note ? ` · ${rate.note}` : ""}`;
+  // Compact: the number and the colour only; the market band lives in the drawer.
+  const full = `${text}${!compact && flagged && rate.note ? ` · ${rate.note}` : ""}`;
   // Right-anchored labels get colour instead of a dot: the dot would need the
   // rendered text width, which SVG does not give us before layout.
   const showDot = flagged && anchor !== "end";
@@ -173,8 +174,7 @@ function RateLabel({ rate, x, y, size = 12.5, anchor = "start" }: { rate: Funnel
     <>
       {showDot ? <circle cx={dotX} cy={y - 4} r={4} fill={statusColor(rate.status)} /> : null}
       <text x={anchor === "start" && flagged ? x + 12 : x} y={y} fontSize={size} fill={fill} textAnchor={anchor}>
-        {text}
-        {flagged && rate.note ? ` · ${rate.note}` : ""}
+        {full}
       </text>
     </>
   );
@@ -246,23 +246,19 @@ export function Diagram({ data, selected, onSelect }: { data: FunnelData; select
         <>
           <text x={C1} y={78} fontSize={13} fontWeight={600} fill={CRIT}>ALAVANCA · páginas de plataforma</text>
           <text x={C1} y={96} fontSize={12.5} fill={CRIT}>{lever}</text>
-          <text x={C1} y={112} fontSize={12.5} fill={CRIT}>teto: 50 a 140 buscas/mês por termo (US)</text>
         </>
       ) : null}
 
       {/* inbound lane */}
       {box("visits", C2, R[0])}
       <Arrow from={{ x: C2 + BW / 2, y: R[0] + BH }} to={{ x: C2 + BW / 2, y: R[1] }} />
-      <RateLabel rate={rate("visit_to_signup")} x={C2 + BW / 2 + 10} y={R[0] + BH + 16} size={12} />
-      <RateLabel rate={rate("survey")} x={C2 + BW / 2 + 10} y={R[0] + BH + 32} size={12} />
+      <RateLabel rate={rate("visit_to_signup")} x={C2 + BW / 2 + 10} y={R[0] + BH + 16} size={12} compact />
+      <RateLabel rate={rate("survey")} x={C2 + BW / 2 + 10} y={R[0] + BH + 32} size={12} compact />
       {box("signups", C2, R[1])}
       <Arrow from={{ x: C2 + BW / 2, y: R[1] + BH }} to={{ x: C2 + BW / 2, y: R[2] }} />
-      <RateLabel rate={rate("connected")} x={C2 + BW / 2 + 10} y={R[1] + BH + 15} size={11.5} />
-      <RateLabel rate={rate("icp_share")} x={C2 + BW / 2 + 10} y={R[1] + BH + 29} size={11.5} />
+      <RateLabel rate={rate("connected")} x={C2 + BW / 2 + 10} y={R[1] + BH + 13} size={11} compact />
+      <RateLabel rate={rate("icp_share")} x={C2 + BW / 2 + 10} y={R[1] + BH + 26} size={11} compact />
       {box("icp", C2, R[2], { spine: true })}
-      <text x={C2 + BW / 2 - 10} y={R[2] + BH + 18} fontSize={12} fill={MUTED} textAnchor="end">
-        {f.platform_split ?? ""}
-      </text>
 
       {/* self-hosted lane */}
       {box("sh_instances", C1, R[0])}
@@ -278,7 +274,7 @@ export function Diagram({ data, selected, onSelect }: { data: FunnelData; select
         style={{ cursor: "pointer" }}
       >
         <text x={C1 + BW / 2 + 10} y={R[0] + BH + 36} fontSize={12} fill={selected === "sh_found" ? VALUE : MUTED} textDecoration="underline">
-          {f.sh_found ?? ""}
+          {f.sh_found_short ?? ""}
         </text>
       </g>
       {box("sh_trial", C1, R[2])}
@@ -287,15 +283,13 @@ export function Diagram({ data, selected, onSelect }: { data: FunnelData; select
       {/* outbound lane */}
       {box("ob_contacts", C3, R[0])}
       <Arrow from={{ x: C3 + BW / 2, y: R[0] + BH }} to={{ x: C3 + BW / 2, y: R[1] }} />
-      <RateLabel rate={rate("cold_reply")} x={C3 + BW / 2 - 10} y={R[0] + BH + 16} size={12} anchor="end" />
-      <RateLabel rate={rate("cold_bounce")} x={C3 + BW / 2 - 10} y={R[0] + BH + 32} size={12} anchor="end" />
+      <RateLabel rate={rate("cold_reply")} x={C3 + BW / 2 - 10} y={R[0] + BH + 16} size={12} anchor="end" compact />
+      <RateLabel rate={rate("cold_bounce")} x={C3 + BW / 2 - 10} y={R[0] + BH + 32} size={12} anchor="end" compact />
       {box("ob_replies", C3, R[1])}
 
       {/* commercial band */}
       <rect x={30} y={BY - 70} width={W - 60} height={260} rx={10} fill="none" stroke={MUTED} strokeWidth={1} strokeDasharray="6 5" />
-      <text x={48} y={BY - 50} fontSize={12.5} fill={MUTED}>
-        COMERCIAL · a mesma régua pra inbound, self-hosted e outbound · conversa → reunião → oportunidade → fechado
-      </text>
+      <text x={48} y={BY - 50} fontSize={12.5} fill={MUTED}>COMERCIAL</text>
       {box("conversations", BX[0], BY, { w: BWB, spine: true })}
       {box("meetings", BX[1], BY, { w: BWB, spine: true })}
       {box("opportunities", BX[2], BY, { w: BWB, spine: true })}
@@ -303,23 +297,21 @@ export function Diagram({ data, selected, onSelect }: { data: FunnelData; select
       {[0, 1, 2].map((i) => (
         <Arrow key={i} from={{ x: BX[i] + BWB, y: BY + BH / 2 }} to={{ x: BX[i + 1] - 2, y: BY + BH / 2 }} />
       ))}
-      <RateLabel rate={rate("conv_to_meeting")} x={(BX[0] + BWB + BX[1]) / 2} y={BY + BH + 20} size={11.5} anchor="middle" />
-      <RateLabel rate={rate("meeting_to_opp")} x={(BX[1] + BWB + BX[2]) / 2} y={BY + BH + 20} size={11.5} anchor="middle" />
-      <RateLabel rate={rate("opp_active")} x={(BX[2] + BWB + BX[3]) / 2} y={BY + BH + 20} size={11.5} anchor="middle" />
-      <RateLabel rate={rate("conv_to_opp")} x={BX[0]} y={BY + BH + 44} size={12} />
+      <RateLabel rate={rate("conv_to_meeting")} x={(BX[0] + BWB + BX[1]) / 2} y={BY + BH + 20} size={11.5} anchor="middle" compact />
+      <RateLabel rate={rate("meeting_to_opp")} x={(BX[1] + BWB + BX[2]) / 2} y={BY + BH + 20} size={11.5} anchor="middle" compact />
+      <RateLabel rate={rate("opp_active")} x={(BX[2] + BWB + BX[3]) / 2} y={BY + BH + 20} size={11.5} anchor="middle" compact />
 
       {/* entries dropping into Conversa */}
       <Elbow points={[{ x: C2 + BW / 2, y: R[2] + BH }, { x: C2 + BW / 2, y: BY - 40 }, { x: convTop.x, y: BY - 40 }, convTop]} />
-      <RateLabel rate={rate("touch_48h")} x={C2 + BW / 2 - 10} y={R[2] + BH + 36} size={12} anchor="end" />
-      <text x={C2 + BW / 2 - 10} y={R[2] + BH + 52} fontSize={12} fill={MUTED} textAnchor="end">respondeu ao toque → Conversa</text>
+      <RateLabel rate={rate("touch_48h")} x={C2 + BW / 2 - 10} y={R[2] + BH + 24} size={12} anchor="end" compact />
 
       {/* self-serve: paid without a conversation, straight to Fechado */}
       <Elbow points={[{ x: C2 + BW - 30, y: R[2] + BH }, { x: C2 + BW - 30, y: SSY + BH / 2 }, { x: SSX - 2, y: SSY + BH / 2 }]} />
       {box("self_serve", SSX, SSY, { w: 300 })}
       <Elbow points={[{ x: SSX + 150, y: SSY + BH }, { x: SSX + 150, y: BY - 20 }, { x: BX[3] + BWB / 2, y: BY - 20 }, { x: BX[3] + BWB / 2, y: BY - 2 }]} />
-      <text x={SSX + 160} y={SSY + BH + 40} fontSize={12} fill={MUTED}>sem conversa → Fechado</text>
+
       <Elbow points={[{ x: C3 + BW / 2, y: R[1] + BH + 80 }, { x: C3 + BW / 2, y: BY - 40 }, { x: convTop.x, y: BY - 40 }, convTop]} />
-      <RateLabel rate={rate("reply_to_conversation")} x={C3 + BW / 2 + 10} y={R[1] + BH + 96} size={11.5} />
+      <RateLabel rate={rate("reply_to_conversation")} x={C3 + BW / 2 - 10} y={BY - 90} size={11.5} anchor="end" compact />
 
       {/* red markers: computed, never hard-coded */}
       {data.bottlenecks.map((b) => {

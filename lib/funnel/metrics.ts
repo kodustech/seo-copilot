@@ -1136,6 +1136,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   facts.sh_found = companies
     ? `achadas (PostHog/manual): ${shFound.length} no mês → contatos t3`
     : "";
+  facts.sh_found_short = companies ? `achadas via PostHog: ${shFound.length} → outbound` : "";
   nodes.sh_found = node(
     "sh_found",
     "Self-hosted achadas",
