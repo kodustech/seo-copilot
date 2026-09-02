@@ -168,8 +168,10 @@ function RateLabel({ rate, x, y, size = 12.5, anchor = "start", compact = false 
   if (!rate) return null;
   const flagged = rate.status === "good" || rate.status === "warn" || rate.status === "crit";
   const text = rate.value == null ? `${rate.label}: não medido` : rate.label;
-  // Compact: the number and the colour only; the market band lives in the drawer.
-  const full = `${text}${!compact && flagged && rate.note ? ` · ${rate.note}` : ""}`;
+  // The market band always rides along when there is one; the colour says
+  // which side of it we are on. Compact only drops the note when the rate
+  // has no band.
+  const full = `${text}${rate.note && rate.value != null && (!compact || flagged || rate.status === "ok") ? ` · ${rate.note}` : ""}`;
   // Right-anchored labels get colour instead of a dot: the dot would need the
   // rendered text width, which SVG does not give us before layout.
   const showDot = flagged && anchor !== "end";
@@ -302,8 +304,8 @@ export function Diagram({ data, selected, onSelect }: { data: FunnelData; select
       {[0, 1].map((i) => (
         <Arrow key={i} from={{ x: BX[i] + BWB, y: BY + BH / 2 }} to={{ x: BX[i + 1] - 2, y: BY + BH / 2 }} />
       ))}
-      <RateLabel rate={rate("conv_to_opp")} x={(BX[0] + BWB + BX[1]) / 2} y={BY + BH / 2 - 10} size={11.5} anchor="middle" compact />
-      <RateLabel rate={rate("opp_active")} x={(BX[1] + BWB + BX[2]) / 2} y={BY + BH / 2 - 10} size={11.5} anchor="middle" compact />
+      <RateLabel rate={rate("conv_to_opp")} x={(BX[0] + BWB + BX[1]) / 2} y={BY - 16} size={11.5} anchor="middle" compact />
+      <RateLabel rate={rate("opp_active")} x={(BX[1] + BWB + BX[2]) / 2} y={BY - 16} size={11.5} anchor="middle" compact />
 
       {/* Reunião: a side box, not a mandatory stop */}
       {box("meetings", MX, MY, { w: BWB, spine: true })}

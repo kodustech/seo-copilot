@@ -144,19 +144,17 @@ function judge(id: string, value: number | null): { status: RateStatus; note: st
   const band = RATE_BANDS[id];
   if (!band) return { status: "ok", note: "" };
   const fmt = (x: number) => `${Math.round(x * 100)}%`;
-  const ref = band.lo === band.hi ? `mercado: ${fmt(band.lo)}` : `mercado ${fmt(band.lo)} a ${fmt(band.hi)}`;
+  const ref = band.lo === band.hi ? `mercado ${fmt(band.lo)}` : `mercado ${fmt(band.lo)} a ${fmt(band.hi)}`;
   if (band.inverted) {
-    if (value <= band.hi) return { status: "good", note: `${ref} ou menos` };
-    if (value <= band.hi * 3) return { status: "warn", note: `acima do ${ref}` };
-    return { status: "crit", note: `muito acima do ${ref}` };
+    if (value <= band.hi) return { status: "good", note: ref };
+    if (value <= band.hi * 3) return { status: "warn", note: ref };
+    return { status: "crit", note: ref };
   }
-  if (value < band.lo) return { status: "warn", note: `abaixo do ${ref}` };
+  if (value < band.lo) return { status: "warn", note: ref };
   if (value > band.hi) {
-    return band.loose
-      ? { status: "warn", note: `acima do ${ref}: definição frouxa` }
-      : { status: "good", note: `acima do ${ref}` };
+    return band.loose ? { status: "warn", note: ref } : { status: "good", note: ref };
   }
-  return { status: "ok", note: `no ${ref}` };
+  return { status: "ok", note: ref };
 }
 
 function rate(id: string, label: string, part: number | null, whole: number | null, nullLabel?: string): FunnelRate {
@@ -1285,12 +1283,18 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     if (r.status !== "crit" || !RATE_NODE[r.id]) continue;
     candidates.push({ nodeId: RATE_NODE[r.id], ratio: 0.1, lines: [r.label, r.note] });
   }
+  // No verdicts on the canvas: the page shows each rate against its market
+  // band (green above, orange below, red far below) and the reader decides
+  // what the bottleneck is. Candidates are still computed for the drawer and
+  // the API, but nothing gets the red outline.
   const seen = new Set<string>();
-  const bottlenecks: Bottleneck[] = candidates
-    .sort((a, b) => a.ratio - b.ratio)
-    .filter((c) => (seen.has(c.nodeId) ? false : (seen.add(c.nodeId), true)))
-    .slice(0, MAX_BOTTLENECKS)
-    .map((c) => ({ nodeId: c.nodeId, lines: c.lines }));
+  const bottlenecks: Bottleneck[] = SHOW_TARGETS
+    ? candidates
+        .sort((a, b) => a.ratio - b.ratio)
+        .filter((c) => (seen.has(c.nodeId) ? false : (seen.add(c.nodeId), true)))
+        .slice(0, MAX_BOTTLENECKS)
+        .map((c) => ({ nodeId: c.nodeId, lines: c.lines }))
+    : [];
 
   facts.ob_new_conversations = changes
     ? `empresa nova em conversa: ${newCompanyConvs.length} (sem cadastro no produto)${SHOW_TARGETS ? ` → ${TARGETS.ob_companies_in_conversation}` : ""}`
