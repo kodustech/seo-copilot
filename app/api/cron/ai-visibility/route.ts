@@ -11,9 +11,11 @@ export const maxDuration = 300;
  * on the configured weekday and once per day. `?force=1` asks regardless.
  */
 export async function POST(req: Request) {
+  // Fail closed: without a CRON_SECRET nobody gets in. This route spends
+  // DataForSEO credits, so an unset secret must not mean an open door.
   const cronSecret = process.env.CRON_SECRET;
   const auth = req.headers.get("authorization") ?? "";
-  if (cronSecret && auth !== `Bearer ${cronSecret}`) {
+  if (!cronSecret || auth !== `Bearer ${cronSecret}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (!isDataForSeoConfigured()) {

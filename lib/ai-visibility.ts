@@ -413,8 +413,9 @@ export function analyzeAnswer(text: string, citations: Citation[], brandTerms: s
   }
 
   const competitors: string[] = [];
+  const brandLower = new Set(brand.map((b) => b.toLowerCase()));
   for (const term of competitorTerms) {
-    if (!term || brand.some((b) => b.toLowerCase() === term.toLowerCase())) continue;
+    if (!term || brandLower.has(term.toLowerCase())) continue;
     if (termRegex(term).test(text) && !competitors.includes(term)) competitors.push(term);
   }
 
