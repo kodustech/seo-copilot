@@ -29,3 +29,9 @@ WHERE id = 1;
 
 ALTER TABLE ai_visibility_settings
   ALTER COLUMN engines SET DEFAULT '[{"engine":"perplexity","model":"sonar","samples":3},{"engine":"chat_gpt","model":"gpt-5.5","samples":1},{"engine":"google_ai","model":"ai_overview","samples":1}]';
+
+-- Distinct run dates without pulling every row: the summary reads the last
+-- N dates from here. security_invoker keeps the table's RLS in force.
+CREATE OR REPLACE VIEW ai_prompt_run_dates WITH (security_invoker = true) AS
+  SELECT run_on, COUNT(*) AS runs FROM ai_prompt_runs GROUP BY run_on;
+GRANT SELECT ON ai_prompt_run_dates TO authenticated, service_role;

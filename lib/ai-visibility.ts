@@ -1110,15 +1110,9 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
   };
 }
 
-/** Distinct run dates, newest first, for the date picker. */
+/** Distinct run dates, newest first, from a grouped view (no row scan). */
 export async function listRunDates(client: SupabaseClient, limit = 26): Promise<string[]> {
-  const { data, error } = await client.from("ai_prompt_runs").select("run_on").order("run_on", { ascending: false }).limit(5000);
-  if (error) throw new Error(`ai_prompt_runs: ${error.message}`);
-  const out: string[] = [];
-  for (const r of data ?? []) {
-    const d = String(r.run_on);
-    if (!out.includes(d)) out.push(d);
-    if (out.length >= limit) break;
-  }
-  return out;
+  const { data, error } = await client.from("ai_prompt_run_dates").select("run_on").order("run_on", { ascending: false }).limit(limit);
+  if (error) throw new Error(`ai_prompt_run_dates: ${error.message}`);
+  return (data ?? []).map((r) => String(r.run_on));
 }
