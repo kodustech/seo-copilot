@@ -928,14 +928,20 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
   };
   if (!runOn) return empty;
 
+  // The rolling window is read by date, so growth in samples per week can
+  // never truncate it; the broader history (for the trend) keeps a cap and
+  // drops the oldest weeks first.
+  const allDates = await listRunDates(client, 500);
+  const rollingDates = allDates.filter((d) => d <= runOn!).slice(0, ROLLING_RUNS);
   const [{ data: runRows, error }, { data: histRows }] = await Promise.all([
     client.from("ai_prompt_runs").select("*").eq("run_on", runOn).order("created_at", { ascending: true }).order("id", { ascending: true }).limit(5000),
     client
       .from("ai_prompt_runs")
       .select("run_on,engine,mentioned,error")
+      .in("run_on", [...new Set([...rollingDates, ...allDates.slice(0, 60)])])
       .order("run_on", { ascending: false })
       .order("id", { ascending: true })
-      .limit(10000),
+      .limit(20000),
   ]);
   if (error) throw new Error(`ai_prompt_runs: ${error.message}`);
   const runs = (runRows ?? []).map((r) => rowToRun(r as RunRow));
@@ -1059,7 +1065,6 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
     histAgg.set(key, agg);
   }
   const history = [...histAgg.values()].sort((a, b) => a.runOn.localeCompare(b.runOn) || a.engine.localeCompare(b.engine));
-  const rollingDates = [...new Set(history.map((h) => h.runOn))].filter((d) => d <= runOn!).sort().slice(-ROLLING_RUNS);
 
   const engines: EngineSummary[] = [...engineAgg.values()].map(({ positions, promptIds, promptIdsMentioned, ...e }) => {
     const window = history.filter((h) => h.engine === e.engine && rollingDates.includes(h.runOn));
