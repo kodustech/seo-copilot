@@ -1176,8 +1176,11 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     ),
   );
   rates.push(rate("conv_to_opp", changes ? `${pct(opps.length, convs.length)} viram oportunidade` : "viram oportunidade", changes ? opps.length : null, changes ? convs.length : null, "conversa → oportunidade"));
+  // Only meetings of this period count, so the numerator stays inside the
+  // denominator: an opportunity coming from a meeting held last month is
+  // last month's conversion.
   const meetingIds = new Set(meetings.map((m) => m.company_id));
-  const oppsViaMeeting = opps.filter((o) => o.from === "meeting" || meetingIds.has(o.company_id));
+  const oppsViaMeeting = opps.filter((o) => meetingIds.has(o.company_id));
   rates.push(
     rate(
       "conv_to_meeting",
