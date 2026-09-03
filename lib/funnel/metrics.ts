@@ -23,7 +23,6 @@ import {
   QUALIFIED_PAGES,
   RATE_BANDS,
   SHOW_TARGETS,
-  SELF_HOSTED_ACTIVE_DAYS,
   SELF_HOSTED_MIN_PRS_7D,
   TARGETS,
 } from "./config";
@@ -759,53 +758,76 @@ async function coldOutbound(
   };
 }
 
-async function selfHostedInstances(): Promise<FunnelNode> {
+/**
+ * Self-hosted entry for the period, from anonymous telemetry. The number is a
+ * flow like every other box: instances whose first heartbeat ever fell in
+ * the period and that reached company-sized usage (≥ SELF_HOSTED_MIN_PRS_7D
+ * PRs reviewed in 7 days) at some point in the period. "Active in the
+ * period" rides along as context, since an old instance still running is
+ * not an entry.
+ */
+async function selfHostedInstances(periodStart: string, nextStart: string): Promise<FunnelNode> {
   if (!isTelemetryConfigured()) {
-    return node("sh_instances", "Instâncias com uso de empresa", null, "telemetria não configurada");
+    return node("sh_instances", "Instâncias novas com uso de empresa", null, "telemetria não configurada");
   }
   const sql = `
-    WITH latest AS (
-      SELECT DISTINCT ON (instance_id) instance_id, received_at, payload
+    WITH hb AS (
+      SELECT instance_id, received_at, payload,
+        COALESCE((payload->'usage_7d'->>'prs_reviewed')::int, 0) AS prs_7d
       FROM telemetry_heartbeats
-      WHERE received_at >= now() - interval '${SELF_HOSTED_ACTIVE_DAYS} days'
+    ),
+    first_seen AS (SELECT instance_id, MIN(received_at) AS first_at FROM hb GROUP BY 1),
+    in_period AS (
+      SELECT h.instance_id,
+        MAX(h.prs_7d) AS max_prs_7d,
+        MAX(h.received_at) AS last_seen,
+        BOOL_OR(f.first_at >= '${periodStart}'::timestamptz) AS is_new
+      FROM hb h JOIN first_seen f USING (instance_id)
+      WHERE h.received_at >= '${periodStart}'::timestamptz AND h.received_at < '${nextStart}'::timestamptz
+      GROUP BY h.instance_id
+    ),
+    latest AS (
+      SELECT DISTINCT ON (instance_id) instance_id, payload
+      FROM hb WHERE received_at < '${nextStart}'::timestamptz
       ORDER BY instance_id, received_at DESC
     )
-    SELECT instance_id,
-      payload->'kodus'->>'version' AS version,
-      payload->'config'->'integrations' AS integrations,
-      (payload->'usage_7d'->>'prs_reviewed')::int AS prs_7d,
-      (payload->'usage_7d'->>'active_users')::int AS users_7d,
-      (payload->'usage_7d'->>'repos_connected')::int AS repos,
-      received_at
-    FROM latest
-    WHERE (payload->'usage_7d'->>'prs_reviewed')::int >= ${SELF_HOSTED_MIN_PRS_7D}
-    ORDER BY prs_7d DESC
-    LIMIT 200`;
+    SELECT p.instance_id, p.is_new, p.max_prs_7d, p.last_seen, f.first_at,
+      l.payload->'kodus'->>'version' AS version,
+      l.payload->'config'->'integrations' AS integrations,
+      (l.payload->'usage_7d'->>'active_users')::int AS users_7d,
+      (l.payload->'usage_7d'->>'repos_connected')::int AS repos
+    FROM in_period p JOIN latest l USING (instance_id) JOIN first_seen f USING (instance_id)
+    WHERE p.max_prs_7d >= ${SELF_HOSTED_MIN_PRS_7D}
+    ORDER BY p.is_new DESC, p.max_prs_7d DESC
+    LIMIT 500`;
   try {
-    const res = await runTelemetryQuery({ sql, maxRows: 200 });
-    const rows = (res.rows as Record<string, unknown>[]).map((r) => ({
+    const res = await runTelemetryQuery({ sql, maxRows: 500 });
+    const all = (res.rows as Record<string, unknown>[]).map((r) => ({
       instance: String(r.instance_id).slice(0, 8),
+      new: r.is_new === true || r.is_new === "true",
+      first_seen: String(r.first_at).slice(0, 10),
       version: str(r.version),
       integrations: Array.isArray(r.integrations) ? (r.integrations as string[]).join(", ") : str(r.integrations),
-      prs_7d: num(r.prs_7d),
+      prs_7d_max: num(r.max_prs_7d),
       users_7d: num(r.users_7d),
       repos: num(r.repos),
-      last_seen: String(r.received_at).slice(0, 10),
+      last_seen: String(r.last_seen).slice(0, 10),
     }));
+    const fresh = all.filter((r) => r.new);
     return node(
       "sh_instances",
-      "Instâncias com uso de empresa",
-      rows.length,
-      `${rows.length} ativas nos últimos ${SELF_HOSTED_ACTIVE_DAYS} dias`,
+      "Instâncias novas com uso de empresa",
+      fresh.length,
+      `${fresh.length} novas no período · ${all.length} ativas no período`,
       {
-        source: "Telemetria self-hosted (anônima)",
-        definition: `Instâncias com heartbeat nos últimos ${SELF_HOSTED_ACTIVE_DAYS} dias e ≥ ${SELF_HOSTED_MIN_PRS_7D} PRs revisados em 7 dias. Anônimas: não dá pra saber a empresa.`,
-        columns: ["instance", "version", "integrations", "prs_7d", "users_7d", "repos", "last_seen"],
-        rows,
+        source: "Telemetria self-hosted (anônima), desde 2026-07-03",
+        definition: `Instâncias cujo primeiro heartbeat caiu no período e que chegaram a ≥ ${SELF_HOSTED_MIN_PRS_7D} PRs revisados em 7 dias dentro dele. "Ativas no período" inclui as antigas que continuam rodando. Anônimas: não dá pra saber a empresa. A telemetria começou em 2026-07-03, então julho conta todas como novas.`,
+        columns: ["instance", "new", "first_seen", "version", "integrations", "prs_7d_max", "users_7d", "repos", "last_seen"],
+        rows: all,
       },
     );
   } catch (err) {
-    return node("sh_instances", "Instâncias com uso de empresa", null, "não medido", {
+    return node("sh_instances", "Instâncias novas com uso de empresa", null, "não medido", {
       source: `Telemetria: ${err instanceof Error ? err.message : "erro"}`,
     });
   }
@@ -879,7 +901,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
       settle("crm_activities", loadActivities(client, periodStart, nextStart)),
       settle("crm_field", hasVerifiedField(client)),
       settle("outbound", coldOutbound(client, periodStart, nextStart)),
-      settle("telemetry", selfHostedInstances()),
+      settle("telemetry", selfHostedInstances(periodStart, nextStart)),
       settle("billing", selfServePaid(periodStart, nextStart)),
     ]);
 

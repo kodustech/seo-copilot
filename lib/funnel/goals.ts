@@ -14,6 +14,7 @@ export const FUNNEL_METRICS: { id: string; label: string; unit: string }[] = [
   { id: "visits", label: "Visitas qualificadas", unit: "cliques" },
   { id: "signups", label: "Cadastros com e-mail corporativo", unit: "cadastros" },
   { id: "icp", label: "ICP (20+ devs)", unit: "contas" },
+  { id: "sh_instances", label: "Self-hosted: instâncias novas com uso", unit: "instâncias" },
   { id: "sh_trial", label: "Self-hosted: pediu trial", unit: "pedidos" },
   { id: "ob_contacts", label: "Outbound: contatos novos", unit: "pessoas" },
   { id: "ob_replies", label: "Outbound: respostas", unit: "respostas" },
