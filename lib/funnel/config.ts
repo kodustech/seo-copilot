@@ -46,13 +46,13 @@ export const LLM_SOURCE_REGEX = String.raw`(^|\.)(chatgpt|openai|claude|perplexi
 
 /**
  * Mediums an assistant referral can carry. GA4 labels them "ai-assistant"
- * (since June 2026), "referral", "organic" (when it treats the assistant as a
- * search engine), "(not set)", "(none)" or empty. Anything else is a
- * utm_medium somebody typed on a link (paid, cpc, social...), which is a
- * campaign, not an assistant sending a reader. An allowlist, because GA4
- * passes utm_medium verbatim and a denylist can never be complete.
+ * (since June 2026), "referral", "(not set)", "(none)" or empty. Anything
+ * else is a utm_medium somebody typed on a link (paid, cpc, organic,
+ * social...), which is a campaign, not an assistant sending a reader. An
+ * allowlist, because GA4 passes utm_medium verbatim and a denylist can never
+ * be complete.
  */
-export const LLM_ALLOWED_MEDIUMS: string[] = ["", "(none)", "(not set)", "referral", "ai-assistant", "organic"];
+export const LLM_ALLOWED_MEDIUMS: string[] = ["", "(none)", "(not set)", "referral", "ai-assistant"];
 
 /** Free-mail domains: a signup from one of these is not a corporate signup. */
 export const FREE_MAIL_DOMAINS: string[] = [

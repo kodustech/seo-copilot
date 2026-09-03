@@ -328,7 +328,7 @@ async function llmReferralNode(periodStart: string, periodEnd: string): Promise<
       -- GA4 export stores date as a 'YYYYMMDD' string.
       WHERE date BETWEEN '${periodStart.replace(/-/g, "")}' AND '${periodEnd.replace(/-/g, "")}'
         AND REGEXP_CONTAINS(LOWER(sessionSource), r'${LLM_SOURCE_REGEX}')
-        AND LOWER(COALESCE(sessionMedium, '')) IN (${sqlList(LLM_ALLOWED_MEDIUMS)})
+        AND LOWER(TRIM(COALESCE(sessionMedium, ''))) IN (${sqlList(LLM_ALLOWED_MEDIUMS)})
       GROUP BY date, sessionSource, sessionMedium, property_id
     )
     SELECT sessionSource AS source, sessionMedium AS medium, CAST(property_id AS STRING) AS property_id,
