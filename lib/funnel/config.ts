@@ -92,7 +92,6 @@ export const COLD_SEQUENCE_PATTERNS: RegExp[] = [/^Outbound BR/i, /Leads vaga QA
 
 /** Self-hosted instance with "company usage": ≥ this many PRs reviewed in 7 d. */
 export const SELF_HOSTED_MIN_PRS_7D = 5;
-export const SELF_HOSTED_ACTIVE_DAYS = 14;
 
 /** Opportunity with no activity for this many days is flagged. */
 export const OPPORTUNITY_IDLE_DAYS = 14;
