@@ -6,12 +6,15 @@ import { Bot, ChevronDown, ChevronRight, Loader2, Play, RefreshCw, Settings2, Tr
 import {
   AI_ENGINES,
   DEFAULT_MODELS,
+  DEFAULT_SAMPLES,
   ENGINE_LABEL,
+  MAX_SAMPLES,
   WEEKDAY_LABELS,
   type AiEngine,
   type AiPromptRun,
   type AiVisibilitySettings,
   type EngineConfig,
+  type PromptEngineResult,
   type RunSummary,
   type VisibilitySummary,
 } from "@/lib/ai-visibility";
@@ -34,42 +37,48 @@ function usd(n: number | null | undefined): string {
   return n == null ? "–" : `US$ ${n.toFixed(2)}`;
 }
 
-/** One cell: named or not, and where in the list. */
-function RunCell({ run, onOpen }: { run: AiPromptRun | undefined; onOpen: () => void }) {
-  if (!run) return <span className="text-neutral-700">–</span>;
-  if (run.error) {
+/** One cell: how many samples named the brand, and where in the list. */
+function RunCell({ result, onOpen }: { result: PromptEngineResult | undefined; onOpen: () => void }) {
+  if (!result) return <span className="text-neutral-700">–</span>;
+  if (result.samples === 0) {
     return (
-      <button onClick={onOpen} title={run.error} className="text-xs text-amber-300 hover:underline">
+      <button onClick={onOpen} title={result.error ?? "erro"} className="text-xs text-amber-300 hover:underline">
         erro
       </button>
     );
   }
+  const rate = result.rate ?? 0;
+  const dot = rate >= 1 ? "bg-emerald-400" : rate > 0 ? "bg-amber-400" : "bg-red-400/80";
+  const label =
+    result.samples > 1 ? `${result.mentioned} de ${result.samples}` : result.mentioned ? (result.avgPosition != null ? `#${result.avgPosition}` : "citado") : "ausente";
   return (
     <button onClick={onOpen} className="flex items-center gap-1.5 text-xs hover:underline">
-      {run.mentioned ? (
-        <>
-          <span className="inline-block size-2 rounded-full bg-emerald-400" />
-          <span className="text-emerald-200">{run.position != null ? `#${run.position}` : "citado"}</span>
-          {run.listSize != null && run.position != null ? <span className="text-neutral-500">de {run.listSize}</span> : null}
-          {run.brandCited ? <span title="Citou uma página nossa" className="text-neutral-500">· fonte</span> : null}
-        </>
-      ) : (
-        <>
-          <span className="inline-block size-2 rounded-full bg-red-400/80" />
-          <span className="text-neutral-400">ausente</span>
-        </>
-      )}
+      <span className={cn("inline-block size-2 rounded-full", dot)} />
+      <span className={rate > 0 ? "text-emerald-200" : "text-neutral-400"}>{label}</span>
+      {result.samples > 1 && result.avgPosition != null ? <span className="text-neutral-500">· #{result.avgPosition}</span> : null}
+      {result.samples === 1 && result.mentioned && result.listSize != null && result.avgPosition != null ? <span className="text-neutral-500">de {result.listSize}</span> : null}
+      {result.engine === "google_ai" && result.extra.aiOverview === false ? <span className="text-neutral-600">· sem overview</span> : null}
+      {result.engine === "google_ai" && result.extra.organicRank != null ? <span className="text-neutral-500">· orgânico #{result.extra.organicRank}</span> : null}
+      {result.brandCited ? <span title="Citou uma página nossa" className="text-neutral-500">· fonte</span> : null}
     </button>
   );
 }
 
-function AnswerPanel({ run }: { run: AiPromptRun }) {
+function AnswerPanel({ run, total }: { run: AiPromptRun; total: number }) {
   return (
     <div className="space-y-2 rounded-md border border-white/10 bg-neutral-950 p-3 text-xs">
       <div className="flex flex-wrap items-center gap-2 text-neutral-400">
         <span className="font-medium text-neutral-200">{ENGINE_LABEL[run.engine]}</span>
+        {total > 1 ? <span>· amostra {run.sample} de {total}</span> : null}
         <span>· {run.modelName ?? "modelo?"}</span>
         <span>· {run.runOn}</span>
+        {run.mentioned ? <span className="text-emerald-300">· Kodus {run.position != null ? `#${run.position}` : "citado"}</span> : <span className="text-red-300">· ausente</span>}
+        {run.engine === "google_ai" ? (
+          <span>
+            · AI Overview {run.extra.aiOverview ? "presente" : "ausente"}
+            {run.extra.organicRank != null ? ` · kodus.io orgânico #${run.extra.organicRank}` : " · kodus.io fora do top 10"}
+          </span>
+        ) : null}
         {run.costUsd != null ? <span>· {usd(run.costUsd)}</span> : null}
         {run.competitors.length ? <span>· cita: {run.competitors.join(", ")}</span> : null}
       </div>
@@ -92,8 +101,11 @@ function AnswerPanel({ run }: { run: AiPromptRun }) {
       ) : null}
       {run.fanOutQueries.length ? (
         <p className="text-neutral-500">
-          O modelo pesquisou: {run.fanOutQueries.map((q) => `“${q}”`).join(", ")}
+          {run.engine === "google_ai" ? "Buscas relacionadas" : "O modelo pesquisou"}: {run.fanOutQueries.map((q) => `“${q}”`).join(", ")}
         </p>
+      ) : null}
+      {run.engine === "google_ai" && run.extra.organicTop?.length ? (
+        <p className="text-neutral-500">Top 10 orgânico: {run.extra.organicTop.join(", ")}</p>
       ) : null}
     </div>
   );
@@ -119,11 +131,14 @@ function SettingsPanel({
     setEngines((list) =>
       list.some((e) => e.engine === engine)
         ? list.filter((e) => e.engine !== engine)
-        : [...list, { engine, model: DEFAULT_MODELS[engine] }],
+        : [...list, { engine, model: DEFAULT_MODELS[engine], samples: DEFAULT_SAMPLES[engine] }],
     );
   };
   const setModel = (engine: AiEngine, model: string) => {
     setEngines((list) => list.map((e) => (e.engine === engine ? { ...e, model } : e)));
+  };
+  const setSamples = (engine: AiEngine, samples: number) => {
+    setEngines((list) => list.map((e) => (e.engine === engine ? { ...e, samples: Math.max(1, Math.min(MAX_SAMPLES, samples || 1)) } : e)));
   };
   const dirty = weekday !== settings.weekday || JSON.stringify(engines) !== JSON.stringify(settings.engines);
 
@@ -154,19 +169,34 @@ function SettingsPanel({
               return (
                 <label key={engine} className="flex items-center gap-2 rounded-md border border-white/10 px-2 py-1.5 text-sm">
                   <input type="checkbox" checked={Boolean(cfg)} onChange={() => toggle(engine)} className="accent-violet-500" />
-                  <span className="w-20 text-neutral-200">{ENGINE_LABEL[engine]}</span>
+                  <span className="w-28 shrink-0 text-neutral-200">{ENGINE_LABEL[engine]}</span>
+                  {engine === "google_ai" ? (
+                    <span className="flex-1 text-xs text-neutral-500">SERP com AI Overview</span>
+                  ) : (
+                    <Input
+                      value={cfg?.model ?? DEFAULT_MODELS[engine]}
+                      disabled={!cfg}
+                      onChange={(e) => setModel(engine, e.target.value)}
+                      className="h-7 border-white/10 bg-neutral-950 text-xs"
+                    />
+                  )}
+                  <span className="text-[11px] text-neutral-500" title="Amostras por prompt">×</span>
                   <Input
-                    value={cfg?.model ?? DEFAULT_MODELS[engine]}
+                    type="number"
+                    min={1}
+                    max={MAX_SAMPLES}
+                    value={cfg?.samples ?? DEFAULT_SAMPLES[engine]}
                     disabled={!cfg}
-                    onChange={(e) => setModel(engine, e.target.value)}
-                    className="h-7 border-white/10 bg-neutral-950 text-xs"
+                    onChange={(e) => setSamples(engine, Number(e.target.value))}
+                    className="h-7 w-14 border-white/10 bg-neutral-950 text-xs"
+                    title="Amostras por prompt"
                   />
                 </label>
               );
             })}
           </div>
           <p className="mt-1 text-[11px] text-neutral-500">
-            Custo medido por prompt: Perplexity sonar US$ 0,006; ChatGPT gpt-5.5 US$ 0,09. Gemini e Claude na mesma faixa do ChatGPT.
+            Amostras: quantas vezes cada prompt é perguntado por rodada; a resposta varia, e a taxa é lida sobre as amostras. Custo medido por pergunta: Perplexity sonar US$ 0,006; ChatGPT gpt-5.5 US$ 0,09; Google AI Overview US$ 0,003. Gemini e Claude na faixa do ChatGPT.
           </p>
         </div>
       </div>
@@ -374,9 +404,16 @@ export function AiVisibilityPage() {
               <p className="text-[11px] uppercase tracking-wider text-neutral-500">
                 {e.label} <span className="normal-case tracking-normal text-neutral-600">· {e.model}</span>
               </p>
-              <p className="mt-1 text-2xl font-semibold text-neutral-100">{pct(e.share)}</p>
+              <p className="mt-1 text-2xl font-semibold text-neutral-100">
+                {pct(e.share)}
+                {e.rollingRuns > 1 && e.rollingShare != null ? (
+                  <span className="ml-2 text-sm font-normal text-neutral-500" title={`Média das últimas ${e.rollingRuns} rodadas`}>
+                    {pct(e.rollingShare)} em {e.rollingRuns} rodadas
+                  </span>
+                ) : null}
+              </p>
               <p className="text-xs text-neutral-400">
-                Kodus em {e.mentioned} de {e.prompts} prompts
+                Kodus em {e.mentioned} de {e.samples} amostra{e.samples === 1 ? "" : "s"} · {e.promptsMentioned} de {e.prompts} prompts
                 {e.avgPosition != null ? ` · posição média ${e.avgPosition}` : ""}
                 {e.brandCited ? ` · nossa página citada ${e.brandCited}x` : ""}
               </p>
@@ -389,7 +426,7 @@ export function AiVisibilityPage() {
           <div className="rounded-xl border border-white/10 bg-neutral-900/60 p-3">
             <p className="text-[11px] uppercase tracking-wider text-neutral-500">Rodada {summary.runOn}</p>
             <p className="mt-1 text-2xl font-semibold text-neutral-100">{pct(summary.overallShare)}</p>
-            <p className="text-xs text-neutral-400">média entre assistentes · {usd(summary.totalCostUsd)}</p>
+            <p className="text-xs text-neutral-400">amostras com Kodus, todos os assistentes · {usd(summary.totalCostUsd)}</p>
             {summary.history.length > 1 ? (
               <p className="mt-1 text-[11px] text-neutral-600">{[...new Set(summary.history.map((h) => h.runOn))].length} rodadas no histórico</p>
             ) : null}
@@ -423,7 +460,7 @@ export function AiVisibilityPage() {
               {summary?.prompts.map(({ prompt, runs }) => {
                 const comps = [...new Set(Object.values(runs).flatMap((r) => r?.competitors ?? []))];
                 const openEngine = open[prompt.id] ?? null;
-                const openRun = openEngine ? runs[openEngine] : undefined;
+                const openResult = openEngine ? runs[openEngine] : undefined;
                 return (
                   <FragmentRow key={prompt.id}>
                     <tr className={cn("border-t border-white/5", !prompt.active && "opacity-50")}>
@@ -448,7 +485,7 @@ export function AiVisibilityPage() {
                       </td>
                       {engines.map((e) => (
                         <td key={e} className="px-3 py-2 align-top">
-                          <RunCell run={runs[e]} onOpen={() => setOpen((o) => ({ ...o, [prompt.id]: o[prompt.id] === e ? null : e }))} />
+                          <RunCell result={runs[e]} onOpen={() => setOpen((o) => ({ ...o, [prompt.id]: o[prompt.id] === e ? null : e }))} />
                         </td>
                       ))}
                       <td className="px-3 py-2 align-top text-xs text-neutral-400">{comps.slice(0, 5).join(", ")}{comps.length > 5 ? ` +${comps.length - 5}` : ""}</td>
@@ -491,7 +528,15 @@ export function AiVisibilityPage() {
                                 </button>
                               ))}
                           </div>
-                          {openRun ? <AnswerPanel run={openRun} /> : <p className="text-xs text-neutral-500">Sem resposta nesta rodada.</p>}
+                          {openResult && openResult.runs.length ? (
+                            <div className="space-y-2">
+                              {openResult.runs.map((run) => (
+                                <AnswerPanel key={run.id} run={run} total={openResult.runs.length} />
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-neutral-500">Sem resposta nesta rodada.</p>
+                          )}
                         </td>
                       </tr>
                     ) : null}
@@ -542,6 +587,38 @@ export function AiVisibilityPage() {
           <p className="mt-1 text-[11px] text-neutral-500">{form.prompt.length}/500. Um prompt novo entra na próxima rodada; use o play na linha pra perguntar agora.</p>
         </div>
       </div>
+
+      {/* What the assistants searched before answering */}
+      {summary && summary.searches.length > 0 ? (
+        <div className="rounded-xl border border-white/10 bg-neutral-900/40">
+          <div className="border-b border-white/10 px-4 py-2">
+            <p className="text-sm font-medium text-neutral-200">Buscas que os assistentes fazem antes de responder</p>
+            <p className="text-[11px] text-neutral-500">
+              O ChatGPT pesquisa na web antes de responder; o Google traz as buscas relacionadas. Cada linha é uma página que precisa existir no kodus.io e ranquear.
+            </p>
+          </div>
+          <table className="w-full text-sm">
+            <thead className="text-[11px] uppercase tracking-wider text-neutral-500">
+              <tr>
+                <th className="px-4 py-2 text-left font-normal">Busca</th>
+                <th className="px-3 py-2 text-right font-normal">Vezes</th>
+                <th className="px-3 py-2 text-right font-normal">Prompts</th>
+                <th className="px-3 py-2 text-left font-normal">Onde</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summary.searches.slice(0, 25).map((sq) => (
+                <tr key={sq.query} className="border-t border-white/5">
+                  <td className="px-4 py-1.5 text-neutral-100">{sq.query}</td>
+                  <td className="px-3 py-1.5 text-right text-neutral-300">{sq.runs}</td>
+                  <td className="px-3 py-1.5 text-right text-neutral-400">{sq.prompts}</td>
+                  <td className="px-3 py-1.5 text-xs text-neutral-500">{sq.engines.map((e) => ENGINE_LABEL[e]).join(", ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
 
       {/* Sources the models lean on */}
       {summary && summary.domains.length > 0 ? (

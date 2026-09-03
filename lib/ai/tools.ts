@@ -3015,17 +3015,21 @@ const listAiPromptsTool = tool({
           active: prompt.active,
           results: Object.values(runs).map((r) => ({
             engine: ENGINE_LABEL[r.engine],
-            mentioned: r.mentioned,
-            position: r.position,
+            samples: r.samples,
+            mentionedSamples: r.mentioned,
+            mentionRate: r.rate,
+            avgPosition: r.avgPosition,
             listSize: r.listSize,
             brandCited: r.brandCited,
             competitors: r.competitors,
             citedDomains: r.citedDomains,
+            ...(r.engine === "google_ai" ? { aiOverview: r.extra.aiOverview ?? null, organicRank: r.extra.organicRank ?? null } : {}),
             error: r.error,
           })),
         })),
         sourcesWithoutKodus: summary.domains.filter((d) => d.runsWithoutBrand > 0).slice(0, 15),
         competitors: summary.competitors.slice(0, 15),
+        searchesTheAssistantsRan: summary.searches.slice(0, 20),
         totalCostUsd: summary.totalCostUsd,
       };
     } catch (err) {
@@ -3068,7 +3072,7 @@ const runAiVisibilityTool = tool({
       let engineConfigs: EngineConfig[] | undefined;
       if (engines?.length) {
         const configured = (await getAiVisibilitySettings(client)).engines;
-        engineConfigs = engines.map((e) => configured.find((c) => c.engine === e) ?? { engine: e, model: DEFAULT_MODELS[e] });
+        engineConfigs = engines.map((e) => configured.find((c) => c.engine === e) ?? { engine: e, model: DEFAULT_MODELS[e], samples: 1 });
       }
       const summary = await runAiVisibility(client, { promptIds, force, engines: engineConfigs });
       return { success: true as const, summary };
