@@ -80,6 +80,17 @@ import {
   type Goal,
 } from "@/lib/goals";
 import {
+  createPrompt as createAiPrompt,
+  getSettings as getAiVisibilitySettings,
+  getVisibilitySummary,
+  runAiVisibility,
+  AI_ENGINES,
+  DEFAULT_MODELS,
+  ENGINE_LABEL,
+  type AiEngine,
+  type EngineConfig,
+} from "@/lib/ai-visibility";
+import {
   listCompanies,
   getCompany,
   createCompany,
@@ -2970,6 +2981,96 @@ const updateGoalTool = tool({
 // ---------------------------------------------------------------------------
 // Bets: what we run to move a goal. Not tasks.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// AI visibility: buyer prompts asked weekly to the assistants
+// ---------------------------------------------------------------------------
+
+const listAiPromptsTool = tool({
+  description:
+    "List the buyer prompts tracked for AI visibility (asked weekly to ChatGPT, Perplexity, Gemini, Claude via DataForSEO), with the latest answer per assistant: whether Kodus was named, its list position, competitors named and pages cited.",
+  inputSchema: z.object({
+    runOn: z.string().optional().describe("YYYY-MM-DD of a past run; default latest."),
+  }),
+  execute: async ({ runOn }: { runOn?: string }) => {
+    try {
+      const summary = await getVisibilitySummary(getSupabaseServiceClient(), { runOn });
+      return {
+        success: true as const,
+        runOn: summary.runOn,
+        weekday: summary.settings.weekday,
+        engines: summary.engines,
+        overallShare: summary.overallShare,
+        prompts: summary.prompts.map(({ prompt, runs }) => ({
+          id: prompt.id,
+          prompt: prompt.prompt,
+          language: prompt.language,
+          tags: prompt.tags,
+          active: prompt.active,
+          results: Object.values(runs).map((r) => ({
+            engine: ENGINE_LABEL[r.engine],
+            mentioned: r.mentioned,
+            position: r.position,
+            listSize: r.listSize,
+            brandCited: r.brandCited,
+            competitors: r.competitors,
+            citedDomains: r.citedDomains,
+            error: r.error,
+          })),
+        })),
+        sourcesWithoutKodus: summary.domains.filter((d) => d.runsWithoutBrand > 0).slice(0, 15),
+        competitors: summary.competitors.slice(0, 15),
+        totalCostUsd: summary.totalCostUsd,
+      };
+    } catch (err) {
+      return { success: false as const, error: err instanceof Error ? err.message : String(err) };
+    }
+  },
+});
+
+const createAiPromptTool = tool({
+  description:
+    "Add a buyer prompt to the weekly AI visibility run. Write it the way a buyer would ask an assistant (max 500 characters). It is asked on the next scheduled run, or immediately with runAiVisibility.",
+  inputSchema: z.object({
+    prompt: z.string().min(5).max(500),
+    language: z.string().optional().describe("'en' (default) or 'pt'"),
+    tags: z.array(z.string()).optional(),
+  }),
+  execute: async ({ prompt, language, tags }: { prompt: string; language?: string; tags?: string[] }) => {
+    try {
+      const created = await createAiPrompt(getSupabaseServiceClient(), { prompt, language, tags });
+      return { success: true as const, prompt: created };
+    } catch (err) {
+      return { success: false as const, error: err instanceof Error ? err.message : String(err) };
+    }
+  },
+});
+
+const runAiVisibilityTool = tool({
+  description:
+    "Ask the assistants the tracked prompts now (outside the weekly schedule). Costs money per prompt per assistant (about US$ 0.006 on Perplexity, US$ 0.09 on ChatGPT), so prefer promptIds for a single prompt. Prompts already asked today are skipped unless force is true.",
+  inputSchema: z.object({
+    promptIds: z.array(z.string()).optional(),
+    engines: z.array(z.enum(AI_ENGINES)).optional().describe("Subset of assistants; default the configured ones."),
+    force: z.boolean().optional().default(false),
+  }),
+  execute: async ({ promptIds, engines, force }: { promptIds?: string[]; engines?: AiEngine[]; force?: boolean }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      // A subset keeps the model configured for that assistant; an assistant
+      // not in the settings gets DataForSEO's default model.
+      let engineConfigs: EngineConfig[] | undefined;
+      if (engines?.length) {
+        const configured = (await getAiVisibilitySettings(client)).engines;
+        engineConfigs = engines.map((e) => configured.find((c) => c.engine === e) ?? { engine: e, model: DEFAULT_MODELS[e] });
+      }
+      const summary = await runAiVisibility(client, { promptIds, force, engines: engineConfigs });
+      return { success: true as const, summary };
+    } catch (err) {
+      return { success: false as const, error: err instanceof Error ? err.message : String(err) };
+    }
+  },
+});
 
 const listBetsTool = tool({
   description:
@@ -7356,6 +7457,9 @@ export function createAgentTools(userEmail?: string) {
     listGoals: listGoalsTool,
     createGoal: createCreateGoalTool(userEmail),
     listBets: listBetsTool,
+    listAiPrompts: listAiPromptsTool,
+    createAiPrompt: createAiPromptTool,
+    runAiVisibility: runAiVisibilityTool,
     createBet: createBetTool,
     decideBet: decideBetTool,
     updateGoal: updateGoalTool,

@@ -63,7 +63,7 @@ import type {
   InternalLinkGapResult,
 } from "@/lib/bigquery";
 import type { BlogPost } from "@/lib/copilot";
-import type { LLMMentionsSnapshot } from "@/lib/dataforseo";
+import type { VisibilitySummary } from "@/lib/ai-visibility";
 
 type DashboardData = {
   period: string;
@@ -76,7 +76,7 @@ type DashboardData = {
   decay: ContentDecayResult;
   opportunities: ContentOpportunitiesResult;
   blogPosts: BlogPost[];
-  llmMentions: LLMMentionsSnapshot[];
+  aiVisibility: VisibilitySummary | null;
   activatedSignups: ActivatedSignupsResult | null;
   cannibalization: CannibalizationResult;
   internalLinkGaps: InternalLinkGapResult;
@@ -511,16 +511,16 @@ export function Dashboard() {
           hint="Queries on page 1 (proxy)"
         />
         <KpiCard
-          title="LLM citations"
+          title="AI visibility"
           value={
             data
-              ? String(
-                  data.llmMentions.reduce((sum, s) => sum + s.mentions, 0),
-                )
+              ? data.aiVisibility?.overallShare != null
+                ? `${Math.round(data.aiVisibility.overallShare * 100)}%`
+                : "–"
               : undefined
           }
           loading={loading}
-          hint="Sum across Google AI + ChatGPT"
+          hint={data?.aiVisibility?.runOn ? `Prompts naming Kodus, run ${data.aiVisibility.runOn}` : "No prompt run yet"}
         />
       </div>
 
@@ -558,11 +558,11 @@ export function Dashboard() {
         />
       </div>
 
-      {/* ── AI Visibility (LLM Mentions) ─────────────────────────────────── */}
-      {!loading && data && data.llmMentions.length > 0 && (
+      {/* ── AI visibility (weekly buyer prompts through the assistants) ──── */}
+      {!loading && data?.aiVisibility && data.aiVisibility.engines.length > 0 && (
         <>
           <SectionHeader label="AI Visibility" />
-          <AIVisibilitySection snapshots={data.llmMentions} />
+          <AIVisibilitySection summary={data.aiVisibility} />
         </>
       )}
 
@@ -1270,154 +1270,64 @@ function formatCompact(n: number): string {
   return String(n);
 }
 
-function AIVisibilitySection({ snapshots }: { snapshots: LLMMentionsSnapshot[] }) {
-  const google = snapshots.find((s) => s.platform === "google");
-  const chatgpt = snapshots.find((s) => s.platform === "chat_gpt");
-
-  const allQuestions = [
-    ...(google?.top_questions ?? []),
-    ...(chatgpt?.top_questions ?? []),
-  ].sort((a, b) => b.ai_search_volume - a.ai_search_volume);
-
-  const allSources = [
-    ...(google?.top_sources ?? []),
-    ...(chatgpt?.top_sources ?? []),
-  ];
-
-  // Deduplicate and sum sources by domain
-  const sourceMap = new Map<string, { domain: string; mentions: number; ai_search_volume: number }>();
-  for (const s of allSources) {
-    const existing = sourceMap.get(s.domain);
-    if (existing) {
-      existing.mentions += s.mentions;
-      existing.ai_search_volume += s.ai_search_volume;
-    } else {
-      sourceMap.set(s.domain, { ...s });
-    }
-  }
-  const topSources = [...sourceMap.values()]
-    .sort((a, b) => b.mentions - a.mentions)
-    .slice(0, 8);
-
-  const snapshotDate = google?.snapshot_date ?? chatgpt?.snapshot_date;
-
+function AIVisibilitySection({ summary }: { summary: VisibilitySummary }) {
+  const absent = summary.domains.filter((d) => d.runsWithoutBrand > 0).slice(0, 6);
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
         <Sparkles className="h-4 w-4 text-violet-400" />
         <h2 className="text-sm font-semibold text-white">AI Visibility</h2>
-        {snapshotDate && (
-          <span className="text-[10px] text-neutral-600">
-            Last sync: {snapshotDate}
-          </span>
-        )}
+        {summary.runOn && <span className="text-[10px] text-neutral-600">Run: {summary.runOn}</span>}
+        <a href="/ai-visibility" className="ml-auto text-xs text-violet-300 hover:underline">
+          Prompts and answers →
+        </a>
       </div>
 
-      {/* AI KPI Cards */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-        <AiKpiCard
-          title="Google AI Mentions"
-          value={google?.mentions ?? 0}
-          icon={<Bot className="h-3.5 w-3.5 text-blue-400" />}
-        />
-        <AiKpiCard
-          title="ChatGPT Mentions"
-          value={chatgpt?.mentions ?? 0}
-          icon={<Bot className="h-3.5 w-3.5 text-emerald-400" />}
-        />
-        <AiKpiCard
-          title="AI Search Volume"
-          value={(google?.ai_search_volume ?? 0) + (chatgpt?.ai_search_volume ?? 0)}
-          icon={<Sparkles className="h-3.5 w-3.5 text-violet-400" />}
-          compact
-        />
+        {summary.engines.map((e) => (
+          <AiKpiCard
+            key={e.engine}
+            title={`${e.label}: Kodus named`}
+            value={e.share == null ? 0 : Math.round(e.share * 100)}
+            icon={<Bot className="h-3.5 w-3.5 text-emerald-400" />}
+            suffix="%"
+            hint={`${e.mentioned} of ${e.prompts} prompts${e.avgPosition != null ? ` · avg position ${e.avgPosition}` : ""}`}
+          />
+        ))}
       </div>
 
-      {/* Tables */}
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* Top AI Questions */}
-        {allQuestions.length > 0 && (
-          <Card className="border-white/[0.06] bg-neutral-900/50">
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <CardTitle className="text-sm font-medium text-violet-400">
-                  Top AI Questions
-                </CardTitle>
-                <Badge variant="outline" className="border-violet-500/30 text-violet-400 text-[10px]">
-                  {allQuestions.length} queries
-                </Badge>
-              </div>
-              <p className="text-xs text-neutral-500">
-                Questions where kodus.io appears in LLM responses
-              </p>
-            </CardHeader>
-            <CardContent>
-              <div>
-                <Table>
-                  <TableHeader>
-                    <TableRow className="border-white/10">
-                      <TableHead className="text-neutral-400">Question</TableHead>
-                      <TableHead className="text-right text-neutral-400">AI Volume</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {allQuestions.slice(0, 10).map((q, i) => (
-                      <TableRow key={`${q.question}-${i}`} className="border-white/5">
-                        <TableCell className="max-w-[300px] truncate text-neutral-200" title={q.question}>
-                          {q.question}
-                        </TableCell>
-                        <TableCell className="text-right text-neutral-300">
-                          {formatCompact(q.ai_search_volume)}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Top Co-Mentioned Sources */}
-        {topSources.length > 0 && (
-          <Card className="border-white/[0.06] bg-neutral-900/50">
-            <CardHeader>
-              <CardTitle className="text-sm font-medium text-neutral-300">
-                Co-Mentioned Sources
-              </CardTitle>
-              <p className="text-xs text-neutral-500">
-                Domains cited alongside kodus.io in AI responses
-              </p>
-            </CardHeader>
-            <CardContent>
-              <div>
-                <Table>
-                  <TableHeader>
-                    <TableRow className="border-white/10">
-                      <TableHead className="text-neutral-400">Domain</TableHead>
-                      <TableHead className="text-right text-neutral-400">Mentions</TableHead>
-                      <TableHead className="text-right text-neutral-400">AI Volume</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {topSources.map((s) => (
-                      <TableRow key={s.domain} className="border-white/5">
-                        <TableCell className="text-neutral-200">{s.domain}</TableCell>
-                        <TableCell className="text-right text-neutral-300">
-                          {formatNumber(s.mentions)}
-                        </TableCell>
-                        <TableCell className="text-right text-neutral-300">
-                          {formatCompact(s.ai_search_volume)}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-      </div>
+      {absent.length > 0 && (
+        <Card className="border-white/[0.06] bg-neutral-900/50">
+          <CardHeader>
+            <CardTitle className="text-sm font-medium text-neutral-300">Sources the assistants cite where Kodus is absent</CardTitle>
+            <p className="text-xs text-neutral-500">Backlink and listing targets, from the latest answers</p>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow className="border-white/10">
+                  <TableHead className="text-neutral-400">Domain</TableHead>
+                  <TableHead className="text-right text-neutral-400">Answers without Kodus</TableHead>
+                  <TableHead className="text-right text-neutral-400">Citations</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {absent.map((d) => (
+                  <TableRow key={d.domain} className="border-white/5">
+                    <TableCell className="text-neutral-200">
+                      <a href={d.urls[0]} target="_blank" rel="noreferrer" className="hover:underline">
+                        {d.domain}
+                      </a>
+                    </TableCell>
+                    <TableCell className="text-right text-amber-300">{d.runsWithoutBrand}</TableCell>
+                    <TableCell className="text-right text-neutral-300">{d.citations}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
@@ -1427,11 +1337,15 @@ function AiKpiCard({
   value,
   icon,
   compact,
+  suffix,
+  hint,
 }: {
   title: string;
   value: number;
   icon: React.ReactNode;
   compact?: boolean;
+  suffix?: string;
+  hint?: string;
 }) {
   return (
     <Card className="border-white/[0.06] bg-neutral-900/50">
@@ -1446,7 +1360,9 @@ function AiKpiCard({
       <CardContent>
         <p className="text-2xl font-semibold text-white">
           {compact ? formatCompact(value) : formatNumber(value)}
+          {suffix ? <span className="text-base text-neutral-400">{suffix}</span> : null}
         </p>
+        {hint ? <p className="mt-0.5 text-[11px] text-neutral-500">{hint}</p> : null}
       </CardContent>
     </Card>
   );

@@ -74,9 +74,29 @@ async function runScheduledJobsCron(): Promise<void> {
   // in the local agent, which owns the scheduling too.
 }
 
-async function runLlmMentionsCron(): Promise<void> {
-  const { syncLLMMentionsSnapshot } = await import("@/lib/dataforseo");
-  await syncLLMMentionsSnapshot();
+/**
+ * Daily check, weekly work: the prompt run happens on the weekday saved in
+ * ai_visibility_settings (UTC) and once per day, so changing the weekday in
+ * the UI is enough; no cron edit, no redeploy.
+ */
+async function runAiVisibilityCron(): Promise<void> {
+  const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
+  const { getSettings, isDueToday, isDataForSeoConfigured, runAiVisibility, WEEKDAY_LABELS } = await import("@/lib/ai-visibility");
+  if (!isDataForSeoConfigured()) {
+    console.warn("[cron] ai-visibility: DataForSEO not configured, skipping");
+    return;
+  }
+  const client = getSupabaseServiceClient();
+  const settings = await getSettings(client);
+  if (!isDueToday(settings)) {
+    console.log(`[cron] ai-visibility: not due (runs on ${WEEKDAY_LABELS[settings.weekday]}, last ${settings.lastRunOn ?? "never"})`);
+    return;
+  }
+  const res = await runAiVisibility(client);
+  console.log(
+    `[cron] ai-visibility: asked ${res.asked}, mentioned ${res.mentioned}, skipped ${res.skipped}, failed ${res.failed}, US$ ${res.costUsd}` +
+      (res.errors.length ? `, errors: ${res.errors.slice(0, 3).join("; ")}` : ""),
+  );
 }
 
 async function runSocialMonitoringCron(): Promise<void> {
@@ -334,9 +354,10 @@ const JOBS: JobDefinition[] = [
     run: runScheduledJobsCron,
   },
   {
-    name: "llm-mentions",
-    schedule: "0 8 * * *",
-    run: runLlmMentionsCron,
+    // Daily at 07:00 UTC; asks the assistants only on the configured weekday.
+    name: "ai-visibility",
+    schedule: "0 7 * * *",
+    run: runAiVisibilityCron,
   },
   {
     name: "social-monitoring",

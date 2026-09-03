@@ -12,7 +12,8 @@ import {
   queryInternalLinkGaps,
 } from "@/lib/bigquery";
 import { fetchBlogPosts } from "@/lib/copilot";
-import { getLatestLLMMentions } from "@/lib/dataforseo";
+import { getVisibilitySummary } from "@/lib/ai-visibility";
+import { getSupabaseServiceClient } from "@/lib/supabase-server";
 
 function periodToDates(period: string): {
   startDate: string;
@@ -43,7 +44,7 @@ export async function GET(request: Request) {
       decay,
       opportunities,
       blogPosts,
-      llmMentions,
+      aiVisibility,
       activatedSignups,
       cannibalization,
       internalLinkGaps,
@@ -55,7 +56,10 @@ export async function GET(request: Request) {
       queryContentDecay({ startDate, endDate }),
       queryContentOpportunities({ startDate, endDate }),
       fetchBlogPosts(100),
-      getLatestLLMMentions().catch(() => []),
+      getVisibilitySummary(getSupabaseServiceClient()).catch((e) => {
+        console.error("[dashboard] aiVisibility error:", e);
+        return null;
+      }),
       queryActivatedSignups({ startDate, endDate }).catch((e) => {
         console.error("[dashboard] activatedSignups error:", e);
         return null;
@@ -81,7 +85,7 @@ export async function GET(request: Request) {
       decay,
       opportunities,
       blogPosts,
-      llmMentions,
+      aiVisibility,
       activatedSignups,
       cannibalization,
       internalLinkGaps,

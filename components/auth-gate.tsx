@@ -88,6 +88,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           { href: "/", label: "Content", icon: Sparkles },
           { href: "/ideas", label: "Ideas", icon: Lightbulb },
           { href: "/dashboard", label: "Performance", icon: BarChart3 },
+          { href: "/ai-visibility", label: "AI visibility", icon: Bot },
         ],
       },
       {
