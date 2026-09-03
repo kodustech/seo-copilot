@@ -36,17 +36,23 @@ export const HEAD_TERMS: string[] = [
   "self hosted ai code review",
 ];
 
-/** GA4 session sources that count as an AI assistant referral. */
-export const LLM_SOURCES: string[] = [
-  "chatgpt.com",
-  "chatgpt",
-  "chat.openai.com",
-  "claude.ai",
-  "perplexity.ai",
-  "www.perplexity.ai",
-  "copilot.microsoft.com",
-  "gemini.google.com",
-];
+/**
+ * GA4 session sources that count as an AI assistant referral, as a BigQuery
+ * regex on the lowercased source. A regex because the same assistant shows up
+ * under several spellings (perplexity.ai, www.perplexity.ai and a bare
+ * "perplexity" from the app), and a fixed list missed the short ones.
+ */
+export const LLM_SOURCE_REGEX = String.raw`(^|\.)(chatgpt|openai|claude|perplexity|copilot|gemini\.google)(\.|$)`;
+
+/**
+ * Mediums an assistant referral can carry. GA4 labels them "ai-assistant"
+ * (since June 2026), "referral", "(not set)", "(none)" or empty. Anything
+ * else is a utm_medium somebody typed on a link (paid, cpc, organic,
+ * social...), which is a campaign, not an assistant sending a reader. An
+ * allowlist, because GA4 passes utm_medium verbatim and a denylist can never
+ * be complete.
+ */
+export const LLM_ALLOWED_MEDIUMS: string[] = ["", "(none)", "(not set)", "referral", "ai-assistant"];
 
 /** Free-mail domains: a signup from one of these is not a corporate signup. */
 export const FREE_MAIL_DOMAINS: string[] = [
