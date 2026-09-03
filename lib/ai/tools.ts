@@ -67,6 +67,7 @@ import {
 import { createBet, deleteBet, listBets, updateBet, type BetStatus } from "@/lib/bets";
 import { fetchFunnel } from "@/lib/funnel/metrics";
 import { FUNNEL_METRICS } from "@/lib/funnel/goals";
+import { FUNNEL_EDGES, FUNNEL_GUIDE, FUNNEL_LANES, STAGE_MECHANICS, previousPeriodSpec, rateBandTable, stageLinks } from "@/lib/funnel/graph";
 import {
   listGoals,
   createGoal,
@@ -3105,12 +3106,13 @@ async function getCachedFunnel(spec: string) {
 
 const getFunnelTool = tool({
   description:
-    "The measured growth funnel for a month ('YYYY-MM') or a date range ('YYYY-MM-DD..YYYY-MM-DD'): every stage with its value, definition, source and drill-down rows, the conversion rates against market bands, and the goals bound to each stage. Same numbers as the /funnel page. Read-only; targets come from goals.",
+    "The measured growth funnel for a month ('YYYY-MM') or a date range ('YYYY-MM-DD..YYYY-MM-DD'), same numbers as the /funnel page, in a shape made for reasoning: lanes and edges (which stage feeds which), the rate on each edge with its market band and status, what moves each stage, goals and bets bound to stages, the previous period for comparison, and a guide on how to read it. It carries no verdict on bottlenecks: read the numbers along each lane and decide. Read-only.",
   inputSchema: z.object({
     period: z.string().optional().describe("'YYYY-MM' or 'YYYY-MM-DD..YYYY-MM-DD'; default current month."),
-    includeRows: z.boolean().optional().default(false).describe("Include drill-down rows per stage (can be large)."),
+    comparePrevious: z.boolean().optional().default(true).describe("Also compute the previous period (previous month, or the range of the same length before) and return per-stage deltas."),
+    includeRows: z.boolean().optional().default(false).describe("Include drill-down rows per stage (accounts, pages, people). Large; ask for it when you need names."),
   }),
-  execute: async ({ period, includeRows }: { period?: string; includeRows?: boolean }) => {
+  execute: async ({ period, comparePrevious, includeRows }: { period?: string; comparePrevious?: boolean; includeRows?: boolean }) => {
     try {
       let spec = new Date().toISOString().slice(0, 7);
       if (period !== undefined) {
@@ -3121,25 +3123,62 @@ const getFunnelTool = tool({
         }
         spec = period;
       }
-      const f = await getCachedFunnel(spec);
-      return {
-        success: true as const,
-        period: { spec, start: f.periodStart, end: f.periodEnd, elapsedShare: f.elapsed },
-        metrics: FUNNEL_METRICS,
-        stages: Object.values(f.nodes).map((n) => ({
+      const prevSpec = comparePrevious === false ? null : previousPeriodSpec(spec);
+      const [f, prev] = await Promise.all([getCachedFunnel(spec), prevSpec ? getCachedFunnel(prevSpec).catch(() => null) : Promise.resolve(null)]);
+      const prevRates = new Map((prev?.rates ?? []).map((r) => [r.id, r]));
+      const bands = new Map(rateBandTable().map((b) => [b.id, b]));
+      const delta = (now: number | null, before: number | null | undefined) =>
+        now == null || before == null ? null : { absolute: now - before, relative: before === 0 ? null : Math.round(((now - before) / before) * 1000) / 1000 };
+
+      const stages = Object.values(f.nodes).map((n) => {
+        const links = stageLinks(n.id);
+        const before = prev?.nodes[n.id];
+        return {
           id: n.id,
           title: n.title,
           value: n.value,
           display: n.display,
           definition: n.definition,
           source: n.source,
+          mechanics: STAGE_MECHANICS[n.id] ?? null,
+          fedBy: links.fedBy,
+          feeds: links.feeds,
           goal: n.goal ?? null,
           bets: n.bets ?? [],
+          ...(prev ? { previous: { value: before?.value ?? null, display: before?.display ?? null, delta: delta(n.value, before?.value) } } : {}),
           ...(includeRows ? { columns: n.columns, rows: n.rows.slice(0, 200) } : { rowCount: n.rows.length }),
-        })),
-        rates: f.rates,
+        };
+      });
+
+      const rates = f.rates.map((r) => {
+        const band = bands.get(r.id);
+        const edge = FUNNEL_EDGES.find((e) => e.rate === r.id);
+        const before = prevRates.get(r.id);
+        return {
+          id: r.id,
+          label: r.label,
+          value: r.value,
+          status: r.status,
+          note: r.note,
+          band: band ? { lo: band.lo, hi: band.hi, inverted: band.inverted, loose: band.loose } : null,
+          edge: edge ? { from: edge.from, to: edge.to, note: edge.note ?? null } : null,
+          ...(prev ? { previous: { value: before?.value ?? null, status: before?.status ?? null } } : {}),
+        };
+      });
+
+      return {
+        success: true as const,
+        guide: FUNNEL_GUIDE,
+        period: { spec, start: f.periodStart, end: f.periodEnd, elapsedShare: f.elapsed },
+        ...(prev ? { comparison: { previous: { spec: prevSpec, start: prev.periodStart, end: prev.periodEnd, elapsedShare: prev.elapsed } } } : {}),
+        lanes: FUNNEL_LANES,
+        edges: FUNNEL_EDGES,
+        stages,
+        rates,
         facts: f.facts,
+        goalMetrics: FUNNEL_METRICS,
         errors: f.errors,
+        ...(prev?.errors.length ? { previousErrors: prev.errors } : {}),
       };
     } catch (err) {
       return { success: false as const, error: err instanceof Error ? err.message : String(err) };
