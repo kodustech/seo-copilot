@@ -3082,6 +3082,19 @@ const runAiVisibilityTool = tool({
 // Funnel: the measured funnel for a month or any date range
 // ---------------------------------------------------------------------------
 
+// The funnel fans out to nine BigQuery and Supabase queries; an agent that
+// asks twice in one conversation should not pay twice. Short TTL, keyed by
+// period spec, in-process.
+const FUNNEL_CACHE_TTL_MS = 5 * 60 * 1000;
+const funnelCache = new Map<string, { at: number; value: Awaited<ReturnType<typeof fetchFunnel>> }>();
+async function getCachedFunnel(spec: string) {
+  const hit = funnelCache.get(spec);
+  if (hit && Date.now() - hit.at < FUNNEL_CACHE_TTL_MS) return hit.value;
+  const value = await fetchFunnel(getSupabaseServiceClient(), spec);
+  funnelCache.set(spec, { at: Date.now(), value });
+  return value;
+}
+
 const getFunnelTool = tool({
   description:
     "The measured growth funnel for a month ('YYYY-MM') or a date range ('YYYY-MM-DD..YYYY-MM-DD'): every stage with its value, definition, source and drill-down rows, the conversion rates against market bands, and the goals bound to each stage. Same numbers as the /funnel page. Read-only; targets come from goals.",
@@ -3091,8 +3104,16 @@ const getFunnelTool = tool({
   }),
   execute: async ({ period, includeRows }: { period?: string; includeRows?: boolean }) => {
     try {
-      const spec = period && (/^\d{4}-\d{2}$/.test(period) || /^\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2}$/.test(period)) ? period : new Date().toISOString().slice(0, 7);
-      const f = await fetchFunnel(getSupabaseServiceClient(), spec);
+      let spec = new Date().toISOString().slice(0, 7);
+      if (period !== undefined) {
+        // A malformed period must not quietly become "this month" with the
+        // wrong label on it.
+        if (!/^\d{4}-\d{2}$/.test(period) && !/^\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2}$/.test(period)) {
+          throw new Error(`Invalid period '${period}'. Use 'YYYY-MM' or 'YYYY-MM-DD..YYYY-MM-DD'.`);
+        }
+        spec = period;
+      }
+      const f = await getCachedFunnel(spec);
       return {
         success: true as const,
         period: { spec, start: f.periodStart, end: f.periodEnd, elapsedShare: f.elapsed },
