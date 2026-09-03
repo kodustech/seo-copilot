@@ -1226,7 +1226,7 @@ function GoalFormDialog({
               className="border-white/10 bg-neutral-900 text-sm"
             />
           </Field>
-          <Field label="Métrica do funil">
+          <Field label="Funnel metric">
             <Select
               value={funnelMetric}
               onValueChange={(v) => {
@@ -1248,7 +1248,7 @@ function GoalFormDialog({
               </SelectContent>
             </Select>
             <p className="text-[10px] leading-snug text-neutral-600">
-              Meta atrelada a um número que o funil mede. O progresso vem do funil todo dia, sem digitar.
+              Bound to a number the funnel measures. Progress comes from the funnel every day, nothing to type.
             </p>
           </Field>
           <div className="grid grid-cols-3 gap-3">
@@ -1821,11 +1821,11 @@ function RecurrenceFormDialog({
 // ---------------------------------------------------------------------------
 
 const BET_STATUS_LABEL: Record<BetStatus, { label: string; className: string }> = {
-  queued: { label: "na fila", className: "bg-neutral-500/20 text-neutral-300" },
-  active: { label: "ativa", className: "bg-emerald-500/20 text-emerald-300" },
-  won: { label: "ganhou", className: "bg-sky-500/20 text-sky-300" },
-  lost: { label: "perdeu", className: "bg-red-500/20 text-red-300" },
-  operation: { label: "virou operação", className: "bg-violet-500/20 text-violet-300" },
+  queued: { label: "queued", className: "bg-neutral-500/20 text-neutral-300" },
+  active: { label: "active", className: "bg-emerald-500/20 text-emerald-300" },
+  won: { label: "won", className: "bg-sky-500/20 text-sky-300" },
+  lost: { label: "lost", className: "bg-red-500/20 text-red-300" },
+  operation: { label: "became operation", className: "bg-violet-500/20 text-violet-300" },
 };
 
 type BetWithGoal = Bet & { goalTitle?: string | null; goalPeriod?: string | null; goalFunnelMetric?: string | null };
@@ -1835,7 +1835,7 @@ const EMPTY_BET_FORM: BetFormState = { title: "", hypothesis: "", action: "", me
 async function decideBet(headers: Record<string, string>, bet: Bet, status: BetStatus): Promise<string | null> {
   const verdict =
     status === "won" || status === "lost"
-      ? window.prompt("Veredito em uma linha (o que o número mostrou):", bet.verdict ?? "")
+      ? window.prompt("One-line verdict (what the number showed):", bet.verdict ?? "")
       : bet.verdict;
   const res = await fetch(`/api/bets/${bet.id}`, { method: "PATCH", headers, body: JSON.stringify({ status, verdict }) });
   const json = await res.json();
@@ -1851,27 +1851,27 @@ function BetRow({ bet, onDecide, showGoal }: { bet: BetWithGoal; onDecide: (stat
         <div className="min-w-0">
           <span className={cn("mr-2 rounded px-1.5 py-0.5", BET_STATUS_LABEL[b.status].className)}>{BET_STATUS_LABEL[b.status].label}</span>
           <span className="font-medium text-neutral-100">{b.title}</span>
-          {showGoal && b.goalTitle ? <span className="ml-2 text-neutral-500">meta: {b.goalTitle}</span> : null}
+          {showGoal && b.goalTitle ? <span className="ml-2 text-neutral-500">goal: {b.goalTitle}</span> : null}
           <p className="mt-1 text-neutral-400">
-            <span className="text-neutral-500">Hipótese:</span> {b.hypothesis}
+            <span className="text-neutral-500">Hypothesis:</span> {b.hypothesis}
           </p>
           <p className="text-neutral-400">
-            <span className="text-neutral-500">Ação:</span> {b.action}
+            <span className="text-neutral-500">Action:</span> {b.action}
           </p>
           <p className="text-neutral-400">
-            <span className="text-neutral-500">Prova:</span> {b.metric} · <span className="text-neutral-500">decide em</span> {b.decisionAt}
+            <span className="text-neutral-500">Proof:</span> {b.metric} · <span className="text-neutral-500">decide by</span> {b.decisionAt}
           </p>
-          {b.verdict ? <p className="mt-1 text-neutral-300">Veredito: {b.verdict}</p> : null}
+          {b.verdict ? <p className="mt-1 text-neutral-300">Verdict: {b.verdict}</p> : null}
         </div>
         {b.status === "active" || b.status === "queued" ? (
           <div className="flex shrink-0 flex-col gap-1">
             {b.status === "queued" ? (
-              <button onClick={() => onDecide("active")} className="rounded border border-emerald-500/30 px-2 py-0.5 text-emerald-300 hover:bg-emerald-500/10">ativar</button>
+              <button onClick={() => onDecide("active")} className="rounded border border-emerald-500/30 px-2 py-0.5 text-emerald-300 hover:bg-emerald-500/10">activate</button>
             ) : (
               <>
-                <button onClick={() => onDecide("won")} className="rounded border border-sky-500/30 px-2 py-0.5 text-sky-300 hover:bg-sky-500/10">ganhou</button>
-                <button onClick={() => onDecide("lost")} className="rounded border border-red-500/30 px-2 py-0.5 text-red-300 hover:bg-red-500/10">perdeu</button>
-                <button onClick={() => onDecide("operation")} className="rounded border border-violet-500/30 px-2 py-0.5 text-violet-300 hover:bg-violet-500/10">virou operação</button>
+                <button onClick={() => onDecide("won")} className="rounded border border-sky-500/30 px-2 py-0.5 text-sky-300 hover:bg-sky-500/10">won</button>
+                <button onClick={() => onDecide("lost")} className="rounded border border-red-500/30 px-2 py-0.5 text-red-300 hover:bg-red-500/10">lost</button>
+                <button onClick={() => onDecide("operation")} className="rounded border border-violet-500/30 px-2 py-0.5 text-violet-300 hover:bg-violet-500/10">became operation</button>
               </>
             )}
           </div>
@@ -1892,17 +1892,17 @@ function BetForm({ form, setForm, onCancel, onSubmit, creating, goalPicker }: {
   return (
     <div className="mt-2 space-y-2 rounded-md border border-white/10 bg-neutral-950 p-2">
       {goalPicker}
-      <Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Título curto" className="border-white/10 bg-neutral-900 text-sm" />
-      <Textarea value={form.hypothesis} onChange={(e) => setForm({ ...form, hypothesis: e.target.value })} placeholder="Hipótese: se a gente fizer X, o número Y sobe porque..." rows={2} className="border-white/10 bg-neutral-900 text-sm" />
-      <Textarea value={form.action} onChange={(e) => setForm({ ...form, action: e.target.value })} placeholder="Ação: o que exatamente vai ser feito, por quem" rows={2} className="border-white/10 bg-neutral-900 text-sm" />
+      <Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Short title" className="border-white/10 bg-neutral-900 text-sm" />
+      <Textarea value={form.hypothesis} onChange={(e) => setForm({ ...form, hypothesis: e.target.value })} placeholder="Hypothesis: if we do X, number Y moves because..." rows={2} className="border-white/10 bg-neutral-900 text-sm" />
+      <Textarea value={form.action} onChange={(e) => setForm({ ...form, action: e.target.value })} placeholder="Action: exactly what will be done, by whom" rows={2} className="border-white/10 bg-neutral-900 text-sm" />
       <div className="grid grid-cols-2 gap-2">
-        <Input value={form.metric} onChange={(e) => setForm({ ...form, metric: e.target.value })} placeholder="Métrica que prova (ex: resposta cold ≥ 3%)" className="border-white/10 bg-neutral-900 text-sm" />
+        <Input value={form.metric} onChange={(e) => setForm({ ...form, metric: e.target.value })} placeholder="Metric that proves it (e.g. cold reply rate ≥ 3%)" className="border-white/10 bg-neutral-900 text-sm" />
         <Input type="date" value={form.decisionAt} onChange={(e) => setForm({ ...form, decisionAt: e.target.value })} className="border-white/10 bg-neutral-900 text-sm" />
       </div>
       <div className="flex justify-end gap-2">
-        <button onClick={onCancel} className="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200">cancelar</button>
+        <button onClick={onCancel} className="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200">cancel</button>
         <button onClick={onSubmit} disabled={creating} className="rounded bg-violet-500/20 px-3 py-1 text-xs text-violet-200 hover:bg-violet-500/30 disabled:opacity-50">
-          {creating ? "salvando..." : "criar aposta"}
+          {creating ? "saving..." : "create bet"}
         </button>
       </div>
     </div>
@@ -1940,12 +1940,12 @@ function BetsPanel({ token, refreshKey, onChanged }: { token: string | null; ref
       setMaxActive(Number(json.maxActive ?? 3));
       setError(null);
     } else {
-      const msg = (json.error as string | undefined) ?? "Falhou ao carregar apostas";
+      const msg = (json.error as string | undefined) ?? "Could not load bets";
       // Before the migration runs there is no table; say that instead of
       // leaking the PostgREST schema-cache message.
       setError(
         /public\.bets/.test(msg)
-          ? "A tabela de apostas ainda não existe neste ambiente. Rode a migration supabase/migrations/20260902220000_goals_funnel_metric_bets.sql no Supabase."
+          ? "The bets table does not exist in this environment yet. Run the migration supabase/migrations/20260902220000_goals_funnel_metric_bets.sql in Supabase."
           : msg,
       );
     }
@@ -1967,7 +1967,7 @@ function BetsPanel({ token, refreshKey, onChanged }: { token: string | null; ref
 
   const create = async () => {
     if (!goalId) {
-      setError("Escolha a meta que a aposta serve.");
+      setError("Pick the goal this bet serves.");
       return;
     }
     setError(null);
@@ -1997,15 +1997,15 @@ function BetsPanel({ token, refreshKey, onChanged }: { token: string | null; ref
       <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-sm font-medium text-neutral-100">
-            Apostas{loaded ? ` · ${active.length} de ${maxActive} ativas` : ""}
-            {overdue.length > 0 ? <span className="ml-2 text-amber-300">· {overdue.length} com decisão vencida</span> : null}
+            Bets{loaded ? ` · ${active.length} of ${maxActive} active` : ""}
+            {overdue.length > 0 ? <span className="ml-2 text-amber-300">· {overdue.length} past decision date</span> : null}
           </h2>
           <p className="mt-0.5 text-xs text-neutral-500">
-            Hipótese + ação + métrica que prova + data da decisão. Cada aposta serve uma meta; tarefas ficam no Kanban.
+            Hypothesis + action + metric that proves it + decision date. Each bet serves a goal; tasks live on the Kanban.
           </p>
         </div>
         <button onClick={() => setOpen((v) => !v)} className="shrink-0 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500">
-          {open ? "fechar" : "+ aposta"}
+          {open ? "close" : "+ bet"}
         </button>
       </div>
       {error ? <p className="mt-2 text-xs text-red-300">{error}</p> : null}
@@ -2019,12 +2019,12 @@ function BetsPanel({ token, refreshKey, onChanged }: { token: string | null; ref
           goalPicker={
             <Select value={goalId} onValueChange={setGoalId}>
               <SelectTrigger className="h-9 border-white/10 bg-neutral-900 text-xs text-neutral-200">
-                <SelectValue placeholder="Meta que essa aposta serve" />
+                <SelectValue placeholder="Goal this bet serves" />
               </SelectTrigger>
               <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
                 {goals.map((g) => (
                   <SelectItem key={g.id} value={g.id}>
-                    {g.title} · {g.periodStart} a {g.periodEnd}
+                    {g.title} · {g.periodStart} to {g.periodEnd}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -2034,7 +2034,7 @@ function BetsPanel({ token, refreshKey, onChanged }: { token: string | null; ref
       ) : null}
       {loaded && active.length + queued.length === 0 ? (
         <p className="mt-3 text-xs text-neutral-500">
-          Nenhuma aposta ativa. {goals.length === 0 ? "Crie uma meta primeiro; a aposta é o que você faz pra mover o número dela." : "Clique em + aposta e escolha a meta."}
+          No active bet. {goals.length === 0 ? "Create a goal first; a bet is what you do to move its number." : "Click + bet and pick the goal."}
         </p>
       ) : null}
       {active.length + queued.length > 0 ? (
@@ -2047,7 +2047,7 @@ function BetsPanel({ token, refreshKey, onChanged }: { token: string | null; ref
       {decided.length > 0 ? (
         <div className="mt-3">
           <button onClick={() => setShowDecided((v) => !v)} className="text-xs text-neutral-500 hover:text-neutral-300">
-            {showDecided ? "esconder" : "ver"} {decided.length} decidida{decided.length === 1 ? "" : "s"}
+            {showDecided ? "hide" : "show"} {decided.length} decided
           </button>
           {showDecided ? (
             <ul className="mt-2 space-y-2">
@@ -2121,11 +2121,11 @@ function BetsSection({ goal, token, refreshKey, onChanged }: { goal: Goal; token
     <div className="mt-3 border-t border-white/10 pt-3">
       <div className="flex items-center justify-between">
         <p className="text-xs text-neutral-400">
-          {loaded ? `${bets.length} aposta${bets.length === 1 ? "" : "s"} · ${active} ativa${active === 1 ? "" : "s"}` : "Apostas"}
-          {overdue.length > 0 ? <span className="ml-2 text-amber-300">· {overdue.length} com decisão vencida</span> : null}
+          {loaded ? `${bets.length} bet${bets.length === 1 ? "" : "s"} · ${active} active` : "Bets"}
+          {overdue.length > 0 ? <span className="ml-2 text-amber-300">· {overdue.length} past decision date</span> : null}
         </p>
         <button onClick={() => setOpen((v) => !v)} className="text-xs text-violet-300 hover:text-violet-200">
-          {open ? "fechar" : "+ aposta"}
+          {open ? "close" : "+ bet"}
         </button>
       </div>
       {error ? <p className="mt-1 text-xs text-red-300">{error}</p> : null}
@@ -2136,7 +2136,7 @@ function BetsSection({ goal, token, refreshKey, onChanged }: { goal: Goal; token
           ))}
         </ul>
       ) : loaded ? (
-        <p className="mt-1 text-xs text-neutral-600">Nenhuma aposta ainda. Uma aposta é hipótese + ação + métrica que prova + data da decisão.</p>
+        <p className="mt-1 text-xs text-neutral-600">No bets yet. A bet is hypothesis + action + metric that proves it + decision date.</p>
       ) : null}
       {open ? <BetForm form={form} setForm={setForm} onCancel={() => setOpen(false)} onSubmit={create} creating={creating} /> : null}
     </div>

@@ -109,7 +109,7 @@ async function assertActiveSlot(client: SupabaseClient, excludeId?: string): Pro
   if (error) throw new Error(`bets: ${error.message}`);
   if ((count ?? 0) >= MAX_ACTIVE_BETS) {
     throw new Error(
-      `Já existem ${MAX_ACTIVE_BETS} apostas ativas. Decida uma (ganhou, perdeu ou virou operação) antes de ativar outra; esta pode ficar na fila.`,
+      `${MAX_ACTIVE_BETS} bets are already active. Decide one (won, lost or became operation) before activating another; this one can wait in the queue.`,
     );
   }
 }

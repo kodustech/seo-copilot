@@ -19,7 +19,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: err instanceof Error ? err.message : "Unauthorized" }, { status: 401 });
   }
   if (!isDataForSeoConfigured()) {
-    return NextResponse.json({ error: "DataForSEO não configurado (DATAFORSEO_LOGIN / DATAFORSEO_PASSWORD)" }, { status: 400 });
+    return NextResponse.json({ error: "DataForSEO is not configured (DATAFORSEO_LOGIN / DATAFORSEO_PASSWORD)" }, { status: 400 });
   }
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   try {

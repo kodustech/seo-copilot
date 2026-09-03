@@ -52,7 +52,7 @@ export const MAX_SAMPLES = 5;
 /** Runs (distinct dates) the rolling share averages over. */
 export const ROLLING_RUNS = 4;
 
-export const WEEKDAY_LABELS = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
+export const WEEKDAY_LABELS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 export type EngineConfig = { engine: AiEngine; model: string; samples: number };
 
