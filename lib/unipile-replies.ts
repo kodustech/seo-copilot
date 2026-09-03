@@ -47,6 +47,7 @@ export async function findEnrollmentsByLinkedInIdentities(
     contactName: string | null;
     contactEmail: string | null;
     companyName: string;
+    createdAt: string | null;
   }>
 > {
   if (identities.length === 0) return [];
@@ -56,7 +57,7 @@ export async function findEnrollmentsByLinkedInIdentities(
   const { data, error } = await client
     .from("outreach_enrollments")
     .select(
-      "id, status, sequence_id, contact_linkedin, contact_name, contact_email, company_name",
+      "id, status, sequence_id, contact_linkedin, contact_name, contact_email, company_name, created_at",
     )
     .not("contact_linkedin", "is", null)
     .order("updated_at", { ascending: false })
@@ -71,6 +72,7 @@ export async function findEnrollmentsByLinkedInIdentities(
     contactName: string | null;
     contactEmail: string | null;
     companyName: string;
+    createdAt: string | null;
   }> = [];
 
   for (const row of data ?? []) {
@@ -84,8 +86,220 @@ export async function findEnrollmentsByLinkedInIdentities(
         contactName: (row.contact_name as string | null) ?? null,
         contactEmail: (row.contact_email as string | null) ?? null,
         companyName: (row.company_name as string) || "",
+        createdAt: (row.created_at as string | null) ?? null,
       });
     }
+  }
+  return hits;
+}
+
+type EnrollmentHit = Awaited<ReturnType<typeof findEnrollmentsByLinkedInIdentities>>[number];
+
+/**
+ * A LinkedIn message we sent by hand (the step failed on Unipile, or the
+ * operator typed it in LinkedIn) leaves no send task, so the enrollment never
+ * counts as contacted and the account shows "Never". The chat has our
+ * outbound messages with timestamps: mark the enrollment's pending LinkedIn
+ * tasks as sent, in order, one per message after the enrollment started, and
+ * write the send onto the CRM account like a machine send would.
+ */
+async function reconcileManualLinkedInSends(
+  client: SupabaseClient,
+  enrollment: EnrollmentHit,
+  outboundTimestamps: string[],
+  companyId: string | null,
+): Promise<number> {
+  const startedAt = enrollment.createdAt ? Date.parse(enrollment.createdAt) : 0;
+  const ours = outboundTimestamps
+    .filter((t) => Date.parse(t) >= startedAt)
+    .sort((a, b) => Date.parse(a) - Date.parse(b));
+  if (ours.length === 0) return 0;
+  const { data: tasks } = await client
+    .from("outreach_send_tasks")
+    .select("id,status,scheduled_for")
+    .eq("enrollment_id", enrollment.id)
+    .eq("channel", "linkedin")
+    .neq("status", "sent")
+    .neq("status", "cancelled")
+    .order("scheduled_for", { ascending: true });
+  const pending = tasks ?? [];
+  // Messages already accounted for: a sent LinkedIn task whose sent_at sits
+  // within a few minutes of the chat message (machine sends land seconds
+  // apart; a reconciled manual send carries the exact timestamp). Pairing
+  // by time keeps a manual message that came before a machine step from
+  // being mistaken for it, and makes a second pass a no-op.
+  const { data: sentTasks } = await client
+    .from("outreach_send_tasks")
+    .select("sent_at")
+    .eq("enrollment_id", enrollment.id)
+    .eq("channel", "linkedin")
+    .eq("status", "sent")
+    .not("sent_at", "is", null);
+  const unclaimed = (sentTasks ?? []).map((t) => Date.parse(String(t.sent_at))).filter((n) => Number.isFinite(n));
+  const TOLERANCE_MS = 10 * 60 * 1000;
+  const toRecord = ours.filter((ts) => {
+    const t = Date.parse(ts);
+    let best = -1;
+    for (let i = 0; i < unclaimed.length; i++) {
+      if (Math.abs(unclaimed[i] - t) <= TOLERANCE_MS && (best < 0 || Math.abs(unclaimed[i] - t) < Math.abs(unclaimed[best] - t))) best = i;
+    }
+    if (best < 0) return true;
+    unclaimed.splice(best, 1);
+    return false;
+  });
+  if (toRecord.length === 0) return 0;
+
+  // Steps to hang created tasks on when the enrollment has none left
+  // (paused early, or the task rows were never generated).
+  let linkedinSteps: Array<{ id: string; position: number }> = [];
+  if (pending.length < toRecord.length && enrollment.sequenceId) {
+    const { data: steps } = await client
+      .from("outreach_sequence_steps")
+      .select("id,position")
+      .eq("sequence_id", enrollment.sequenceId)
+      .eq("channel", "linkedin")
+      .order("position", { ascending: true });
+    linkedinSteps = (steps ?? []) as Array<{ id: string; position: number }>;
+  }
+
+  let marked = 0;
+  for (let i = 0; i < toRecord.length; i++) {
+    const sentAt = toRecord[i];
+    if (i < pending.length) {
+      const { error } = await client
+        .from("outreach_send_tasks")
+        .update({
+          status: "sent",
+          sent_at: sentAt,
+          provider: "linkedin_manual",
+          error: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", pending[i].id as string);
+      if (error) continue;
+    } else {
+      const step = linkedinSteps[Math.min(i, linkedinSteps.length - 1)];
+      if (!step) break;
+      const { error } = await client.from("outreach_send_tasks").insert({
+        enrollment_id: enrollment.id,
+        step_id: step.id,
+        channel: "linkedin",
+        mode: "semi",
+        status: "sent",
+        scheduled_for: sentAt,
+        sent_at: sentAt,
+        provider: "linkedin_manual",
+        meta: { reconciled_from_chat: true },
+      });
+      if (error) continue;
+    }
+    marked += 1;
+    if (companyId) {
+      try {
+        const { logActivity } = await import("@/lib/crm");
+        await logActivity(client, companyId, "outreach_sent", {
+          summary: `LinkedIn sent to ${enrollment.contactName ?? "contact"} (manual, from chat)`,
+          meta: { channel: "linkedin", enrollment_id: enrollment.id, sequence_id: enrollment.sequenceId, reconciled_from_chat: true },
+          actorEmail: null,
+          touch: false,
+        });
+        await client.rpc("bump_outreach_counters", { p_company_id: companyId, p_sent_at: sentAt, p_channel: "linkedin" });
+      } catch {
+        /* bookkeeping only */
+      }
+    }
+  }
+  return marked;
+}
+
+function normalizeName(s: string | null | undefined): string {
+  return (s ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Fallback when no enrollment carries the attendee's LinkedIn identity: match
+ * by full name among recent enrollments. Most research-table enrollments have
+ * no contact_linkedin, or a vanity URL that never equals the provider id the
+ * chat exposes, so identity matching alone left most replies unmatched and
+ * the sequences "paused" by hand. First + last name must both agree; a bare
+ * first name is not a match.
+ */
+type NameMatchRow = {
+  id: string;
+  status: string;
+  sequence_id: string | null;
+  contact_linkedin: string | null;
+  contact_name: string | null;
+  contact_email: string | null;
+  company_name: string | null;
+  created_at: string | null;
+};
+
+/** Recent enrollments with a name, loaded once and matched in memory. */
+export async function loadEnrollmentsForNameMatch(
+  client: SupabaseClient,
+  sinceDays = 120,
+): Promise<NameMatchRow[]> {
+  const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString();
+  const { data, error } = await client
+    .from("outreach_enrollments")
+    .select(
+      "id, status, sequence_id, contact_linkedin, contact_name, contact_email, company_name, created_at",
+    )
+    .not("contact_name", "is", null)
+    .gte("created_at", since)
+    .order("updated_at", { ascending: false })
+    .limit(3000);
+  if (error) throw new Error(error.message);
+  return (data ?? []) as NameMatchRow[];
+}
+
+export async function findEnrollmentsByContactName(
+  client: SupabaseClient,
+  name: string | null | undefined,
+  opts?: { sinceDays?: number; rows?: NameMatchRow[] },
+): Promise<EnrollmentHit[]> {
+  const wanted = normalizeName(name);
+  const parts = wanted.split(" ");
+  if (parts.length < 2) return [];
+  const data = opts?.rows ?? (await loadEnrollmentsForNameMatch(client, opts?.sinceDays));
+  const hits: EnrollmentHit[] = [];
+  for (const row of data ?? []) {
+    const n = normalizeName(row.contact_name as string);
+    const p = n.split(" ");
+    if (p.length < 2) continue;
+    // "Bruno Henrique" on the enrollment, "Bruno Henrique Ramos Fernandes"
+    // on LinkedIn: the shorter name as a prefix of the longer one counts.
+    const same =
+      n === wanted ||
+      wanted.startsWith(`${n} `) ||
+      n.startsWith(`${wanted} `) ||
+      (p[0] === parts[0] && p[p.length - 1] === parts[parts.length - 1]);
+    if (!same) continue;
+    hits.push({
+      id: row.id as string,
+      status: row.status as string,
+      sequenceId: (row.sequence_id as string | null) ?? null,
+      contactLinkedin: (row.contact_linkedin as string | null) ?? null,
+      contactName: (row.contact_name as string | null) ?? null,
+      contactEmail: (row.contact_email as string | null) ?? null,
+      companyName: (row.company_name as string) || "",
+      createdAt: (row.created_at as string | null) ?? null,
+    });
+  }
+  // Two people with the same name at different companies: a name alone
+  // cannot say which one wrote, and stopping the wrong sequence is worse
+  // than leaving both running. Identity matching still finds them.
+  const companies = new Set(hits.map((h) => normalizeName(h.companyName)));
+  if (companies.size > 1) {
+    console.warn("[unipile] name matches several companies, skipped:", wanted, [...companies]);
+    return [];
   }
   return hits;
 }
@@ -495,7 +709,7 @@ export async function syncUnipileLinkedInInbox(
     };
   }
 
-  const chatLimit = Math.min(80, Math.max(5, opts?.chatLimit ?? 40));
+  const chatLimit = Math.min(300, Math.max(5, opts?.chatLimit ?? 40));
   const messagesPerChat = Math.min(40, Math.max(5, opts?.messagesPerChat ?? 20));
 
   let accounts = 0;
@@ -505,16 +719,28 @@ export async function syncUnipileLinkedInInbox(
   let enrollmentsMarkedReplied = 0;
   const threadIds = new Set<string>();
   const enrollmentsStopped = new Set<string>();
+  // Enrollments for the name fallback, loaded on first use and shared by
+  // every chat in this run instead of one 3000-row query per chat.
+  let nameRows: Awaited<ReturnType<typeof loadEnrollmentsForNameMatch>> | null = null;
 
   try {
     const liAccounts = await listLinkedInAccounts();
     accounts = liAccounts.length;
 
     for (const account of liAccounts) {
-      const { items: chats } = await listUnipileChats({
-        accountId: account.id,
-        limit: chatLimit,
-      });
+      // Unipile pages at 100; follow the cursor until chatLimit so a busy
+      // inbox (150+ chats a fortnight) is not cut at the first page.
+      const chats: Awaited<ReturnType<typeof listUnipileChats>>["items"] = [];
+      let cursor: string | null = null;
+      do {
+        const page = await listUnipileChats({
+          accountId: account.id,
+          limit: Math.min(100, chatLimit - chats.length),
+          cursor,
+        });
+        chats.push(...page.items);
+        cursor = page.cursor;
+      } while (cursor && chats.length < chatLimit);
 
       for (const chat of chats) {
         chatsScanned += 1;
@@ -573,10 +799,14 @@ export async function syncUnipileLinkedInInbox(
           identities,
         );
 
-        const enrollments = await findEnrollmentsByLinkedInIdentities(
+        let enrollments = await findEnrollmentsByLinkedInIdentities(
           client,
           expanded,
         );
+        if (enrollments.length === 0 && other?.name) {
+          nameRows ??= await loadEnrollmentsForNameMatch(client);
+          enrollments = await findEnrollmentsByContactName(client, other.name, { rows: nameRows });
+        }
         if (enrollments.length === 0) continue;
 
         const stoppable = enrollments.filter(
@@ -665,6 +895,8 @@ export async function syncUnipileLinkedInInbox(
               contactEmail: primary.contactEmail,
               contactLinkedin: primary.contactLinkedin ?? contactLinkedin,
               companyName: primary.companyName,
+              // The name fallback still means "matched through the LinkedIn
+              // chat"; matched_how has a CHECK constraint and no value for it.
               matchedHow: "linkedin_profile",
             });
             threadIds.add(upserted.threadId);
@@ -674,13 +906,52 @@ export async function syncUnipileLinkedInInbox(
           }
         }
 
-        // Stop sequences for matched enrollments (inbound present)
+        // Stop sequences for matched enrollments, but only when the person
+        // wrote back AFTER this enrollment started. A LinkedIn chat keeps the
+        // whole history: a "não, nossos desafios são outros" from 2024 sat in
+        // the same thread as the 2026 sequence and marked it replied, which
+        // put five silent accounts in the reply count and moved them to
+        // engaged in the CRM.
+        // Our own messages in this chat: manual sends the engine never saw.
+        // The thread belongs to the primary enrollment (the one the messages
+        // were upserted under), so only it gets the sends; a contact with
+        // two enrollments would otherwise count every message twice.
+        const outboundTs = messages
+          .filter((m) => m.isSender && m.timestamp)
+          .map((m) => m.timestamp as string);
+        if (outboundTs.length) {
+          try {
+            const { data: enrRow } = await client
+              .from("outreach_enrollments")
+              .select("crm_company_id")
+              .eq("id", primary.id)
+              .maybeSingle();
+            await reconcileManualLinkedInSends(
+              client,
+              primary,
+              outboundTs,
+              (enrRow?.crm_company_id as string | null) ?? null,
+            );
+          } catch (err) {
+            console.warn("[unipile] reconcile manual sends failed", primary.id, err);
+          }
+        }
+
+        const inboundDates = inbound
+          .map((m) => (m.timestamp ? Date.parse(m.timestamp) : NaN))
+          .filter((t) => Number.isFinite(t));
+        const latestInbound = inboundDates.length ? Math.max(...inboundDates) : null;
         for (const enr of stoppable) {
           if (enrollmentsStopped.has(enr.id)) continue;
           if (enr.status === "replied") {
             enrollmentsStopped.add(enr.id);
             continue;
           }
+          // Skip only when both dates are known and the last reply predates
+          // the enrollment; a message without a parseable date is still a
+          // reply.
+          const startedAt = enr.createdAt ? Date.parse(enr.createdAt) : NaN;
+          if (latestInbound != null && Number.isFinite(startedAt) && latestInbound < startedAt) continue;
           try {
             await markEnrollmentReplied(client, enr.id, {
               revive: false,

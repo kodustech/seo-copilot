@@ -75,6 +75,8 @@ export async function PATCH(
     updates.targetCount = body.targetCount;
   if (typeof body.currentCount === "number")
     updates.currentCount = body.currentCount;
+  if ("funnelMetric" in body)
+    updates.funnelMetric = typeof body.funnelMetric === "string" ? body.funnelMetric : null;
   if (typeof body.periodStart === "string")
     updates.periodStart = body.periodStart;
   if (typeof body.periodEnd === "string") updates.periodEnd = body.periodEnd;

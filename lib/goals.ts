@@ -46,6 +46,9 @@ export type Goal = {
   responsibleEmail: string | null;
   projectRef: string | null;
   notes: string | null;
+  /** Funnel stage this goal targets (a node id from lib/funnel). When set,
+   *  current_count is written by the funnel sync, never by hand. */
+  funnelMetric: string | null;
   // Set when this goal was materialized from a recurrence rule.
   recurrenceId: string | null;
   createdByEmail: string | null;
@@ -67,6 +70,7 @@ export type CreateGoalInput = {
   responsibleEmail?: string | null;
   projectRef?: string | null;
   notes?: string | null;
+  funnelMetric?: string | null;
   recurrenceId?: string | null;
   createdByEmail?: string | null;
 };
@@ -142,6 +146,7 @@ type Row = {
   responsible_email: string | null;
   project_ref: string | null;
   notes: string | null;
+  funnel_metric?: string | null;
   recurrence_id: string | null;
   created_by_email: string | null;
   created_at: string;
@@ -165,6 +170,7 @@ function rowToGoal(row: Row): Goal {
     responsibleEmail: row.responsible_email,
     projectRef: row.project_ref,
     notes: row.notes,
+    funnelMetric: row.funnel_metric ?? null,
     recurrenceId: row.recurrence_id ?? null,
     createdByEmail: row.created_by_email,
     createdAt: row.created_at,
@@ -247,6 +253,7 @@ export async function createGoal(
     responsible_email: trimOrNull(input.responsibleEmail),
     project_ref: trimOrNull(input.projectRef),
     notes: trimOrNull(input.notes),
+    ...(input.funnelMetric !== undefined ? { funnel_metric: trimOrNull(input.funnelMetric) } : {}),
     recurrence_id: input.recurrenceId ?? null,
     created_by_email: trimOrNull(input.createdByEmail),
   };
@@ -290,6 +297,7 @@ export async function updateGoal(
   if ("projectRef" in updates)
     patch.project_ref = trimOrNull(updates.projectRef ?? null);
   if ("notes" in updates) patch.notes = trimOrNull(updates.notes ?? null);
+  if ("funnelMetric" in updates) patch.funnel_metric = trimOrNull(updates.funnelMetric ?? null);
 
   const { data, error } = await client
     .from("goals")
@@ -315,6 +323,11 @@ export async function incrementGoalProgress(
     .single();
   if (readErr || !existing) {
     throw new Error(readErr?.message || "Goal not found");
+  }
+  if ((existing as Row).funnel_metric) {
+    throw new Error(
+      "Esta meta segue uma métrica do funil; o progresso é escrito pelo sync do funil, não à mão.",
+    );
   }
   const current = (existing as Row).current_count + delta;
   const target = (existing as Row).target_count;
@@ -491,6 +504,8 @@ export async function recalculateGoalProgress(
     .eq("id", goalId)
     .single();
   if (readErr || !existing) return null;
+  // Linked tasks never overwrite a funnel-measured number.
+  if ((existing as Row).funnel_metric) return null;
 
   const target = (existing as Row).target_count;
   const prevStatus = (existing as Row).status as GoalStatus;

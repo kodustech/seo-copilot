@@ -8,12 +8,24 @@ export const GMAIL_SEND_SCOPE =
 export const GMAIL_READONLY_SCOPE =
   "https://www.googleapis.com/auth/gmail.readonly";
 
+/** Read-only calendar: the CRM meeting sync matches event attendees to accounts. */
+export const CALENDAR_READONLY_SCOPE =
+  "https://www.googleapis.com/auth/calendar.readonly";
+
 const GMAIL_SCOPES = [
   GMAIL_SEND_SCOPE,
   GMAIL_READONLY_SCOPE,
+  CALENDAR_READONLY_SCOPE,
   "https://www.googleapis.com/auth/userinfo.email",
   "openid",
 ].join(" ");
+
+export function scopesIncludeCalendarReadonly(
+  scopes: string | null | undefined,
+): boolean {
+  if (!scopes?.trim()) return false;
+  return scopes.split(/\s+/).includes(CALENDAR_READONLY_SCOPE);
+}
 
 export function scopesIncludeGmailReadonly(
   scopes: string | null | undefined,

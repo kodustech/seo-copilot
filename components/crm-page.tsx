@@ -90,6 +90,7 @@ import {
 const STATUS_LABELS: Record<CompanyStatus, { label: string; className: string }> = {
   lead: { label: "Lead", className: "bg-neutral-500/20 text-neutral-300" },
   engaged: { label: "Engaged", className: "bg-cyan-500/20 text-cyan-300" },
+  meeting: { label: "Meeting", className: "bg-teal-500/20 text-teal-300" },
   qualified: { label: "Qualified", className: "bg-sky-500/20 text-sky-300" },
   poc: { label: "POC", className: "bg-amber-500/20 text-amber-300" },
   negotiation: { label: "Negotiation", className: "bg-violet-500/20 text-violet-300" },
@@ -2296,6 +2297,7 @@ function OverviewTab({
   const [devCount, setDevCount] = useState(
     company.devCount != null ? String(company.devCount) : "",
   );
+  const [arr, setArr] = useState(company.arr != null ? String(company.arr) : "");
   const [notes, setNotes] = useState(company.notes ?? "");
 
   // Keep local fields in sync when the drawer company changes.
@@ -2304,6 +2306,7 @@ function OverviewTab({
     setDomain(company.domain ?? "");
     setIndustry(company.industry ?? "");
     setDevCount(company.devCount != null ? String(company.devCount) : "");
+    setArr(company.arr != null ? String(company.arr) : "");
     setNotes(company.notes ?? "");
   }, [
     company.id,
@@ -2311,6 +2314,7 @@ function OverviewTab({
     company.domain,
     company.industry,
     company.devCount,
+    company.arr,
     company.notes,
   ]);
 
@@ -2462,6 +2466,31 @@ function OverviewTab({
           <p className="mt-1 text-[11px] text-neutral-500">
             Engineering headcount (ICP). Not Kodus product seats — those are
             on the Product tab.
+          </p>
+        </Field>
+        <Field label="ARR (R$ / year)">
+          <Input
+            type="number"
+            min={0}
+            step={1000}
+            value={arr}
+            onChange={(e) => setArr(e.target.value)}
+            onBlur={() => {
+              const current = company.arr != null ? String(company.arr) : "";
+              if (arr === current) return;
+              // A year of contract value is never negative; a stray "-" or a
+              // non-number clears the field instead of poisoning the funnel.
+              const parsed = Number(arr);
+              const next = arr.trim() && Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+              if (next == null) setArr("");
+              onPatch({ arr: next });
+            }}
+            placeholder="ex: 129000"
+            className="border-white/10 bg-neutral-900"
+          />
+          <p className="mt-1 text-[11px] text-neutral-500">
+            Contract value per year, in BRL. The funnel sums this when the
+            account becomes a customer; empty counts as zero.
           </p>
         </Field>
       </div>

@@ -292,7 +292,42 @@ async function runPersonaTickCron(): Promise<void> {
   }
 }
 
+async function runCrmMeetingsCron(): Promise<void> {
+  const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
+  const { syncCalendarMeetings } = await import("@/lib/crm-meetings");
+  const res = await syncCalendarMeetings(getSupabaseServiceClient());
+  console.log(
+    `[cron] crm-meetings: ${res.mailboxes} mailbox(es), ${res.eventsScanned} events, ${res.eventsMatched} matched, ${res.companiesTouched} accounts, ${res.statusMoved} moved to meeting` +
+      (res.skippedNoScope.length ? `, no calendar scope: ${res.skippedNoScope.join(", ")}` : "") +
+      (res.errors.length ? `, errors: ${res.errors.length}` : ""),
+  );
+}
+
+async function runFunnelGoalsCron(): Promise<void> {
+  const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
+  const { syncFunnelGoals } = await import("@/lib/funnel/goals");
+  const { fetchFunnel } = await import("@/lib/funnel/metrics");
+  const res = await syncFunnelGoals(getSupabaseServiceClient(), fetchFunnel);
+  console.log(
+    `[cron] funnel-goals: ${res.goals} goal(s), ${res.updated} updated` +
+      (res.skipped.length ? `, skipped: ${res.skipped.join("; ")}` : "") +
+      (res.errors.length ? `, errors: ${res.errors.join("; ")}` : ""),
+  );
+}
+
 const JOBS: JobDefinition[] = [
+  {
+    // Daily 06:00 UTC (03:00 BRT): write measured funnel numbers into goals.
+    name: "funnel-goals",
+    schedule: "0 6 * * *",
+    run: runFunnelGoalsCron,
+  },
+  {
+    // Every 2 h: match calendar events to CRM accounts (reply → meeting).
+    name: "crm-meetings",
+    schedule: "30 */2 * * *",
+    run: runCrmMeetingsCron,
+  },
   {
     name: "scheduled-jobs",
     schedule: "0 * * * *",
