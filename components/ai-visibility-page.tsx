@@ -139,18 +139,18 @@ function MatrixCell({ result, active, onOpen }: { result: PromptEngineResult | u
   let main = "–";
   let aside: string | null = null;
   if (result && state !== "empty") {
-    if (state === "error") main = "erro";
+    if (state === "error") main = "error";
     else if (result.samples > 1) {
       main = `${result.mentioned}/${result.samples}`;
       if (result.avgPosition != null) aside = `#${result.avgPosition}`;
     } else if (result.mentioned) {
-      main = result.avgPosition != null ? `#${result.avgPosition}` : "cita";
-      if (result.avgPosition != null && result.listSize != null) aside = `de ${result.listSize}`;
+      main = result.avgPosition != null ? `#${result.avgPosition}` : "named";
+      if (result.avgPosition != null && result.listSize != null) aside = `of ${result.listSize}`;
     } else {
-      main = "não";
+      main = "no";
     }
     if (result.engine === "google_ai") {
-      if (result.extra.aiOverview === false) aside = "sem overview";
+      if (result.extra.aiOverview === false) aside = "no overview";
       else if (result.extra.organicRank != null) aside = `org #${result.extra.organicRank}`;
     }
   }
@@ -167,7 +167,7 @@ function MatrixCell({ result, active, onOpen }: { result: PromptEngineResult | u
       <span className={cn("inline-block size-2.5 shrink-0 rounded-[3px]", SWATCH[state])} />
       <span className={cn("whitespace-nowrap", state === "all" || state === "some" ? "text-neutral-100" : state === "error" ? "text-amber-300" : "text-neutral-500")}>{main}</span>
       {aside ? <span className="whitespace-nowrap text-neutral-500">{aside}</span> : null}
-      {result?.brandCited ? <Link2 className="ml-auto size-3 shrink-0 text-neutral-600" aria-label="Citou uma página nossa" /> : null}
+      {result?.brandCited ? <Link2 className="ml-auto size-3 shrink-0 text-neutral-600" aria-label="Cited one of our pages" /> : null}
     </button>
   );
 }
@@ -183,17 +183,17 @@ function SamplePanel({ run, total }: { run: AiPromptRun; total: number }) {
   return (
     <article className="rounded-lg border border-white/[0.06] bg-neutral-950/60">
       <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-white/[0.06] px-4 py-2 text-xs text-neutral-400">
-        {total > 1 ? <span className="font-medium text-neutral-200">Amostra {run.sample} de {total}</span> : <span className="font-medium text-neutral-200">Resposta</span>}
-        <span>{run.modelName ?? "modelo?"}</span>
+        {total > 1 ? <span className="font-medium text-neutral-200">Sample {run.sample} of {total}</span> : <span className="font-medium text-neutral-200">Answer</span>}
+        <span>{run.modelName ?? "model?"}</span>
         {run.mentioned ? (
-          <span className="text-emerald-300">Kodus {run.position != null ? `#${run.position}${run.listSize != null ? ` de ${run.listSize}` : ""}` : "citado"}</span>
+          <span className="text-emerald-300">Kodus {run.position != null ? `#${run.position}${run.listSize != null ? ` of ${run.listSize}` : ""}` : "named"}</span>
         ) : (
-          <span className="text-neutral-500">Kodus ausente</span>
+          <span className="text-neutral-500">Kodus absent</span>
         )}
         {run.engine === "google_ai" ? (
           <span>
-            {run.extra.aiOverview ? "AI Overview presente" : "sem AI Overview"}
-            {run.extra.organicRank != null ? ` · orgânico #${run.extra.organicRank}` : " · fora do top 10 orgânico"}
+            {run.extra.aiOverview ? "AI Overview present" : "no AI Overview"}
+            {run.extra.organicRank != null ? ` · organic #${run.extra.organicRank}` : " · outside the organic top 10"}
           </span>
         ) : null}
         {run.costUsd != null ? <span className="ml-auto text-neutral-600">{usd(run.costUsd)}</span> : null}
@@ -204,7 +204,7 @@ function SamplePanel({ run, total }: { run: AiPromptRun; total: number }) {
           <MarkdownContent text={showAll || !long ? text : `${text.slice(0, 1400)}…`} className="text-[13px] text-neutral-300" />
           {long ? (
             <button type="button" onClick={() => setShowAll((v) => !v)} className="mt-2 text-xs text-neutral-400 hover:text-neutral-200">
-              {showAll ? "mostrar menos" : "mostrar tudo"}
+              {showAll ? "show less" : "show all"}
             </button>
           ) : null}
         </div>
@@ -213,7 +213,7 @@ function SamplePanel({ run, total }: { run: AiPromptRun; total: number }) {
         <footer className="grid gap-4 border-t border-white/[0.06] px-4 py-3 text-xs md:grid-cols-2">
           {run.citations.length ? (
             <div className="min-w-0">
-              <p className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">Fontes citadas</p>
+              <p className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">Sources cited</p>
               <ol className="space-y-0.5">
                 {run.citations.slice(0, 12).map((c) => {
                   const host = c.url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
@@ -233,19 +233,19 @@ function SamplePanel({ run, total }: { run: AiPromptRun; total: number }) {
           <div className="min-w-0 space-y-2">
             {run.competitors.length ? (
               <div>
-                <p className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">Concorrentes nomeados</p>
+                <p className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">Competitors named</p>
                 <p className="text-neutral-300">{run.competitors.join(", ")}</p>
               </div>
             ) : null}
             {run.fanOutQueries.length ? (
               <div>
-                <p className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">{run.engine === "google_ai" ? "Buscas relacionadas" : "O modelo pesquisou"}</p>
+                <p className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">{run.engine === "google_ai" ? "Related searches" : "The model searched for"}</p>
                 <p className="text-neutral-400">{run.fanOutQueries.map((q) => `“${q}”`).join(", ")}</p>
               </div>
             ) : null}
             {run.engine === "google_ai" && run.extra.organicTop?.length ? (
               <div>
-                <p className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">Top 10 orgânico</p>
+                <p className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">Organic top 10</p>
                 <p className="text-neutral-400">{run.extra.organicTop.join(", ")}</p>
               </div>
             ) : null}
@@ -313,15 +313,15 @@ function SettingsForm({
   return (
     <>
         <DialogHeader>
-          <DialogTitle>Rodada semanal</DialogTitle>
+          <DialogTitle>Weekly run</DialogTitle>
           <DialogDescription className="text-neutral-400">
-            Quando perguntar, a quem, e quantas vezes por prompt. Mudar aqui vale para a próxima rodada, sem deploy.
+            When to ask, which assistants, and how many times per prompt. Changes apply to the next run, no deploy needed.
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-5">
           <div className="grid grid-cols-[120px_1fr] items-center gap-3">
-            <label className="text-sm text-neutral-300">Dia da semana</label>
+            <label className="text-sm text-neutral-300">Day of week</label>
             <div className="flex items-center gap-3">
               <Select value={String(weekday)} onValueChange={(v) => setWeekday(Number(v))}>
                 <SelectTrigger className="h-9 w-40 border-white/10 bg-neutral-900 text-sm">
@@ -335,15 +335,15 @@ function SettingsForm({
                   ))}
                 </SelectContent>
               </Select>
-              <span className="text-xs text-neutral-500">07:00 UTC · última: {settings.lastRunOn ?? "nunca"}</span>
+              <span className="text-xs text-neutral-500">07:00 UTC · last run: {settings.lastRunOn ?? "never"}</span>
             </div>
           </div>
 
           <div>
             <div className="mb-2 grid grid-cols-[1fr_170px_88px] items-end gap-3 text-[11px] uppercase tracking-wider text-neutral-500">
-              <span>Assistente</span>
-              <span>Modelo</span>
-              <span>Amostras</span>
+              <span>Assistant</span>
+              <span>Model</span>
+              <span>Samples</span>
             </div>
             <div className="divide-y divide-white/[0.06] rounded-lg border border-white/[0.08]">
               {AI_ENGINES.map((engine) => {
@@ -356,7 +356,7 @@ function SettingsForm({
                       {ENGINE_LABEL[engine]}
                     </label>
                     {engine === "google_ai" ? (
-                      <span className="text-xs text-neutral-500">SERP com AI Overview</span>
+                      <span className="text-xs text-neutral-500">SERP with AI Overview</span>
                     ) : (
                       <Input
                         value={cfg?.model ?? DEFAULT_MODELS[engine]}
@@ -379,14 +379,14 @@ function SettingsForm({
               })}
             </div>
             <p className="mt-2 text-xs text-neutral-500">
-              A resposta varia entre execuções; com mais amostras a taxa fica mais estável. Custo medido por pergunta: Perplexity sonar US$ 0,006 · ChatGPT gpt-5.5 US$ 0,09 · Google AI Overview US$ 0,003 · Gemini e Claude na faixa do ChatGPT.
+              Answers vary between runs; more samples make the rate steadier. Measured cost per question: Perplexity sonar US$ 0.006 · ChatGPT gpt-5.5 US$ 0.09 · Google AI Overview US$ 0.003 · Gemini and Claude in ChatGPT's range.
             </p>
           </div>
         </div>
 
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="rounded-md px-3 py-1.5 text-sm text-neutral-400 hover:text-neutral-200">
-            Cancelar
+            Cancel
           </button>
           <button
             type="button"
@@ -396,7 +396,7 @@ function SettingsForm({
             disabled={!dirty || saving || engines.length === 0}
             className="rounded-md bg-violet-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-40"
           >
-            {saving ? "Salvando…" : "Salvar"}
+            {saving ? "Saving…" : "Save"}
           </button>
         </div>
     </>
@@ -439,14 +439,14 @@ export function AiVisibilityPage() {
     try {
       const res = await fetch(`/api/ai-visibility/summary${runOn ? `?runOn=${runOn}` : ""}`, { headers });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Falha ao carregar");
+      if (!res.ok) throw new Error(json.error ?? "Could not load");
       setSummary(json.summary as VisibilitySummary);
       setDates(json.dates as string[]);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Falha ao carregar";
+      const msg = err instanceof Error ? err.message : "Could not load";
       setError(
         /ai_prompts|ai_visibility_settings|ai_prompt_runs|ai_prompt_run_dates/.test(msg) && /schema cache|does not exist/.test(msg)
-          ? "As tabelas de AI visibility ainda não existem neste ambiente. Rode as migrations de ai_visibility."
+          ? "The AI visibility tables do not exist in this environment yet. Run the ai_visibility migrations."
           : msg,
       );
       setSummary(null);
@@ -526,7 +526,7 @@ export function AiVisibilityPage() {
   };
 
   const removePrompt = async (id: string) => {
-    if (!window.confirm("Apagar o prompt e o histórico dele?")) return;
+    if (!window.confirm("Delete this prompt and its history?")) return;
     const res = await fetch(`/api/ai-visibility/prompts/${id}`, { method: "DELETE", headers });
     if (!res.ok) {
       const json = await res.json().catch(() => ({}));
@@ -539,7 +539,7 @@ export function AiVisibilityPage() {
   const engines = summary?.settings.engines.map((e) => e.engine) ?? [];
   const activeCount = summary?.prompts.filter((p) => p.prompt.active).length ?? 0;
   const engineCount = summary?.engines.length ?? 0;
-  const configLabel = summary ? `${WEEKDAY_LABELS[summary.settings.weekday]} · ${engines.length} assistente${engines.length === 1 ? "" : "s"}` : "";
+  const configLabel = summary ? `${WEEKDAY_LABELS[summary.settings.weekday]} · ${engines.length} assistant${engines.length === 1 ? "" : "s"}` : "";
   const totalSamples = summary?.engines.reduce((s, e) => s + e.samples, 0) ?? 0;
   const totalMentioned = summary?.engines.reduce((s, e) => s + e.mentioned, 0) ?? 0;
   const rollingAll = (() => {
@@ -564,7 +564,7 @@ export function AiVisibilityPage() {
             <Bot className="size-5 text-violet-400" /> AI visibility
           </h1>
           <p className="mt-1 max-w-2xl text-sm text-neutral-400">
-            Toda semana, prompts de comprador vão aos assistentes com busca ligada. A leitura: onde o Kodus aparece, em que posição, e quais páginas o modelo usa como fonte.
+            Every week, buyer prompts go to the assistants with web search on. The reading: where Kodus shows up, in which position, and which pages the model uses as sources.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -576,7 +576,7 @@ export function AiVisibilityPage() {
               <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
                 {dates.map((d) => (
                   <SelectItem key={d} value={d}>
-                    Rodada {d}
+                    Run {d}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -586,23 +586,23 @@ export function AiVisibilityPage() {
             type="button"
             onClick={() => setSettingsOpen(true)}
             className="inline-flex h-8 items-center gap-2 rounded-md border border-white/[0.08] px-2.5 text-xs text-neutral-300 hover:bg-white/[0.05] hover:text-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60"
-            title="Configurar a rodada semanal"
+            title="Configure the weekly run"
           >
             <Settings2 className="size-3.5 text-neutral-500" />
-            {configLabel || "Configurar"}
+            {configLabel || "Configure"}
           </button>
-          <IconButton label="Recarregar" onClick={() => load()}>
+          <IconButton label="Reload" onClick={() => load()}>
             <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
           </IconButton>
           <button
             type="button"
             onClick={() => runNow()}
             disabled={running != null || activeCount === 0}
-            title="Pergunta agora o que ainda não foi perguntado hoje"
+            title="Ask now whatever has not been asked today"
             className="inline-flex h-8 items-center gap-1.5 rounded-md bg-violet-600 px-3 text-xs font-medium text-white hover:bg-violet-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 disabled:opacity-40"
           >
             {running === "all" ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
-            Rodar agora
+            Run now
           </button>
         </div>
       </div>
@@ -610,8 +610,8 @@ export function AiVisibilityPage() {
       {error ? <p className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">{error}</p> : null}
       {lastRun ? (
         <p className="rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-200">
-          Rodou: {lastRun.asked} perguntas, Kodus em {lastRun.mentioned}. {lastRun.skipped} já feitas hoje, {lastRun.failed} falhas, {usd(lastRun.costUsd)}.
-          {lastRun.errors.length ? ` Erros: ${lastRun.errors.slice(0, 2).join(" | ")}` : ""}
+          Done: {lastRun.asked} questions, Kodus named in {lastRun.mentioned}. {lastRun.skipped} already asked today, {lastRun.failed} failed, {usd(lastRun.costUsd)}.
+          {lastRun.errors.length ? ` Errors: ${lastRun.errors.slice(0, 2).join(" | ")}` : ""}
         </p>
       ) : null}
 
@@ -624,27 +624,27 @@ export function AiVisibilityPage() {
       {/* Reading of the run */}
       {summary && engineCount > 0 ? (
         <section>
-          <SectionHeader label={`Leitura da rodada ${summary.runOn}`} hint={`${usd(summary.totalCostUsd)} na rodada`} />
+          <SectionHeader label={`Reading of run ${summary.runOn}`} hint={`${usd(summary.totalCostUsd)} this run`} />
           <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
             <div className="rounded-lg border border-white/[0.06] bg-neutral-900/40 p-5">
-              <p className="text-[11px] font-medium uppercase tracking-wider text-neutral-500">Kodus citado</p>
+              <p className="text-[11px] font-medium uppercase tracking-wider text-neutral-500">Kodus named</p>
               <p className="mt-2 text-5xl font-semibold tabular-nums tracking-tight text-neutral-100">{pct(summary.overallShare)}</p>
               <p className="mt-2 text-sm text-neutral-400">
-                {totalMentioned} de {totalSamples} respostas, {activeCount} prompts, {engineCount} assistente{engineCount === 1 ? "" : "s"}.
+                {totalMentioned} of {totalSamples} answers, {activeCount} prompts, {engineCount} assistant{engineCount === 1 ? "" : "s"}.
               </p>
               <p className="mt-1 text-xs text-neutral-500">
-                {rollingAll ? `Média das últimas ${rollingAll.runs} rodadas: ${pct(rollingAll.share)}.` : "Primeira rodada; a média móvel aparece a partir da segunda."}
+                {rollingAll ? `Average of the last ${rollingAll.runs} runs: ${pct(rollingAll.share)}.` : "First run; the rolling average appears from the second one."}
               </p>
             </div>
             <div className="rounded-lg border border-white/[0.06] bg-neutral-900/40">
               <table className="w-full text-sm">
                 <thead className="text-[11px] uppercase tracking-wider text-neutral-500">
                   <tr className="border-b border-white/[0.06]">
-                    <th className="px-4 py-2 text-left font-medium">Assistente</th>
-                    <th className="px-3 py-2 text-left font-medium">Citado</th>
+                    <th className="px-4 py-2 text-left font-medium">Assistant</th>
+                    <th className="px-3 py-2 text-left font-medium">Named</th>
                     <th className="hidden px-3 py-2 text-right font-medium md:table-cell">Prompts</th>
-                    <th className="px-3 py-2 text-right font-medium">Posição</th>
-                    <th className="hidden px-3 py-2 text-right font-medium sm:table-cell">Nossa página</th>
+                    <th className="px-3 py-2 text-right font-medium">Position</th>
+                    <th className="hidden px-3 py-2 text-right font-medium sm:table-cell">Our page cited</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/[0.06]">
@@ -654,7 +654,7 @@ export function AiVisibilityPage() {
                         <p className="text-neutral-100">{e.label}</p>
                         <p className="text-[11px] text-neutral-500">
                           {e.model}
-                          {e.failed ? ` · ${e.failed} falha${e.failed === 1 ? "" : "s"}` : ""}
+                          {e.failed ? ` · ${e.failed} failed` : ""}
                         </p>
                       </td>
                       <td className="px-3 py-2.5">
@@ -663,7 +663,7 @@ export function AiVisibilityPage() {
                           <span className="w-12 text-right tabular-nums text-neutral-100">{pct(e.share)}</span>
                           <span className="hidden text-xs tabular-nums text-neutral-500 lg:inline">
                             {e.mentioned}/{e.samples}
-                            {e.rollingRuns > 1 && e.rollingShare != null ? ` · ${pct(e.rollingShare)} em ${e.rollingRuns}` : ""}
+                            {e.rollingRuns > 1 && e.rollingShare != null ? ` · ${pct(e.rollingShare)} over ${e.rollingRuns}` : ""}
                           </span>
                         </div>
                       </td>
@@ -685,14 +685,14 @@ export function AiVisibilityPage() {
       {summary ? (
         <section>
           <SectionHeader
-            label={`Prompts · ${activeCount} ativos`}
-            hint="Cada célula: quantas amostras citaram o Kodus, e a posição média na lista. Clique pra ler a resposta."
+            label={`Prompts · ${activeCount} active`}
+            hint="Each cell: how many samples named Kodus, and the average list position. Click to read the answer."
             right={
               <span className="flex items-center gap-3 text-[11px] text-neutral-500">
-                <span className="inline-flex items-center gap-1.5"><span className="inline-block size-2.5 rounded-[3px] bg-emerald-400" /> todas</span>
-                <span className="inline-flex items-center gap-1.5"><span className="inline-block size-2.5 rounded-[3px] bg-amber-400" /> parte</span>
-                <span className="inline-flex items-center gap-1.5"><span className="inline-block size-2.5 rounded-[3px] ring-1 ring-inset ring-white/20" /> nenhuma</span>
-                <span className="inline-flex items-center gap-1.5"><Link2 className="size-3" /> fonte nossa</span>
+                <span className="inline-flex items-center gap-1.5"><span className="inline-block size-2.5 rounded-[3px] bg-emerald-400" /> all</span>
+                <span className="inline-flex items-center gap-1.5"><span className="inline-block size-2.5 rounded-[3px] bg-amber-400" /> some</span>
+                <span className="inline-flex items-center gap-1.5"><span className="inline-block size-2.5 rounded-[3px] ring-1 ring-inset ring-white/20" /> none</span>
+                <span className="inline-flex items-center gap-1.5"><Link2 className="size-3" /> our page cited</span>
               </span>
             }
           />
@@ -706,7 +706,7 @@ export function AiVisibilityPage() {
                       {SHORT_LABEL[e]}
                     </th>
                   ))}
-                  <th className="w-[84px] px-2 py-2 text-right font-medium" title="Assistentes que citaram o Kodus nesta rodada">Presença</th>
+                  <th className="w-[84px] px-2 py-2 text-right font-medium" title="Assistants that named Kodus in this run">Present</th>
                   <th className="w-[92px] px-2 py-2" />
                 </tr>
               </thead>
@@ -730,7 +730,7 @@ export function AiVisibilityPage() {
                               <span className="block text-[11px] text-neutral-500">
                                 {prompt.language.toUpperCase()}
                                 {prompt.tags.length ? ` · ${prompt.tags.join(", ")}` : ""}
-                                {!prompt.active ? " · pausado" : ""}
+                                {!prompt.active ? " · paused" : ""}
                               </span>
                             </span>
                           </button>
@@ -751,13 +751,13 @@ export function AiVisibilityPage() {
                         </td>
                         <td className="px-2 py-1 text-right align-middle">
                           <div className="flex justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                            <IconButton label="Perguntar só este agora" onClick={() => runNow([prompt.id])} disabled={running != null} className="size-7 border-transparent">
+                            <IconButton label="Ask only this one now" onClick={() => runNow([prompt.id])} disabled={running != null} className="size-7 border-transparent">
                               {running === prompt.id ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
                             </IconButton>
-                            <IconButton label={prompt.active ? "Pausar" : "Ativar"} onClick={() => patchPrompt(prompt.id, { active: !prompt.active })} className="size-7 border-transparent">
+                            <IconButton label={prompt.active ? "Pause" : "Resume"} onClick={() => patchPrompt(prompt.id, { active: !prompt.active })} className="size-7 border-transparent">
                               {prompt.active ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
                             </IconButton>
-                            <IconButton label="Apagar" onClick={() => removePrompt(prompt.id)} className="size-7 border-transparent hover:text-red-300">
+                            <IconButton label="Delete" onClick={() => removePrompt(prompt.id)} className="size-7 border-transparent hover:text-red-300">
                               <Trash2 className="size-3.5" />
                             </IconButton>
                           </div>
@@ -780,7 +780,7 @@ export function AiVisibilityPage() {
                                     )}
                                   >
                                     {ENGINE_LABEL[e]}
-                                    {runs[e] ? <span className="ml-1.5 text-neutral-500">{runs[e]!.samples > 1 ? `${runs[e]!.mentioned}/${runs[e]!.samples}` : runs[e]!.mentioned ? "cita" : "não"}</span> : null}
+                                    {runs[e] ? <span className="ml-1.5 text-neutral-500">{runs[e]!.samples > 1 ? `${runs[e]!.mentioned}/${runs[e]!.samples}` : runs[e]!.mentioned ? "named" : "no"}</span> : null}
                                   </button>
                                 ))}
                             </div>
@@ -791,7 +791,7 @@ export function AiVisibilityPage() {
                                 ))}
                               </div>
                             ) : (
-                              <p className="text-xs text-neutral-500">Sem resposta nesta rodada.</p>
+                              <p className="text-xs text-neutral-500">No answer in this run.</p>
                             )}
                           </td>
                         </tr>
@@ -802,7 +802,7 @@ export function AiVisibilityPage() {
                 {summary.prompts.length === 0 ? (
                   <tr>
                     <td colSpan={engines.length + 3} className="px-4 py-8 text-center text-sm text-neutral-500">
-                      Nenhum prompt ainda. Escreva a pergunta como um comprador escreveria.
+                      No prompts yet. Write the question the way a buyer would.
                     </td>
                   </tr>
                 ) : null}
@@ -814,7 +814,7 @@ export function AiVisibilityPage() {
                           autoFocus
                           value={form.prompt}
                           onChange={(e) => setForm({ ...form, prompt: e.target.value })}
-                          placeholder="Como um comprador perguntaria. Ex.: What are the best AI code review tools for a team on GitLab that wants a self-hosted option?"
+                          placeholder="The way a buyer would ask. E.g. What are the best AI code review tools for a team on GitLab that wants a self-hosted option?"
                           rows={2}
                           maxLength={500}
                           className="border-white/10 bg-neutral-950 text-sm"
@@ -838,12 +838,12 @@ export function AiVisibilityPage() {
                           disabled={saveInFlight || form.prompt.trim().length < 5}
                           className="h-9 rounded-md bg-violet-600 px-3 text-xs font-medium text-white hover:bg-violet-500 disabled:opacity-40"
                         >
-                          {saveInFlight ? "Salvando…" : "Adicionar"}
+                          {saveInFlight ? "Saving…" : "Add"}
                         </button>
                         <button type="button" onClick={() => setAdding(false)} className="h-9 px-2 text-xs text-neutral-400 hover:text-neutral-200">
-                          Cancelar
+                          Cancel
                         </button>
-                        <p className="text-[11px] text-neutral-500 md:col-span-5">{form.prompt.length}/500 · entra na próxima rodada; use o play na linha pra perguntar agora.</p>
+                        <p className="text-[11px] text-neutral-500 md:col-span-5">{form.prompt.length}/500 · joins the next run; use the play button on its row to ask now.</p>
                       </div>
                     ) : (
                       <button
@@ -851,7 +851,7 @@ export function AiVisibilityPage() {
                         onClick={() => setAdding(true)}
                         className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs text-neutral-400 hover:bg-white/[0.04] hover:text-neutral-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60"
                       >
-                        <Plus className="size-3.5" /> Novo prompt
+                        <Plus className="size-3.5" /> New prompt
                       </button>
                     )}
                   </td>
@@ -865,12 +865,12 @@ export function AiVisibilityPage() {
       {/* Where to act */}
       {summary && (absentSources.length > 0 || summary.competitors.length > 0 || searches.length > 0) ? (
         <section>
-          <SectionHeader label="Onde atacar" hint="O que os assistentes leem e não nos encontram, quem eles nomeiam, e o que pesquisam antes de responder." />
+          <SectionHeader label="Where to act" hint="What the assistants read where they do not find us, who they name, and what they search before answering." />
           <div className="grid gap-4 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
             <div className="rounded-lg border border-white/[0.06] bg-neutral-900/40">
               <div className="border-b border-white/[0.06] px-4 py-2.5">
-                <p className="text-sm font-medium text-neutral-100">Fontes citadas em respostas sem o Kodus</p>
-                <p className="text-[11px] text-neutral-500">Cada uma é um alvo de backlink ou listing. A barra é o número de respostas sem o Kodus que citaram o domínio.</p>
+                <p className="text-sm font-medium text-neutral-100">Sources cited in answers without Kodus</p>
+                <p className="text-[11px] text-neutral-500">Each one is a backlink or listing target. The bar is the number of answers without Kodus that cited the domain.</p>
               </div>
               <ol className="divide-y divide-white/[0.06]">
                 {absentSources.slice(0, 12).map((d) => (
@@ -897,8 +897,8 @@ export function AiVisibilityPage() {
             <div className="space-y-4">
               <div className="rounded-lg border border-white/[0.06] bg-neutral-900/40">
                 <div className="border-b border-white/[0.06] px-4 py-2.5">
-                  <p className="text-sm font-medium text-neutral-100">Quem os assistentes nomeiam</p>
-                  <p className="text-[11px] text-neutral-500">Respostas desta rodada que citam cada concorrente.</p>
+                  <p className="text-sm font-medium text-neutral-100">Who the assistants name</p>
+                  <p className="text-[11px] text-neutral-500">Answers in this run naming each competitor.</p>
                 </div>
                 <ol className="divide-y divide-white/[0.06]">
                   {summary.competitors.slice(0, 8).map((c) => (
@@ -910,15 +910,15 @@ export function AiVisibilityPage() {
                       <span className="text-right text-xs tabular-nums text-neutral-400">{c.runs}</span>
                     </li>
                   ))}
-                  {summary.competitors.length === 0 ? <li className="px-4 py-2 text-xs text-neutral-500">Nenhum concorrente da lista foi citado.</li> : null}
+                  {summary.competitors.length === 0 ? <li className="px-4 py-2 text-xs text-neutral-500">No competitor from the list was named.</li> : null}
                 </ol>
               </div>
 
               {searches.length ? (
                 <div className="rounded-lg border border-white/[0.06] bg-neutral-900/40">
                   <div className="border-b border-white/[0.06] px-4 py-2.5">
-                    <p className="text-sm font-medium text-neutral-100">O que eles pesquisam antes de responder</p>
-                    <p className="text-[11px] text-neutral-500">Buscas do ChatGPT e do Claude, e as relacionadas do Google. Cada uma é uma página que precisa existir e ranquear.</p>
+                    <p className="text-sm font-medium text-neutral-100">What they search before answering</p>
+                    <p className="text-[11px] text-neutral-500">ChatGPT and Claude searches, plus Google related searches. Each one is a page that needs to exist and rank.</p>
                   </div>
                   <ul className="divide-y divide-white/[0.06]">
                     {shownSearches.map((sq) => (
@@ -933,7 +933,7 @@ export function AiVisibilityPage() {
                   </ul>
                   {searches.length > 10 ? (
                     <button type="button" onClick={() => setAllSearches((v) => !v)} className="w-full border-t border-white/[0.06] px-4 py-2 text-left text-xs text-neutral-400 hover:text-neutral-200">
-                      {allSearches ? "mostrar menos" : `ver todas as ${searches.length}`}
+                      {allSearches ? "show less" : `show all ${searches.length}`}
                     </button>
                   ) : null}
                 </div>
