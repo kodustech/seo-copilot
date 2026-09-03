@@ -414,7 +414,9 @@ export function analyzeAnswer(text: string, citations: Citation[], brandTerms: s
   // list, not across all of them.
   const numberedLists: string[][] = [];
   const bullets: string[] = [];
-  const tableRows: string[] = [];
+  // Rows per table, header dropped, so the brand's row number is read inside
+  // its own table.
+  const tables: string[][] = [];
   let tableHeaderSkipped = false;
   let prevNumber = 0;
   for (const line of lines) {
@@ -427,12 +429,16 @@ export function analyzeAnswer(text: string, citations: Citation[], brandTerms: s
     } else if (bulletRe.test(line)) bullets.push(line);
     if (tableRowRe.test(line)) {
       if (tableRuleRe.test(line)) continue;
-      // The first row of a table is its header.
+      // The first row of each table is its header; a blank line between two
+      // tables resets the flag so the second header is not read as an entry.
       if (!tableHeaderSkipped) {
         tableHeaderSkipped = true;
+        tables.push([]);
         continue;
       }
-      tableRows.push(line);
+      tables[tables.length - 1].push(line);
+    } else {
+      tableHeaderSkipped = false;
     }
   }
 
@@ -448,10 +454,13 @@ export function analyzeAnswer(text: string, citations: Citation[], brandTerms: s
   };
   if (mentioned) {
     const inNumbered = numberedLists.some((list) => pick(list, true));
-    if (!inNumbered && !(tableRows.length && pick(tableRows, false)) && !(bullets.length && pick(bullets, false))) {
-      // Enumerated in prose: order among the bold names of that sentence.
-      const line = lines.find(hasBrand) ?? "";
-      const bold = [...line.matchAll(/\*\*([^*]+)\*\*/g)].map((m) => m[1]);
+    const inTable = !inNumbered && tables.some((rows) => pick(rows, false));
+    if (!inNumbered && !inTable && !(bullets.length && pick(bullets, false))) {
+      // Enumerated in prose: order among the bold names of the first sentence
+      // whose bold names include the brand.
+      const boldOf = (l: string) => [...l.matchAll(/\*\*([^*]+)\*\*/g)].map((m) => m[1]);
+      const line = lines.find((l) => boldOf(l).some(hasBrand)) ?? "";
+      const bold = boldOf(line);
       const idx = bold.findIndex(hasBrand);
       if (idx >= 0 && bold.length >= 2) {
         position = idx + 1;
@@ -459,7 +468,7 @@ export function analyzeAnswer(text: string, citations: Citation[], brandTerms: s
       }
     }
   }
-  if (listSize == null) listSize = numberedLists[0]?.length || tableRows.length || bullets.length || null;
+  if (listSize == null) listSize = numberedLists[0]?.length || tables[0]?.length || bullets.length || null;
 
   const competitors: string[] = [];
   const brandLower = new Set(brand.map((b) => b.toLowerCase()));
@@ -620,29 +629,40 @@ export function isDueToday(settings: AiVisibilitySettings, now = new Date()): bo
  */
 export async function reanalyzeRuns(client: SupabaseClient, opts: { runOn?: string } = {}): Promise<{ runs: number; changed: number }> {
   const settings = await getSettings(client);
-  let q = client.from("ai_prompt_runs").select("*").is("error", null).limit(5000);
-  if (opts.runOn) q = q.eq("run_on", opts.runOn);
-  const { data, error } = await q;
-  if (error) throw new Error(`ai_prompt_runs: ${error.message}`);
+  const PAGE = 500;
+  let runs = 0;
   let changed = 0;
-  for (const row of (data ?? []) as RunRow[]) {
-    const a = analyzeAnswer(row.answer ?? "", row.citations ?? [], settings.brandTerms, settings.competitorTerms);
-    const same =
-      a.mentioned === row.mentioned &&
-      a.position === row.position &&
-      a.listSize === row.list_size &&
-      a.brandCited === row.brand_cited &&
-      JSON.stringify(a.competitors) === JSON.stringify(row.competitors ?? []) &&
-      JSON.stringify(a.citedDomains) === JSON.stringify(row.cited_domains ?? []);
-    if (same) continue;
-    const { error: upErr } = await client
-      .from("ai_prompt_runs")
-      .update({ mentioned: a.mentioned, position: a.position, list_size: a.listSize, brand_cited: a.brandCited, competitors: a.competitors, cited_domains: a.citedDomains })
-      .eq("id", row.id);
-    if (upErr) throw new Error(`ai_prompt_runs: ${upErr.message}`);
-    changed += 1;
+  for (let from = 0; ; from += PAGE) {
+    let q = client.from("ai_prompt_runs").select("*").is("error", null).order("created_at", { ascending: true }).order("id", { ascending: true }).range(from, from + PAGE - 1);
+    if (opts.runOn) q = q.eq("run_on", opts.runOn);
+    const { data, error } = await q;
+    if (error) throw new Error(`ai_prompt_runs: ${error.message}`);
+    const rows = (data ?? []) as RunRow[];
+    runs += rows.length;
+    const updates = rows.flatMap((row) => {
+      const a = analyzeAnswer(row.answer ?? "", row.citations ?? [], settings.brandTerms, settings.competitorTerms);
+      const same =
+        a.mentioned === row.mentioned &&
+        a.position === row.position &&
+        a.listSize === row.list_size &&
+        a.brandCited === row.brand_cited &&
+        JSON.stringify(a.competitors) === JSON.stringify(row.competitors ?? []) &&
+        JSON.stringify(a.citedDomains) === JSON.stringify(row.cited_domains ?? []);
+      return same ? [] : [{ id: row.id, patch: { mentioned: a.mentioned, position: a.position, list_size: a.listSize, brand_cited: a.brandCited, competitors: a.competitors, cited_domains: a.citedDomains } }];
+    });
+    // A few updates in flight at a time: fast enough for a backfill, kind to
+    // the pooler.
+    for (let i = 0; i < updates.length; i += 5) {
+      const results = await Promise.all(
+        updates.slice(i, i + 5).map((u) => client.from("ai_prompt_runs").update(u.patch).eq("id", u.id)),
+      );
+      const failed = results.find((r) => r.error);
+      if (failed?.error) throw new Error(`ai_prompt_runs: ${failed.error.message}`);
+      changed += results.length;
+    }
+    if (rows.length < PAGE) break;
   }
-  return { runs: (data ?? []).length, changed };
+  return { runs, changed };
 }
 
 // ---------------------------------------------------------------------------
