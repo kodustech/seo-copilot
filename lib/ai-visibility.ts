@@ -437,7 +437,9 @@ export function analyzeAnswer(text: string, citations: Citation[], brandTerms: s
         continue;
       }
       tables[tables.length - 1].push(line);
-    } else {
+    } else if (!line.trim()) {
+      // Only a blank line ends a table; a note between two rows must not
+      // turn the next row into a header.
       tableHeaderSkipped = false;
     }
   }
