@@ -15,7 +15,8 @@ import {
   ICP_MIN_AUTHORS,
   ICP_MIN_MEMBERS,
   ICP_VERIFIED_FIELD,
-  LLM_SOURCES,
+  LLM_EXCLUDED_MEDIUMS,
+  LLM_SOURCE_REGEX,
   MAX_BOTTLENECKS,
   OPPORTUNITY_IDLE_DAYS,
   OPPORTUNITY_STATUSES,
@@ -326,12 +327,13 @@ async function llmReferralNode(periodStart: string, periodEnd: string): Promise<
       FROM \`${BQ}.kodus_ga.traffic_sources\`
       -- GA4 export stores date as a 'YYYYMMDD' string.
       WHERE date BETWEEN '${periodStart.replace(/-/g, "")}' AND '${periodEnd.replace(/-/g, "")}'
-        AND LOWER(sessionSource) IN (${sqlList(LLM_SOURCES)})
+        AND REGEXP_CONTAINS(LOWER(sessionSource), r'${LLM_SOURCE_REGEX}')
+        AND LOWER(COALESCE(sessionMedium, '')) NOT IN (${sqlList(LLM_EXCLUDED_MEDIUMS)})
       GROUP BY date, sessionSource, sessionMedium, property_id
     )
-    SELECT sessionSource AS source, CAST(property_id AS STRING) AS property_id,
+    SELECT sessionSource AS source, sessionMedium AS medium, CAST(property_id AS STRING) AS property_id,
       SUM(users) AS users, SUM(sessions) AS sessions
-    FROM dedup GROUP BY source, property_id ORDER BY users DESC LIMIT 50`;
+    FROM dedup GROUP BY source, medium, property_id ORDER BY users DESC LIMIT 50`;
   try {
     const { rows } = await queryBigQuery(sql, 50);
     const users = rows.reduce((s, r) => s + num(r.users), 0);
@@ -343,10 +345,11 @@ async function llmReferralNode(periodStart: string, periodEnd: string): Promise<
       {
         source: "GA4 (BigQuery kodus_ga.traffic_sources), sessionSource",
         definition:
-          "Usuários cuja sessão veio de um assistente de IA, em qualquer página. Não entram nas visitas qualificadas, que contam só Google.",
-        columns: ["source", "property_id", "users", "sessions"],
+          "Usuários cuja sessão veio de um assistente de IA (ChatGPT, Claude, Perplexity, Copilot, Gemini), em qualquer página. Links com utm de campanha (paid, cpc) ficam de fora. Clique vindo do app do assistente chega sem referrer e cai em (direct), então isto é piso, não teto. Não entram nas visitas qualificadas, que contam só Google.",
+        columns: ["source", "medium", "users", "sessions"],
         rows: rows.map((r) => ({
           source: str(r.source),
+          medium: str(r.medium),
           property_id: str(r.property_id),
           users: num(r.users),
           sessions: num(r.sessions),

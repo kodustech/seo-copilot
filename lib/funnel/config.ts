@@ -36,17 +36,20 @@ export const HEAD_TERMS: string[] = [
   "self hosted ai code review",
 ];
 
-/** GA4 session sources that count as an AI assistant referral. */
-export const LLM_SOURCES: string[] = [
-  "chatgpt.com",
-  "chatgpt",
-  "chat.openai.com",
-  "claude.ai",
-  "perplexity.ai",
-  "www.perplexity.ai",
-  "copilot.microsoft.com",
-  "gemini.google.com",
-];
+/**
+ * GA4 session sources that count as an AI assistant referral, as a BigQuery
+ * regex on the lowercased source. A regex because the same assistant shows up
+ * under several spellings (perplexity.ai, www.perplexity.ai and a bare
+ * "perplexity" from the app), and a fixed list missed the short ones.
+ */
+export const LLM_SOURCE_REGEX = String.raw`(^|\.)(chatgpt|openai|claude|perplexity|copilot|gemini\.google)(\.|$)`;
+
+/**
+ * Mediums that mean somebody tagged the link (utm_medium=paid, cpc) rather
+ * than an assistant sending a reader. GA4 labels real assistant referrals
+ * "ai-assistant" (since June 2026), "referral" or "(not set)".
+ */
+export const LLM_EXCLUDED_MEDIUMS: string[] = ["paid", "cpc", "ppc", "email", "social"];
 
 /** Free-mail domains: a signup from one of these is not a corporate signup. */
 export const FREE_MAIL_DOMAINS: string[] = [
