@@ -379,7 +379,7 @@ function SettingsForm({
               })}
             </div>
             <p className="mt-2 text-xs text-neutral-500">
-              Answers vary between runs; more samples make the rate steadier. Measured cost per question: Perplexity sonar US$ 0.006 · ChatGPT gpt-5.5 US$ 0.09 · Google AI Overview US$ 0.003 · Gemini and Claude in ChatGPT's range.
+              Answers vary between runs; more samples make the rate steadier. Measured cost per question: Perplexity sonar US$ 0.006 · ChatGPT gpt-5.5 US$ 0.09 · Google AI Overview US$ 0.003 · Gemini and Claude cost about the same as ChatGPT.
             </p>
           </div>
         </div>
