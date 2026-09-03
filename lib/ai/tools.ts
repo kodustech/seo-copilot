@@ -64,7 +64,9 @@ import {
   updateWorkItem,
   deleteWorkItem,
 } from "@/lib/kanban";
-import { createBet, listBets, updateBet, type BetStatus } from "@/lib/bets";
+import { createBet, deleteBet, listBets, updateBet, type BetStatus } from "@/lib/bets";
+import { fetchFunnel } from "@/lib/funnel/metrics";
+import { FUNNEL_METRICS } from "@/lib/funnel/goals";
 import {
   listGoals,
   createGoal,
@@ -81,12 +83,16 @@ import {
 } from "@/lib/goals";
 import {
   createPrompt as createAiPrompt,
+  deletePrompt as deleteAiPrompt,
   getSettings as getAiVisibilitySettings,
   getVisibilitySummary,
   runAiVisibility,
+  updatePrompt as updateAiPrompt,
+  updateSettings as updateAiVisibilitySettings,
   AI_ENGINES,
   DEFAULT_MODELS,
   ENGINE_LABEL,
+  WEEKDAY_LABELS,
   type AiEngine,
   type EngineConfig,
 } from "@/lib/ai-visibility";
@@ -2787,7 +2793,7 @@ function createCreateGoalTool(userEmail?: string) {
         .string()
         .optional()
         .describe(
-          "Bind the goal to a funnel stage the funnel measures (visits, signups, icp, sh_trial, ob_contacts, ob_replies, conversations, meetings, opportunities, self_serve, closed). Progress is then written by the funnel sync, not by hand.",
+          "Bind the goal to a funnel stage the funnel measures (visits, signups, icp, sh_instances, sh_trial, ob_contacts, ob_replies, conversations, meetings, opportunities, self_serve, closed). Progress is then written by the funnel sync, not by hand.",
         ),
       linkTaskIds: z
         .array(z.string())
@@ -3066,6 +3072,174 @@ const runAiVisibilityTool = tool({
       }
       const summary = await runAiVisibility(client, { promptIds, force, engines: engineConfigs });
       return { success: true as const, summary };
+    } catch (err) {
+      return { success: false as const, error: err instanceof Error ? err.message : String(err) };
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Funnel: the measured funnel for a month or any date range
+// ---------------------------------------------------------------------------
+
+// The funnel fans out to nine BigQuery and Supabase queries; an agent that
+// asks twice in one conversation should not pay twice. Short TTL, keyed by
+// period spec, in-process.
+const FUNNEL_CACHE_TTL_MS = 5 * 60 * 1000;
+const funnelCache = new Map<string, { at: number; value: Awaited<ReturnType<typeof fetchFunnel>> }>();
+async function getCachedFunnel(spec: string) {
+  const now = Date.now();
+  // Sweep expired entries so one-off date ranges do not pin their rows
+  // in memory for the life of the process.
+  for (const [key, entry] of funnelCache) if (now - entry.at >= FUNNEL_CACHE_TTL_MS) funnelCache.delete(key);
+  const hit = funnelCache.get(spec);
+  if (hit) return hit.value;
+  const value = await fetchFunnel(getSupabaseServiceClient(), spec);
+  funnelCache.set(spec, { at: now, value });
+  return value;
+}
+
+const getFunnelTool = tool({
+  description:
+    "The measured growth funnel for a month ('YYYY-MM') or a date range ('YYYY-MM-DD..YYYY-MM-DD'): every stage with its value, definition, source and drill-down rows, the conversion rates against market bands, and the goals bound to each stage. Same numbers as the /funnel page. Read-only; targets come from goals.",
+  inputSchema: z.object({
+    period: z.string().optional().describe("'YYYY-MM' or 'YYYY-MM-DD..YYYY-MM-DD'; default current month."),
+    includeRows: z.boolean().optional().default(false).describe("Include drill-down rows per stage (can be large)."),
+  }),
+  execute: async ({ period, includeRows }: { period?: string; includeRows?: boolean }) => {
+    try {
+      let spec = new Date().toISOString().slice(0, 7);
+      if (period !== undefined) {
+        // A malformed period must not quietly become "this month" with the
+        // wrong label on it.
+        if (!/^\d{4}-\d{2}$/.test(period) && !/^\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2}$/.test(period)) {
+          throw new Error(`Invalid period '${period}'. Use 'YYYY-MM' or 'YYYY-MM-DD..YYYY-MM-DD'.`);
+        }
+        spec = period;
+      }
+      const f = await getCachedFunnel(spec);
+      return {
+        success: true as const,
+        period: { spec, start: f.periodStart, end: f.periodEnd, elapsedShare: f.elapsed },
+        metrics: FUNNEL_METRICS,
+        stages: Object.values(f.nodes).map((n) => ({
+          id: n.id,
+          title: n.title,
+          value: n.value,
+          display: n.display,
+          definition: n.definition,
+          source: n.source,
+          goal: n.goal ?? null,
+          bets: n.bets ?? [],
+          ...(includeRows ? { columns: n.columns, rows: n.rows.slice(0, 200) } : { rowCount: n.rows.length }),
+        })),
+        rates: f.rates,
+        facts: f.facts,
+        errors: f.errors,
+      };
+    } catch (err) {
+      return { success: false as const, error: err instanceof Error ? err.message : String(err) };
+    }
+  },
+});
+
+const updateBetTool = tool({
+  description: "Edit a bet's text: title, hypothesis, action, proving metric, decision date (YYYY-MM-DD) or notes. Use decideBet to change status.",
+  inputSchema: z.object({
+    betId: z.string(),
+    title: z.string().optional(),
+    hypothesis: z.string().optional(),
+    action: z.string().optional(),
+    metric: z.string().optional(),
+    decisionAt: z.string().optional(),
+    notes: z.string().optional(),
+  }),
+  execute: async ({ betId, ...patch }: { betId: string; title?: string; hypothesis?: string; action?: string; metric?: string; decisionAt?: string; notes?: string }) => {
+    try {
+      const bet = await updateBet(getSupabaseServiceClient(), betId, patch);
+      return { success: true as const, bet };
+    } catch (error) {
+      return { success: false as const, message: error instanceof Error ? error.message : "Error updating bet." };
+    }
+  },
+});
+
+const deleteBetTool = tool({
+  description: "Delete a bet. Prefer decideBet (lost / operation) so the verdict stays on record; delete only a bet created by mistake.",
+  inputSchema: z.object({ betId: z.string() }),
+  execute: async ({ betId }: { betId: string }) => {
+    try {
+      await deleteBet(getSupabaseServiceClient(), betId);
+      return { success: true as const };
+    } catch (error) {
+      return { success: false as const, message: error instanceof Error ? error.message : "Error deleting bet." };
+    }
+  },
+});
+
+const updateAiPromptTool = tool({
+  description: "Edit a tracked AI visibility prompt: text (max 500 chars), language, tags, or pause/resume it with active.",
+  inputSchema: z.object({
+    promptId: z.string(),
+    prompt: z.string().optional(),
+    language: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+    active: z.boolean().optional(),
+  }),
+  execute: async ({ promptId, ...patch }: { promptId: string; prompt?: string; language?: string; tags?: string[]; active?: boolean }) => {
+    try {
+      const prompt = await updateAiPrompt(getSupabaseServiceClient(), promptId, patch);
+      return { success: true as const, prompt };
+    } catch (err) {
+      return { success: false as const, error: err instanceof Error ? err.message : String(err) };
+    }
+  },
+});
+
+const deleteAiPromptTool = tool({
+  description: "Delete a tracked AI visibility prompt and its run history. To keep history but stop asking, use updateAiPrompt with active=false.",
+  inputSchema: z.object({ promptId: z.string() }),
+  execute: async ({ promptId }: { promptId: string }) => {
+    try {
+      await deleteAiPrompt(getSupabaseServiceClient(), promptId);
+      return { success: true as const };
+    } catch (err) {
+      return { success: false as const, error: err instanceof Error ? err.message : String(err) };
+    }
+  },
+});
+
+const getAiVisibilitySettingsTool = tool({
+  description: "AI visibility schedule and assistants: weekday of the weekly run (0 = Sunday, UTC), assistants with their model, brand and competitor terms, last run date.",
+  inputSchema: z.object({}),
+  execute: async () => {
+    try {
+      const settings = await getAiVisibilitySettings(getSupabaseServiceClient());
+      return { success: true as const, settings: { ...settings, weekdayLabel: WEEKDAY_LABELS[settings.weekday] }, availableEngines: AI_ENGINES, defaultModels: DEFAULT_MODELS };
+    } catch (err) {
+      return { success: false as const, error: err instanceof Error ? err.message : String(err) };
+    }
+  },
+});
+
+const updateAiVisibilitySettingsTool = tool({
+  description:
+    "Change the AI visibility schedule or assistants: weekday (0 = Sunday .. 6 = Saturday, UTC), engines (list of {engine, model}; engine one of perplexity, chat_gpt, gemini, claude; model optional, defaults per engine), brand terms, competitor terms. Takes effect on the next run, no redeploy.",
+  inputSchema: z.object({
+    weekday: z.number().int().min(0).max(6).optional(),
+    engines: z.array(z.object({ engine: z.enum(AI_ENGINES), model: z.string().optional() })).optional(),
+    brandTerms: z.array(z.string()).optional(),
+    competitorTerms: z.array(z.string()).optional(),
+  }),
+  execute: async ({ weekday, engines, brandTerms, competitorTerms }: { weekday?: number; engines?: Array<{ engine: AiEngine; model?: string }>; brandTerms?: string[]; competitorTerms?: string[] }) => {
+    try {
+      const settings = await updateAiVisibilitySettings(getSupabaseServiceClient(), {
+        ...(weekday != null ? { weekday } : {}),
+        ...(engines ? { engines: engines.map((e) => ({ engine: e.engine, model: e.model ?? DEFAULT_MODELS[e.engine] })) } : {}),
+        ...(brandTerms ? { brandTerms } : {}),
+        ...(competitorTerms ? { competitorTerms } : {}),
+      });
+      return { success: true as const, settings: { ...settings, weekdayLabel: WEEKDAY_LABELS[settings.weekday] } };
     } catch (err) {
       return { success: false as const, error: err instanceof Error ? err.message : String(err) };
     }
@@ -7457,9 +7631,16 @@ export function createAgentTools(userEmail?: string) {
     listGoals: listGoalsTool,
     createGoal: createCreateGoalTool(userEmail),
     listBets: listBetsTool,
+    getFunnel: getFunnelTool,
     listAiPrompts: listAiPromptsTool,
     createAiPrompt: createAiPromptTool,
+    updateAiPrompt: updateAiPromptTool,
+    deleteAiPrompt: deleteAiPromptTool,
     runAiVisibility: runAiVisibilityTool,
+    getAiVisibilitySettings: getAiVisibilitySettingsTool,
+    updateAiVisibilitySettings: updateAiVisibilitySettingsTool,
+    updateBet: updateBetTool,
+    deleteBet: deleteBetTool,
     createBet: createBetTool,
     decideBet: decideBetTool,
     updateGoal: updateGoalTool,
