@@ -1,7 +1,9 @@
 "use client";
 
+/* Hallmark · genre: modern-minimal · macrostructure: Workbench (app page: reading → matrix → targets) · theme: app tokens (dark neutral, violet ≤ 5%) · enrichment: none · nav: app shell · footer: none */
+
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Bot, ChevronDown, ChevronRight, Loader2, Play, RefreshCw, Settings2, Trash2 } from "lucide-react";
+import { Bot, ChevronDown, ChevronRight, Link2, Loader2, Pause, Play, Plus, RefreshCw, Settings2, Trash2 } from "lucide-react";
 
 import {
   AI_ENGINES,
@@ -20,7 +22,10 @@ import {
 } from "@/lib/ai-visibility";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
+import { MarkdownContent } from "@/components/markdown-content";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -29,7 +34,15 @@ const LANGS = [
   { value: "pt", label: "PT" },
 ];
 
-function pct(n: number | null): string {
+const SHORT_LABEL: Record<AiEngine, string> = {
+  perplexity: "Perplexity",
+  chat_gpt: "ChatGPT",
+  gemini: "Gemini",
+  claude: "Claude",
+  google_ai: "Google AIO",
+};
+
+function pct(n: number | null | undefined): string {
   return n == null ? "–" : `${Math.round(n * 100)}%`;
 }
 
@@ -37,181 +50,362 @@ function usd(n: number | null | undefined): string {
   return n == null ? "–" : `US$ ${n.toFixed(2)}`;
 }
 
-/** One cell: how many samples named the brand, and where in the list. */
-function RunCell({ result, onOpen }: { result: PromptEngineResult | undefined; onOpen: () => void }) {
-  if (!result) return <span className="text-neutral-700">–</span>;
-  if (result.samples === 0) {
-    return (
-      <button onClick={onOpen} title={result.error ?? "erro"} className="text-xs text-amber-300 hover:underline">
-        erro
-      </button>
-    );
-  }
-  const rate = result.rate ?? 0;
-  const dot = rate >= 1 ? "bg-emerald-400" : rate > 0 ? "bg-amber-400" : "bg-red-400/80";
-  const label =
-    result.samples > 1 ? `${result.mentioned} de ${result.samples}` : result.mentioned ? (result.avgPosition != null ? `#${result.avgPosition}` : "citado") : "ausente";
+/** Citation markers like [1][4][12] that the models append; noise on screen. */
+function stripCitationMarks(text: string): string {
+  return text.replace(/(\[\d{1,2}\])+/g, "").replace(/[ \t]+\n/g, "\n");
+}
+
+// ---------------------------------------------------------------------------
+// Small pieces
+// ---------------------------------------------------------------------------
+
+function SectionHeader({ label, hint, right }: { label: string; hint?: string; right?: React.ReactNode }) {
   return (
-    <button onClick={onOpen} className="flex items-center gap-1.5 text-xs hover:underline">
-      <span className={cn("inline-block size-2 rounded-full", dot)} />
-      <span className={rate > 0 ? "text-emerald-200" : "text-neutral-400"}>{label}</span>
-      {result.samples > 1 && result.avgPosition != null ? <span className="text-neutral-500">· #{result.avgPosition}</span> : null}
-      {result.samples === 1 && result.mentioned && result.listSize != null && result.avgPosition != null ? <span className="text-neutral-500">de {result.listSize}</span> : null}
-      {result.engine === "google_ai" && result.extra.aiOverview === false ? <span className="text-neutral-600">· sem overview</span> : null}
-      {result.engine === "google_ai" && result.extra.organicRank != null ? <span className="text-neutral-500">· orgânico #{result.extra.organicRank}</span> : null}
-      {result.brandCited ? <span title="Citou uma página nossa" className="text-neutral-500">· fonte</span> : null}
+    <div className="flex items-baseline gap-3 pb-2 pt-1">
+      <h2 className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400">{label}</h2>
+      {hint ? <p className="hidden text-[11px] text-neutral-600 sm:block">{hint}</p> : null}
+      <div className="h-px flex-1 bg-white/[0.06]" />
+      {right}
+    </div>
+  );
+}
+
+function IconButton({
+  label,
+  onClick,
+  disabled,
+  children,
+  className,
+}: {
+  label: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      className={cn(
+        "inline-flex size-8 items-center justify-center rounded-md border border-white/[0.08] text-neutral-400 transition-colors hover:bg-white/[0.05] hover:text-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60 disabled:opacity-40",
+        className,
+      )}
+    >
+      {children}
     </button>
   );
 }
 
-function AnswerPanel({ run, total }: { run: AiPromptRun; total: number }) {
+/** A thin bar: the share of samples naming the brand. */
+function ShareBar({ value, className }: { value: number | null; className?: string }) {
+  const w = value == null ? 0 : Math.max(2, Math.round(value * 100));
   return (
-    <div className="space-y-2 rounded-md border border-white/10 bg-neutral-950 p-3 text-xs">
-      <div className="flex flex-wrap items-center gap-2 text-neutral-400">
-        <span className="font-medium text-neutral-200">{ENGINE_LABEL[run.engine]}</span>
-        {total > 1 ? <span>· amostra {run.sample} de {total}</span> : null}
-        <span>· {run.modelName ?? "modelo?"}</span>
-        <span>· {run.runOn}</span>
-        {run.mentioned ? <span className="text-emerald-300">· Kodus {run.position != null ? `#${run.position}` : "citado"}</span> : <span className="text-red-300">· ausente</span>}
-        {run.engine === "google_ai" ? (
-          <span>
-            · AI Overview {run.extra.aiOverview ? "presente" : "ausente"}
-            {run.extra.organicRank != null ? ` · kodus.io orgânico #${run.extra.organicRank}` : " · kodus.io fora do top 10"}
-          </span>
-        ) : null}
-        {run.costUsd != null ? <span>· {usd(run.costUsd)}</span> : null}
-        {run.competitors.length ? <span>· cita: {run.competitors.join(", ")}</span> : null}
-      </div>
-      {run.error ? <p className="text-amber-300">{run.error}</p> : null}
-      {run.answer ? <pre className="max-h-72 overflow-auto whitespace-pre-wrap font-sans text-neutral-300">{run.answer}</pre> : null}
-      {run.citations.length ? (
-        <div>
-          <p className="mb-1 text-neutral-500">Fontes citadas</p>
-          <ul className="space-y-0.5">
-            {run.citations.map((c) => (
-              <li key={c.url} className="truncate">
-                <a href={c.url} target="_blank" rel="noreferrer" className="text-sky-300 hover:underline">
-                  {c.title || c.url}
-                </a>
-                <span className="ml-1 text-neutral-600">{c.url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0]}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      {run.fanOutQueries.length ? (
-        <p className="text-neutral-500">
-          {run.engine === "google_ai" ? "Buscas relacionadas" : "O modelo pesquisou"}: {run.fanOutQueries.map((q) => `“${q}”`).join(", ")}
-        </p>
-      ) : null}
-      {run.engine === "google_ai" && run.extra.organicTop?.length ? (
-        <p className="text-neutral-500">Top 10 orgânico: {run.extra.organicTop.join(", ")}</p>
-      ) : null}
+    <div className={cn("h-1.5 w-full overflow-hidden rounded-full bg-white/[0.06]", className)} aria-hidden="true">
+      <div className="h-full rounded-full bg-emerald-400/80" style={{ width: `${w}%` }} />
     </div>
   );
 }
 
-function SettingsPanel({
+type CellState = "all" | "some" | "none" | "error" | "empty";
+
+function cellState(r: PromptEngineResult | undefined): CellState {
+  if (!r) return "empty";
+  if (r.samples === 0) return "error";
+  const rate = r.rate ?? 0;
+  if (rate >= 1) return "all";
+  if (rate > 0) return "some";
+  return "none";
+}
+
+const SWATCH: Record<CellState, string> = {
+  all: "bg-emerald-400",
+  some: "bg-amber-400",
+  none: "bg-transparent ring-1 ring-inset ring-white/20",
+  error: "bg-transparent ring-1 ring-inset ring-amber-400/70",
+  empty: "bg-transparent ring-1 ring-inset ring-white/10",
+};
+
+/**
+ * One prompt on one assistant, in one line: swatch, how many samples named
+ * the brand (or its list position when there is one sample), then the two
+ * facts that matter next: the position and whether a page of ours was cited.
+ */
+function MatrixCell({ result, active, onOpen }: { result: PromptEngineResult | undefined; active: boolean; onOpen: () => void }) {
+  const state = cellState(result);
+  let main = "–";
+  let aside: string | null = null;
+  if (result && state !== "empty") {
+    if (state === "error") main = "erro";
+    else if (result.samples > 1) {
+      main = `${result.mentioned}/${result.samples}`;
+      if (result.avgPosition != null) aside = `#${result.avgPosition}`;
+    } else if (result.mentioned) {
+      main = result.avgPosition != null ? `#${result.avgPosition}` : "cita";
+      if (result.avgPosition != null && result.listSize != null) aside = `de ${result.listSize}`;
+    } else {
+      main = "não";
+    }
+    if (result.engine === "google_ai") {
+      if (result.extra.aiOverview === false) aside = "sem overview";
+      else if (result.extra.organicRank != null) aside = `org #${result.extra.organicRank}`;
+    }
+  }
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={result?.error ?? undefined}
+      className={cn(
+        "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs tabular-nums transition-colors hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60",
+        active && "bg-white/[0.06]",
+      )}
+    >
+      <span className={cn("inline-block size-2.5 shrink-0 rounded-[3px]", SWATCH[state])} />
+      <span className={cn("whitespace-nowrap", state === "all" || state === "some" ? "text-neutral-100" : state === "error" ? "text-amber-300" : "text-neutral-500")}>{main}</span>
+      {aside ? <span className="whitespace-nowrap text-neutral-500">{aside}</span> : null}
+      {result?.brandCited ? <Link2 className="ml-auto size-3 shrink-0 text-neutral-600" aria-label="Citou uma página nossa" /> : null}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Answer panel (one sample)
+// ---------------------------------------------------------------------------
+
+function SamplePanel({ run, total }: { run: AiPromptRun; total: number }) {
+  const [showAll, setShowAll] = useState(false);
+  const text = stripCitationMarks(run.answer ?? "");
+  const long = text.length > 1400;
+  return (
+    <article className="rounded-lg border border-white/[0.06] bg-neutral-950/60">
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-white/[0.06] px-4 py-2 text-xs text-neutral-400">
+        {total > 1 ? <span className="font-medium text-neutral-200">Amostra {run.sample} de {total}</span> : <span className="font-medium text-neutral-200">Resposta</span>}
+        <span>{run.modelName ?? "modelo?"}</span>
+        {run.mentioned ? (
+          <span className="text-emerald-300">Kodus {run.position != null ? `#${run.position}${run.listSize != null ? ` de ${run.listSize}` : ""}` : "citado"}</span>
+        ) : (
+          <span className="text-neutral-500">Kodus ausente</span>
+        )}
+        {run.engine === "google_ai" ? (
+          <span>
+            {run.extra.aiOverview ? "AI Overview presente" : "sem AI Overview"}
+            {run.extra.organicRank != null ? ` · orgânico #${run.extra.organicRank}` : " · fora do top 10 orgânico"}
+          </span>
+        ) : null}
+        {run.costUsd != null ? <span className="ml-auto text-neutral-600">{usd(run.costUsd)}</span> : null}
+      </header>
+      {run.error ? <p className="px-4 py-3 text-xs text-amber-300">{run.error}</p> : null}
+      {text ? (
+        <div className="px-4 py-3">
+          <MarkdownContent text={showAll || !long ? text : `${text.slice(0, 1400)}…`} className="text-[13px] text-neutral-300" />
+          {long ? (
+            <button type="button" onClick={() => setShowAll((v) => !v)} className="mt-2 text-xs text-neutral-400 hover:text-neutral-200">
+              {showAll ? "mostrar menos" : "mostrar tudo"}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {run.citations.length || run.competitors.length || run.fanOutQueries.length ? (
+        <footer className="grid gap-4 border-t border-white/[0.06] px-4 py-3 text-xs md:grid-cols-2">
+          {run.citations.length ? (
+            <div className="min-w-0">
+              <p className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">Fontes citadas</p>
+              <ol className="space-y-0.5">
+                {run.citations.slice(0, 12).map((c) => {
+                  const host = c.url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
+                  return (
+                    <li key={c.url} className="flex min-w-0 items-baseline gap-2">
+                      <a href={c.url} target="_blank" rel="noreferrer" className="min-w-0 truncate text-neutral-200 hover:underline">
+                        {c.title || c.url}
+                      </a>
+                      <span className="shrink-0 text-neutral-600">{host}</span>
+                    </li>
+                  );
+                })}
+                {run.citations.length > 12 ? <li className="text-neutral-600">+{run.citations.length - 12}</li> : null}
+              </ol>
+            </div>
+          ) : null}
+          <div className="min-w-0 space-y-2">
+            {run.competitors.length ? (
+              <div>
+                <p className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">Concorrentes nomeados</p>
+                <p className="text-neutral-300">{run.competitors.join(", ")}</p>
+              </div>
+            ) : null}
+            {run.fanOutQueries.length ? (
+              <div>
+                <p className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">{run.engine === "google_ai" ? "Buscas relacionadas" : "O modelo pesquisou"}</p>
+                <p className="text-neutral-400">{run.fanOutQueries.map((q) => `“${q}”`).join(", ")}</p>
+              </div>
+            ) : null}
+            {run.engine === "google_ai" && run.extra.organicTop?.length ? (
+              <div>
+                <p className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">Top 10 orgânico</p>
+                <p className="text-neutral-400">{run.extra.organicTop.join(", ")}</p>
+              </div>
+            ) : null}
+          </div>
+        </footer>
+      ) : null}
+    </article>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Settings dialog
+// ---------------------------------------------------------------------------
+
+function SettingsDialog({
+  open,
+  onOpenChange,
   settings,
   onSave,
   saving,
 }: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
   settings: AiVisibilitySettings;
-  onSave: (patch: { weekday: number; engines: EngineConfig[] }) => Promise<void>;
+  onSave: (patch: { weekday: number; engines: EngineConfig[] }) => Promise<boolean>;
   saving: boolean;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-xl border-white/10 bg-neutral-950 text-neutral-100">
+        {/* Keyed on open + settings so the form starts from the saved values every time it opens. */}
+        <SettingsForm key={`${open}:${settings.updatedAt}`} settings={settings} onSave={onSave} saving={saving} onClose={() => onOpenChange(false)} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function SettingsForm({
+  settings,
+  onSave,
+  saving,
+  onClose,
+}: {
+  settings: AiVisibilitySettings;
+  onSave: (patch: { weekday: number; engines: EngineConfig[] }) => Promise<boolean>;
+  saving: boolean;
+  onClose: () => void;
 }) {
   const [weekday, setWeekday] = useState(settings.weekday);
   const [engines, setEngines] = useState<EngineConfig[]>(settings.engines);
-  useEffect(() => {
-    setWeekday(settings.weekday);
-    setEngines(settings.engines);
-  }, [settings]);
 
-  const toggle = (engine: AiEngine) => {
+  const cfgOf = (engine: AiEngine) => engines.find((e) => e.engine === engine);
+  const toggle = (engine: AiEngine, on: boolean) => {
     setEngines((list) =>
-      list.some((e) => e.engine === engine)
-        ? list.filter((e) => e.engine !== engine)
-        : [...list, { engine, model: DEFAULT_MODELS[engine], samples: DEFAULT_SAMPLES[engine] }],
+      on
+        ? list.some((e) => e.engine === engine)
+          ? list
+          : [...list, { engine, model: DEFAULT_MODELS[engine], samples: DEFAULT_SAMPLES[engine] }]
+        : list.filter((e) => e.engine !== engine),
     );
   };
-  const setModel = (engine: AiEngine, model: string) => {
-    setEngines((list) => list.map((e) => (e.engine === engine ? { ...e, model } : e)));
-  };
-  const setSamples = (engine: AiEngine, samples: number) => {
-    setEngines((list) => list.map((e) => (e.engine === engine ? { ...e, samples: Math.max(1, Math.min(MAX_SAMPLES, samples || 1)) } : e)));
-  };
+  const patch = (engine: AiEngine, p: Partial<EngineConfig>) => setEngines((list) => list.map((e) => (e.engine === engine ? { ...e, ...p } : e)));
   const dirty = weekday !== settings.weekday || JSON.stringify(engines) !== JSON.stringify(settings.engines);
 
   return (
-    <div className="rounded-xl border border-white/10 bg-neutral-900/60 p-4">
-      <div className="grid gap-4 md:grid-cols-[220px_1fr]">
-        <div>
-          <p className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">Roda toda</p>
-          <Select value={String(weekday)} onValueChange={(v) => setWeekday(Number(v))}>
-            <SelectTrigger className="h-9 border-white/10 bg-neutral-900 text-sm">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
-              {WEEKDAY_LABELS.map((label, i) => (
-                <SelectItem key={i} value={String(i)}>
-                  {label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="mt-1 text-[11px] text-neutral-500">Às 07:00 UTC (04:00 em Brasília). Última: {settings.lastRunOn ?? "nunca"}.</p>
-        </div>
-        <div>
-          <p className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">Assistentes e modelo</p>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {AI_ENGINES.map((engine) => {
-              const cfg = engines.find((e) => e.engine === engine);
-              return (
-                <label key={engine} className="flex items-center gap-2 rounded-md border border-white/10 px-2 py-1.5 text-sm">
-                  <input type="checkbox" checked={Boolean(cfg)} onChange={() => toggle(engine)} className="accent-violet-500" />
-                  <span className="w-28 shrink-0 text-neutral-200">{ENGINE_LABEL[engine]}</span>
-                  {engine === "google_ai" ? (
-                    <span className="flex-1 text-xs text-neutral-500">SERP com AI Overview</span>
-                  ) : (
-                    <Input
-                      value={cfg?.model ?? DEFAULT_MODELS[engine]}
-                      disabled={!cfg}
-                      onChange={(e) => setModel(engine, e.target.value)}
-                      className="h-7 border-white/10 bg-neutral-950 text-xs"
-                    />
-                  )}
-                  <span className="text-[11px] text-neutral-500" title="Amostras por prompt">×</span>
-                  <Input
-                    type="number"
-                    min={1}
-                    max={MAX_SAMPLES}
-                    value={cfg?.samples ?? DEFAULT_SAMPLES[engine]}
-                    disabled={!cfg}
-                    onChange={(e) => setSamples(engine, Number(e.target.value))}
-                    className="h-7 w-14 border-white/10 bg-neutral-950 text-xs"
-                    title="Amostras por prompt"
-                  />
-                </label>
-              );
-            })}
+    <>
+        <DialogHeader>
+          <DialogTitle>Rodada semanal</DialogTitle>
+          <DialogDescription className="text-neutral-400">
+            Quando perguntar, a quem, e quantas vezes por prompt. Mudar aqui vale para a próxima rodada, sem deploy.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-5">
+          <div className="grid grid-cols-[120px_1fr] items-center gap-3">
+            <label className="text-sm text-neutral-300">Dia da semana</label>
+            <div className="flex items-center gap-3">
+              <Select value={String(weekday)} onValueChange={(v) => setWeekday(Number(v))}>
+                <SelectTrigger className="h-9 w-40 border-white/10 bg-neutral-900 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+                  {WEEKDAY_LABELS.map((label, i) => (
+                    <SelectItem key={i} value={String(i)}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="text-xs text-neutral-500">07:00 UTC · última: {settings.lastRunOn ?? "nunca"}</span>
+            </div>
           </div>
-          <p className="mt-1 text-[11px] text-neutral-500">
-            Amostras: quantas vezes cada prompt é perguntado por rodada; a resposta varia, e a taxa é lida sobre as amostras. Custo medido por pergunta: Perplexity sonar US$ 0,006; ChatGPT gpt-5.5 US$ 0,09; Google AI Overview US$ 0,003. Gemini e Claude na faixa do ChatGPT.
-          </p>
+
+          <div>
+            <div className="mb-2 grid grid-cols-[1fr_170px_88px] items-end gap-3 text-[11px] uppercase tracking-wider text-neutral-500">
+              <span>Assistente</span>
+              <span>Modelo</span>
+              <span>Amostras</span>
+            </div>
+            <div className="divide-y divide-white/[0.06] rounded-lg border border-white/[0.08]">
+              {AI_ENGINES.map((engine) => {
+                const cfg = cfgOf(engine);
+                const on = Boolean(cfg);
+                return (
+                  <div key={engine} className={cn("grid grid-cols-[1fr_170px_88px] items-center gap-3 px-3 py-2", !on && "opacity-60")}>
+                    <label className="flex items-center gap-3 text-sm text-neutral-200">
+                      <Switch checked={on} onCheckedChange={(v) => toggle(engine, v)} aria-label={ENGINE_LABEL[engine]} />
+                      {ENGINE_LABEL[engine]}
+                    </label>
+                    {engine === "google_ai" ? (
+                      <span className="text-xs text-neutral-500">SERP com AI Overview</span>
+                    ) : (
+                      <Input
+                        value={cfg?.model ?? DEFAULT_MODELS[engine]}
+                        disabled={!on}
+                        onChange={(e) => patch(engine, { model: e.target.value })}
+                        className="h-8 border-white/10 bg-neutral-900 text-xs"
+                      />
+                    )}
+                    <Input
+                      type="number"
+                      min={1}
+                      max={MAX_SAMPLES}
+                      value={cfg?.samples ?? DEFAULT_SAMPLES[engine]}
+                      disabled={!on}
+                      onChange={(e) => patch(engine, { samples: Math.max(1, Math.min(MAX_SAMPLES, Number(e.target.value) || 1)) })}
+                      className="h-8 border-white/10 bg-neutral-900 text-xs tabular-nums"
+                    />
+                  </div>
+                );
+              })}
+            </div>
+            <p className="mt-2 text-xs text-neutral-500">
+              A resposta varia entre execuções; com mais amostras a taxa fica mais estável. Custo medido por pergunta: Perplexity sonar US$ 0,006 · ChatGPT gpt-5.5 US$ 0,09 · Google AI Overview US$ 0,003 · Gemini e Claude na faixa do ChatGPT.
+            </p>
+          </div>
         </div>
-      </div>
-      <div className="mt-3 flex justify-end">
-        <button
-          onClick={() => onSave({ weekday, engines })}
-          disabled={!dirty || saving || engines.length === 0}
-          className="rounded-md bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500 disabled:opacity-40"
-        >
-          {saving ? "salvando..." : "salvar"}
-        </button>
-      </div>
-    </div>
+
+        <div className="flex justify-end gap-2 pt-2">
+          <button type="button" onClick={onClose} className="rounded-md px-3 py-1.5 text-sm text-neutral-400 hover:text-neutral-200">
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              if (await onSave({ weekday, engines })) onClose();
+            }}
+            disabled={!dirty || saving || engines.length === 0}
+            className="rounded-md bg-violet-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-40"
+          >
+            {saving ? "Salvando…" : "Salvar"}
+          </button>
+        </div>
+    </>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
 
 export function AiVisibilityPage() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
@@ -221,23 +415,22 @@ export function AiVisibilityPage() {
   const [runOn, setRunOn] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showSettings, setShowSettings] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [running, setRunning] = useState(false);
+  const [running, setRunning] = useState<string | "all" | null>(null);
   const [lastRun, setLastRun] = useState<RunSummary | null>(null);
-  const [open, setOpen] = useState<Record<string, AiEngine | null>>({});
-  const [form, setForm] = useState({ prompt: "", language: "en", tags: "" });
+  const [open, setOpen] = useState<{ promptId: string; engine: AiEngine } | null>(null);
   const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ prompt: "", language: "en", tags: "" });
+  const [saveInFlight, setSaveInFlight] = useState(false);
+  const [allSearches, setAllSearches] = useState(false);
 
   useEffect(() => {
     if (!supabase) return;
     supabase.auth.getSession().then(({ data: s }) => setToken(s.session?.access_token ?? null));
   }, [supabase]);
 
-  const headers = useMemo(
-    () => ({ Authorization: `Bearer ${token ?? ""}`, "Content-Type": "application/json" }),
-    [token],
-  );
+  const headers = useMemo(() => ({ Authorization: `Bearer ${token ?? ""}`, "Content-Type": "application/json" }), [token]);
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -252,8 +445,8 @@ export function AiVisibilityPage() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Falha ao carregar";
       setError(
-        /ai_prompts|ai_visibility_settings|ai_prompt_runs/.test(msg) && /schema cache|does not exist/.test(msg)
-          ? "As tabelas de AI visibility ainda não existem neste ambiente. Rode a migration supabase/migrations/20260903150000_ai_visibility.sql."
+        /ai_prompts|ai_visibility_settings|ai_prompt_runs|ai_prompt_run_dates/.test(msg) && /schema cache|does not exist/.test(msg)
+          ? "As tabelas de AI visibility ainda não existem neste ambiente. Rode as migrations de ai_visibility."
           : msg,
       );
       setSummary(null);
@@ -266,7 +459,7 @@ export function AiVisibilityPage() {
     void load();
   }, [load]);
 
-  const saveSettings = async (patch: { weekday: number; engines: EngineConfig[] }) => {
+  const saveSettings = async (patch: { weekday: number; engines: EngineConfig[] }): Promise<boolean> => {
     setSaving(true);
     setError(null);
     try {
@@ -274,15 +467,17 @@ export function AiVisibilityPage() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Falhou");
       await load();
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falhou");
+      return false;
     } finally {
       setSaving(false);
     }
   };
 
   const runNow = async (promptIds?: string[]) => {
-    setRunning(true);
+    setRunning(promptIds?.[0] ?? "all");
     setError(null);
     setLastRun(null);
     try {
@@ -295,12 +490,12 @@ export function AiVisibilityPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falhou");
     } finally {
-      setRunning(false);
+      setRunning(null);
     }
   };
 
   const addPrompt = async () => {
-    setAdding(true);
+    setSaveInFlight(true);
     setError(null);
     try {
       const res = await fetch("/api/ai-visibility/prompts", {
@@ -311,11 +506,12 @@ export function AiVisibilityPage() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Falhou");
       setForm({ prompt: "", language: form.language, tags: "" });
+      setAdding(false);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falhou");
     } finally {
-      setAdding(false);
+      setSaveInFlight(false);
     }
   };
 
@@ -342,46 +538,71 @@ export function AiVisibilityPage() {
 
   const engines = summary?.settings.engines.map((e) => e.engine) ?? [];
   const activeCount = summary?.prompts.filter((p) => p.prompt.active).length ?? 0;
+  const engineCount = summary?.engines.length ?? 0;
+  const configLabel = summary ? `${WEEKDAY_LABELS[summary.settings.weekday]} · ${engines.length} assistente${engines.length === 1 ? "" : "s"}` : "";
+  const totalSamples = summary?.engines.reduce((s, e) => s + e.samples, 0) ?? 0;
+  const totalMentioned = summary?.engines.reduce((s, e) => s + e.mentioned, 0) ?? 0;
+  const rollingAll = (() => {
+    if (!summary) return null;
+    const withRolling = summary.engines.filter((e) => e.rollingShare != null && e.rollingRuns > 1);
+    if (!withRolling.length) return null;
+    return { runs: Math.max(...withRolling.map((e) => e.rollingRuns)), share: withRolling.reduce((s, e) => s + (e.rollingShare ?? 0), 0) / withRolling.length };
+  })();
+  const absentSources = summary?.domains.filter((d) => d.runsWithoutBrand > 0) ?? [];
+  const maxAbsent = absentSources[0]?.runsWithoutBrand ?? 1;
+  const maxComp = summary?.competitors[0]?.runs ?? 1;
+  const searches = summary?.searches ?? [];
+  const shownSearches = allSearches ? searches : searches.slice(0, 10);
+  const openResult = open ? summary?.prompts.find((p) => p.prompt.id === open.promptId)?.runs[open.engine] : undefined;
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4 overflow-auto p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="flex items-center gap-2 text-xl font-semibold">
+    <div className="mx-auto w-full max-w-screen-2xl space-y-6 px-6 py-5">
+      {/* Header */}
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="flex items-center gap-2 text-xl font-semibold text-neutral-100">
             <Bot className="size-5 text-violet-400" /> AI visibility
           </h1>
-          <p className="text-sm text-muted-foreground">
-            Prompts de comprador perguntados toda semana aos assistentes, com busca web ligada. O que interessa: se o Kodus aparece, em que posição, contra quem, e quais páginas o modelo cita.
+          <p className="mt-1 max-w-2xl text-sm text-neutral-400">
+            Toda semana, prompts de comprador vão aos assistentes com busca ligada. A leitura: onde o Kodus aparece, em que posição, e quais páginas o modelo usa como fonte.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {dates.length > 1 ? (
             <Select value={runOn ?? dates[0]} onValueChange={(v) => setRunOn(v === dates[0] ? null : v)}>
-              <SelectTrigger className="h-9 w-[150px] border-white/10 bg-neutral-900 text-xs">
+              <SelectTrigger className="h-8 w-[140px] border-white/[0.08] bg-transparent text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
                 {dates.map((d) => (
                   <SelectItem key={d} value={d}>
-                    {d}
+                    Rodada {d}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           ) : null}
-          <button onClick={() => setShowSettings((v) => !v)} className="flex h-9 items-center gap-1.5 rounded-md border border-white/10 px-3 text-xs text-neutral-300 hover:bg-white/5">
-            <Settings2 className="size-3.5" /> {summary ? `${WEEKDAY_LABELS[summary.settings.weekday]} · ${engines.map((e) => ENGINE_LABEL[e]).join(" + ") || "sem assistente"}` : "configurar"}
-          </button>
-          <button onClick={() => load()} className="flex h-9 items-center gap-1.5 rounded-md border border-white/10 px-3 text-xs text-neutral-300 hover:bg-white/5">
-            <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
-          </button>
           <button
-            onClick={() => runNow()}
-            disabled={running || activeCount === 0}
-            className="flex h-9 items-center gap-1.5 rounded-md bg-violet-600 px-3 text-xs font-medium text-white hover:bg-violet-500 disabled:opacity-40"
-            title="Pergunta agora os prompts ativos que ainda não foram perguntados hoje"
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            className="inline-flex h-8 items-center gap-2 rounded-md border border-white/[0.08] px-2.5 text-xs text-neutral-300 hover:bg-white/[0.05] hover:text-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60"
+            title="Configurar a rodada semanal"
           >
-            {running ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />} rodar agora
+            <Settings2 className="size-3.5 text-neutral-500" />
+            {configLabel || "Configurar"}
+          </button>
+          <IconButton label="Recarregar" onClick={() => load()}>
+            <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
+          </IconButton>
+          <button
+            type="button"
+            onClick={() => runNow()}
+            disabled={running != null || activeCount === 0}
+            title="Pergunta agora o que ainda não foi perguntado hoje"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-violet-600 px-3 text-xs font-medium text-white hover:bg-violet-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 disabled:opacity-40"
+          >
+            {running === "all" ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+            Rodar agora
           </button>
         </div>
       </div>
@@ -389,298 +610,345 @@ export function AiVisibilityPage() {
       {error ? <p className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">{error}</p> : null}
       {lastRun ? (
         <p className="rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-200">
-          Rodou: {lastRun.asked} perguntas, Kodus em {lastRun.mentioned}, {lastRun.skipped} já feitas hoje, {lastRun.failed} falhas, {usd(lastRun.costUsd)}.
+          Rodou: {lastRun.asked} perguntas, Kodus em {lastRun.mentioned}. {lastRun.skipped} já feitas hoje, {lastRun.failed} falhas, {usd(lastRun.costUsd)}.
           {lastRun.errors.length ? ` Erros: ${lastRun.errors.slice(0, 2).join(" | ")}` : ""}
         </p>
       ) : null}
 
-      {showSettings && summary ? <SettingsPanel settings={summary.settings} onSave={saveSettings} saving={saving} /> : null}
-
-      {/* Per-engine summary */}
-      {summary && summary.engines.length > 0 ? (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {summary.engines.map((e) => (
-            <div key={e.engine} className="rounded-xl border border-white/10 bg-neutral-900/60 p-3">
-              <p className="text-[11px] uppercase tracking-wider text-neutral-500">
-                {e.label} <span className="normal-case tracking-normal text-neutral-600">· {e.model}</span>
-              </p>
-              <p className="mt-1 text-2xl font-semibold text-neutral-100">
-                {pct(e.share)}
-                {e.rollingRuns > 1 && e.rollingShare != null ? (
-                  <span className="ml-2 text-sm font-normal text-neutral-500" title={`Média das últimas ${e.rollingRuns} rodadas`}>
-                    {pct(e.rollingShare)} em {e.rollingRuns} rodadas
-                  </span>
-                ) : null}
-              </p>
-              <p className="text-xs text-neutral-400">
-                Kodus em {e.mentioned} de {e.samples} amostra{e.samples === 1 ? "" : "s"} · {e.promptsMentioned} de {e.prompts} prompts
-                {e.avgPosition != null ? ` · posição média ${e.avgPosition}` : ""}
-                {e.brandCited ? ` · nossa página citada ${e.brandCited}x` : ""}
-              </p>
-              <p className="mt-1 text-[11px] text-neutral-600">
-                {usd(e.costUsd)}
-                {e.failed ? ` · ${e.failed} falha${e.failed === 1 ? "" : "s"}` : ""}
-              </p>
-            </div>
-          ))}
-          <div className="rounded-xl border border-white/10 bg-neutral-900/60 p-3">
-            <p className="text-[11px] uppercase tracking-wider text-neutral-500">Rodada {summary.runOn}</p>
-            <p className="mt-1 text-2xl font-semibold text-neutral-100">{pct(summary.overallShare)}</p>
-            <p className="text-xs text-neutral-400">amostras com Kodus, todos os assistentes · {usd(summary.totalCostUsd)}</p>
-            {summary.history.length > 1 ? (
-              <p className="mt-1 text-[11px] text-neutral-600">{[...new Set(summary.history.map((h) => h.runOn))].length} rodadas no histórico</p>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-
-      {/* Prompts */}
-      <div className="rounded-xl border border-white/10 bg-neutral-900/40">
-        <div className="flex items-center justify-between border-b border-white/10 px-4 py-2">
-          <p className="text-sm font-medium text-neutral-200">
-            Prompts <span className="text-neutral-500">· {activeCount} ativos</span>
-          </p>
-          {summary?.runOn ? <p className="text-[11px] text-neutral-500">resultado de {summary.runOn}</p> : null}
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-[11px] uppercase tracking-wider text-neutral-500">
-              <tr>
-                <th className="px-4 py-2 text-left font-normal">Prompt</th>
-                {engines.map((e) => (
-                  <th key={e} className="px-3 py-2 text-left font-normal">
-                    {ENGINE_LABEL[e]}
-                  </th>
-                ))}
-                <th className="px-3 py-2 text-left font-normal">Concorrentes citados</th>
-                <th className="px-3 py-2 text-right font-normal"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {summary?.prompts.map(({ prompt, runs }) => {
-                const comps = [...new Set(Object.values(runs).flatMap((r) => r?.competitors ?? []))];
-                const openEngine = open[prompt.id] ?? null;
-                const openResult = openEngine ? runs[openEngine] : undefined;
-                return (
-                  <FragmentRow key={prompt.id}>
-                    <tr className={cn("border-t border-white/5", !prompt.active && "opacity-50")}>
-                      <td className="max-w-[520px] px-4 py-2 align-top">
-                        <div className="flex items-start gap-2">
-                          <button
-                            onClick={() => setOpen((o) => ({ ...o, [prompt.id]: openEngine ? null : engines.find((e) => runs[e]) ?? null }))}
-                            className="mt-0.5 text-neutral-500 hover:text-neutral-200"
-                            aria-label="Ver respostas"
-                          >
-                            {openEngine ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-                          </button>
-                          <div className="min-w-0">
-                            <p className="text-neutral-100">{prompt.prompt}</p>
-                            <p className="text-[11px] text-neutral-500">
-                              {prompt.language.toUpperCase()}
-                              {prompt.tags.length ? ` · ${prompt.tags.join(", ")}` : ""}
-                              {!prompt.active ? " · pausado" : ""}
-                            </p>
-                          </div>
-                        </div>
-                      </td>
-                      {engines.map((e) => (
-                        <td key={e} className="px-3 py-2 align-top">
-                          <RunCell result={runs[e]} onOpen={() => setOpen((o) => ({ ...o, [prompt.id]: o[prompt.id] === e ? null : e }))} />
-                        </td>
-                      ))}
-                      <td className="px-3 py-2 align-top text-xs text-neutral-400">{comps.slice(0, 5).join(", ")}{comps.length > 5 ? ` +${comps.length - 5}` : ""}</td>
-                      <td className="px-3 py-2 text-right align-top">
-                        <div className="flex justify-end gap-1">
-                          <button
-                            onClick={() => runNow([prompt.id])}
-                            disabled={running}
-                            title="Perguntar só este agora"
-                            className="rounded p-1 text-neutral-500 hover:bg-white/5 hover:text-neutral-200 disabled:opacity-40"
-                          >
-                            <Play className="size-3.5" />
-                          </button>
-                          <button
-                            onClick={() => patchPrompt(prompt.id, { active: !prompt.active })}
-                            title={prompt.active ? "Pausar" : "Ativar"}
-                            className="rounded px-1.5 text-[11px] text-neutral-500 hover:bg-white/5 hover:text-neutral-200"
-                          >
-                            {prompt.active ? "pausar" : "ativar"}
-                          </button>
-                          <button onClick={() => removePrompt(prompt.id)} title="Apagar" className="rounded p-1 text-neutral-600 hover:bg-red-500/10 hover:text-red-300">
-                            <Trash2 className="size-3.5" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                    {openEngine ? (
-                      <tr className="border-t border-white/5 bg-black/20">
-                        <td colSpan={engines.length + 3} className="px-4 py-3">
-                          <div className="mb-2 flex gap-2">
-                            {engines
-                              .filter((e) => runs[e])
-                              .map((e) => (
-                                <button
-                                  key={e}
-                                  onClick={() => setOpen((o) => ({ ...o, [prompt.id]: e }))}
-                                  className={cn("rounded px-2 py-0.5 text-xs", e === openEngine ? "bg-violet-500/20 text-violet-200" : "text-neutral-400 hover:bg-white/5")}
-                                >
-                                  {ENGINE_LABEL[e]}
-                                </button>
-                              ))}
-                          </div>
-                          {openResult && openResult.runs.length ? (
-                            <div className="space-y-2">
-                              {openResult.runs.map((run) => (
-                                <AnswerPanel key={run.id} run={run} total={openResult.runs.length} />
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="text-xs text-neutral-500">Sem resposta nesta rodada.</p>
-                          )}
-                        </td>
-                      </tr>
-                    ) : null}
-                  </FragmentRow>
-                );
-              })}
-              {summary && summary.prompts.length === 0 ? (
-                <tr>
-                  <td colSpan={engines.length + 3} className="px-4 py-6 text-center text-sm text-neutral-500">
-                    Nenhum prompt ainda. Escreva a pergunta como um comprador escreveria.
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-        <div className="border-t border-white/10 p-3">
-          <div className="grid gap-2 md:grid-cols-[1fr_90px_200px_auto]">
-            <Textarea
-              value={form.prompt}
-              onChange={(e) => setForm({ ...form, prompt: e.target.value })}
-              placeholder="Ex.: What are the best AI code review tools for a team on GitLab that wants a self-hosted option?"
-              rows={2}
-              maxLength={500}
-              className="border-white/10 bg-neutral-950 text-sm"
-            />
-            <Select value={form.language} onValueChange={(v) => setForm({ ...form, language: v })}>
-              <SelectTrigger className="h-9 border-white/10 bg-neutral-950 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
-                {LANGS.map((l) => (
-                  <SelectItem key={l.value} value={l.value}>
-                    {l.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Input value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} placeholder="tags: gitlab, self-hosted" className="h-9 border-white/10 bg-neutral-950 text-xs" />
-            <button
-              onClick={addPrompt}
-              disabled={adding || form.prompt.trim().length < 5}
-              className="h-9 rounded-md bg-violet-600 px-3 text-xs font-medium text-white hover:bg-violet-500 disabled:opacity-40"
-            >
-              {adding ? "salvando..." : "+ prompt"}
-            </button>
-          </div>
-          <p className="mt-1 text-[11px] text-neutral-500">{form.prompt.length}/500. Um prompt novo entra na próxima rodada; use o play na linha pra perguntar agora.</p>
-        </div>
-      </div>
-
-      {/* What the assistants searched before answering */}
-      {summary && summary.searches.length > 0 ? (
-        <div className="rounded-xl border border-white/10 bg-neutral-900/40">
-          <div className="border-b border-white/10 px-4 py-2">
-            <p className="text-sm font-medium text-neutral-200">Buscas que os assistentes fazem antes de responder</p>
-            <p className="text-[11px] text-neutral-500">
-              O ChatGPT pesquisa na web antes de responder; o Google traz as buscas relacionadas. Cada linha é uma página que precisa existir no kodus.io e ranquear.
-            </p>
-          </div>
-          <table className="w-full text-sm">
-            <thead className="text-[11px] uppercase tracking-wider text-neutral-500">
-              <tr>
-                <th className="px-4 py-2 text-left font-normal">Busca</th>
-                <th className="px-3 py-2 text-right font-normal">Vezes</th>
-                <th className="px-3 py-2 text-right font-normal">Prompts</th>
-                <th className="px-3 py-2 text-left font-normal">Onde</th>
-              </tr>
-            </thead>
-            <tbody>
-              {summary.searches.slice(0, 25).map((sq) => (
-                <tr key={sq.query} className="border-t border-white/5">
-                  <td className="px-4 py-1.5 text-neutral-100">{sq.query}</td>
-                  <td className="px-3 py-1.5 text-right text-neutral-300">{sq.runs}</td>
-                  <td className="px-3 py-1.5 text-right text-neutral-400">{sq.prompts}</td>
-                  <td className="px-3 py-1.5 text-xs text-neutral-500">{sq.engines.map((e) => ENGINE_LABEL[e]).join(", ")}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
-
-      {/* Sources the models lean on */}
-      {summary && summary.domains.length > 0 ? (
-        <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
-          <div className="rounded-xl border border-white/10 bg-neutral-900/40">
-            <div className="border-b border-white/10 px-4 py-2">
-              <p className="text-sm font-medium text-neutral-200">Páginas que os assistentes citam</p>
-              <p className="text-[11px] text-neutral-500">Ordenado por respostas sem o Kodus. Cada uma é um alvo de backlink ou listing.</p>
-            </div>
-            <table className="w-full text-sm">
-              <thead className="text-[11px] uppercase tracking-wider text-neutral-500">
-                <tr>
-                  <th className="px-4 py-2 text-left font-normal">Domínio</th>
-                  <th className="px-3 py-2 text-right font-normal">Citações</th>
-                  <th className="px-3 py-2 text-right font-normal">Sem Kodus</th>
-                  <th className="px-3 py-2 text-left font-normal">Exemplo</th>
-                </tr>
-              </thead>
-              <tbody>
-                {summary.domains.slice(0, 20).map((d) => (
-                  <tr key={d.domain} className="border-t border-white/5">
-                    <td className="px-4 py-1.5 text-neutral-100">{d.domain}</td>
-                    <td className="px-3 py-1.5 text-right text-neutral-300">{d.citations}</td>
-                    <td className={cn("px-3 py-1.5 text-right", d.runsWithoutBrand ? "text-amber-300" : "text-neutral-500")}>{d.runsWithoutBrand}</td>
-                    <td className="max-w-[360px] truncate px-3 py-1.5 text-xs">
-                      <a href={d.urls[0]} target="_blank" rel="noreferrer" className="text-sky-300 hover:underline">
-                        {d.urls[0]?.replace(/^https?:\/\/(www\.)?/, "")}
-                      </a>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="rounded-xl border border-white/10 bg-neutral-900/40">
-            <div className="border-b border-white/10 px-4 py-2">
-              <p className="text-sm font-medium text-neutral-200">Quem mais aparece</p>
-              <p className="text-[11px] text-neutral-500">Respostas desta rodada que nomeiam cada concorrente.</p>
-            </div>
-            <ul className="p-2">
-              {summary.competitors.slice(0, 15).map((c) => (
-                <li key={c.name} className="flex items-center justify-between px-2 py-1 text-sm">
-                  <span className="text-neutral-200">{c.name}</span>
-                  <span className="text-neutral-400">{c.runs}</span>
-                </li>
-              ))}
-              {summary.competitors.length === 0 ? <li className="px-2 py-1 text-xs text-neutral-500">Nenhum concorrente da lista foi citado.</li> : null}
-            </ul>
-          </div>
-        </div>
-      ) : null}
-
       {loading && !summary ? (
-        <div className="flex items-center justify-center py-16">
+        <div className="flex items-center justify-center py-24">
           <Loader2 className="size-6 animate-spin text-neutral-600" />
         </div>
       ) : null}
+
+      {/* Reading of the run */}
+      {summary && engineCount > 0 ? (
+        <section>
+          <SectionHeader label={`Leitura da rodada ${summary.runOn}`} hint={`${usd(summary.totalCostUsd)} na rodada`} />
+          <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+            <div className="rounded-lg border border-white/[0.06] bg-neutral-900/40 p-5">
+              <p className="text-[11px] font-medium uppercase tracking-wider text-neutral-500">Kodus citado</p>
+              <p className="mt-2 text-5xl font-semibold tabular-nums tracking-tight text-neutral-100">{pct(summary.overallShare)}</p>
+              <p className="mt-2 text-sm text-neutral-400">
+                {totalMentioned} de {totalSamples} respostas, {activeCount} prompts, {engineCount} assistente{engineCount === 1 ? "" : "s"}.
+              </p>
+              <p className="mt-1 text-xs text-neutral-500">
+                {rollingAll ? `Média das últimas ${rollingAll.runs} rodadas: ${pct(rollingAll.share)}.` : "Primeira rodada; a média móvel aparece a partir da segunda."}
+              </p>
+            </div>
+            <div className="rounded-lg border border-white/[0.06] bg-neutral-900/40">
+              <table className="w-full text-sm">
+                <thead className="text-[11px] uppercase tracking-wider text-neutral-500">
+                  <tr className="border-b border-white/[0.06]">
+                    <th className="px-4 py-2 text-left font-medium">Assistente</th>
+                    <th className="px-3 py-2 text-left font-medium">Citado</th>
+                    <th className="hidden px-3 py-2 text-right font-medium md:table-cell">Prompts</th>
+                    <th className="px-3 py-2 text-right font-medium">Posição</th>
+                    <th className="hidden px-3 py-2 text-right font-medium sm:table-cell">Nossa página</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/[0.06]">
+                  {summary.engines.map((e) => (
+                    <tr key={e.engine}>
+                      <td className="px-4 py-2.5">
+                        <p className="text-neutral-100">{e.label}</p>
+                        <p className="text-[11px] text-neutral-500">
+                          {e.model}
+                          {e.failed ? ` · ${e.failed} falha${e.failed === 1 ? "" : "s"}` : ""}
+                        </p>
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-center gap-3">
+                          <ShareBar value={e.share} className="w-24 md:w-32" />
+                          <span className="w-12 text-right tabular-nums text-neutral-100">{pct(e.share)}</span>
+                          <span className="hidden text-xs tabular-nums text-neutral-500 lg:inline">
+                            {e.mentioned}/{e.samples}
+                            {e.rollingRuns > 1 && e.rollingShare != null ? ` · ${pct(e.rollingShare)} em ${e.rollingRuns}` : ""}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="hidden px-3 py-2.5 text-right tabular-nums text-neutral-300 md:table-cell">
+                        {e.promptsMentioned}/{e.prompts}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-neutral-300">{e.avgPosition != null ? `#${e.avgPosition}` : "–"}</td>
+                      <td className="hidden px-3 py-2.5 text-right tabular-nums text-neutral-300 sm:table-cell">{e.brandCited ? `${e.brandCited}×` : "–"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {/* Prompt × assistant matrix */}
+      {summary ? (
+        <section>
+          <SectionHeader
+            label={`Prompts · ${activeCount} ativos`}
+            hint="Cada célula: quantas amostras citaram o Kodus, e a posição média na lista. Clique pra ler a resposta."
+            right={
+              <span className="flex items-center gap-3 text-[11px] text-neutral-500">
+                <span className="inline-flex items-center gap-1.5"><span className="inline-block size-2.5 rounded-[3px] bg-emerald-400" /> todas</span>
+                <span className="inline-flex items-center gap-1.5"><span className="inline-block size-2.5 rounded-[3px] bg-amber-400" /> parte</span>
+                <span className="inline-flex items-center gap-1.5"><span className="inline-block size-2.5 rounded-[3px] ring-1 ring-inset ring-white/20" /> nenhuma</span>
+                <span className="inline-flex items-center gap-1.5"><Link2 className="size-3" /> fonte nossa</span>
+              </span>
+            }
+          />
+          <div className="overflow-x-auto rounded-lg border border-white/[0.06] bg-neutral-900/40">
+            <table className="w-full min-w-[820px] text-sm">
+              <thead className="text-[11px] uppercase tracking-wider text-neutral-500">
+                <tr className="border-b border-white/[0.06]">
+                  <th className="px-4 py-2 text-left font-medium">Prompt</th>
+                  {engines.map((e) => (
+                    <th key={e} className="w-[132px] px-2 py-2 text-left font-medium">
+                      {SHORT_LABEL[e]}
+                    </th>
+                  ))}
+                  <th className="w-[84px] px-2 py-2 text-right font-medium" title="Assistentes que citaram o Kodus nesta rodada">Presença</th>
+                  <th className="w-[92px] px-2 py-2" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/[0.06]">
+                {summary.prompts.map(({ prompt, runs }) => {
+                  const isOpen = open?.promptId === prompt.id;
+                  const present = engines.filter((e) => (runs[e]?.mentioned ?? 0) > 0).length;
+                  const asked = engines.filter((e) => (runs[e]?.samples ?? 0) > 0).length;
+                  return (
+                    <RowGroup key={prompt.id}>
+                      <tr className={cn("group", !prompt.active && "opacity-50", isOpen && "bg-white/[0.02]")}>
+                        <td className="max-w-[460px] px-4 py-2 align-middle">
+                          <button
+                            type="button"
+                            onClick={() => setOpen(isOpen ? null : { promptId: prompt.id, engine: engines.find((e) => runs[e]) ?? engines[0] })}
+                            className="flex w-full items-start gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60"
+                          >
+                            {isOpen ? <ChevronDown className="mt-0.5 size-3.5 shrink-0 text-neutral-500" /> : <ChevronRight className="mt-0.5 size-3.5 shrink-0 text-neutral-500" />}
+                            <span className="min-w-0">
+                              <span className="block text-neutral-100">{prompt.prompt}</span>
+                              <span className="block text-[11px] text-neutral-500">
+                                {prompt.language.toUpperCase()}
+                                {prompt.tags.length ? ` · ${prompt.tags.join(", ")}` : ""}
+                                {!prompt.active ? " · pausado" : ""}
+                              </span>
+                            </span>
+                          </button>
+                        </td>
+                        {engines.map((e) => (
+                          <td key={e} className="px-1 py-1 align-middle">
+                            <MatrixCell
+                              result={runs[e]}
+                              active={isOpen && open?.engine === e}
+                              onOpen={() => setOpen(isOpen && open?.engine === e ? null : { promptId: prompt.id, engine: e })}
+                            />
+                          </td>
+                        ))}
+                        <td className="px-2 py-2 text-right align-middle tabular-nums">
+                          <span className={cn(present === 0 ? "text-neutral-500" : present === asked ? "text-emerald-300" : "text-neutral-200")}>
+                            {asked ? `${present}/${asked}` : "–"}
+                          </span>
+                        </td>
+                        <td className="px-2 py-1 text-right align-middle">
+                          <div className="flex justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                            <IconButton label="Perguntar só este agora" onClick={() => runNow([prompt.id])} disabled={running != null} className="size-7 border-transparent">
+                              {running === prompt.id ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+                            </IconButton>
+                            <IconButton label={prompt.active ? "Pausar" : "Ativar"} onClick={() => patchPrompt(prompt.id, { active: !prompt.active })} className="size-7 border-transparent">
+                              {prompt.active ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
+                            </IconButton>
+                            <IconButton label="Apagar" onClick={() => removePrompt(prompt.id)} className="size-7 border-transparent hover:text-red-300">
+                              <Trash2 className="size-3.5" />
+                            </IconButton>
+                          </div>
+                        </td>
+                      </tr>
+                      {isOpen ? (
+                        <tr className="bg-black/20">
+                          <td colSpan={engines.length + 3} className="px-4 py-4">
+                            <div className="mb-3 flex flex-wrap items-center gap-1">
+                              {engines
+                                .filter((e) => runs[e])
+                                .map((e) => (
+                                  <button
+                                    key={e}
+                                    type="button"
+                                    onClick={() => setOpen({ promptId: prompt.id, engine: e })}
+                                    className={cn(
+                                      "rounded-md px-2.5 py-1 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60",
+                                      e === open?.engine ? "bg-white/[0.08] text-neutral-100" : "text-neutral-400 hover:bg-white/[0.04] hover:text-neutral-200",
+                                    )}
+                                  >
+                                    {ENGINE_LABEL[e]}
+                                    {runs[e] ? <span className="ml-1.5 text-neutral-500">{runs[e]!.samples > 1 ? `${runs[e]!.mentioned}/${runs[e]!.samples}` : runs[e]!.mentioned ? "cita" : "não"}</span> : null}
+                                  </button>
+                                ))}
+                            </div>
+                            {openResult && openResult.runs.length ? (
+                              <div className="space-y-3">
+                                {openResult.runs.map((run) => (
+                                  <SamplePanel key={run.id} run={run} total={openResult.runs.length} />
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-xs text-neutral-500">Sem resposta nesta rodada.</p>
+                            )}
+                          </td>
+                        </tr>
+                      ) : null}
+                    </RowGroup>
+                  );
+                })}
+                {summary.prompts.length === 0 ? (
+                  <tr>
+                    <td colSpan={engines.length + 3} className="px-4 py-8 text-center text-sm text-neutral-500">
+                      Nenhum prompt ainda. Escreva a pergunta como um comprador escreveria.
+                    </td>
+                  </tr>
+                ) : null}
+                <tr>
+                  <td colSpan={engines.length + 3} className="px-2 py-1">
+                    {adding ? (
+                      <div className="grid gap-2 p-2 md:grid-cols-[minmax(0,1fr)_84px_200px_auto_auto]">
+                        <Textarea
+                          autoFocus
+                          value={form.prompt}
+                          onChange={(e) => setForm({ ...form, prompt: e.target.value })}
+                          placeholder="Como um comprador perguntaria. Ex.: What are the best AI code review tools for a team on GitLab that wants a self-hosted option?"
+                          rows={2}
+                          maxLength={500}
+                          className="border-white/10 bg-neutral-950 text-sm"
+                        />
+                        <Select value={form.language} onValueChange={(v) => setForm({ ...form, language: v })}>
+                          <SelectTrigger className="h-9 border-white/10 bg-neutral-950 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+                            {LANGS.map((l) => (
+                              <SelectItem key={l.value} value={l.value}>
+                                {l.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Input value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} placeholder="tags: gitlab, self-hosted" className="h-9 border-white/10 bg-neutral-950 text-xs" />
+                        <button
+                          type="button"
+                          onClick={addPrompt}
+                          disabled={saveInFlight || form.prompt.trim().length < 5}
+                          className="h-9 rounded-md bg-violet-600 px-3 text-xs font-medium text-white hover:bg-violet-500 disabled:opacity-40"
+                        >
+                          {saveInFlight ? "Salvando…" : "Adicionar"}
+                        </button>
+                        <button type="button" onClick={() => setAdding(false)} className="h-9 px-2 text-xs text-neutral-400 hover:text-neutral-200">
+                          Cancelar
+                        </button>
+                        <p className="text-[11px] text-neutral-500 md:col-span-5">{form.prompt.length}/500 · entra na próxima rodada; use o play na linha pra perguntar agora.</p>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setAdding(true)}
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs text-neutral-400 hover:bg-white/[0.04] hover:text-neutral-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60"
+                      >
+                        <Plus className="size-3.5" /> Novo prompt
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      {/* Where to act */}
+      {summary && (absentSources.length > 0 || summary.competitors.length > 0 || searches.length > 0) ? (
+        <section>
+          <SectionHeader label="Onde atacar" hint="O que os assistentes leem e não nos encontram, quem eles nomeiam, e o que pesquisam antes de responder." />
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
+            <div className="rounded-lg border border-white/[0.06] bg-neutral-900/40">
+              <div className="border-b border-white/[0.06] px-4 py-2.5">
+                <p className="text-sm font-medium text-neutral-100">Fontes citadas em respostas sem o Kodus</p>
+                <p className="text-[11px] text-neutral-500">Cada uma é um alvo de backlink ou listing. A barra é o número de respostas sem o Kodus que citaram o domínio.</p>
+              </div>
+              <ol className="divide-y divide-white/[0.06]">
+                {absentSources.slice(0, 12).map((d) => (
+                  <li key={d.domain} className="grid grid-cols-[minmax(0,1fr)_120px_auto] items-center gap-3 px-4 py-2 text-sm">
+                    <div className="min-w-0">
+                      <p className="text-neutral-100">{d.domain}</p>
+                      {d.urls[0] ? (
+                        <a href={d.urls[0]} target="_blank" rel="noreferrer" className="block truncate text-[11px] text-neutral-500 hover:text-neutral-300 hover:underline">
+                          {d.urls[0].replace(/^https?:\/\/(www\.)?/, "")}
+                        </a>
+                      ) : null}
+                    </div>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.06]" aria-hidden="true">
+                      <div className="h-full rounded-full bg-amber-400/80" style={{ width: `${Math.max(3, Math.round((d.runsWithoutBrand / maxAbsent) * 100))}%` }} />
+                    </div>
+                    <p className="w-20 text-right text-xs tabular-nums text-neutral-400">
+                      <span className="text-amber-300">{d.runsWithoutBrand}</span> / {d.citations}
+                    </p>
+                  </li>
+                ))}
+              </ol>
+            </div>
+
+            <div className="space-y-4">
+              <div className="rounded-lg border border-white/[0.06] bg-neutral-900/40">
+                <div className="border-b border-white/[0.06] px-4 py-2.5">
+                  <p className="text-sm font-medium text-neutral-100">Quem os assistentes nomeiam</p>
+                  <p className="text-[11px] text-neutral-500">Respostas desta rodada que citam cada concorrente.</p>
+                </div>
+                <ol className="divide-y divide-white/[0.06]">
+                  {summary.competitors.slice(0, 8).map((c) => (
+                    <li key={c.name} className="grid grid-cols-[minmax(0,1fr)_96px_36px] items-center gap-3 px-4 py-1.5 text-sm">
+                      <span className="truncate text-neutral-200">{c.name}</span>
+                      <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.06]" aria-hidden="true">
+                        <div className="h-full rounded-full bg-neutral-400/70" style={{ width: `${Math.max(3, Math.round((c.runs / maxComp) * 100))}%` }} />
+                      </div>
+                      <span className="text-right text-xs tabular-nums text-neutral-400">{c.runs}</span>
+                    </li>
+                  ))}
+                  {summary.competitors.length === 0 ? <li className="px-4 py-2 text-xs text-neutral-500">Nenhum concorrente da lista foi citado.</li> : null}
+                </ol>
+              </div>
+
+              {searches.length ? (
+                <div className="rounded-lg border border-white/[0.06] bg-neutral-900/40">
+                  <div className="border-b border-white/[0.06] px-4 py-2.5">
+                    <p className="text-sm font-medium text-neutral-100">O que eles pesquisam antes de responder</p>
+                    <p className="text-[11px] text-neutral-500">Buscas do ChatGPT e do Claude, e as relacionadas do Google. Cada uma é uma página que precisa existir e ranquear.</p>
+                  </div>
+                  <ul className="divide-y divide-white/[0.06]">
+                    {shownSearches.map((sq) => (
+                      <li key={sq.query} className="flex items-baseline gap-3 px-4 py-1.5 text-sm">
+                        <span className="min-w-0 flex-1 truncate text-neutral-200" title={sq.query}>
+                          {sq.query}
+                        </span>
+                        <span className="shrink-0 text-[11px] text-neutral-500">{sq.engines.map((e) => SHORT_LABEL[e]).join(", ")}</span>
+                        <span className="w-6 shrink-0 text-right text-xs tabular-nums text-neutral-400">{sq.runs}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  {searches.length > 10 ? (
+                    <button type="button" onClick={() => setAllSearches((v) => !v)} className="w-full border-t border-white/[0.06] px-4 py-2 text-left text-xs text-neutral-400 hover:text-neutral-200">
+                      {allSearches ? "mostrar menos" : `ver todas as ${searches.length}`}
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {summary ? <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} settings={summary.settings} onSave={saveSettings} saving={saving} /> : null}
     </div>
   );
 }
 
 /** Two table rows per prompt need a keyed wrapper; a fragment does the job. */
-function FragmentRow({ children }: { children: React.ReactNode }) {
+function RowGroup({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
