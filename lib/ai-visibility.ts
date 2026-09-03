@@ -11,7 +11,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  * where we are absent is a backlink or listing target.
  */
 
-export const AI_ENGINES = ["perplexity", "chat_gpt", "gemini", "claude"] as const;
+export const AI_ENGINES = ["perplexity", "chat_gpt", "gemini", "claude", "google_ai"] as const;
 export type AiEngine = (typeof AI_ENGINES)[number];
 
 export const ENGINE_LABEL: Record<AiEngine, string> = {
@@ -19,19 +19,42 @@ export const ENGINE_LABEL: Record<AiEngine, string> = {
   chat_gpt: "ChatGPT",
   gemini: "Gemini",
   claude: "Claude",
+  google_ai: "Google AI Overview",
 };
 
-/** Models DataForSEO exposes per engine, verified 2026-09-03. */
+/**
+ * Models DataForSEO exposes per engine, verified 2026-09-03. Google AI
+ * Overview is not a model call but a SERP with the overview loaded; the
+ * "model" is a fixed label.
+ */
 export const DEFAULT_MODELS: Record<AiEngine, string> = {
   perplexity: "sonar",
   chat_gpt: "gpt-5.5",
   gemini: "gemini-3.5-flash",
   claude: "claude-sonnet-5",
+  google_ai: "ai_overview",
 };
+
+/**
+ * Answers vary between runs, so a prompt is asked several times where it is
+ * cheap (Perplexity sonar is under a cent) and the share is read over
+ * samples. Expensive engines default to one.
+ */
+export const DEFAULT_SAMPLES: Record<AiEngine, number> = {
+  perplexity: 3,
+  chat_gpt: 1,
+  gemini: 1,
+  claude: 1,
+  google_ai: 1,
+};
+export const MAX_SAMPLES = 5;
+
+/** Runs (distinct dates) the rolling share averages over. */
+export const ROLLING_RUNS = 4;
 
 export const WEEKDAY_LABELS = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
 
-export type EngineConfig = { engine: AiEngine; model: string };
+export type EngineConfig = { engine: AiEngine; model: string; samples: number };
 
 export type AiVisibilitySettings = {
   weekday: number;
@@ -55,11 +78,19 @@ export type AiPrompt = {
 
 export type Citation = { title: string | null; url: string };
 
+/** Engine-specific facts of a run; Google AI Overview fills these. */
+export type RunExtra = {
+  aiOverview?: boolean;
+  organicRank?: number | null;
+  organicTop?: string[];
+};
+
 export type AiPromptRun = {
   id: string;
   promptId: string;
   runOn: string;
   engine: AiEngine;
+  sample: number;
   modelName: string | null;
   mentioned: boolean;
   position: number | null;
@@ -72,12 +103,13 @@ export type AiPromptRun = {
   answer: string | null;
   costUsd: number | null;
   error: string | null;
+  extra: RunExtra;
   createdAt: string;
 };
 
 type SettingsRow = {
   weekday: number;
-  engines: EngineConfig[] | null;
+  engines: Array<Partial<EngineConfig>> | null;
   brand_terms: string[] | null;
   competitor_terms: string[] | null;
   last_run_on: string | null;
@@ -100,6 +132,7 @@ type RunRow = {
   prompt_id: string;
   run_on: string;
   engine: string;
+  sample: number | null;
   model_name: string | null;
   mentioned: boolean;
   position: number | null;
@@ -112,6 +145,7 @@ type RunRow = {
   answer: string | null;
   cost_usd: number | string | null;
   error: string | null;
+  extra: RunExtra | null;
   created_at: string;
 };
 
@@ -119,10 +153,20 @@ function isEngine(v: unknown): v is AiEngine {
   return typeof v === "string" && (AI_ENGINES as readonly string[]).includes(v);
 }
 
+function normalizeSamples(engine: AiEngine, v: unknown): number {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_SAMPLES[engine];
+  return Math.min(MAX_SAMPLES, Math.round(n));
+}
+
+function normalizeEngines(list: Array<Partial<EngineConfig>> | null | undefined): EngineConfig[] {
+  return (list ?? [])
+    .filter((e): e is Partial<EngineConfig> & { engine: AiEngine } => Boolean(e) && isEngine(e.engine))
+    .map((e) => ({ engine: e.engine, model: e.model?.trim() || DEFAULT_MODELS[e.engine], samples: normalizeSamples(e.engine, e.samples) }));
+}
+
 function rowToSettings(r: SettingsRow): AiVisibilitySettings {
-  const engines = (r.engines ?? [])
-    .filter((e) => e && isEngine(e.engine))
-    .map((e) => ({ engine: e.engine, model: e.model?.trim() || DEFAULT_MODELS[e.engine] }));
+  const engines = normalizeEngines(r.engines);
   return {
     weekday: r.weekday,
     engines,
@@ -152,6 +196,7 @@ function rowToRun(r: RunRow): AiPromptRun {
     promptId: r.prompt_id,
     runOn: r.run_on,
     engine: (isEngine(r.engine) ? r.engine : "chat_gpt") as AiEngine,
+    sample: r.sample ?? 1,
     modelName: r.model_name,
     mentioned: r.mentioned,
     position: r.position,
@@ -164,6 +209,7 @@ function rowToRun(r: RunRow): AiPromptRun {
     answer: r.answer,
     costUsd: r.cost_usd == null ? null : Number(r.cost_usd),
     error: r.error,
+    extra: r.extra ?? {},
     createdAt: r.created_at,
   };
 }
@@ -179,8 +225,9 @@ export async function getSettings(client: SupabaseClient): Promise<AiVisibilityS
     return {
       weekday: 1,
       engines: [
-        { engine: "perplexity", model: DEFAULT_MODELS.perplexity },
-        { engine: "chat_gpt", model: DEFAULT_MODELS.chat_gpt },
+        { engine: "perplexity", model: DEFAULT_MODELS.perplexity, samples: DEFAULT_SAMPLES.perplexity },
+        { engine: "chat_gpt", model: DEFAULT_MODELS.chat_gpt, samples: DEFAULT_SAMPLES.chat_gpt },
+        { engine: "google_ai", model: DEFAULT_MODELS.google_ai, samples: DEFAULT_SAMPLES.google_ai },
       ],
       brandTerms: ["kodus", "kody"],
       competitorTerms: [],
@@ -191,7 +238,9 @@ export async function getSettings(client: SupabaseClient): Promise<AiVisibilityS
   return rowToSettings(data as SettingsRow);
 }
 
-export type SettingsPatch = Partial<Pick<AiVisibilitySettings, "weekday" | "engines" | "brandTerms" | "competitorTerms">>;
+export type SettingsPatch = Partial<Pick<AiVisibilitySettings, "weekday" | "brandTerms" | "competitorTerms">> & {
+  engines?: Array<Partial<EngineConfig> & { engine: AiEngine }>;
+};
 
 export async function updateSettings(client: SupabaseClient, patch: SettingsPatch): Promise<AiVisibilitySettings> {
   const row: Record<string, unknown> = { id: 1, updated_at: new Date().toISOString() };
@@ -200,7 +249,7 @@ export async function updateSettings(client: SupabaseClient, patch: SettingsPatc
     row.weekday = patch.weekday;
   }
   if (patch.engines) {
-    const engines = patch.engines.filter((e) => isEngine(e.engine)).map((e) => ({ engine: e.engine, model: e.model?.trim() || DEFAULT_MODELS[e.engine] }));
+    const engines = normalizeEngines(patch.engines);
     if (engines.length === 0) throw new Error("Pick at least one assistant");
     row.engines = engines;
   }
@@ -300,21 +349,115 @@ export type LlmAnswer = {
   fanOutQueries: string[];
   costUsd: number;
   raw: unknown;
+  extra?: RunExtra;
 };
+
+function dfsAuthHeader(): string {
+  const login = process.env.DATAFORSEO_LOGIN?.trim();
+  const password = process.env.DATAFORSEO_PASSWORD?.trim();
+  if (!login || !password) throw new Error("DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD must be set");
+  return `Basic ${Buffer.from(`${login}:${password}`).toString("base64")}`;
+}
+
+type DfsSerpItem = {
+  type?: string;
+  rank_group?: number;
+  domain?: string;
+  url?: string;
+  title?: string;
+  text?: string;
+  items?: Array<Record<string, unknown>> | string[] | null;
+  references?: Array<{ source?: string; domain?: string; url?: string; title?: string }> | null;
+  asynchronous_ai_overview?: boolean;
+};
+
+type DfsSerpResponse = {
+  status_code?: number;
+  status_message?: string;
+  cost?: number;
+  tasks?: Array<{ status_code?: number; status_message?: string; cost?: number; result?: Array<{ items?: DfsSerpItem[] | null }> | null }>;
+};
+
+/** Location per prompt language: Brazil for Portuguese, United States otherwise. */
+function serpLocale(language: string): { location_code: number; language_code: string } {
+  return language.toLowerCase().startsWith("pt") ? { location_code: 2076, language_code: "pt" } : { location_code: 2840, language_code: "en" };
+}
+
+/**
+ * Google AI Overview for a prompt used as a query. The overview loads
+ * asynchronously on Google, so the SERP call asks DataForSEO to wait for it.
+ * The organic top 10 rides along in `extra`, since the same call pays for
+ * both.
+ */
+export async function askGoogleAiOverview(prompt: string, language: string): Promise<LlmAnswer> {
+  const res = await fetch("https://api.dataforseo.com/v3/serp/google/organic/live/advanced", {
+    method: "POST",
+    headers: { Authorization: dfsAuthHeader(), "Content-Type": "application/json" },
+    body: JSON.stringify([{ keyword: prompt.slice(0, 700), ...serpLocale(language), device: "desktop", depth: 10, load_async_ai_overview: true }]),
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!res.ok) throw new Error(`DataForSEO SERP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const json = (await res.json()) as DfsSerpResponse;
+  const task = json.tasks?.[0];
+  if (!task || task.status_code !== 20000) {
+    throw new Error(`DataForSEO SERP task ${task?.status_code ?? json.status_code}: ${task?.status_message ?? json.status_message ?? "no task"}`);
+  }
+  const items = task.result?.[0]?.items ?? [];
+  const overview = items.find((i) => i.type === "ai_overview");
+  const texts: string[] = [];
+  const citations: Citation[] = [];
+  const seen = new Set<string>();
+  const addRef = (r: { url?: string; title?: string; source?: string } | undefined) => {
+    const url = r?.url?.trim();
+    if (!url || seen.has(url)) return;
+    seen.add(url);
+    citations.push({ title: r?.title ?? r?.source ?? null, url });
+  };
+  if (overview) {
+    for (const el of (overview.items ?? []) as Array<Record<string, unknown>>) {
+      if (typeof el !== "object" || !el) continue;
+      const title = typeof el.title === "string" ? el.title : "";
+      const text = typeof el.text === "string" ? el.text : "";
+      if (title || text) texts.push([title, text].filter(Boolean).join("\n"));
+      for (const r of (el.references as Array<{ url?: string; title?: string; source?: string }> | undefined) ?? []) addRef(r);
+      // Nested lists inside an overview element.
+      for (const sub of (el.items as Array<Record<string, unknown>> | undefined) ?? []) {
+        if (typeof sub?.text === "string") texts.push(`- ${sub.text}`);
+        for (const r of (sub?.references as Array<{ url?: string; title?: string; source?: string }> | undefined) ?? []) addRef(r);
+      }
+    }
+    for (const r of overview.references ?? []) addRef(r);
+  }
+  const organic = items.filter((i) => i.type === "organic");
+  const own = organic.find((i) => /(^|\.)kodus\.io$/i.test(i.domain ?? ""));
+  const related = items.find((i) => i.type === "related_searches");
+  const fanOut = Array.isArray(related?.items) ? (related!.items as unknown[]).filter((q): q is string => typeof q === "string") : [];
+  return {
+    modelName: "ai_overview",
+    text: texts.join("\n"),
+    citations,
+    fanOutQueries: fanOut,
+    costUsd: Number(task.cost ?? json.cost ?? 0),
+    raw: json,
+    extra: {
+      aiOverview: Boolean(overview) && (texts.length > 0 || citations.length > 0),
+      organicRank: own?.rank_group ?? null,
+      organicTop: organic.slice(0, 10).map((i) => i.domain ?? "").filter(Boolean),
+    },
+  };
+}
 
 export function isDataForSeoConfigured(): boolean {
   return Boolean(process.env.DATAFORSEO_LOGIN?.trim() && process.env.DATAFORSEO_PASSWORD?.trim());
 }
 
 /** Ask one assistant one prompt, web search on, and flatten the answer. */
-export async function askAssistant(engine: AiEngine, model: string, prompt: string): Promise<LlmAnswer> {
-  const login = process.env.DATAFORSEO_LOGIN?.trim();
-  const password = process.env.DATAFORSEO_PASSWORD?.trim();
-  if (!login || !password) throw new Error("DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD must be set");
+export async function askAssistant(engine: AiEngine, model: string, prompt: string, language = "en"): Promise<LlmAnswer> {
+  if (engine === "google_ai") return askGoogleAiOverview(prompt, language);
   const res = await fetch(`https://api.dataforseo.com/v3/ai_optimization/${engine}/llm_responses/live`, {
     method: "POST",
     headers: {
-      Authorization: `Basic ${Buffer.from(`${login}:${password}`).toString("base64")}`,
+      Authorization: dfsAuthHeader(),
       "Content-Type": "application/json",
     },
     body: JSON.stringify([{ user_prompt: prompt.slice(0, 500), model_name: model, web_search: true }]),
@@ -549,21 +692,23 @@ export async function runAiVisibility(client: SupabaseClient, opts: RunOptions =
   if (!opts.force) {
     const { data } = await client
       .from("ai_prompt_runs")
-      .select("prompt_id,engine")
+      .select("prompt_id,engine,sample")
       .eq("run_on", runOn)
       .is("error", null)
       .in("prompt_id", prompts.map((p) => p.id));
-    for (const r of data ?? []) existing.add(`${r.prompt_id}:${r.engine}`);
+    for (const r of data ?? []) existing.add(`${r.prompt_id}:${r.engine}:${r.sample ?? 1}`);
   }
 
-  const jobs: Array<{ prompt: AiPrompt; engine: EngineConfig }> = [];
+  const jobs: Array<{ prompt: AiPrompt; engine: EngineConfig; sample: number }> = [];
   for (const prompt of prompts) {
     for (const engine of engines) {
-      if (existing.has(`${prompt.id}:${engine.engine}`)) {
-        summary.skipped += 1;
-        continue;
+      for (let sample = 1; sample <= Math.max(1, engine.samples ?? 1); sample++) {
+        if (existing.has(`${prompt.id}:${engine.engine}:${sample}`)) {
+          summary.skipped += 1;
+          continue;
+        }
+        jobs.push({ prompt, engine, sample });
       }
-      jobs.push({ prompt, engine });
     }
   }
 
@@ -576,10 +721,11 @@ export async function runAiVisibility(client: SupabaseClient, opts: RunOptions =
         prompt_id: job.prompt.id,
         run_on: runOn,
         engine: job.engine.engine,
+        sample: job.sample,
         model_name: job.engine.model,
       };
       try {
-        const answer = await askAssistant(job.engine.engine, job.engine.model, job.prompt.prompt);
+        const answer = await askAssistant(job.engine.engine, job.engine.model, job.prompt.prompt, job.prompt.language);
         const a = analyzeAnswer(answer.text, answer.citations, settings.brandTerms, settings.competitorTerms);
         const { error } = await client.from("ai_prompt_runs").upsert(
           {
@@ -596,9 +742,10 @@ export async function runAiVisibility(client: SupabaseClient, opts: RunOptions =
             answer: answer.text,
             cost_usd: answer.costUsd,
             error: null,
+            extra: answer.extra ?? {},
             raw: answer.raw,
           },
-          { onConflict: "prompt_id,engine,run_on" },
+          { onConflict: "prompt_id,engine,run_on,sample" },
         );
         if (error) throw new Error(error.message);
         summary.asked += 1;
@@ -607,10 +754,10 @@ export async function runAiVisibility(client: SupabaseClient, opts: RunOptions =
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         summary.failed += 1;
-        summary.errors.push(`${ENGINE_LABEL[job.engine.engine]} · ${job.prompt.prompt.slice(0, 60)}: ${message}`);
+        summary.errors.push(`${ENGINE_LABEL[job.engine.engine]} #${job.sample} · ${job.prompt.prompt.slice(0, 60)}: ${message}`);
         await client.from("ai_prompt_runs").upsert(
           { ...base, mentioned: false, error: message.slice(0, 500), answer: null },
-          { onConflict: "prompt_id,engine,run_on" },
+          { onConflict: "prompt_id,engine,run_on,sample" },
         );
       }
     }
@@ -681,18 +828,43 @@ export type EngineSummary = {
   engine: AiEngine;
   label: string;
   model: string | null;
+  /** Prompts asked (with at least one sample without error). */
   prompts: number;
+  /** Prompts named in at least one sample. */
+  promptsMentioned: number;
+  /** Samples without error, and samples naming the brand. */
+  samples: number;
   mentioned: number;
+  /** mentioned / samples for this run. */
   share: number | null;
+  /** Same share over the last ROLLING_RUNS run dates. */
+  rollingShare: number | null;
+  rollingRuns: number;
   avgPosition: number | null;
   brandCited: number;
   costUsd: number;
   failed: number;
 };
 
+/** One prompt on one engine for one run date, all samples folded. */
+export type PromptEngineResult = {
+  engine: AiEngine;
+  samples: number;
+  mentioned: number;
+  rate: number | null;
+  avgPosition: number | null;
+  listSize: number | null;
+  brandCited: boolean;
+  competitors: string[];
+  citedDomains: string[];
+  extra: RunExtra;
+  runs: AiPromptRun[];
+  error: string | null;
+};
+
 export type PromptSummary = {
   prompt: AiPrompt;
-  runs: Partial<Record<AiEngine, AiPromptRun>>;
+  runs: Partial<Record<AiEngine, PromptEngineResult>>;
 };
 
 export type DomainSummary = {
@@ -706,6 +878,9 @@ export type DomainSummary = {
 
 export type CompetitorSummary = { name: string; runs: number };
 
+/** A search the assistants ran before answering: a page that should exist. */
+export type SearchSummary = { query: string; runs: number; engines: AiEngine[]; prompts: number };
+
 export type VisibilitySummary = {
   runOn: string | null;
   settings: AiVisibilitySettings;
@@ -713,11 +888,16 @@ export type VisibilitySummary = {
   prompts: PromptSummary[];
   domains: DomainSummary[];
   competitors: CompetitorSummary[];
+  searches: SearchSummary[];
   totalCostUsd: number;
-  /** Share of prompt × engine pairs naming the brand, across engines. */
+  /** Share of samples naming the brand, across engines. */
   overallShare: number | null;
-  history: Array<{ runOn: string; engine: AiEngine; prompts: number; mentioned: number }>;
+  history: Array<{ runOn: string; engine: AiEngine; samples: number; mentioned: number }>;
 };
+
+function avg(nums: number[]): number | null {
+  return nums.length ? Math.round((nums.reduce((s, n) => s + n, 0) / nums.length) * 10) / 10 : null;
+}
 
 export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn?: string } = {}): Promise<VisibilitySummary> {
   const [settings, prompts] = await Promise.all([getSettings(client), listPrompts(client)]);
@@ -734,6 +914,7 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
     prompts: prompts.map((p) => ({ prompt: p, runs: {} })),
     domains: [],
     competitors: [],
+    searches: [],
     totalCostUsd: 0,
     overallShare: null,
     history: [],
@@ -741,24 +922,60 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
   if (!runOn) return empty;
 
   const [{ data: runRows, error }, { data: histRows }] = await Promise.all([
-    client.from("ai_prompt_runs").select("*").eq("run_on", runOn).limit(2000),
-    client.from("ai_prompt_runs").select("run_on,engine,mentioned,error").order("run_on", { ascending: false }).limit(5000),
+    client.from("ai_prompt_runs").select("*").eq("run_on", runOn).limit(5000),
+    client.from("ai_prompt_runs").select("run_on,engine,mentioned,error").order("run_on", { ascending: false }).limit(10000),
   ]);
   if (error) throw new Error(`ai_prompt_runs: ${error.message}`);
   const runs = (runRows ?? []).map((r) => rowToRun(r as RunRow));
 
-  const byPrompt = new Map<string, Partial<Record<AiEngine, AiPromptRun>>>();
+  // Fold samples per prompt × engine.
+  const byPrompt = new Map<string, Partial<Record<AiEngine, PromptEngineResult>>>();
   for (const r of runs) {
     const m = byPrompt.get(r.promptId) ?? {};
-    m[r.engine] = r;
+    const cur: PromptEngineResult = m[r.engine] ?? {
+      engine: r.engine,
+      samples: 0,
+      mentioned: 0,
+      rate: null,
+      avgPosition: null,
+      listSize: null,
+      brandCited: false,
+      competitors: [],
+      citedDomains: [],
+      extra: {},
+      runs: [],
+      error: null,
+    };
+    cur.runs.push(r);
+    if (r.error) {
+      cur.error = cur.error ?? r.error;
+    } else {
+      cur.samples += 1;
+      if (r.mentioned) cur.mentioned += 1;
+      if (r.brandCited) cur.brandCited = true;
+      for (const c of r.competitors) if (!cur.competitors.includes(c)) cur.competitors.push(c);
+      for (const d of r.citedDomains) if (!cur.citedDomains.includes(d)) cur.citedDomains.push(d);
+      if (r.listSize != null) cur.listSize = cur.listSize == null ? r.listSize : Math.max(cur.listSize, r.listSize);
+      if (Object.keys(r.extra ?? {}).length) cur.extra = { ...cur.extra, ...r.extra };
+    }
+    m[r.engine] = cur;
     byPrompt.set(r.promptId, m);
   }
+  for (const m of byPrompt.values()) {
+    for (const res of Object.values(m)) {
+      if (!res) continue;
+      res.runs.sort((a, b) => a.sample - b.sample);
+      res.rate = res.samples ? res.mentioned / res.samples : null;
+      res.avgPosition = avg(res.runs.filter((r) => !r.error && r.mentioned && r.position != null).map((r) => r.position as number));
+    }
+  }
 
-  const engineAgg = new Map<AiEngine, EngineSummary & { positions: number[] }>();
+  const engineAgg = new Map<AiEngine, EngineSummary & { positions: number[]; promptIds: Set<string>; promptIdsMentioned: Set<string> }>();
   const domainAgg = new Map<string, DomainSummary>();
   const compAgg = new Map<string, number>();
-  let pairs = 0;
-  let pairsMentioned = 0;
+  const searchAgg = new Map<string, { query: string; runs: number; engines: Set<AiEngine>; prompts: Set<string> }>();
+  let samples = 0;
+  let samplesMentioned = 0;
   for (const r of runs) {
     const e =
       engineAgg.get(r.engine) ??
@@ -767,23 +984,31 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
         label: ENGINE_LABEL[r.engine],
         model: r.modelName,
         prompts: 0,
+        promptsMentioned: 0,
+        samples: 0,
         mentioned: 0,
         share: null,
+        rollingShare: null,
+        rollingRuns: 0,
         avgPosition: null,
         brandCited: 0,
         costUsd: 0,
         failed: 0,
         positions: [],
+        promptIds: new Set<string>(),
+        promptIdsMentioned: new Set<string>(),
       };
     e.costUsd += r.costUsd ?? 0;
     if (r.error) {
       e.failed += 1;
     } else {
-      e.prompts += 1;
-      pairs += 1;
+      e.samples += 1;
+      samples += 1;
+      e.promptIds.add(r.promptId);
       if (r.mentioned) {
         e.mentioned += 1;
-        pairsMentioned += 1;
+        samplesMentioned += 1;
+        e.promptIdsMentioned.add(r.promptId);
         if (r.position != null) e.positions.push(r.position);
       }
       if (r.brandCited) e.brandCited += 1;
@@ -797,16 +1022,48 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
         domainAgg.set(d, agg);
       }
       for (const name of r.competitors) compAgg.set(name, (compAgg.get(name) ?? 0) + 1);
+      for (const q of r.fanOutQueries) {
+        const key = q.trim().toLowerCase();
+        if (!key) continue;
+        const agg = searchAgg.get(key) ?? { query: q.trim(), runs: 0, engines: new Set<AiEngine>(), prompts: new Set<string>() };
+        agg.runs += 1;
+        agg.engines.add(r.engine);
+        agg.prompts.add(r.promptId);
+        searchAgg.set(key, agg);
+      }
     }
     engineAgg.set(r.engine, e);
   }
 
-  const engines: EngineSummary[] = [...engineAgg.values()].map(({ positions, ...e }) => ({
-    ...e,
-    share: e.prompts ? e.mentioned / e.prompts : null,
-    avgPosition: positions.length ? Math.round((positions.reduce((s, p) => s + p, 0) / positions.length) * 10) / 10 : null,
-    costUsd: Math.round(e.costUsd * 1e4) / 1e4,
-  }));
+  // History per run date and engine, over samples; the rolling share is the
+  // last ROLLING_RUNS dates up to and including this run.
+  const histAgg = new Map<string, { runOn: string; engine: AiEngine; samples: number; mentioned: number }>();
+  for (const h of histRows ?? []) {
+    if (h.error || !isEngine(h.engine)) continue;
+    const key = `${h.run_on}:${h.engine}`;
+    const agg = histAgg.get(key) ?? { runOn: String(h.run_on), engine: h.engine, samples: 0, mentioned: 0 };
+    agg.samples += 1;
+    if (h.mentioned) agg.mentioned += 1;
+    histAgg.set(key, agg);
+  }
+  const history = [...histAgg.values()].sort((a, b) => a.runOn.localeCompare(b.runOn) || a.engine.localeCompare(b.engine));
+  const rollingDates = [...new Set(history.map((h) => h.runOn))].filter((d) => d <= runOn!).sort().slice(-ROLLING_RUNS);
+
+  const engines: EngineSummary[] = [...engineAgg.values()].map(({ positions, promptIds, promptIdsMentioned, ...e }) => {
+    const window = history.filter((h) => h.engine === e.engine && rollingDates.includes(h.runOn));
+    const wSamples = window.reduce((s, h) => s + h.samples, 0);
+    const wMentioned = window.reduce((s, h) => s + h.mentioned, 0);
+    return {
+      ...e,
+      prompts: promptIds.size,
+      promptsMentioned: promptIdsMentioned.size,
+      share: e.samples ? e.mentioned / e.samples : null,
+      rollingShare: wSamples ? wMentioned / wSamples : null,
+      rollingRuns: window.length ? new Set(window.map((h) => h.runOn)).size : 0,
+      avgPosition: avg(positions),
+      costUsd: Math.round(e.costUsd * 1e4) / 1e4,
+    };
+  });
   engines.sort((a, b) => AI_ENGINES.indexOf(a.engine) - AI_ENGINES.indexOf(b.engine));
 
   const ownDomains = new Set(["kodus.io", "trykodus.com"]);
@@ -817,17 +1074,10 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
 
   const competitors = [...compAgg.entries()].map(([name, n]) => ({ name, runs: n })).sort((a, b) => b.runs - a.runs);
 
-  // Weekly history per engine, oldest first, for the trend line.
-  const histAgg = new Map<string, { runOn: string; engine: AiEngine; prompts: number; mentioned: number }>();
-  for (const h of histRows ?? []) {
-    if (h.error || !isEngine(h.engine)) continue;
-    const key = `${h.run_on}:${h.engine}`;
-    const agg = histAgg.get(key) ?? { runOn: String(h.run_on), engine: h.engine, prompts: 0, mentioned: 0 };
-    agg.prompts += 1;
-    if (h.mentioned) agg.mentioned += 1;
-    histAgg.set(key, agg);
-  }
-  const history = [...histAgg.values()].sort((a, b) => a.runOn.localeCompare(b.runOn) || a.engine.localeCompare(b.engine));
+  const searches: SearchSummary[] = [...searchAgg.values()]
+    .map((sq) => ({ query: sq.query, runs: sq.runs, engines: [...sq.engines], prompts: sq.prompts.size }))
+    .sort((a, b) => b.runs - a.runs || a.query.localeCompare(b.query))
+    .slice(0, 60);
 
   return {
     runOn,
@@ -836,8 +1086,9 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
     prompts: prompts.map((p) => ({ prompt: p, runs: byPrompt.get(p.id) ?? {} })),
     domains,
     competitors,
+    searches,
     totalCostUsd: Math.round(runs.reduce((s, r) => s + (r.costUsd ?? 0), 0) * 1e4) / 1e4,
-    overallShare: pairs ? pairsMentioned / pairs : null,
+    overallShare: samples ? samplesMentioned / samples : null,
     history,
   };
 }
