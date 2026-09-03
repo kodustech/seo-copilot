@@ -102,10 +102,12 @@ function IconButton({
 
 /** A thin bar: the share of samples naming the brand. */
 function ShareBar({ value, className }: { value: number | null; className?: string }) {
-  const w = value == null ? 0 : Math.max(2, Math.round(value * 100));
+  // Zero stays empty; only a tiny positive share gets the 2% floor so it is
+  // visible at all.
+  const w = value == null || value <= 0 ? 0 : Math.max(2, Math.round(value * 100));
   return (
     <div className={cn("h-1.5 w-full overflow-hidden rounded-full bg-white/[0.06]", className)} aria-hidden="true">
-      <div className="h-full rounded-full bg-emerald-400/80" style={{ width: `${w}%` }} />
+      {w > 0 ? <div className="h-full rounded-full bg-emerald-400/80" style={{ width: `${w}%` }} /> : null}
     </div>
   );
 }
@@ -150,8 +152,8 @@ function MatrixCell({ result, active, onOpen }: { result: PromptEngineResult | u
       main = "no";
     }
     if (result.engine === "google_ai") {
-      if (result.extra.aiOverview === false) aside = "no overview";
-      else if (result.extra.organicRank != null) aside = `org #${result.extra.organicRank}`;
+      const serp = result.extra.aiOverview === false ? "no overview" : result.extra.organicRank != null ? `org #${result.extra.organicRank}` : null;
+      if (serp) aside = aside ? `${aside} · ${serp}` : serp;
     }
   }
   return (
