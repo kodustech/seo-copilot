@@ -123,14 +123,30 @@ async function reconcileManualLinkedInSends(
     .neq("status", "cancelled")
     .order("scheduled_for", { ascending: true });
   const pending = tasks ?? [];
-  // Messages already accounted for: sent LinkedIn tasks on this enrollment.
-  const { count: alreadySent } = await client
+  // Messages already accounted for: a sent LinkedIn task whose sent_at sits
+  // within a few minutes of the chat message (machine sends land seconds
+  // apart; a reconciled manual send carries the exact timestamp). Pairing
+  // by time keeps a manual message that came before a machine step from
+  // being mistaken for it, and makes a second pass a no-op.
+  const { data: sentTasks } = await client
     .from("outreach_send_tasks")
-    .select("id", { count: "exact", head: true })
+    .select("sent_at")
     .eq("enrollment_id", enrollment.id)
     .eq("channel", "linkedin")
-    .eq("status", "sent");
-  const toRecord = ours.slice(alreadySent ?? 0);
+    .eq("status", "sent")
+    .not("sent_at", "is", null);
+  const unclaimed = (sentTasks ?? []).map((t) => Date.parse(String(t.sent_at))).filter((n) => Number.isFinite(n));
+  const TOLERANCE_MS = 10 * 60 * 1000;
+  const toRecord = ours.filter((ts) => {
+    const t = Date.parse(ts);
+    let best = -1;
+    for (let i = 0; i < unclaimed.length; i++) {
+      if (Math.abs(unclaimed[i] - t) <= TOLERANCE_MS && (best < 0 || Math.abs(unclaimed[i] - t) < Math.abs(unclaimed[best] - t))) best = i;
+    }
+    if (best < 0) return true;
+    unclaimed.splice(best, 1);
+    return false;
+  });
   if (toRecord.length === 0) return 0;
 
   // Steps to hang created tasks on when the enrollment has none left
@@ -214,15 +230,23 @@ function normalizeName(s: string | null | undefined): string {
  * the sequences "paused" by hand. First + last name must both agree; a bare
  * first name is not a match.
  */
-export async function findEnrollmentsByContactName(
+type NameMatchRow = {
+  id: string;
+  status: string;
+  sequence_id: string | null;
+  contact_linkedin: string | null;
+  contact_name: string | null;
+  contact_email: string | null;
+  company_name: string | null;
+  created_at: string | null;
+};
+
+/** Recent enrollments with a name, loaded once and matched in memory. */
+export async function loadEnrollmentsForNameMatch(
   client: SupabaseClient,
-  name: string | null | undefined,
-  opts?: { sinceDays?: number },
-): Promise<EnrollmentHit[]> {
-  const wanted = normalizeName(name);
-  const parts = wanted.split(" ");
-  if (parts.length < 2) return [];
-  const since = new Date(Date.now() - (opts?.sinceDays ?? 120) * 86_400_000).toISOString();
+  sinceDays = 120,
+): Promise<NameMatchRow[]> {
+  const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString();
   const { data, error } = await client
     .from("outreach_enrollments")
     .select(
@@ -233,6 +257,18 @@ export async function findEnrollmentsByContactName(
     .order("updated_at", { ascending: false })
     .limit(3000);
   if (error) throw new Error(error.message);
+  return (data ?? []) as NameMatchRow[];
+}
+
+export async function findEnrollmentsByContactName(
+  client: SupabaseClient,
+  name: string | null | undefined,
+  opts?: { sinceDays?: number; rows?: NameMatchRow[] },
+): Promise<EnrollmentHit[]> {
+  const wanted = normalizeName(name);
+  const parts = wanted.split(" ");
+  if (parts.length < 2) return [];
+  const data = opts?.rows ?? (await loadEnrollmentsForNameMatch(client, opts?.sinceDays));
   const hits: EnrollmentHit[] = [];
   for (const row of data ?? []) {
     const n = normalizeName(row.contact_name as string);
@@ -256,6 +292,14 @@ export async function findEnrollmentsByContactName(
       companyName: (row.company_name as string) || "",
       createdAt: (row.created_at as string | null) ?? null,
     });
+  }
+  // Two people with the same name at different companies: a name alone
+  // cannot say which one wrote, and stopping the wrong sequence is worse
+  // than leaving both running. Identity matching still finds them.
+  const companies = new Set(hits.map((h) => normalizeName(h.companyName)));
+  if (companies.size > 1) {
+    console.warn("[unipile] name matches several companies, skipped:", wanted, [...companies]);
+    return [];
   }
   return hits;
 }
@@ -675,6 +719,9 @@ export async function syncUnipileLinkedInInbox(
   let enrollmentsMarkedReplied = 0;
   const threadIds = new Set<string>();
   const enrollmentsStopped = new Set<string>();
+  // Enrollments for the name fallback, loaded on first use and shared by
+  // every chat in this run instead of one 3000-row query per chat.
+  let nameRows: Awaited<ReturnType<typeof loadEnrollmentsForNameMatch>> | null = null;
 
   try {
     const liAccounts = await listLinkedInAccounts();
@@ -757,7 +804,8 @@ export async function syncUnipileLinkedInInbox(
           expanded,
         );
         if (enrollments.length === 0 && other?.name) {
-          enrollments = await findEnrollmentsByContactName(client, other.name);
+          nameRows ??= await loadEnrollmentsForNameMatch(client);
+          enrollments = await findEnrollmentsByContactName(client, other.name, { rows: nameRows });
         }
         if (enrollments.length === 0) continue;
 
@@ -865,41 +913,45 @@ export async function syncUnipileLinkedInInbox(
         // put five silent accounts in the reply count and moved them to
         // engaged in the CRM.
         // Our own messages in this chat: manual sends the engine never saw.
+        // The thread belongs to the primary enrollment (the one the messages
+        // were upserted under), so only it gets the sends; a contact with
+        // two enrollments would otherwise count every message twice.
         const outboundTs = messages
           .filter((m) => m.isSender && m.timestamp)
           .map((m) => m.timestamp as string);
         if (outboundTs.length) {
-          for (const enr of stoppable) {
-            try {
-              const { data: enrRow } = await client
-                .from("outreach_enrollments")
-                .select("crm_company_id")
-                .eq("id", enr.id)
-                .maybeSingle();
-              await reconcileManualLinkedInSends(
-                client,
-                enr,
-                outboundTs,
-                (enrRow?.crm_company_id as string | null) ?? null,
-              );
-            } catch (err) {
-              console.warn("[unipile] reconcile manual sends failed", enr.id, err);
-            }
+          try {
+            const { data: enrRow } = await client
+              .from("outreach_enrollments")
+              .select("crm_company_id")
+              .eq("id", primary.id)
+              .maybeSingle();
+            await reconcileManualLinkedInSends(
+              client,
+              primary,
+              outboundTs,
+              (enrRow?.crm_company_id as string | null) ?? null,
+            );
+          } catch (err) {
+            console.warn("[unipile] reconcile manual sends failed", primary.id, err);
           }
         }
 
-        const latestInbound = inbound.reduce((max, m) => {
-          const t = m.timestamp ? Date.parse(m.timestamp) : 0;
-          return t > max ? t : max;
-        }, 0);
+        const inboundDates = inbound
+          .map((m) => (m.timestamp ? Date.parse(m.timestamp) : NaN))
+          .filter((t) => Number.isFinite(t));
+        const latestInbound = inboundDates.length ? Math.max(...inboundDates) : null;
         for (const enr of stoppable) {
           if (enrollmentsStopped.has(enr.id)) continue;
           if (enr.status === "replied") {
             enrollmentsStopped.add(enr.id);
             continue;
           }
-          const startedAt = enr.createdAt ? Date.parse(enr.createdAt) : 0;
-          if (!latestInbound || latestInbound < startedAt) continue;
+          // Skip only when both dates are known and the last reply predates
+          // the enrollment; a message without a parseable date is still a
+          // reply.
+          const startedAt = enr.createdAt ? Date.parse(enr.createdAt) : NaN;
+          if (latestInbound != null && Number.isFinite(startedAt) && latestInbound < startedAt) continue;
           try {
             await markEnrollmentReplied(client, enr.id, {
               revive: false,

@@ -141,6 +141,7 @@ function daysLeft(end: string): number {
 
 export function GoalsPage() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const [betsVersion, setBetsVersion] = useState(0);
   const [token, setToken] = useState<string | null>(null);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [stats, setStats] = useState<Record<string, number>>({});
@@ -411,6 +412,9 @@ export function GoalsPage() {
         }}
       />
 
+      {/* Bets: what we are running to move the goals. Three active at most. */}
+      <BetsPanel token={token} refreshKey={betsVersion} onChanged={() => setBetsVersion((v) => v + 1)} />
+
       {/* Goal list */}
       {loading && goals.length === 0 ? (
         <div className="flex items-center justify-center py-20">
@@ -439,6 +443,8 @@ export function GoalsPage() {
               goal={g}
               teamMembers={teamMembers}
               token={token}
+              betsVersion={betsVersion}
+              onBetsChanged={() => setBetsVersion((v) => v + 1)}
               onIncrement={(delta) => incrementGoal(g.id, delta)}
               onUpdate={(updates) => updateInline(g.id, updates)}
               onEdit={() => setEditing(g)}
@@ -508,6 +514,8 @@ function GoalCard({
   onEdit,
   onDelete,
   onLinksChanged,
+  betsVersion,
+  onBetsChanged,
 }: {
   goal: Goal;
   teamMembers: TeamMember[];
@@ -517,6 +525,8 @@ function GoalCard({
   onEdit: () => void;
   onDelete: () => void;
   onLinksChanged: (goal: Goal) => void;
+  betsVersion: number;
+  onBetsChanged: () => void;
 }) {
   const pct = Math.min(
     100,
@@ -851,7 +861,7 @@ function GoalCard({
         )}
       </div>
 
-      <BetsSection goal={goal} token={token} />
+      <BetsSection goal={goal} token={token} refreshKey={betsVersion} onChanged={onBetsChanged} />
 
       {picking && (
         <TaskPickerDialog
@@ -1818,13 +1828,247 @@ const BET_STATUS_LABEL: Record<BetStatus, { label: string; className: string }> 
   operation: { label: "virou operação", className: "bg-violet-500/20 text-violet-300" },
 };
 
-function BetsSection({ goal, token }: { goal: Goal; token: string | null }) {
+type BetWithGoal = Bet & { goalTitle?: string | null; goalPeriod?: string | null; goalFunnelMetric?: string | null };
+type BetFormState = { title: string; hypothesis: string; action: string; metric: string; decisionAt: string };
+const EMPTY_BET_FORM: BetFormState = { title: "", hypothesis: "", action: "", metric: "", decisionAt: "" };
+
+async function decideBet(headers: Record<string, string>, bet: Bet, status: BetStatus): Promise<string | null> {
+  const verdict =
+    status === "won" || status === "lost"
+      ? window.prompt("Veredito em uma linha (o que o número mostrou):", bet.verdict ?? "")
+      : bet.verdict;
+  const res = await fetch(`/api/bets/${bet.id}`, { method: "PATCH", headers, body: JSON.stringify({ status, verdict }) });
+  const json = await res.json();
+  return res.ok ? null : ((json.error as string | undefined) ?? "Falhou");
+}
+
+/** One bet: what we believe, what we do, what proves it, when we decide. */
+function BetRow({ bet, onDecide, showGoal }: { bet: BetWithGoal; onDecide: (status: BetStatus) => void; showGoal?: boolean }) {
+  const b = bet;
+  return (
+    <li className="rounded-md border border-white/10 bg-white/[0.03] p-2 text-xs">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <span className={cn("mr-2 rounded px-1.5 py-0.5", BET_STATUS_LABEL[b.status].className)}>{BET_STATUS_LABEL[b.status].label}</span>
+          <span className="font-medium text-neutral-100">{b.title}</span>
+          {showGoal && b.goalTitle ? <span className="ml-2 text-neutral-500">meta: {b.goalTitle}</span> : null}
+          <p className="mt-1 text-neutral-400">
+            <span className="text-neutral-500">Hipótese:</span> {b.hypothesis}
+          </p>
+          <p className="text-neutral-400">
+            <span className="text-neutral-500">Ação:</span> {b.action}
+          </p>
+          <p className="text-neutral-400">
+            <span className="text-neutral-500">Prova:</span> {b.metric} · <span className="text-neutral-500">decide em</span> {b.decisionAt}
+          </p>
+          {b.verdict ? <p className="mt-1 text-neutral-300">Veredito: {b.verdict}</p> : null}
+        </div>
+        {b.status === "active" || b.status === "queued" ? (
+          <div className="flex shrink-0 flex-col gap-1">
+            {b.status === "queued" ? (
+              <button onClick={() => onDecide("active")} className="rounded border border-emerald-500/30 px-2 py-0.5 text-emerald-300 hover:bg-emerald-500/10">ativar</button>
+            ) : (
+              <>
+                <button onClick={() => onDecide("won")} className="rounded border border-sky-500/30 px-2 py-0.5 text-sky-300 hover:bg-sky-500/10">ganhou</button>
+                <button onClick={() => onDecide("lost")} className="rounded border border-red-500/30 px-2 py-0.5 text-red-300 hover:bg-red-500/10">perdeu</button>
+                <button onClick={() => onDecide("operation")} className="rounded border border-violet-500/30 px-2 py-0.5 text-violet-300 hover:bg-violet-500/10">virou operação</button>
+              </>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </li>
+  );
+}
+
+function BetForm({ form, setForm, onCancel, onSubmit, creating, goalPicker }: {
+  form: BetFormState;
+  setForm: (f: BetFormState) => void;
+  onCancel: () => void;
+  onSubmit: () => void;
+  creating: boolean;
+  goalPicker?: React.ReactNode;
+}) {
+  return (
+    <div className="mt-2 space-y-2 rounded-md border border-white/10 bg-neutral-950 p-2">
+      {goalPicker}
+      <Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Título curto" className="border-white/10 bg-neutral-900 text-sm" />
+      <Textarea value={form.hypothesis} onChange={(e) => setForm({ ...form, hypothesis: e.target.value })} placeholder="Hipótese: se a gente fizer X, o número Y sobe porque..." rows={2} className="border-white/10 bg-neutral-900 text-sm" />
+      <Textarea value={form.action} onChange={(e) => setForm({ ...form, action: e.target.value })} placeholder="Ação: o que exatamente vai ser feito, por quem" rows={2} className="border-white/10 bg-neutral-900 text-sm" />
+      <div className="grid grid-cols-2 gap-2">
+        <Input value={form.metric} onChange={(e) => setForm({ ...form, metric: e.target.value })} placeholder="Métrica que prova (ex: resposta cold ≥ 3%)" className="border-white/10 bg-neutral-900 text-sm" />
+        <Input type="date" value={form.decisionAt} onChange={(e) => setForm({ ...form, decisionAt: e.target.value })} className="border-white/10 bg-neutral-900 text-sm" />
+      </div>
+      <div className="flex justify-end gap-2">
+        <button onClick={onCancel} className="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200">cancelar</button>
+        <button onClick={onSubmit} disabled={creating} className="rounded bg-violet-500/20 px-3 py-1 text-xs text-violet-200 hover:bg-violet-500/30 disabled:opacity-50">
+          {creating ? "salvando..." : "criar aposta"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * All bets, above the goal list. The three active ones are what the week is
+ * about; queued ones wait for a slot; decided ones keep their verdict.
+ */
+function BetsPanel({ token, refreshKey, onChanged }: { token: string | null; refreshKey: number; onChanged: () => void }) {
+  const [bets, setBets] = useState<BetWithGoal[]>([]);
+  const [goals, setGoals] = useState<{ id: string; title: string; periodStart: string; periodEnd: string }[]>([]);
+  const [maxActive, setMaxActive] = useState(3);
+  const [loaded, setLoaded] = useState(false);
+  const [showDecided, setShowDecided] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [goalId, setGoalId] = useState("");
+  const [form, setForm] = useState<BetFormState>(EMPTY_BET_FORM);
+
+  const headers = useMemo(
+    () => ({ Authorization: `Bearer ${token ?? ""}`, "Content-Type": "application/json" }),
+    [token],
+  );
+
+  const load = useCallback(async () => {
+    if (!token) return;
+    const res = await fetch("/api/bets", { headers });
+    const json = await res.json();
+    if (res.ok) {
+      setBets(json.bets as BetWithGoal[]);
+      setGoals(json.goals as typeof goals);
+      setMaxActive(Number(json.maxActive ?? 3));
+      setError(null);
+    } else {
+      const msg = (json.error as string | undefined) ?? "Falhou ao carregar apostas";
+      // Before the migration runs there is no table; say that instead of
+      // leaking the PostgREST schema-cache message.
+      setError(
+        /public\.bets/.test(msg)
+          ? "A tabela de apostas ainda não existe neste ambiente. Rode a migration supabase/migrations/20260902220000_goals_funnel_metric_bets.sql no Supabase."
+          : msg,
+      );
+    }
+    setLoaded(true);
+  }, [token, headers]);
+
+  useEffect(() => {
+    void load();
+  }, [load, refreshKey]);
+
+  const decide = async (bet: Bet, status: BetStatus) => {
+    const err = await decideBet(headers, bet, status);
+    if (err) {
+      setError(err);
+      return;
+    }
+    onChanged();
+  };
+
+  const create = async () => {
+    if (!goalId) {
+      setError("Escolha a meta que a aposta serve.");
+      return;
+    }
+    setError(null);
+    setCreating(true);
+    try {
+      const res = await fetch(`/api/goals/${goalId}/bets`, { method: "POST", headers, body: JSON.stringify(form) });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "Falhou");
+      setForm(EMPTY_BET_FORM);
+      setOpen(false);
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falhou");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const today = new Date().toISOString().slice(0, 10);
+  const active = bets.filter((b) => b.status === "active");
+  const queued = bets.filter((b) => b.status === "queued");
+  const decided = bets.filter((b) => b.status !== "active" && b.status !== "queued");
+  const overdue = active.filter((b) => b.decisionAt < today);
+
+  return (
+    <div className="mb-6 rounded-xl border border-violet-500/20 bg-violet-500/[0.04] p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-medium text-neutral-100">
+            Apostas{loaded ? ` · ${active.length} de ${maxActive} ativas` : ""}
+            {overdue.length > 0 ? <span className="ml-2 text-amber-300">· {overdue.length} com decisão vencida</span> : null}
+          </h2>
+          <p className="mt-0.5 text-xs text-neutral-500">
+            Hipótese + ação + métrica que prova + data da decisão. Cada aposta serve uma meta; tarefas ficam no Kanban.
+          </p>
+        </div>
+        <button onClick={() => setOpen((v) => !v)} className="shrink-0 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500">
+          {open ? "fechar" : "+ aposta"}
+        </button>
+      </div>
+      {error ? <p className="mt-2 text-xs text-red-300">{error}</p> : null}
+      {open ? (
+        <BetForm
+          form={form}
+          setForm={setForm}
+          onCancel={() => setOpen(false)}
+          onSubmit={create}
+          creating={creating}
+          goalPicker={
+            <Select value={goalId} onValueChange={setGoalId}>
+              <SelectTrigger className="h-9 border-white/10 bg-neutral-900 text-xs text-neutral-200">
+                <SelectValue placeholder="Meta que essa aposta serve" />
+              </SelectTrigger>
+              <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+                {goals.map((g) => (
+                  <SelectItem key={g.id} value={g.id}>
+                    {g.title} · {g.periodStart} a {g.periodEnd}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          }
+        />
+      ) : null}
+      {loaded && active.length + queued.length === 0 ? (
+        <p className="mt-3 text-xs text-neutral-500">
+          Nenhuma aposta ativa. {goals.length === 0 ? "Crie uma meta primeiro; a aposta é o que você faz pra mover o número dela." : "Clique em + aposta e escolha a meta."}
+        </p>
+      ) : null}
+      {active.length + queued.length > 0 ? (
+        <ul className="mt-3 space-y-2">
+          {[...active, ...queued].map((b) => (
+            <BetRow key={b.id} bet={b} showGoal onDecide={(st) => decide(b, st)} />
+          ))}
+        </ul>
+      ) : null}
+      {decided.length > 0 ? (
+        <div className="mt-3">
+          <button onClick={() => setShowDecided((v) => !v)} className="text-xs text-neutral-500 hover:text-neutral-300">
+            {showDecided ? "esconder" : "ver"} {decided.length} decidida{decided.length === 1 ? "" : "s"}
+          </button>
+          {showDecided ? (
+            <ul className="mt-2 space-y-2">
+              {decided.map((b) => (
+                <BetRow key={b.id} bet={b} showGoal onDecide={(st) => decide(b, st)} />
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function BetsSection({ goal, token, refreshKey, onChanged }: { goal: Goal; token: string | null; refreshKey: number; onChanged: () => void }) {
   const [bets, setBets] = useState<Bet[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState({ title: "", hypothesis: "", action: "", metric: "", decisionAt: "" });
+  const [form, setForm] = useState<BetFormState>(EMPTY_BET_FORM);
 
   const headers = useMemo(
     () => ({ Authorization: `Bearer ${token ?? ""}`, "Content-Type": "application/json" }),
@@ -1841,18 +2085,16 @@ function BetsSection({ goal, token }: { goal: Goal; token: string | null }) {
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, refreshKey]);
 
   const decide = async (bet: Bet, status: BetStatus) => {
     setError(null);
-    const verdict = status === "won" || status === "lost" ? window.prompt("Veredito em uma linha (o que o número mostrou):", bet.verdict ?? "") : bet.verdict;
-    const res = await fetch(`/api/bets/${bet.id}`, { method: "PATCH", headers, body: JSON.stringify({ status, verdict }) });
-    const json = await res.json();
-    if (!res.ok) {
-      setError(json.error ?? "Falhou");
+    const err = await decideBet(headers, bet, status);
+    if (err) {
+      setError(err);
       return;
     }
-    void load();
+    onChanged();
   };
 
   const create = async () => {
@@ -1862,9 +2104,9 @@ function BetsSection({ goal, token }: { goal: Goal; token: string | null }) {
       const res = await fetch(`/api/goals/${goal.id}/bets`, { method: "POST", headers, body: JSON.stringify(form) });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Falhou");
-      setForm({ title: "", hypothesis: "", action: "", metric: "", decisionAt: "" });
+      setForm(EMPTY_BET_FORM);
       setOpen(false);
-      void load();
+      onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falhou");
     } finally {
@@ -1890,59 +2132,13 @@ function BetsSection({ goal, token }: { goal: Goal; token: string | null }) {
       {bets.length > 0 ? (
         <ul className="mt-2 space-y-2">
           {bets.map((b) => (
-            <li key={b.id} className="rounded-md border border-white/10 bg-white/[0.03] p-2 text-xs">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <span className={cn("mr-2 rounded px-1.5 py-0.5", BET_STATUS_LABEL[b.status].className)}>{BET_STATUS_LABEL[b.status].label}</span>
-                  <span className="font-medium text-neutral-100">{b.title}</span>
-                  <p className="mt-1 text-neutral-400">
-                    <span className="text-neutral-500">Hipótese:</span> {b.hypothesis}
-                  </p>
-                  <p className="text-neutral-400">
-                    <span className="text-neutral-500">Ação:</span> {b.action}
-                  </p>
-                  <p className="text-neutral-400">
-                    <span className="text-neutral-500">Prova:</span> {b.metric} · <span className="text-neutral-500">decide em</span> {b.decisionAt}
-                  </p>
-                  {b.verdict ? <p className="mt-1 text-neutral-300">Veredito: {b.verdict}</p> : null}
-                </div>
-                {b.status === "active" || b.status === "queued" ? (
-                  <div className="flex shrink-0 flex-col gap-1">
-                    {b.status === "queued" ? (
-                      <button onClick={() => decide(b, "active")} className="rounded border border-emerald-500/30 px-2 py-0.5 text-emerald-300 hover:bg-emerald-500/10">ativar</button>
-                    ) : (
-                      <>
-                        <button onClick={() => decide(b, "won")} className="rounded border border-sky-500/30 px-2 py-0.5 text-sky-300 hover:bg-sky-500/10">ganhou</button>
-                        <button onClick={() => decide(b, "lost")} className="rounded border border-red-500/30 px-2 py-0.5 text-red-300 hover:bg-red-500/10">perdeu</button>
-                        <button onClick={() => decide(b, "operation")} className="rounded border border-violet-500/30 px-2 py-0.5 text-violet-300 hover:bg-violet-500/10">virou operação</button>
-                      </>
-                    )}
-                  </div>
-                ) : null}
-              </div>
-            </li>
+            <BetRow key={b.id} bet={b} onDecide={(st) => decide(b, st)} />
           ))}
         </ul>
       ) : loaded ? (
         <p className="mt-1 text-xs text-neutral-600">Nenhuma aposta ainda. Uma aposta é hipótese + ação + métrica que prova + data da decisão.</p>
       ) : null}
-      {open ? (
-        <div className="mt-2 space-y-2 rounded-md border border-white/10 bg-neutral-950 p-2">
-          <Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Título curto" className="border-white/10 bg-neutral-900 text-sm" />
-          <Textarea value={form.hypothesis} onChange={(e) => setForm({ ...form, hypothesis: e.target.value })} placeholder="Hipótese: se a gente fizer X, o número Y sobe porque..." rows={2} className="border-white/10 bg-neutral-900 text-sm" />
-          <Textarea value={form.action} onChange={(e) => setForm({ ...form, action: e.target.value })} placeholder="Ação: o que exatamente vai ser feito, por quem" rows={2} className="border-white/10 bg-neutral-900 text-sm" />
-          <div className="grid grid-cols-2 gap-2">
-            <Input value={form.metric} onChange={(e) => setForm({ ...form, metric: e.target.value })} placeholder="Métrica que prova (ex: resposta cold ≥ 3%)" className="border-white/10 bg-neutral-900 text-sm" />
-            <Input type="date" value={form.decisionAt} onChange={(e) => setForm({ ...form, decisionAt: e.target.value })} className="border-white/10 bg-neutral-900 text-sm" />
-          </div>
-          <div className="flex justify-end gap-2">
-            <button onClick={() => setOpen(false)} className="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200">cancelar</button>
-            <button onClick={create} disabled={creating} className="rounded bg-violet-500/20 px-3 py-1 text-xs text-violet-200 hover:bg-violet-500/30 disabled:opacity-50">
-              {creating ? "salvando..." : "criar aposta"}
-            </button>
-          </div>
-        </div>
-      ) : null}
+      {open ? <BetForm form={form} setForm={setForm} onCancel={() => setOpen(false)} onSubmit={create} creating={creating} /> : null}
     </div>
   );
 }

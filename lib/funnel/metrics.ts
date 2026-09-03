@@ -120,7 +120,9 @@ function pct(part: number, whole: number): string {
 }
 
 function sqlList(values: string[]): string {
-  return values.map((v) => `'${v.replace(/'/g, "\\'")}'`).join(", ");
+  return values
+    .map((v) => `'${v.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`)
+    .join(", ");
 }
 
 /**
@@ -170,6 +172,9 @@ function judge(id: string, value: number | null): { status: RateStatus; note: st
     if (value <= band.hi * 3) return { status: "warn", note: ref };
     return { status: "crit", note: ref };
   }
+  // Half the floor of the band is "far below": the same distance that makes
+  // an inverted band critical at three times its ceiling.
+  if (value < band.lo / 2) return { status: "crit", note: ref };
   if (value < band.lo) return { status: "warn", note: ref };
   if (value > band.hi) {
     return band.loose ? { status: "warn", note: ref } : { status: "good", note: ref };
@@ -311,6 +316,10 @@ async function searchNodes(
 
 async function llmReferralNode(periodStart: string, periodEnd: string): Promise<FunnelNode> {
   const sql = `
+    -- One row per (day, source, medium, property) is the table's grain; there
+    -- is no campaign or page dimension. Airbyte can extract the same day
+    -- twice (startDate/endDate windows overlap), so MAX dedups a re-sync
+    -- instead of adding it twice.
     WITH dedup AS (
       SELECT date, sessionSource, sessionMedium, property_id,
         MAX(totalUsers) AS users, MAX(sessions) AS sessions
@@ -357,6 +366,8 @@ type SignupRow = {
   domain: string;
   corporate: boolean;
   created: string;
+  /** Full signup instant, for windows measured in hours. */
+  created_at: string;
   platform: string | null;
   members: number | null;
   authors: number;
@@ -391,6 +402,7 @@ async function signupRows(periodStart: string, nextStart: string): Promise<Signu
       GROUP BY organizationId
     )
     SELECT o.uuid AS org_id, o.name, DATE(o.createdAt) AS created,
+      FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', o.createdAt) AS created_at,
       REGEXP_EXTRACT(LOWER(ow.email), r'@(.+)$') AS domain,
       ow.referralSource AS survey_source,
       pl.platforms, o.code_host_member_count AS members,
@@ -418,6 +430,7 @@ async function signupRows(periodStart: string, nextStart: string): Promise<Signu
       domain,
       corporate: domain !== "" && !free.has(domain),
       created: str(r.created) ?? "",
+      created_at: str(r.created_at) ?? `${str(r.created) ?? ""}T00:00:00Z`,
       platform: str(r.platforms),
       members,
       authors,
@@ -447,19 +460,31 @@ type CrmCompanyLite = {
 };
 
 async function loadCompanies(client: SupabaseClient): Promise<CrmCompanyLite[]> {
-  const { data, error } = await client
-    .from("crm_companies")
-    .select(
-      "id,name,domain,org_id,status,arr,dev_count,deployment,source,tier,trigger,properties,last_activity_at,last_outreach_at,created_at",
-    )
-    .is("archived_at", null)
-    .limit(5000);
-  if (error) throw new Error(`crm_companies: ${error.message}`);
-  return (data ?? []).map((r) => ({
-    ...(r as Record<string, unknown>),
-    arr: r.arr == null ? null : Number(r.arr),
-    dev_count: r.dev_count == null ? null : Number(r.dev_count),
-  })) as CrmCompanyLite[];
+  // Paged so the CRM can outgrow any single-request cap without the funnel
+  // silently dropping the newest accounts.
+  const PAGE = 1000;
+  const out: CrmCompanyLite[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await client
+      .from("crm_companies")
+      .select(
+        "id,name,domain,org_id,status,arr,dev_count,deployment,source,tier,trigger,properties,last_activity_at,last_outreach_at,created_at",
+      )
+      .is("archived_at", null)
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`crm_companies: ${error.message}`);
+    for (const r of data ?? []) {
+      out.push({
+        ...(r as Record<string, unknown>),
+        arr: r.arr == null ? null : Number(r.arr),
+        dev_count: r.dev_count == null ? null : Number(r.dev_count),
+      } as CrmCompanyLite);
+    }
+    if ((data ?? []).length < PAGE) break;
+  }
+  return out;
 }
 
 type StatusChange = {
@@ -535,7 +560,8 @@ async function coldOutbound(
     humanReplies: number | null;
     classifiedHuman: number | null;
   } | null;
-  repliedDomains: string[];
+  /** Company domain → first reply in the period (ISO). */
+  repliedDomains: Map<string, string>;
 }> {
   const { data: seqs, error } = await client
     .from("outreach_sequences")
@@ -551,7 +577,7 @@ async function coldOutbound(
       replies: node("ob_replies", "Respostas de empresa nova", null, "não medido"),
       facts: {},
       counts: null,
-      repliedDomains: [],
+      repliedDomains: new Map(),
     };
   }
 
@@ -619,18 +645,25 @@ async function coldOutbound(
   const repliedIds = [...new Set(humanThreads.map((t) => String(t.enrollment_id)))];
   const enrolledById = new Map(enrollments.map((e) => [String(e.id), e]));
   const missing = repliedIds.filter((id) => !enrolledById.has(id));
-  if (missing.length) {
+  for (let i = 0; i < missing.length; i += 200) {
     const { data: extra } = await client
       .from("outreach_enrollments")
       .select("id,sequence_id,status,company_name,domain,contact_name,contact_email,current_step_position,created_at")
-      .in("id", missing);
+      .in("id", missing.slice(i, i + 200));
     for (const e of extra ?? []) enrolledById.set(String(e.id), e);
   }
   const repliedEnrollments = repliedIds.map((id) => enrolledById.get(id)).filter((e): e is NonNullable<typeof e> => Boolean(e));
   const repliedStatus = repliedEnrollments.length;
-  const repliedDomains = new Set(
-    repliedEnrollments.map((e) => String(e.domain ?? "").toLowerCase()).filter(Boolean),
-  );
+  // Earliest reply per company domain, so a CRM move can be checked against
+  // when the person actually wrote back.
+  const repliedDomains = new Map<string, string>();
+  for (const e of repliedEnrollments) {
+    const d = String(e.domain ?? "").toLowerCase();
+    const at = repliedAt.get(String(e.id)) ?? "";
+    if (!d) continue;
+    const prev = repliedDomains.get(d);
+    if (!prev || (at && at < prev)) repliedDomains.set(d, at);
+  }
 
   // Which channel carried each reply: one thread per enrollment.
   const byChannel: Record<string, number> = {};
@@ -719,7 +752,7 @@ async function coldOutbound(
       ob_completed: `${pct(completed + repliedStatus, people)} completaram`,
     },
     counts: { people, bounced, completed: completed + repliedStatus, humanReplies: repliedStatus, classifiedHuman: humanReplies },
-    repliedDomains: [...repliedDomains],
+    repliedDomains,
   };
 }
 
@@ -784,21 +817,27 @@ type SelfServeRow = { org_id: string; name: string; plan: string; seats: number;
  */
 async function selfServePaid(periodStart: string, nextStart: string): Promise<SelfServeRow[]> {
   const sql = `
-    WITH first_lic AS (
+    WITH per_license AS (
       SELECT ol.organizationId, ol.planType, ol.subscriptionStatus, ol.totalLicenses, MIN(ul.assignedAt) AS first_assigned
       FROM \`${BQ}.kodus_billing.user_licenses\` ul
       JOIN \`${BQ}.kodus_billing.organization_licenses\` ol ON ol.id = ul.organizationLicenseId
-      WHERE ol.planType NOT LIKE 'free%'
+      WHERE ol.planType NOT LIKE 'free%' AND ol.subscriptionStatus = 'active' AND ol.totalLicenses > 0
       GROUP BY 1, 2, 3, 4
+    ),
+    -- One row per organization: its earliest paid assignment. An upgrade
+    -- (plan or seats) is a second license on the same org, not a second
+    -- customer.
+    first_lic AS (
+      SELECT * FROM per_license
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY organizationId ORDER BY first_assigned) = 1
     )
     SELECT f.organizationId AS org_id, o.name, f.planType AS plan, f.totalLicenses AS seats, DATE(f.first_assigned) AS first_assigned
     FROM first_lic f
     JOIN \`${BQ}.kodus_postgres.organizations\` o ON o.uuid = f.organizationId
-    WHERE f.subscriptionStatus = 'active' AND f.totalLicenses > 0
-      AND f.first_assigned >= '${periodStart}' AND f.first_assigned < '${nextStart}'
+    WHERE f.first_assigned >= '${periodStart}' AND f.first_assigned < '${nextStart}'
     ORDER BY f.first_assigned
-    LIMIT 200`;
-  const { rows } = await queryBigQuery(sql, 200);
+    LIMIT 1000`;
+  const { rows } = await queryBigQuery(sql, 1000);
   return rows.map((r) => ({
     org_id: str(r.org_id) ?? "",
     name: str(r.name) ?? "",
@@ -975,15 +1014,18 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   const byId = new Map(crm.map((c) => [c.id, c]));
   const allActs = changes ?? [];
   const ch = allActs.filter((c) => c.kind === "status_change" && c.created_at < `${nextStart}T00:00:00Z`);
+  const actsByCompany = new Map<string, StatusChange[]>();
+  for (const a of allActs) actsByCompany.set(a.company_id, [...(actsByCompany.get(a.company_id) ?? []), a]);
+  const chByCompany = new Map<string, StatusChange[]>();
+  for (const a of ch) chByCompany.set(a.company_id, [...(chByCompany.get(a.company_id) ?? []), a]);
 
   // Human touch on ICP within 48 h of signup: any activity a person logged on
   // the linked CRM account (comment, note, outreach sent, status moved).
   const touched = icpProxy.filter((s) => {
     const c = byOrg.get(s.org_id);
     if (!c) return false;
-    const created = new Date(`${s.created}T00:00:00Z`).getTime();
-    return allActs.some((a) => {
-      if (a.company_id !== c.id) return false;
+    const created = new Date(s.created_at).getTime();
+    return (actsByCompany.get(c.id) ?? []).some((a) => {
       if (a.kind === "status_change" && !a.actor) return false;
       const t = new Date(a.created_at).getTime();
       return t >= created && t - created <= 48 * 60 * 60 * 1000;
@@ -1149,7 +1191,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     rate(
       "meeting_to_opp",
       changes
-        ? `${oppsViaMeeting.length} de ${opps.length} oportunidades passaram por reunião`
+        ? `${oppsViaMeeting.length} de ${meetings.length} reuniões viraram oportunidade`
         : "reunião → oportunidade",
       changes ? oppsViaMeeting.length : null,
       changes ? meetings.length : null,
@@ -1231,20 +1273,27 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     nodes.ob_replies = node("ob_replies", "Respostas de empresa nova", null, "não medido");
   }
   const cc = cold?.counts ?? null;
-  // Reply → opportunity for cold: replied companies whose CRM account is now
-  // (or was moved this month into) qualified, poc or negotiation.
-  const repliedCrm = (cold?.repliedDomains ?? [])
-    .map((d) => crm.find((c) => (c.domain ?? "").toLowerCase() === d))
-    .filter((c): c is CrmCompanyLite => Boolean(c));
-  const repliedToOpp = repliedCrm.filter(
-    (c) => opp.has(c.status) || ch.some((a) => a.company_id === c.id && opp.has(a.to ?? "")),
-  );
-  const repliedToMeeting = repliedCrm.filter(
-    (c) =>
-      c.status === "meeting" ||
-      opp.has(c.status) ||
-      ch.some((a) => a.company_id === c.id && (a.to === "meeting" || opp.has(a.to ?? ""))),
-  );
+  // Reply → meeting / opportunity for cold: the CRM account of a company
+  // that replied moved into meeting, qualified, poc or negotiation AFTER the
+  // reply. Live status alone would credit an account that was already an
+  // opportunity when the cold message went out.
+  const crmByDomain = new Map<string, CrmCompanyLite>();
+  for (const c of crm) {
+    const d = (c.domain ?? "").toLowerCase();
+    if (d && !crmByDomain.has(d)) crmByDomain.set(d, c);
+  }
+  const repliedCrm: CrmCompanyLite[] = [];
+  const replyAtByCompany = new Map<string, string>();
+  for (const [d, at] of cold?.repliedDomains ?? new Map<string, string>()) {
+    const c = crmByDomain.get(d);
+    if (!c) continue;
+    repliedCrm.push(c);
+    replyAtByCompany.set(c.id, at);
+  }
+  const movedAfterReply = (c: CrmCompanyLite, into: (to: string) => boolean) =>
+    (chByCompany.get(c.id) ?? []).some((a) => into(a.to ?? "") && a.created_at >= (replyAtByCompany.get(c.id) ?? ""));
+  const repliedToOpp = repliedCrm.filter((c) => movedAfterReply(c, (to) => opp.has(to)));
+  const repliedToMeeting = repliedCrm.filter((c) => movedAfterReply(c, (to) => to === "meeting" || opp.has(to)));
   const repliedInConversation = repliedCrm.filter((c) => c.status !== "lead" && c.status !== "lost" && c.status !== "churned");
   rates.push(
     rate(
@@ -1352,7 +1401,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   // thing that earns the red outline.
   const RATE_NODE: Record<string, string> = { cold_bounce: "ob_contacts", cold_reply: "ob_replies", connected: "signups", touch_48h: "icp" };
   for (const r of rates) {
-    if (r.status !== "crit" || !RATE_NODE[r.id]) continue;
+    if ((r.status !== "crit" && r.status !== "warn") || !RATE_NODE[r.id]) continue;
     candidates.push({ nodeId: RATE_NODE[r.id], ratio: 0.1, lines: [r.label, r.note] });
   }
   // No verdicts on the canvas: the page shows each rate against its market

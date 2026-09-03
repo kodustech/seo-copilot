@@ -172,14 +172,14 @@ function RateLabel({ rate, x, y, size = 12.5, anchor = "start", compact = false 
   // which side of it we are on. Compact only drops the note when the rate
   // has no band.
   const full = `${text}${rate.note && rate.value != null && (!compact || flagged || rate.status === "ok") ? ` · ${rate.note}` : ""}`;
-  // Right-anchored labels get colour instead of a dot: the dot would need the
-  // rendered text width, which SVG does not give us before layout.
-  const showDot = flagged && anchor !== "end";
-  const dotX = anchor === "middle" ? x - 8 - full.length * 3.1 : x + 4;
-  const fill = rate.value == null ? CRIT : anchor === "end" && flagged ? statusColor(rate.status) : MUTED;
+  // Only a left-anchored label knows where its text starts, so only it gets
+  // the dot. Middle and right anchors would need the rendered width, which
+  // SVG does not give before layout; they carry the status in the colour.
+  const showDot = flagged && anchor === "start";
+  const fill = rate.value == null ? CRIT : !showDot && flagged ? statusColor(rate.status) : MUTED;
   return (
     <>
-      {showDot ? <circle cx={dotX} cy={y - 4} r={4} fill={statusColor(rate.status)} /> : null}
+      {showDot ? <circle cx={x + 4} cy={y - 4} r={4} fill={statusColor(rate.status)} /> : null}
       <text x={anchor === "start" && flagged ? x + 12 : x} y={y} fontSize={size} fill={fill} textAnchor={anchor}>
         {full}
       </text>

@@ -324,6 +324,11 @@ export async function incrementGoalProgress(
   if (readErr || !existing) {
     throw new Error(readErr?.message || "Goal not found");
   }
+  if ((existing as Row).funnel_metric) {
+    throw new Error(
+      "Esta meta segue uma métrica do funil; o progresso é escrito pelo sync do funil, não à mão.",
+    );
+  }
   const current = (existing as Row).current_count + delta;
   const target = (existing as Row).target_count;
   const newStatus: GoalStatus =
@@ -499,6 +504,8 @@ export async function recalculateGoalProgress(
     .eq("id", goalId)
     .single();
   if (readErr || !existing) return null;
+  // Linked tasks never overwrite a funnel-measured number.
+  if ((existing as Row).funnel_metric) return null;
 
   const target = (existing as Row).target_count;
   const prevStatus = (existing as Row).status as GoalStatus;

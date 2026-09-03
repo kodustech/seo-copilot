@@ -8,8 +8,9 @@
 --
 -- A bet is what we run to move a goal: hypothesis, action, the metric that
 -- proves it, and the date the verdict is due. It is not a task; tasks live
--- on the Kanban. At most three bets are active at a time (enforced in the
--- application), the rest queue.
+-- on the Kanban. At most three bets are active at a time, the rest queue;
+-- the cap is enforced by a constraint trigger below so two concurrent
+-- activations cannot both slip past an application-side count.
 -- ---------------------------------------------------------------------------
 
 ALTER TABLE goals ADD COLUMN IF NOT EXISTS funnel_metric TEXT;
@@ -34,6 +35,31 @@ CREATE TABLE IF NOT EXISTS bets (
 );
 CREATE INDEX IF NOT EXISTS bets_goal_idx ON bets (goal_id, status);
 CREATE INDEX IF NOT EXISTS bets_decision_idx ON bets (status, decision_at);
+
+CREATE OR REPLACE FUNCTION bets_enforce_active_cap() RETURNS TRIGGER AS $$
+DECLARE
+  active_count INTEGER;
+BEGIN
+  IF NEW.status <> 'active' THEN
+    RETURN NEW;
+  END IF;
+  -- Serialise concurrent activations: the lock is per statement, released at
+  -- commit, so the count below sees every committed activation.
+  PERFORM pg_advisory_xact_lock(hashtext('bets_active_cap'));
+  SELECT COUNT(*) INTO active_count FROM bets WHERE status = 'active' AND id <> NEW.id;
+  IF active_count >= 3 THEN
+    RAISE EXCEPTION 'Já existem 3 apostas ativas. Decida uma (ganhou, perdeu ou virou operação) antes de ativar outra.'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS bets_active_cap ON bets;
+CREATE CONSTRAINT TRIGGER bets_active_cap
+  AFTER INSERT OR UPDATE OF status ON bets
+  DEFERRABLE INITIALLY IMMEDIATE
+  FOR EACH ROW EXECUTE FUNCTION bets_enforce_active_cap();
 
 ALTER TABLE bets ENABLE ROW LEVEL SECURITY;
 DO $$

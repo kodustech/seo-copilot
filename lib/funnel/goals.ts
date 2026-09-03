@@ -24,8 +24,10 @@ export const FUNNEL_METRICS: { id: string; label: string; unit: string }[] = [
   { id: "closed", label: "Fechado (R$)", unit: "R$" },
 ];
 
+const FUNNEL_METRIC_IDS = new Set(FUNNEL_METRICS.map((m) => m.id));
+
 export function isFunnelMetric(id: string | null | undefined): boolean {
-  return Boolean(id) && FUNNEL_METRICS.some((m) => m.id === id);
+  return Boolean(id) && FUNNEL_METRIC_IDS.has(id as string);
 }
 
 /**
@@ -53,12 +55,19 @@ export async function goalOverlay(
   const goals = await goalsForMonth(client, month);
   const targets: Record<string, { goalId: string; title: string; target: number }> = {};
   const bets: Record<string, Bet[]> = {};
+  if (goals.length === 0) return { targets, bets };
+  const metricByGoal = new Map<string, string>();
   for (const g of goals) {
     const id = g.funnelMetric as string;
+    metricByGoal.set(g.id, id);
     // One goal per metric per month; the first (oldest) wins if two exist.
     if (!targets[id]) targets[id] = { goalId: g.id, title: g.title, target: g.targetCount };
-    const list = await listBets(client, { goalId: g.id });
-    bets[id] = [...(bets[id] ?? []), ...list];
+  }
+  // One query for every goal's bets instead of one per goal.
+  for (const b of await listBets(client, { goalIds: [...metricByGoal.keys()] })) {
+    const id = metricByGoal.get(b.goalId);
+    if (!id) continue;
+    bets[id] = [...(bets[id] ?? []), b];
   }
   return { targets, bets };
 }

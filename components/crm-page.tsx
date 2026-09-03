@@ -2477,7 +2477,13 @@ function OverviewTab({
             onChange={(e) => setArr(e.target.value)}
             onBlur={() => {
               const current = company.arr != null ? String(company.arr) : "";
-              if (arr !== current) onPatch({ arr: arr.trim() ? Number(arr) : null });
+              if (arr === current) return;
+              // A year of contract value is never negative; a stray "-" or a
+              // non-number clears the field instead of poisoning the funnel.
+              const parsed = Number(arr);
+              const next = arr.trim() && Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+              if (next == null) setArr("");
+              onPatch({ arr: next });
             }}
             placeholder="ex: 129000"
             className="border-white/10 bg-neutral-900"

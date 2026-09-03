@@ -1346,27 +1346,34 @@ export async function promoteEnrollmentToCrm(
         .not("sent_at", "is", null)
         .order("sent_at", { ascending: true });
       const who = enrollment.contactName ?? enrollment.contactEmail ?? "contact";
+      // The link above already happened, so this loop never runs again for
+      // this enrollment: a task that fails is logged and the others still
+      // land, instead of one error dropping every send after it.
       for (const t of tasks ?? []) {
         const channel = String(t.channel);
         const sentAt = String(t.sent_at);
-        await logActivity(client, result.company.id, "outreach_sent", {
-          summary: `${channel === "linkedin" ? "LinkedIn" : "Email"} sent to ${who}`,
-          meta: {
-            channel,
-            enrollment_id: enrollment.id,
-            sequence_id: enrollment.sequenceId,
-            contact_email: enrollment.contactEmail,
-            backfilled_on_promote: true,
-          },
-          actorEmail: null,
-          touch: false,
-        });
-        const { error } = await client.rpc("bump_outreach_counters", {
-          p_company_id: result.company.id,
-          p_sent_at: sentAt,
-          p_channel: channel,
-        });
-        if (error) throw new Error(error.message);
+        try {
+          await logActivity(client, result.company.id, "outreach_sent", {
+            summary: `${channel === "linkedin" ? "LinkedIn" : "Email"} sent to ${who}`,
+            meta: {
+              channel,
+              enrollment_id: enrollment.id,
+              sequence_id: enrollment.sequenceId,
+              contact_email: enrollment.contactEmail,
+              backfilled_on_promote: true,
+            },
+            actorEmail: null,
+            touch: false,
+          });
+          const { error } = await client.rpc("bump_outreach_counters", {
+            p_company_id: result.company.id,
+            p_sent_at: sentAt,
+            p_channel: channel,
+          });
+          if (error) throw new Error(error.message);
+        } catch (err) {
+          console.warn("[crm] backfill of a send on promote failed:", enrollment.id, sentAt, err);
+        }
       }
     }
   } catch (err) {

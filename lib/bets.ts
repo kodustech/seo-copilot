@@ -73,10 +73,14 @@ function need(v: string | undefined, name: string): string {
 
 export async function listBets(
   client: SupabaseClient,
-  filters: { goalId?: string; status?: BetStatus | BetStatus[]; limit?: number } = {},
+  filters: { goalId?: string; goalIds?: string[]; status?: BetStatus | BetStatus[]; limit?: number } = {},
 ): Promise<Bet[]> {
   let q = client.from("bets").select("*").order("decision_at", { ascending: true });
   if (filters.goalId) q = q.eq("goal_id", filters.goalId);
+  if (filters.goalIds) {
+    if (filters.goalIds.length === 0) return [];
+    q = q.in("goal_id", filters.goalIds);
+  }
   if (filters.status) {
     q = Array.isArray(filters.status) ? q.in("status", filters.status) : q.eq("status", filters.status);
   }
@@ -95,6 +99,9 @@ export async function countActiveBets(client: SupabaseClient): Promise<number> {
   return count ?? 0;
 }
 
+// The database enforces the same cap with a constraint trigger (see the bets
+// migration), so two writers racing past this check still cannot leave four
+// active; this read exists to give a readable message before the insert.
 async function assertActiveSlot(client: SupabaseClient, excludeId?: string): Promise<void> {
   let q = client.from("bets").select("id", { count: "exact", head: true }).eq("status", "active");
   if (excludeId) q = q.neq("id", excludeId);

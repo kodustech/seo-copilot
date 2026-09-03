@@ -160,18 +160,19 @@ export async function syncCalendarMeetings(client: SupabaseClient): Promise<Meet
         const external = (ev.attendees ?? [])
           .map((a) => a.email?.toLowerCase() ?? "")
           .filter((e) => e && !e.endsWith("@resource.calendar.google.com"));
-        const domains = new Set(
-          external
-            .map(domainOf)
-            .filter((d): d is string => Boolean(d) && !OWN_DOMAINS.has(d!) && !FREE_MAIL.has(d!)),
-        );
-        if (domains.size === 0) continue;
+        // Attendees grouped by customer domain; ours and free mail dropped.
+        const byEventDomain = new Map<string, string[]>();
+        for (const e of external) {
+          const d = domainOf(e);
+          if (!d || OWN_DOMAINS.has(d) || FREE_MAIL.has(d)) continue;
+          byEventDomain.set(d, [...(byEventDomain.get(d) ?? []), e]);
+        }
+        if (byEventDomain.size === 0) continue;
 
-        for (const d of domains) {
+        for (const [d, attendees] of byEventDomain) {
           const company = byDomain.get(d);
           if (!company) continue;
           result.eventsMatched += 1;
-          const attendees = external.filter((e) => domainOf(e) === d);
           const { error: upErr } = await client.from("crm_meetings").upsert(
             {
               company_id: company.id,
@@ -205,7 +206,11 @@ export async function syncCalendarMeetings(client: SupabaseClient): Promise<Meet
     if (!company) continue;
     const meetingAt = pickMeetingAt(list);
     const patch: Record<string, unknown> = {};
-    if (meetingAt && meetingAt !== company.meeting_at) patch.meeting_at = meetingAt;
+    // Google gives the start with a local offset and Postgres hands it back in
+    // UTC, so compare instants, not strings, or every run rewrites the date.
+    const sameInstant =
+      meetingAt && company.meeting_at && new Date(meetingAt).getTime() === new Date(company.meeting_at).getTime();
+    if (meetingAt && !sameInstant) patch.meeting_at = new Date(meetingAt).toISOString();
     const moves = company.status === "lead" || company.status === "engaged";
     if (Object.keys(patch).length === 0 && !moves) continue;
 
