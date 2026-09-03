@@ -326,7 +326,7 @@ export async function incrementGoalProgress(
   }
   if ((existing as Row).funnel_metric) {
     throw new Error(
-      "Esta meta segue uma métrica do funil; o progresso é escrito pelo sync do funil, não à mão.",
+      "This goal follows a funnel metric; its progress is written by the funnel sync, not by hand.",
     );
   }
   const current = (existing as Row).current_count + delta;

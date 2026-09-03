@@ -67,7 +67,7 @@ function monthOptions(count = 8): { value: string; label: string }[] {
   for (let i = 0; i < count; i++) {
     const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
     const value = d.toISOString().slice(0, 7);
-    const label = d.toLocaleDateString("pt-BR", { month: "long", year: "numeric", timeZone: "UTC" });
+    const label = d.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
     out.push({ value, label: label.charAt(0).toUpperCase() + label.slice(1) });
   }
   return out;
@@ -81,8 +81,8 @@ function fmtTarget(n: FunnelNode): string {
 
 function fmtCell(v: FunnelCell): string {
   if (v == null) return "";
-  if (typeof v === "boolean") return v ? "sim" : "não";
-  if (typeof v === "number") return Number.isInteger(v) ? v.toLocaleString("pt-BR") : v.toFixed(1);
+  if (typeof v === "boolean") return v ? "yes" : "no";
+  if (typeof v === "number") return Number.isInteger(v) ? v.toLocaleString("en-US") : v.toFixed(1);
   return v;
 }
 
@@ -167,7 +167,7 @@ function statusColor(status: FunnelRate["status"]): string {
 function RateLabel({ rate, x, y, size = 12.5, anchor = "start", compact = false }: { rate: FunnelRate | undefined; x: number; y: number; size?: number; anchor?: "start" | "middle" | "end"; compact?: boolean }) {
   if (!rate) return null;
   const flagged = rate.status === "good" || rate.status === "warn" || rate.status === "crit";
-  const text = rate.value == null ? `${rate.label}: não medido` : rate.label;
+  const text = rate.value == null ? `${rate.label}: not measured` : rate.label;
   // The market band always rides along when there is one; the colour says
   // which side of it we are on. Compact only drops the note when the rate
   // has no band.
@@ -216,7 +216,7 @@ function platformLever(n: Record<string, FunnelNode>): string {
     ["bitbucket", pos("bitbucket")],
     ["self-hosted", pos("self-hosted-ai")],
   ].filter(([, v]) => v != null);
-  return parts.length ? `posição: ${parts.map(([k, v]) => `${k} ${v}`).join(" · ")}` : "";
+  return parts.length ? `position: ${parts.map(([k, v]) => `${k} ${v}`).join(" · ")}` : "";
 }
 
 export function Diagram({ data, selected, onSelect }: { data: FunnelData; selected: string | null; onSelect: (id: string) => void }) {
@@ -230,7 +230,7 @@ export function Diagram({ data, selected, onSelect }: { data: FunnelData; select
   const convTop = { x: BX[0] + BWB / 2, y: BY - 2 };
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Funil Kodus: três entradas que caem numa faixa comercial única" className="h-auto w-full min-w-[960px]">
+    <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Kodus funnel: three entry lanes feeding one commercial band" className="h-auto w-full min-w-[960px]">
       <defs>
         <marker id="funnel-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
           <path d="M0,0 L10,5 L0,10 z" fill={INK} />
@@ -240,9 +240,9 @@ export function Diagram({ data, selected, onSelect }: { data: FunnelData; select
       {/* headers */}
       <text x={C1} y={52} fontSize={12.5} fill={MUTED}>SELF-HOSTED</text>
       <text x={C2} y={26} fontSize={12.5} fill={MUTED}>
-        INBOUND CLOUD · por mês{data.elapsed < 1 ? ` · mês em curso (${Math.round(data.elapsed * 100)}%)` : ""}
+        INBOUND CLOUD · per period{data.elapsed < 1 ? ` · in progress (${Math.round(data.elapsed * 100)}%)` : ""}
       </text>
-      <text x={C3} y={52} fontSize={12.5} fill={MUTED}>OUTBOUND · empresa nova, cold</text>
+      <text x={C3} y={52} fontSize={12.5} fill={MUTED}>OUTBOUND · new companies, cold</text>
 
       {/* inbound sources */}
       {box("impressions", C2 - 160, 40, { w: 300 })}
@@ -252,7 +252,7 @@ export function Diagram({ data, selected, onSelect }: { data: FunnelData; select
       <RateLabel rate={rate("ctr")} x={C2 - 150} y={122} size={12} />
       {lever ? (
         <>
-          <text x={C1} y={78} fontSize={13} fontWeight={600} fill={CRIT}>ALAVANCA · páginas de plataforma</text>
+          <text x={C1} y={78} fontSize={13} fontWeight={600} fill={CRIT}>LEVER · platform pages</text>
           <text x={C1} y={96} fontSize={12.5} fill={CRIT}>{lever}</text>
         </>
       ) : null}
@@ -271,7 +271,7 @@ export function Diagram({ data, selected, onSelect }: { data: FunnelData; select
       {/* self-hosted lane */}
       {box("sh_instances", C1, R[0])}
       <Arrow from={{ x: C1 + BW / 2, y: R[0] + BH }} to={{ x: C1 + BW / 2, y: R[2] }} />
-      <text x={C1 + BW / 2 + 10} y={R[0] + BH + 18} fontSize={12.5} fill={MUTED}>pedidos de trial: {n.sh_trial?.value ?? "?"}</text>
+      <text x={C1 + BW / 2 + 10} y={R[0] + BH + 18} fontSize={12.5} fill={MUTED}>trial requests: {n.sh_trial?.value ?? "?"}</text>
       <g
         role="button"
         tabIndex={0}
@@ -297,7 +297,7 @@ export function Diagram({ data, selected, onSelect }: { data: FunnelData; select
 
       {/* commercial band */}
       <rect x={30} y={BY - 100} width={W - 60} height={340} rx={10} fill="none" stroke={MUTED} strokeWidth={1} strokeDasharray="6 5" />
-      <text x={48} y={BY - 82} fontSize={12.5} fill={MUTED}>COMERCIAL</text>
+      <text x={48} y={BY - 82} fontSize={12.5} fill={MUTED}>COMMERCIAL</text>
       {box("conversations", BX[0], BY, { w: BWB, spine: true })}
       {box("opportunities", BX[1], BY, { w: BWB, spine: true })}
       {box("closed", BX[2], BY, { w: BWB, spine: true })}
@@ -348,15 +348,15 @@ function Drawer({ node, onClose }: { node: FunnelNode; onClose: () => void }) {
           <h2 className="text-base font-semibold">{node.title}</h2>
           <p className="mt-1 font-mono text-sm">{node.display}{node.value == null ? "" : fmtTarget(node)}</p>
           {node.definition ? <p className="mt-2 text-sm text-muted-foreground">{node.definition}</p> : null}
-          {node.source ? <p className="mt-1 text-xs text-muted-foreground">Fonte: {node.source}</p> : null}
+          {node.source ? <p className="mt-1 text-xs text-muted-foreground">Source: {node.source}</p> : null}
         </div>
-        <Button variant="ghost" size="icon" onClick={onClose} aria-label="Fechar">
+        <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close">
           <X className="h-4 w-4" />
         </Button>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         {node.rows.length === 0 ? (
-          <p className="p-4 text-sm text-muted-foreground">Nenhuma linha no período.</p>
+          <p className="p-4 text-sm text-muted-foreground">No rows in this period.</p>
         ) : (
           <Table>
             <TableHeader>
@@ -384,7 +384,7 @@ function Drawer({ node, onClose }: { node: FunnelNode; onClose: () => void }) {
       </div>
       {node.goal ? (
         <div className="border-t px-4 py-3 text-sm">
-          <p className="text-xs font-medium text-muted-foreground">Meta</p>
+          <p className="text-xs font-medium text-muted-foreground">Goal</p>
           <p>
             {node.goal.title}: {node.value == null ? "?" : fmtCell(node.value)} de {fmtCell(node.goal.target)}
           </p>
@@ -401,7 +401,7 @@ function Drawer({ node, onClose }: { node: FunnelNode; onClose: () => void }) {
               ))}
             </ul>
           ) : (
-            <p className="mt-1 text-xs text-muted-foreground">Sem apostas nesta meta.</p>
+            <p className="mt-1 text-xs text-muted-foreground">No bets on this goal.</p>
           )}
         </div>
       ) : null}
@@ -434,7 +434,7 @@ function Drawer({ node, onClose }: { node: FunnelNode; onClose: () => void }) {
           </div>
         </div>
       ))}
-      <div className="border-t p-3 text-xs text-muted-foreground">{node.rows.length} linha{node.rows.length === 1 ? "" : "s"}</div>
+      <div className="border-t p-3 text-xs text-muted-foreground">{node.rows.length} row{node.rows.length === 1 ? "" : "s"}</div>
     </aside>
   );
 }
@@ -465,10 +465,10 @@ export function FunnelPage() {
     try {
       const res = await fetch(`/api/funnel?month=${month}`, { headers: { Authorization: `Bearer ${token}` } });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Falha ao montar o funil");
+      if (!res.ok) throw new Error(json.error ?? "Could not build the funnel");
       setData(json.funnel as FunnelData);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha ao montar o funil");
+      setError(err instanceof Error ? err.message : "Could not build the funnel");
       setData(null);
     } finally {
       setLoading(false);
@@ -485,9 +485,9 @@ export function FunnelPage() {
     <div className="flex h-full min-h-0 flex-col gap-4 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">Funil</h1>
+          <h1 className="text-xl font-semibold">Funnel</h1>
           <p className="text-sm text-muted-foreground">
-            {data ? `Período ${data.periodStart} a ${data.periodEnd}. ` : ""}Clique numa caixa pra ver as contas por trás.
+            {data ? `Period ${data.periodStart} to ${data.periodEnd}. ` : ""}Click a box to see the accounts behind it.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -503,7 +503,7 @@ export function FunnelPage() {
               ))}
             </SelectContent>
           </Select>
-          <Button variant="outline" size="icon" onClick={() => void load()} disabled={loading} aria-label="Atualizar">
+          <Button variant="outline" size="icon" onClick={() => void load()} disabled={loading} aria-label="Refresh">
             <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
           </Button>
         </div>
@@ -512,7 +512,7 @@ export function FunnelPage() {
       {error ? <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm">{error}</div> : null}
       {data?.errors.length ? (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
-          Fontes com erro (as caixas ficam como &quot;não medido&quot;): {data.errors.join(" · ")}
+          Sources with errors (their boxes read &quot;not measured&quot;): {data.errors.join(" · ")}
         </div>
       ) : null}
 

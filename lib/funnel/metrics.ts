@@ -65,7 +65,7 @@ export type FunnelRate = {
   label: string;
   value: number | null;
   status: RateStatus;
-  /** Why it got that status (band, or "não medido"). */
+  /** Why it got that status (band, or "not measured"). */
   note: string;
 };
 
@@ -162,11 +162,11 @@ export function monthRange(spec: string): {
 
 /** Judge a fraction against a market band. */
 function judge(id: string, value: number | null): { status: RateStatus; note: string } {
-  if (value == null) return { status: "na", note: "não medido" };
+  if (value == null) return { status: "na", note: "not measured" };
   const band = RATE_BANDS[id];
   if (!band) return { status: "ok", note: "" };
   const fmt = (x: number) => `${Math.round(x * 100)}%`;
-  const ref = band.lo === band.hi ? `mercado ${fmt(band.lo)}` : `mercado ${fmt(band.lo)} a ${fmt(band.hi)}`;
+  const ref = band.lo === band.hi ? `market ${fmt(band.lo)}` : `market ${fmt(band.lo)} to ${fmt(band.hi)}`;
   if (band.inverted) {
     if (value <= band.hi) return { status: "good", note: ref };
     if (value <= band.hi * 3) return { status: "warn", note: ref };
@@ -277,18 +277,18 @@ async function searchNodes(
 
   const impressionsNode = node(
     "impressions",
-    `Impressões (Google, ${QUALIFIED_PAGES.length} páginas)`,
+    `Impressions (Google, ${QUALIFIED_PAGES.length} pages)`,
     impressions,
-    `${impressions.toLocaleString("pt-BR")} · posição média ${wpos.toFixed(1)}`,
+    `${impressions.toLocaleString("en-US")} · avg position ${wpos.toFixed(1)}`,
     {
       source: "Google Search Console (BigQuery kodus_search_console.search_analytics_by_page)",
       definition:
-        "Impressões e posição média ponderada das páginas de intenção. A média é puxada pelas páginas genéricas; olhe a posição por página e por termo.",
+        "Impressions and impression-weighted average position of the intent pages. The average is dragged by the generic pages; read position per page and per term.",
       columns: ["page", "impressions", "clicks", "ctr", "position"],
       rows: pageRows,
       extra: [
         {
-          title: "Termos-cabeça das páginas de plataforma (a alavanca é a posição)",
+          title: "Head terms of the platform pages (position is the lever)",
           columns: ["query", "page", "impressions", "clicks", "position"],
           rows: headRows,
         },
@@ -297,12 +297,12 @@ async function searchNodes(
   );
   const visitsNode = node(
     "visits",
-    `Visitas qualificadas (${QUALIFIED_PAGES.length} páginas)`,
+    `Qualified visits (${QUALIFIED_PAGES.length} pages)`,
     clicks,
-    `${clicks.toLocaleString("pt-BR")} cliques`,
+    `${clicks.toLocaleString("en-US")} clicks`,
     {
-      source: "Google Search Console, cliques por página",
-      definition: "Cliques do Google nas páginas de intenção. Não inclui referral de LLM nem tráfego direto.",
+      source: "Google Search Console, clicks per page",
+      definition: "Google clicks on the intent pages. Excludes LLM referral and direct traffic.",
       columns: ["page", "clicks", "impressions", "ctr", "position"],
       rows: [...pageRows].sort((a, b) => Number(b.clicks) - Number(a.clicks)),
     },
@@ -338,13 +338,13 @@ async function llmReferralNode(periodStart: string, periodEnd: string): Promise<
     const users = rows.reduce((s, r) => s + num(r.users), 0);
     return node(
       "llm_referral",
-      "Referral de LLM",
+      "LLM referral",
       users,
-      `${users} usuários (GA4)`,
+      `${users} users (GA4)`,
       {
         source: "GA4 (BigQuery kodus_ga.traffic_sources), sessionSource",
         definition:
-          "Usuários cuja sessão veio de um assistente de IA (ChatGPT, Claude, Perplexity, Copilot, Gemini), em qualquer página. Links com utm de campanha (paid, cpc) ficam de fora. Clique vindo do app do assistente chega sem referrer e cai em (direct), então isto é piso, não teto. Não entram nas visitas qualificadas, que contam só Google.",
+          "Users whose session came from an AI assistant (ChatGPT, Claude, Perplexity, Copilot, Gemini), on any page. Links tagged with a campaign utm (paid, cpc) are excluded. A click from the assistant's app arrives without a referrer and lands in (direct), so this is a floor, not a ceiling. Not part of qualified visits, which count Google only.",
         columns: ["source", "medium", "users", "sessions"],
         rows: rows.map((r) => ({
           source: str(r.source),
@@ -356,7 +356,7 @@ async function llmReferralNode(periodStart: string, periodEnd: string): Promise<
       },
     );
   } catch (err) {
-    return node("llm_referral", "Referral de LLM", null, "não medido", {
+    return node("llm_referral", "LLM referral", null, "not measured", {
       source: `GA4: ${err instanceof Error ? err.message : "erro"}`,
     });
   }
@@ -575,8 +575,8 @@ async function coldOutbound(
   const coldIds = cold.map((s) => s.id as string);
   if (coldIds.length === 0) {
     return {
-      contacts: node("ob_contacts", "Contatos novos (cold)", null, "nenhuma sequência cold"),
-      replies: node("ob_replies", "Respostas de empresa nova", null, "não medido"),
+      contacts: node("ob_contacts", "New contacts (cold)", null, "no cold sequence"),
+      replies: node("ob_replies", "Replies from new companies", null, "not measured"),
       facts: {},
       counts: null,
       repliedDomains: new Map(),
@@ -713,26 +713,26 @@ async function coldOutbound(
 
   const contacts = node(
     "ob_contacts",
-    "Contatos novos (cold)",
+    "New contacts (cold)",
     people,
-    `${people} pessoas · ${companies} empresas`,
+    `${people} people · ${companies} companies`,
     {
-      source: `Motor de sequência: ${cold.map((s) => s.name).join("; ")}`,
+      source: `Sequence engine: ${cold.map((s) => s.name).join("; ")}`,
       definition:
-        "Pessoas enroladas nas sequências cold no mês. Só empresa que não está no produto.",
+        "People enrolled in cold sequences in the period. Only companies not in the product.",
       columns: ["company", "contact", "email", "sequence", "status", "step", "enrolled"],
       rows,
     },
   );
   const replies = node(
     "ob_replies",
-    "Respostas de empresa nova",
+    "Replies from new companies",
     repliedStatus,
     `cold: ${repliedStatus}${channelText ? ` (${channelText})` : ""}`,
     {
-      source: "Caixas de e-mail e LinkedIn (Unipile), mensagens recebidas ligadas a uma sequência cold",
+      source: "Email inboxes and LinkedIn (Unipile), inbound messages tied to a cold sequence",
       definition:
-        "Pessoas de sequência cold que escreveram de volta no período, por e-mail ou LinkedIn, mesmo que tenham sido abordadas antes. Bounce e resposta automática não entram. Rede (indicação, champion) não passa pelo motor e é registrada no CRM.",
+        "People in cold sequences who wrote back in the period, by email or LinkedIn, even if they were approached earlier. Bounces and autoresponders are excluded. Network (referrals, champions) does not go through the engine and is logged in the CRM.",
       columns: ["company", "contact", "sequence", "replied", "enrolled"],
       rows: repliedEnrollments.map((e) => ({
         company: str(e.company_name),
@@ -751,7 +751,7 @@ async function coldOutbound(
     contacts,
     replies,
     facts: {
-      ob_completed: `${pct(completed + repliedStatus, people)} completaram`,
+      ob_completed: `${pct(completed + repliedStatus, people)} completed`,
     },
     counts: { people, bounced, completed: completed + repliedStatus, humanReplies: repliedStatus, classifiedHuman: humanReplies },
     repliedDomains,
@@ -768,7 +768,7 @@ async function coldOutbound(
  */
 async function selfHostedInstances(periodStart: string, nextStart: string): Promise<FunnelNode> {
   if (!isTelemetryConfigured()) {
-    return node("sh_instances", "Instâncias novas com uso de empresa", null, "telemetria não configurada");
+    return node("sh_instances", "New instances with company-sized usage", null, "telemetry not configured");
   }
   const sql = `
     WITH hb AS (
@@ -816,18 +816,18 @@ async function selfHostedInstances(periodStart: string, nextStart: string): Prom
     const fresh = all.filter((r) => r.new);
     return node(
       "sh_instances",
-      "Instâncias novas com uso de empresa",
+      "New instances with company-sized usage",
       fresh.length,
-      `${fresh.length} novas no período · ${all.length} ativas no período`,
+      `${fresh.length} new in the period · ${all.length} active in the period`,
       {
-        source: "Telemetria self-hosted (anônima), desde 2026-07-03",
-        definition: `Instâncias cujo primeiro heartbeat caiu no período e que chegaram a ≥ ${SELF_HOSTED_MIN_PRS_7D} PRs revisados em 7 dias dentro dele. "Ativas no período" inclui as antigas que continuam rodando. Anônimas: não dá pra saber a empresa. A telemetria começou em 2026-07-03, então julho conta todas como novas.`,
+        source: "Self-hosted telemetry (anonymous), since 2026-07-03",
+        definition: `Instances whose first heartbeat fell in the period and that reached ≥ ${SELF_HOSTED_MIN_PRS_7D} PRs reviewed in 7 days inside it. "Active in the period" includes older instances still running. Anonymous: the company cannot be known. Telemetry started 2026-07-03, so July counts every instance as new.`,
         columns: ["instance", "new", "first_seen", "version", "integrations", "prs_7d_max", "users_7d", "repos", "last_seen"],
         rows: all,
       },
     );
   } catch (err) {
-    return node("sh_instances", "Instâncias novas com uso de empresa", null, "não medido", {
+    return node("sh_instances", "New instances with company-sized usage", null, "not measured", {
       source: `Telemetria: ${err instanceof Error ? err.message : "erro"}`,
     });
   }
@@ -912,10 +912,10 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     rates.push(rate("ctr", `CTR ${pct(search.visits.value ?? 0, search.impressions.value ?? 0)}`, search.visits.value, search.impressions.value, "CTR"));
   } else {
     rates.push(rate("ctr", "CTR", null, null));
-    nodes.impressions = node("impressions", "Impressões", null, "não medido");
-    nodes.visits = node("visits", "Visitas qualificadas", null, "não medido");
+    nodes.impressions = node("impressions", "Impressions", null, "not measured");
+    nodes.visits = node("visits", "Qualified visits", null, "not measured");
   }
-  nodes.llm_referral = llm ?? node("llm_referral", "Referral de LLM", null, "não medido");
+  nodes.llm_referral = llm ?? node("llm_referral", "LLM referral", null, "not measured");
 
   // Signups → connected → ICP
   const all = signups ?? [];
@@ -939,11 +939,11 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     "signups",
     "Cadastros com e-mail corporativo",
     signups ? corporate.length : null,
-    signups ? `${corporate.length} (${all.length} no total)` : "não medido",
+    signups ? `${corporate.length} (${all.length} total)` : "not measured",
     {
       source: "Produto (BigQuery kodus_postgres.organizations + users)",
       definition:
-        "Organizações criadas no mês cujo primeiro usuário tem e-mail que não é de provedor gratuito. O total inclui gmail e afins.",
+        "Organizations created in the period whose first user has a non-free-mail address. The total includes gmail and the like.",
       columns: signupCols,
       rows: all.map(toRow),
     },
@@ -952,10 +952,10 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     "connected",
     "Conectados",
     signups ? connected.length : null,
-    signups ? `${connected.length}` : "não medido",
+    signups ? `${connected.length}` : "not measured",
     {
       source: "Produto (integrations, CODE_MANAGEMENT)",
-      definition: "Cadastros corporativos do mês que conectaram um git (GitHub, GitLab, Bitbucket, Azure Repos).",
+      definition: "Corporate signups of the period that connected a git provider (GitHub, GitLab, Bitbucket, Azure Repos).",
       columns: signupCols,
       rows: connected.map(toRow),
     },
@@ -972,17 +972,17 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   // Clicks and signups are different populations (signups come from every
   // source), so there is no measured visit → signup rate until the signup
   // carries its landing page.
-  rates.push(rate("visit_to_signup", "visita → cadastro", null, null));
+  rates.push(rate("visit_to_signup", "visit → signup", null, null));
   rates.push(
-    rate("connected", signups ? `${pct(connected.length, corporate.length)} conectam o git` : "conectam o git", signups ? connected.length : null, signups ? corporate.length : null, "conectam o git"),
+    rate("connected", signups ? `${pct(connected.length, corporate.length)} connect a git` : "connect a git", signups ? connected.length : null, signups ? corporate.length : null, "connect a git"),
   );
   rates.push(
     rate(
       "icp_share",
-      signups ? `${pct(icpProxy.length, connected.length)} passam o proxy (${icpProxy.length} de ${connected.length})` : "passam o proxy",
+      signups ? `${pct(icpProxy.length, connected.length)} pass the proxy (${icpProxy.length} of ${connected.length})` : "pass the proxy",
       signups ? icpProxy.length : null,
       signups ? connected.length : null,
-      "passam o proxy",
+      "pass the proxy",
     ),
   );
   facts.platform_split = Object.entries(byPlatform)
@@ -992,10 +992,10 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     .join(" · ");
   // A lever we chose, not a stage: it gets a target on the label and never
   // competes for the red marker.
-  facts.non_github = `não-GitHub: ${nonGithub.length} cadastros, ${nonGithub.filter((s) => s.icp).length} ICP${SHOW_TARGETS && TARGETS.non_github_signups ? ` → ${TARGETS.non_github_signups}` : ""}`;
+  facts.non_github = `non-GitHub: ${nonGithub.length} signups, ${nonGithub.filter((s) => s.icp).length} ICP${SHOW_TARGETS && TARGETS.non_github_signups ? ` → ${TARGETS.non_github_signups}` : ""}`;
   const icpFreeMail = all.filter((s) => s.icp && !s.corporate);
   facts.icp_free_mail = icpFreeMail.length
-    ? `+${icpFreeMail.length} ICP com e-mail gratuito, fora da conta`
+    ? `+${icpFreeMail.length} ICP on free mail, not counted`
     : "";
   const answered = all.filter((s) => s.survey_source).length;
   rates.push(rate("survey", signups ? `survey respondido: ${pct(answered, all.length)}` : "survey respondido", signups ? answered : null, signups ? all.length : null, "survey respondido"));
@@ -1011,13 +1011,13 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     verifiedMeasured ? verifiedRows.length : icpProxy.length,
     verifiedMeasured
       ? `${verifiedRows.length} verificados · ${icpProxy.length} pelo proxy`
-      : `${icpProxy.length} pelo proxy · sem verificação`,
+      : `${icpProxy.length} by proxy · unverified`,
     {
       source: verifiedMeasured
         ? `Produto (proxy) + CRM campo ${ICP_VERIFIED_FIELD}`
         : "Produto (proxy: membros da org no git ou autores de PR)",
       definition: verifiedMeasured
-        ? `Proxy: ≥ ${ICP_MIN_MEMBERS} membros na org do git ou ≥ ${ICP_MIN_AUTHORS} autores de PR. Verificado: alguém conferiu no LinkedIn e marcou ${ICP_VERIFIED_FIELD} = yes no CRM.`
+        ? `Proxy: ≥ ${ICP_MIN_MEMBERS} members in the git org or ≥ ${ICP_MIN_AUTHORS} PR authors. Verified: someone checked LinkedIn and set ${ICP_VERIFIED_FIELD} = yes in the CRM.`
         : `Proxy: ≥ ${ICP_MIN_MEMBERS} membros na org do git ou ≥ ${ICP_MIN_AUTHORS} autores de PR. Pra contar verificado, crie o campo ${ICP_VERIFIED_FIELD} (yes/no) no CRM e marque depois de conferir no LinkedIn.`,
       columns: [...signupCols, "crm_status", "verified"],
       rows: icpProxy.map((s) => ({
@@ -1027,7 +1027,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
       })),
       extra: [
         {
-          title: `Conectaram o git no mês (${connected.length} de ${corporate.length})`,
+          title: `Connected a git in the period (${connected.length} of ${corporate.length})`,
           columns: signupCols,
           rows: connected.map(toRow),
         },
@@ -1059,10 +1059,10 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   rates.push(
     rate(
       "touch_48h",
-      signups ? `toque humano em 48 h: ${touched.length} de ${icpProxy.length}` : "toque humano em 48 h",
+      signups ? `human touch within 48 h: ${touched.length} of ${icpProxy.length}` : "human touch within 48 h",
       signups ? touched.length : null,
       signups ? icpProxy.length : null,
-      "toque humano em 48 h",
+      "human touch within 48 h",
     ),
   );
   const opp = new Set<string>(OPPORTUNITY_STATUSES);
@@ -1094,10 +1094,10 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     "conversations",
     "Conversa (lead → engaged)",
     changes ? convs.length : null,
-    changes ? `${convs.length}` : "não medido",
+    changes ? `${convs.length}` : "not measured",
     {
       source: "CRM (crm_activities, status_change → engaged)",
-      definition: "Contas que entraram em engaged no mês pela primeira vez. Inclui base antiga, rede e outbound.",
+      definition: "Accounts that entered engaged in the period for the first time. Includes the old base, network and outbound.",
       columns: crmCols,
       rows: convs.map(crmRow),
     },
@@ -1105,13 +1105,13 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   const meetings = firstTo((c) => c.to === "meeting");
   nodes.meetings = node(
     "meetings",
-    "Reunião",
+    "Meetings",
     changes ? meetings.length : null,
-    changes ? `${meetings.length}` : "não medido",
+    changes ? `${meetings.length}` : "not measured",
     {
-      source: "CRM (status_change → meeting; o calendário move a conta sozinho)",
+      source: "CRM (status_change → meeting; the calendar sync moves the account)",
       definition:
-        "Contas que entraram em meeting no mês: reunião no calendário com convidado do domínio da conta, ou movida à mão. Etapa não obrigatória: inbound pode ir de conversa direto pra oportunidade.",
+        "Accounts that entered meeting in the period: a calendar event with a guest from the account's domain, or moved by hand. Not a mandatory step: inbound can go from conversation straight to opportunity.",
       columns: crmCols,
       rows: meetings.map(crmRow),
     },
@@ -1120,10 +1120,10 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     "opportunities",
     "Oportunidade",
     changes ? opps.length : null,
-    changes ? `${opps.length}` : "não medido",
+    changes ? `${opps.length}` : "not measured",
     {
       source: "CRM (status_change → qualified, poc ou negotiation)",
-      definition: "Contas que entraram em qualified, poc ou negotiation no mês vindo de fora desses status.",
+      definition: "Accounts that entered qualified, poc or negotiation in the period from outside those statuses.",
       columns: crmCols,
       rows: opps.map(crmRow),
     },
@@ -1134,17 +1134,17 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     "Fechado",
     changes ? closedArr : null,
     changes
-      ? `R$ ${Math.round(closedArr).toLocaleString("pt-BR")} · ${closed.length} conta${closed.length === 1 ? "" : "s"}`
-      : "não medido",
+      ? `R$ ${Math.round(closedArr).toLocaleString("en-US")} · ${closed.length} account${closed.length === 1 ? "" : "s"}`
+      : "not measured",
     {
       target: SHOW_TARGETS ? TARGETS.closed_brl : null,
-      source: "CRM (status_change → customer, campo arr da conta)",
-      definition: "Soma do campo arr das contas que viraram customer no mês. Sem arr preenchido, a conta conta zero.",
+      source: "CRM (status_change → customer, the account's arr field)",
+      definition: "Sum of the arr field of accounts that became customers in the period. Without arr filled, the account counts zero.",
       columns: crmCols,
       rows: closed.map(crmRow),
       extra: [
         {
-          title: `ARR na base (CRM, soma de arr nas contas customer): R$ ${Math.round(crm.filter((c) => c.status === "customer").reduce((s, c) => s + (c.arr ?? 0), 0)).toLocaleString("pt-BR")}`,
+          title: `ARR in the base (CRM, sum of arr on customer accounts): R$ ${Math.round(crm.filter((c) => c.status === "customer").reduce((s, c) => s + (c.arr ?? 0), 0)).toLocaleString("en-US")}`,
           columns: ["company", "domain", "arr", "deployment"],
           rows: crm
             .filter((c) => c.status === "customer")
@@ -1167,18 +1167,18 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     "self_serve",
     "Pagou sozinho (self-serve)",
     paid ? selfServe.length : null,
-    paid ? `${selfServe.length} conta${selfServe.length === 1 ? "" : "s"} · ${selfServe.reduce((a, r) => a + r.seats, 0)} seats` : "não medido",
+    paid ? `${selfServe.length} account${selfServe.length === 1 ? "" : "s"} · ${selfServe.reduce((a, r) => a + r.seats, 0)} seats` : "not measured",
     {
-      source: "Billing (BigQuery kodus_billing: primeira licença atribuída num plano pago)",
+      source: "Billing (BigQuery kodus_billing: first license assigned on a paid plan)",
       definition:
-        "Contas que começaram a pagar no mês sem passar por conversa no CRM. Billing não guarda histórico; a data é a da primeira licença atribuída.",
+        "Accounts that started paying in the period without a CRM conversation. Billing keeps no history; the date is the first license assignment.",
       columns: ["name", "plan", "seats", "first_assigned"],
       rows: selfServe.map(paidRow),
       extra:
         paidRows.length !== selfServe.length
           ? [
               {
-                title: "Começaram a pagar no mês depois de uma conversa (contam em Fechado)",
+                title: "Started paying in the period after a conversation (counted in Closed)",
                 columns: ["name", "plan", "seats", "first_assigned"],
                 rows: paidRows.filter((r) => inConversation.has(r.org_id)).map(paidRow),
               },
@@ -1194,13 +1194,13 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   rates.push(
     rate(
       "opp_active",
-      `abertas agora: ${openOpps.length} · com atividade em ${OPPORTUNITY_IDLE_DAYS} d: ${openOpps.length - idle.length}`,
+      `open now: ${openOpps.length} · with activity in ${OPPORTUNITY_IDLE_DAYS} d: ${openOpps.length - idle.length}`,
       companies ? openOpps.length - idle.length : null,
       companies ? openOpps.length : null,
-      "nenhuma oportunidade aberta",
+      "no open opportunity",
     ),
   );
-  rates.push(rate("conv_to_opp", changes ? `${pct(opps.length, convs.length)} viram oportunidade` : "viram oportunidade", changes ? opps.length : null, changes ? convs.length : null, "conversa → oportunidade"));
+  rates.push(rate("conv_to_opp", changes ? `${pct(opps.length, convs.length)} become opportunities` : "become opportunities", changes ? opps.length : null, changes ? convs.length : null, "conversation → opportunity"));
   // Only meetings of this period count, so the numerator stays inside the
   // denominator: an opportunity coming from a meeting held last month is
   // last month's conversion.
@@ -1209,21 +1209,21 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   rates.push(
     rate(
       "conv_to_meeting",
-      changes ? `${meetings.length} de ${convs.length} conversas marcaram reunião` : "marcam reunião",
+      changes ? `${meetings.length} of ${convs.length} conversations booked a meeting` : "book a meeting",
       changes ? meetings.length : null,
       changes ? convs.length : null,
-      "conversa → reunião",
+      "conversation → meeting",
     ),
   );
   rates.push(
     rate(
       "meeting_to_opp",
       changes
-        ? `${oppsViaMeeting.length} de ${meetings.length} reuniões viraram oportunidade`
-        : "reunião → oportunidade",
+        ? `${oppsViaMeeting.length} of ${meetings.length} meetings became opportunities`
+        : "meeting → opportunity",
       changes ? oppsViaMeeting.length : null,
       changes ? meetings.length : null,
-      "reunião → oportunidade",
+      "meeting → opportunity",
     ),
   );
 
@@ -1234,11 +1234,11 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     "arr",
     "ARR",
     customerArr || null,
-    customerArr ? `R$ ${Math.round(customerArr).toLocaleString("pt-BR")} (CRM)` : "sem arr no CRM",
+    customerArr ? `R$ ${Math.round(customerArr).toLocaleString("en-US")} (CRM)` : "no arr in the CRM",
     {
       target: SHOW_TARGETS ? TARGETS.arr_brl : null,
-      source: "CRM (soma de arr nas contas customer)",
-      definition: "Depende do campo arr estar preenchido em cada conta customer. Stripe e billing não entram aqui.",
+      source: "CRM (sum of arr on customer accounts)",
+      definition: "Depends on the arr field being filled on every customer account. Stripe and billing are not part of this.",
       columns: ["company", "domain", "arr", "deployment"],
       rows: crm
         .filter((c) => c.status === "customer")
@@ -1248,7 +1248,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   );
 
   // Self-hosted
-  nodes.sh_instances = sh ?? node("sh_instances", "Instâncias com uso de empresa", null, "não medido");
+  nodes.sh_instances = sh ?? node("sh_instances", "New instances with company-sized usage", null, "not measured");
   const shCompanies = crm.filter(
     (c) => c.deployment === "self_hosted" && c.created_at >= `${periodStart}` && c.created_at < `${nextStart}T00:00:00Z`,
   );
@@ -1264,28 +1264,28 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   });
   nodes.sh_trial = node(
     "sh_trial",
-    "Pediu trial (mão levantada)",
+    "Asked for a trial (hand raised)",
     companies ? shTrial.length : null,
-    companies ? `${shTrial.length}` : "não medido",
+    companies ? `${shTrial.length}` : "not measured",
     {
-      source: "CRM (deployment self_hosted, source webhook = formulário de trial)",
-      definition: "Contas self-hosted criadas no mês a partir do formulário de trial (kodus.io/self-hosted-trial).",
+      source: "CRM (deployment self_hosted, source webhook = trial form)",
+      definition: "Self-hosted accounts created in the period from the trial form (kodus.io/self-hosted-trial).",
       columns: ["company", "domain", "source", "status", "tier", "created"],
       rows: shTrial.map(shRow),
     },
   );
   facts.sh_found = companies
-    ? `achadas (PostHog/manual): ${shFound.length} no mês → contatos t3`
+    ? `found (PostHog/manual): ${shFound.length} in the period → t3 contacts`
     : "";
   facts.sh_found_short = companies ? `achadas via PostHog: ${shFound.length} → outbound` : "";
   nodes.sh_found = node(
     "sh_found",
     "Self-hosted achadas",
     companies ? shFound.length : null,
-    companies ? `${shFound.length}` : "não medido",
+    companies ? `${shFound.length}` : "not measured",
     {
-      source: "CRM (deployment self_hosted, criadas no mês, sem ser pelo formulário)",
-      definition: "Instâncias identificadas por PostHog ou à mão e cadastradas no CRM no mês.",
+      source: "CRM (deployment self_hosted, created in the period, not through the form)",
+      definition: "Instances identified through PostHog or by hand and added to the CRM in the period.",
       columns: ["company", "domain", "source", "status", "tier", "created"],
       rows: shFound.map(shRow),
     },
@@ -1297,8 +1297,8 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     nodes.ob_replies = cold.replies;
     Object.assign(facts, cold.facts);
   } else {
-    nodes.ob_contacts = node("ob_contacts", "Contatos novos (cold)", null, "não medido");
-    nodes.ob_replies = node("ob_replies", "Respostas de empresa nova", null, "não medido");
+    nodes.ob_contacts = node("ob_contacts", "New contacts (cold)", null, "not measured");
+    nodes.ob_replies = node("ob_replies", "Replies from new companies", null, "not measured");
   }
   const cc = cold?.counts ?? null;
   // Reply → meeting / opportunity for cold: the CRM account of a company
@@ -1326,38 +1326,38 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   rates.push(
     rate(
       "reply_to_conversation",
-      cold ? `resposta → conversa: ${repliedInConversation.length} de ${repliedCrm.length} empresas` : "resposta → conversa",
+      cold ? `reply → conversation: ${repliedInConversation.length} of ${repliedCrm.length} companies` : "reply → conversation",
       cold ? repliedInConversation.length : null,
       cold ? repliedCrm.length : null,
-      "resposta → conversa",
+      "reply → conversation",
     ),
   );
   rates.push(
     rate(
       "reply_to_meeting",
-      cold ? `resposta → reunião: ${repliedToMeeting.length} de ${repliedCrm.length} empresas` : "resposta → reunião",
+      cold ? `reply → meeting: ${repliedToMeeting.length} of ${repliedCrm.length} companies` : "reply → meeting",
       cold ? repliedToMeeting.length : null,
       cold ? repliedCrm.length : null,
-      "resposta → reunião",
+      "reply → meeting",
     ),
   );
   rates.push(
     rate(
       "reply_to_opp",
-      cold ? `resposta → oportunidade: ${repliedToOpp.length} de ${repliedCrm.length}` : "resposta → oportunidade",
+      cold ? `reply → opportunity: ${repliedToOpp.length} of ${repliedCrm.length}` : "reply → opportunity",
       cold ? repliedToOpp.length : null,
       cold ? repliedCrm.length : null,
-      "resposta → oportunidade",
+      "reply → opportunity",
     ),
   );
   rates.push(rate("cold_bounce", cc ? `bounce ${pct(cc.bounced, cc.people)}` : "bounce", cc ? cc.bounced : null, cc ? cc.people : null, "bounce"));
   rates.push(
     rate(
       "cold_reply",
-      cc && cc.humanReplies != null ? `resposta humana: ${pct(cc.humanReplies, cc.people)} (${cc.humanReplies} de ${cc.people})` : "resposta humana",
+      cc && cc.humanReplies != null ? `human replies: ${pct(cc.humanReplies, cc.people)} (${cc.humanReplies} of ${cc.people})` : "human replies",
       cc ? cc.humanReplies : null,
       cc ? cc.people : null,
-      "resposta humana",
+      "human replies",
     ),
   );
   // New companies in conversation via outbound = engaged this month with a
@@ -1365,9 +1365,9 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   const newCompanyConvs = convs.filter((c) => !byId.get(c.company_id)?.org_id);
   const newCompanyNode = node(
     "ob_new_conversations",
-    "Empresa nova em conversa",
+    "New companies in conversation",
     changes ? newCompanyConvs.length : null,
-    changes ? `${newCompanyConvs.length}` : "não medido",
+    changes ? `${newCompanyConvs.length}` : "not measured",
     { target: SHOW_TARGETS ? TARGETS.ob_companies_in_conversation : null },
   );
 
@@ -1392,29 +1392,29 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     const need = target * elapsed;
     const ratio = value / need;
     if (ratio >= BOTTLENECK_RATIO) return;
-    const needText = elapsed < 1 ? `${fmt(Math.round(need))} até aqui (${fmt(target)} no mês)` : fmt(target);
+    const needText = elapsed < 1 ? `${fmt(Math.round(need))} so far (${fmt(target)} for the period)` : fmt(target);
     candidates.push({ nodeId, ratio, lines: [`${label}: ${fmt(value)} de ${needText}`, ...detail.filter(Boolean)] });
   };
   const plain = (n: number) => `${n}`;
   const brl = (n: number) => `R$ ${Math.round(n / 1000)}k`;
-  consider("icp", nodes.icp.value, nodes.icp.target, plain, "entra pouca empresa grande", [
-    signups ? `${icpProxy.length} de ${corporate.length} cadastros têm ${ICP_MIN_MEMBERS}+ devs` : "",
+  consider("icp", nodes.icp.value, nodes.icp.target, plain, "few large companies coming in", [
+    signups ? `${icpProxy.length} of ${corporate.length} signups have ${ICP_MIN_MEMBERS}+ devs` : "",
     facts.non_github ?? "",
   ]);
-  consider("conversations", nodes.conversations.value, nodes.conversations.target, plain, "poucas conversas", [
+  consider("conversations", nodes.conversations.value, nodes.conversations.target, plain, "few conversations", [
     rates.find((r) => r.id === "touch_48h")?.label ?? "",
   ]);
-  consider("opportunities", nodes.opportunities.value, nodes.opportunities.target, plain, "poucas oportunidades", [
+  consider("opportunities", nodes.opportunities.value, nodes.opportunities.target, plain, "few opportunities", [
     rates.find((r) => r.id === "conv_to_opp")?.label ?? "",
   ]);
   const closedNoArr = closed.filter((c) => byId.get(c.company_id)?.arr == null).length;
-  facts.closed_note = closedNoArr ? `${closedNoArr} conta${closedNoArr === 1 ? "" : "s"} fechada${closedNoArr === 1 ? "" : "s"} sem arr no CRM` : "";
-  consider("closed", nodes.closed.value, nodes.closed.target, brl, "fechado abaixo da meta", [
-    closedNoArr ? `${closedNoArr} conta${closedNoArr === 1 ? "" : "s"} fechada${closedNoArr === 1 ? "" : "s"} sem arr no CRM` : "",
+  facts.closed_note = closedNoArr ? `${closedNoArr} closed account${closedNoArr === 1 ? "" : "s"} without arr in the CRM` : "";
+  consider("closed", nodes.closed.value, nodes.closed.target, brl, "closed below target", [
+    closedNoArr ? `${closedNoArr} closed account${closedNoArr === 1 ? "" : "s"} without arr in the CRM` : "",
     rates.find((r) => r.id === "opp_active")?.label ?? "",
   ]);
-  consider("ob_replies", newCompanyNode.value, newCompanyNode.target, plain, "pouca empresa nova em conversa", [
-    cc ? `cold: ${cc.humanReplies ?? "?"} respostas em ${cc.people} contatos` : "",
+  consider("ob_replies", newCompanyNode.value, newCompanyNode.target, plain, "few new companies in conversation", [
+    cc ? `cold: ${cc.humanReplies ?? "?"} replies from ${cc.people} contacts` : "",
   ]);
   if (cc && cc.humanReplies === 0 && cc.people >= COLD_MIN_CONTACTS_FOR_VERDICT) {
     const lo = Math.round(cc.people * RATE_BANDS.cold_reply.lo);
@@ -1422,7 +1422,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     candidates.push({
       nodeId: "ob_replies",
       ratio: 0,
-      lines: ["cold não responde", `0 de ${cc.people} respondem; mercado 3 a 8% = ${lo} a ${hi}`, "volume existe; mensagem, lista ou canal não"],
+      lines: ["cold gets no replies", `0 of ${cc.people} reply; market 3 to 8% = ${lo} to ${hi}`, "volume exists; message, list or channel does not"],
     });
   }
   // Without targets, a rate far outside its market band is the only other
@@ -1446,7 +1446,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     : [];
 
   facts.ob_new_conversations = changes
-    ? `empresa nova em conversa: ${newCompanyConvs.length} (sem cadastro no produto)${SHOW_TARGETS ? ` → ${TARGETS.ob_companies_in_conversation}` : ""}`
+    ? `new companies in conversation: ${newCompanyConvs.length} (not signed up)${SHOW_TARGETS ? ` → ${TARGETS.ob_companies_in_conversation}` : ""}`
     : "";
 
   // Targets come from Goals bound to a funnel metric; bets ride along so the

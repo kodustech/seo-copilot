@@ -11,18 +11,18 @@ import type { FunnelData } from "./metrics";
  * progress.
  */
 export const FUNNEL_METRICS: { id: string; label: string; unit: string }[] = [
-  { id: "visits", label: "Visitas qualificadas", unit: "cliques" },
-  { id: "signups", label: "Cadastros com e-mail corporativo", unit: "cadastros" },
-  { id: "icp", label: "ICP (20+ devs)", unit: "contas" },
-  { id: "sh_instances", label: "Self-hosted: instâncias novas com uso", unit: "instâncias" },
-  { id: "sh_trial", label: "Self-hosted: pediu trial", unit: "pedidos" },
-  { id: "ob_contacts", label: "Outbound: contatos novos", unit: "pessoas" },
-  { id: "ob_replies", label: "Outbound: respostas", unit: "respostas" },
-  { id: "conversations", label: "Conversas (engaged)", unit: "contas" },
-  { id: "meetings", label: "Reuniões", unit: "reuniões" },
-  { id: "opportunities", label: "Oportunidades", unit: "contas" },
-  { id: "self_serve", label: "Pagou sozinho (self-serve)", unit: "contas" },
-  { id: "closed", label: "Fechado (R$)", unit: "R$" },
+  { id: "visits", label: "Qualified visits", unit: "clicks" },
+  { id: "signups", label: "Corporate-email signups", unit: "signups" },
+  { id: "icp", label: "ICP (20+ devs)", unit: "accounts" },
+  { id: "sh_instances", label: "Self-hosted: new instances with usage", unit: "instances" },
+  { id: "sh_trial", label: "Self-hosted: trial requests", unit: "requests" },
+  { id: "ob_contacts", label: "Outbound: new contacts", unit: "people" },
+  { id: "ob_replies", label: "Outbound: replies", unit: "replies" },
+  { id: "conversations", label: "Conversations (engaged)", unit: "accounts" },
+  { id: "meetings", label: "Meetings", unit: "meetings" },
+  { id: "opportunities", label: "Opportunities", unit: "accounts" },
+  { id: "self_serve", label: "Self-serve (paid without a conversation)", unit: "accounts" },
+  { id: "closed", label: "Closed (R$)", unit: "R$" },
 ];
 
 const FUNNEL_METRIC_IDS = new Set(FUNNEL_METRICS.map((m) => m.id));
@@ -100,7 +100,7 @@ export async function syncFunnelGoals(
       }
       const node = funnel.nodes[g.funnelMetric as string];
       if (!node || node.value == null) {
-        skipped.push(`${g.title}: ${g.funnelMetric} não medido em ${period}`);
+        skipped.push(`${g.title}: ${g.funnelMetric} not measured in ${period}`);
         continue;
       }
       const value = Math.round(node.value);
