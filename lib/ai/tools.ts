@@ -3088,10 +3088,14 @@ const runAiVisibilityTool = tool({
 const FUNNEL_CACHE_TTL_MS = 5 * 60 * 1000;
 const funnelCache = new Map<string, { at: number; value: Awaited<ReturnType<typeof fetchFunnel>> }>();
 async function getCachedFunnel(spec: string) {
+  const now = Date.now();
+  // Sweep expired entries so one-off date ranges do not pin their rows
+  // in memory for the life of the process.
+  for (const [key, entry] of funnelCache) if (now - entry.at >= FUNNEL_CACHE_TTL_MS) funnelCache.delete(key);
   const hit = funnelCache.get(spec);
-  if (hit && Date.now() - hit.at < FUNNEL_CACHE_TTL_MS) return hit.value;
+  if (hit) return hit.value;
   const value = await fetchFunnel(getSupabaseServiceClient(), spec);
-  funnelCache.set(spec, { at: Date.now(), value });
+  funnelCache.set(spec, { at: now, value });
   return value;
 }
 
