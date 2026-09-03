@@ -396,21 +396,70 @@ export function analyzeAnswer(text: string, citations: Citation[], brandTerms: s
   const brandRe = brand.map(termRegex);
   const mentioned = brandRe.some((re) => re.test(text));
 
-  // List items: "1. ", "1) ", "- ", "* ", "• " at line start (markdown bold
-  // prefixes tolerated). Position is the first item naming the brand.
+  // Where the brand sits in the answer's ranking. Assistants rank in four
+  // shapes: numbered items ("1. ", "1) ", "### 2. Name"), top-level bullets,
+  // markdown table rows, and a sentence that enumerates bold names
+  // ("include **A**, **B**, **C**"). Numbered items win when present, since
+  // bullets under them are usually pros and cons, not entries.
   const lines = text.split(/\r?\n/);
-  const itemRe = /^\s*(?:\*\*)?(?:(\d{1,2})[.)]|[-*•])\s+/;
-  let listSize = 0;
-  let position: number | null = null;
+  const numberedRe = /^\s{0,3}(?:#{1,4}\s+)?(?:\*\*)?(\d{1,2})[.)]\s+/;
+  const bulletRe = /^(?:[-*•]|\d{1,2}[.)])\s+/;
+  const tableRowRe = /^\s*\|/;
+  const tableRuleRe = /^\s*\|?\s*:?-{2,}/;
+  const hasBrand = (line: string) => brandRe.some((re) => re.test(line));
+
+  // Numbered lines grouped into lists: a new list starts at "1." or when the
+  // number stops growing. An answer often has the ranking first and then
+  // short "if you want X" lists; the brand's place is read inside its own
+  // list, not across all of them.
+  const numberedLists: string[][] = [];
+  const bullets: string[] = [];
+  const tableRows: string[] = [];
+  let tableHeaderSkipped = false;
+  let prevNumber = 0;
   for (const line of lines) {
-    const m = line.match(itemRe);
-    if (!m) continue;
-    listSize += 1;
-    if (position == null && brandRe.some((re) => re.test(line))) {
-      const numbered = m[1] ? Number(m[1]) : NaN;
-      position = Number.isFinite(numbered) && numbered > 0 ? numbered : listSize;
+    const m = line.match(numberedRe);
+    if (m) {
+      const n = Number(m[1]);
+      if (n <= prevNumber || n === 1 || numberedLists.length === 0) numberedLists.push([]);
+      numberedLists[numberedLists.length - 1].push(line);
+      prevNumber = n;
+    } else if (bulletRe.test(line)) bullets.push(line);
+    if (tableRowRe.test(line)) {
+      if (tableRuleRe.test(line)) continue;
+      // The first row of a table is its header.
+      if (!tableHeaderSkipped) {
+        tableHeaderSkipped = true;
+        continue;
+      }
+      tableRows.push(line);
     }
   }
+
+  let listSize: number | null = null;
+  let position: number | null = null;
+  const pick = (items: string[], numberedOrder: boolean): boolean => {
+    const idx = items.findIndex(hasBrand);
+    if (idx < 0) return false;
+    listSize = items.length;
+    const n = numberedOrder ? Number(items[idx].match(numberedRe)?.[1]) : NaN;
+    position = Number.isFinite(n) && n > 0 ? n : idx + 1;
+    return true;
+  };
+  if (mentioned) {
+    const inNumbered = numberedLists.some((list) => pick(list, true));
+    if (!inNumbered && !(tableRows.length && pick(tableRows, false)) && !(bullets.length && pick(bullets, false))) {
+      // Enumerated in prose: order among the bold names of that sentence.
+      const line = lines.find(hasBrand) ?? "";
+      const bold = [...line.matchAll(/\*\*([^*]+)\*\*/g)].map((m) => m[1]);
+      const idx = bold.findIndex(hasBrand);
+      if (idx >= 0 && bold.length >= 2) {
+        position = idx + 1;
+        listSize = bold.length;
+      }
+    }
+  }
+  if (listSize == null) listSize = numberedLists[0]?.length || tableRows.length || bullets.length || null;
 
   const competitors: string[] = [];
   const brandLower = new Set(brand.map((b) => b.toLowerCase()));
@@ -432,7 +481,7 @@ export function analyzeAnswer(text: string, citations: Citation[], brandTerms: s
   return {
     mentioned,
     position: mentioned ? position : null,
-    listSize: listSize > 0 ? listSize : null,
+    listSize: listSize != null && listSize > 0 ? listSize : null,
     brandCited,
     competitors,
     citedDomains,
@@ -562,6 +611,38 @@ export async function runAiVisibility(client: SupabaseClient, opts: RunOptions =
 export function isDueToday(settings: AiVisibilitySettings, now = new Date()): boolean {
   if (now.getUTCDay() !== settings.weekday) return false;
   return settings.lastRunOn !== now.toISOString().slice(0, 10);
+}
+
+/**
+ * Recompute mentioned / position / competitors from the stored answer and
+ * citations, so a better parser applies to past runs without asking (and
+ * paying) again.
+ */
+export async function reanalyzeRuns(client: SupabaseClient, opts: { runOn?: string } = {}): Promise<{ runs: number; changed: number }> {
+  const settings = await getSettings(client);
+  let q = client.from("ai_prompt_runs").select("*").is("error", null).limit(5000);
+  if (opts.runOn) q = q.eq("run_on", opts.runOn);
+  const { data, error } = await q;
+  if (error) throw new Error(`ai_prompt_runs: ${error.message}`);
+  let changed = 0;
+  for (const row of (data ?? []) as RunRow[]) {
+    const a = analyzeAnswer(row.answer ?? "", row.citations ?? [], settings.brandTerms, settings.competitorTerms);
+    const same =
+      a.mentioned === row.mentioned &&
+      a.position === row.position &&
+      a.listSize === row.list_size &&
+      a.brandCited === row.brand_cited &&
+      JSON.stringify(a.competitors) === JSON.stringify(row.competitors ?? []) &&
+      JSON.stringify(a.citedDomains) === JSON.stringify(row.cited_domains ?? []);
+    if (same) continue;
+    const { error: upErr } = await client
+      .from("ai_prompt_runs")
+      .update({ mentioned: a.mentioned, position: a.position, list_size: a.listSize, brand_cited: a.brandCited, competitors: a.competitors, cited_domains: a.citedDomains })
+      .eq("id", row.id);
+    if (upErr) throw new Error(`ai_prompt_runs: ${upErr.message}`);
+    changed += 1;
+  }
+  return { runs: (data ?? []).length, changed };
 }
 
 // ---------------------------------------------------------------------------
