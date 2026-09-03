@@ -431,7 +431,14 @@ export async function askGoogleAiOverview(prompt: string, language: string): Pro
   const organic = items.filter((i) => i.type === "organic");
   const own = organic.find((i) => /(^|\.)kodus\.io$/i.test(i.domain ?? ""));
   const related = items.find((i) => i.type === "related_searches");
-  const fanOut = Array.isArray(related?.items) ? (related!.items as unknown[]).filter((q): q is string => typeof q === "string") : [];
+  // Related searches come as plain strings today; an object with a title is
+  // the other shape DataForSEO uses for list items.
+  const fanOut = Array.isArray(related?.items)
+    ? (related!.items as unknown[])
+        .map((q) => (typeof q === "string" ? q : typeof (q as { title?: unknown })?.title === "string" ? (q as { title: string }).title : ""))
+        .map((q) => q.trim())
+        .filter(Boolean)
+    : [];
   return {
     modelName: "ai_overview",
     text: texts.join("\n"),
@@ -922,8 +929,13 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
   if (!runOn) return empty;
 
   const [{ data: runRows, error }, { data: histRows }] = await Promise.all([
-    client.from("ai_prompt_runs").select("*").eq("run_on", runOn).limit(5000),
-    client.from("ai_prompt_runs").select("run_on,engine,mentioned,error").order("run_on", { ascending: false }).limit(10000),
+    client.from("ai_prompt_runs").select("*").eq("run_on", runOn).order("created_at", { ascending: true }).order("id", { ascending: true }).limit(5000),
+    client
+      .from("ai_prompt_runs")
+      .select("run_on,engine,mentioned,error")
+      .order("run_on", { ascending: false })
+      .order("id", { ascending: true })
+      .limit(10000),
   ]);
   if (error) throw new Error(`ai_prompt_runs: ${error.message}`);
   const runs = (runRows ?? []).map((r) => rowToRun(r as RunRow));
