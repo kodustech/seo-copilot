@@ -3127,8 +3127,19 @@ const getFunnelTool = tool({
       const [f, prev] = await Promise.all([getCachedFunnel(spec), prevSpec ? getCachedFunnel(prevSpec).catch(() => null) : Promise.resolve(null)]);
       const prevRates = new Map((prev?.rates ?? []).map((r) => [r.id, r]));
       const bands = new Map(rateBandTable().map((b) => [b.id, b]));
+      const edgeByRate = new Map(FUNNEL_EDGES.filter((e) => e.rate).map((e) => [e.rate as string, e]));
       const delta = (now: number | null, before: number | null | undefined) =>
         now == null || before == null ? null : { absolute: now - before, relative: before === 0 ? null : Math.round(((now - before) / before) * 1000) / 1000 };
+      // An open period is a partial flow: 12 signups on day 10 of a 30-day
+      // month is a pace of 36, not a drop from last month's 30. Flow stages
+      // get a pace-adjusted comparison; stocks (arr) do not.
+      const partial = f.elapsed < 1;
+      const STOCK_STAGES = new Set(["arr"]);
+      const paced = (id: string, now: number | null, before: number | null | undefined) => {
+        if (!partial || STOCK_STAGES.has(id) || now == null) return null;
+        const projected = Math.round(now / f.elapsed);
+        return { projected, delta: delta(projected, before) };
+      };
 
       const stages = Object.values(f.nodes).map((n) => {
         const links = stageLinks(n.id);
@@ -3145,14 +3156,23 @@ const getFunnelTool = tool({
           feeds: links.feeds,
           goal: n.goal ?? null,
           bets: n.bets ?? [],
-          ...(prev ? { previous: { value: before?.value ?? null, display: before?.display ?? null, delta: delta(n.value, before?.value) } } : {}),
+          ...(prev
+            ? {
+                previous: {
+                  value: before?.value ?? null,
+                  display: before?.display ?? null,
+                  delta: delta(n.value, before?.value),
+                  ...(partial ? { pace: paced(n.id, n.value, before?.value) } : {}),
+                },
+              }
+            : {}),
           ...(includeRows ? { columns: n.columns, rows: n.rows.slice(0, 200) } : { rowCount: n.rows.length }),
         };
       });
 
       const rates = f.rates.map((r) => {
         const band = bands.get(r.id);
-        const edge = FUNNEL_EDGES.find((e) => e.rate === r.id);
+        const edge = edgeByRate.get(r.id);
         const before = prevRates.get(r.id);
         return {
           id: r.id,
@@ -3170,7 +3190,17 @@ const getFunnelTool = tool({
         success: true as const,
         guide: FUNNEL_GUIDE,
         period: { spec, start: f.periodStart, end: f.periodEnd, elapsedShare: f.elapsed },
-        ...(prev ? { comparison: { previous: { spec: prevSpec, start: prev.periodStart, end: prev.periodEnd, elapsedShare: prev.elapsed } } } : {}),
+        ...(prev
+          ? {
+              comparison: {
+                previous: { spec: prevSpec, start: prev.periodStart, end: prev.periodEnd, elapsedShare: prev.elapsed },
+                partialPeriod: partial,
+                note: partial
+                  ? `The current period is ${Math.round(f.elapsed * 100)}% elapsed. 'delta' compares raw values against the full previous period; 'pace.projected' is value ÷ elapsedShare and 'pace.delta' compares that projection. Use pace for flow stages; 'arr' is a stock and has no pace.`
+                  : "Both periods are closed; deltas compare full periods.",
+              },
+            }
+          : {}),
         lanes: FUNNEL_LANES,
         edges: FUNNEL_EDGES,
         stages,
