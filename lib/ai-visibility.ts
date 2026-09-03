@@ -414,11 +414,20 @@ export function analyzeAnswer(text: string, citations: Citation[], brandTerms: s
   // list, not across all of them.
   const numberedLists: string[][] = [];
   const bullets: string[] = [];
-  // Rows per table, header dropped, so the brand's row number is read inside
-  // its own table.
+  // Rows per table, so the brand's row number is read inside its own table.
+  // A table's header is the row right before its rule line ("|---|"), so
+  // rows are held one line before being committed: a rule line drops the
+  // held row as the header and opens a new table. Prose between rows, or
+  // between two tables, does not confuse the split.
   const tables: string[][] = [];
-  let tableHeaderSkipped = false;
+  let heldRow: string | null = null;
   let prevNumber = 0;
+  const commitHeld = () => {
+    if (heldRow == null) return;
+    if (tables.length === 0) tables.push([]);
+    tables[tables.length - 1].push(heldRow);
+    heldRow = null;
+  };
   for (const line of lines) {
     const m = line.match(numberedRe);
     if (m) {
@@ -428,21 +437,18 @@ export function analyzeAnswer(text: string, citations: Citation[], brandTerms: s
       prevNumber = n;
     } else if (bulletRe.test(line)) bullets.push(line);
     if (tableRowRe.test(line)) {
-      if (tableRuleRe.test(line)) continue;
-      // The first row of each table is its header; a blank line between two
-      // tables resets the flag so the second header is not read as an entry.
-      if (!tableHeaderSkipped) {
-        tableHeaderSkipped = true;
+      if (tableRuleRe.test(line)) {
+        heldRow = null; // the held row was this table's header
         tables.push([]);
         continue;
       }
-      tables[tables.length - 1].push(line);
-    } else if (!line.trim()) {
-      // Only a blank line ends a table; a note between two rows must not
-      // turn the next row into a header.
-      tableHeaderSkipped = false;
+      commitHeld();
+      heldRow = line;
+    } else {
+      commitHeld();
     }
   }
+  commitHeld();
 
   let listSize: number | null = null;
   let position: number | null = null;
