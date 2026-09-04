@@ -50,7 +50,8 @@ export async function GET(req: Request) {
     const tags = [...new Set((seqRows ?? []).flatMap((r) => (Array.isArray(r.tags) ? (r.tags as string[]) : [])))].sort();
     // Only open bets with a measure are worth a funnel read; decided ones
     // keep their verdict, and a bet without a measure has nothing to read.
-    const toEvaluate = bets.filter((b) => b.measure && (b.status === "active" || b.status === "queued")).slice(0, 50);
+    // Shared windows are computed once (funnel cache inside evaluateBets).
+    const toEvaluate = bets.filter((b) => b.measure && (b.status === "active" || b.status === "queued"));
     const evaluations = withEvaluation ? await evaluateBets(client, toEvaluate) : {};
     return NextResponse.json({
       bets: bets.map((b) => {

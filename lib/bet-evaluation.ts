@@ -91,58 +91,73 @@ async function outboundTagNumbers(
   tag: string,
   start: string,
   endExclusive: string,
+  needMeetings: boolean,
 ): Promise<{ contacts: number; replies: number; meetings: number; sequences: string[] }> {
   const { data: seqs, error } = await client.from("outreach_sequences").select("id,name,tags").contains("tags", [tag]);
   if (error) throw new Error(`outreach_sequences: ${error.message}`);
   const ids = (seqs ?? []).map((s) => String(s.id));
-  if (ids.length === 0) return { contacts: 0, replies: 0, meetings: 0, sequences: [] };
-  // Paged, so a big campaign window never gets silently truncated.
-  const rows: Array<{ id: string; status: string; crm_company_id: string | null; created_at: string }> = [];
-  for (let from = 0; ; from += 1000) {
-    const { data: enr, error: enrErr } = await client
+  const sequences = (seqs ?? []).map((s) => String(s.name));
+  if (ids.length === 0) return { contacts: 0, replies: 0, meetings: 0, sequences };
+
+  // Counts come from the database, not from rows: exact at any size and one
+  // round trip each.
+  const windowed = () =>
+    client
       .from("outreach_enrollments")
-      .select("id,status,crm_company_id,created_at")
+      .select("id", { count: "exact", head: true })
       .in("sequence_id", ids)
       .gte("created_at", `${start}T00:00:00Z`)
-      .lt("created_at", `${endExclusive}T00:00:00Z`)
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true })
-      .range(from, from + 999);
-    if (enrErr) throw new Error(`outreach_enrollments: ${enrErr.message}`);
-    const page = (enr ?? []) as typeof rows;
-    rows.push(...page);
-    if (page.length < 1000) break;
-  }
-  const replied = rows.filter((r) => r.status === "replied");
-  // A meeting counts when the enrolled company moved to `meeting` after the
-  // enrollment started (the calendar sync writes that status).
-  const companyIds = [...new Set(rows.map((r) => r.crm_company_id).filter((v): v is string => Boolean(v)))];
+      .lt("created_at", `${endExclusive}T00:00:00Z`);
+  const [{ count: contacts, error: cErr }, { count: replies, error: rErr }] = await Promise.all([windowed(), windowed().eq("status", "replied")]);
+  if (cErr) throw new Error(`outreach_enrollments: ${cErr.message}`);
+  if (rErr) throw new Error(`outreach_enrollments: ${rErr.message}`);
+
   let meetings = 0;
-  if (companyIds.length) {
+  if (needMeetings) {
+    // A meeting counts when the enrolled company moved to `meeting` inside
+    // the window and after its enrollment started (the calendar sync writes
+    // that status). Companies are read in parallel pages; the status
+    // changes are bounded to the window on both ends.
+    const PAGE = 1000;
+    const { count: withCompany } = await windowed().not("crm_company_id", "is", null);
+    const pages = Math.ceil((withCompany ?? 0) / PAGE);
+    const results = await Promise.all(
+      Array.from({ length: pages }, (_, i) =>
+        client
+          .from("outreach_enrollments")
+          .select("crm_company_id,created_at")
+          .in("sequence_id", ids)
+          .not("crm_company_id", "is", null)
+          .gte("created_at", `${start}T00:00:00Z`)
+          .lt("created_at", `${endExclusive}T00:00:00Z`)
+          .order("created_at", { ascending: true })
+          .order("id", { ascending: true })
+          .range(i * PAGE, i * PAGE + PAGE - 1),
+      ),
+    );
     const startedAt = new Map<string, string>();
-    for (const r of rows) if (r.crm_company_id) startedAt.set(String(r.crm_company_id), String(r.created_at));
-    // Bounded to the window on both ends, so the same meeting cannot count
-    // for this window and the one before.
-    const { data: acts } = await client
-      .from("crm_activities")
-      .select("company_id,created_at,meta")
-      .eq("kind", "status_change")
-      .in("company_id", companyIds)
-      .gte("created_at", `${start}T00:00:00Z`)
-      .lt("created_at", `${endExclusive}T00:00:00Z`)
-      .order("created_at", { ascending: true })
-      .limit(5000);
+    for (const r of results) for (const row of r.data ?? []) startedAt.set(String(row.crm_company_id), String(row.created_at));
+    const companyIds = [...startedAt.keys()];
     const seen = new Set<string>();
-    for (const a of acts ?? []) {
-      const meta = (a.meta ?? {}) as { to?: string };
-      const cid = String(a.company_id);
-      if (meta.to === "meeting" && String(a.created_at) >= (startedAt.get(cid) ?? "") && !seen.has(cid)) {
-        seen.add(cid);
-        meetings += 1;
+    for (let i = 0; i < companyIds.length; i += 200) {
+      const { data: acts } = await client
+        .from("crm_activities")
+        .select("company_id,created_at,meta")
+        .eq("kind", "status_change")
+        .in("company_id", companyIds.slice(i, i + 200))
+        .gte("created_at", `${start}T00:00:00Z`)
+        .lt("created_at", `${endExclusive}T00:00:00Z`)
+        .order("created_at", { ascending: true })
+        .limit(5000);
+      for (const a of acts ?? []) {
+        const meta = (a.meta ?? {}) as { to?: string };
+        const cid = String(a.company_id);
+        if (meta.to === "meeting" && String(a.created_at) >= (startedAt.get(cid) ?? "") && !seen.has(cid)) seen.add(cid);
       }
     }
+    meetings = seen.size;
   }
-  return { contacts: rows.length, replies: replied.length, meetings, sequences: (seqs ?? []).map((s) => String(s.name)) };
+  return { contacts: contacts ?? 0, replies: replies ?? 0, meetings, sequences };
 }
 
 async function actionLevel(client: SupabaseClient, bet: Bet): Promise<EvaluationLevel> {
@@ -237,7 +252,11 @@ export async function evaluateBet(client: SupabaseClient, betOrId: Bet | string,
       } else if (m.kind === "outbound_tag") {
         const endEx = iso(new Date(new Date(`${effectiveEnd}T00:00:00Z`).getTime() + DAY));
         const prevEndEx = iso(new Date(new Date(`${prevEnd}T00:00:00Z`).getTime() + DAY));
-        const [now, before] = await Promise.all([outboundTagNumbers(client, m.id, start, endEx), outboundTagNumbers(client, m.id, prevStart, prevEndEx)]);
+        const needMeetings = m.submetric === "meetings";
+        const [now, before] = await Promise.all([
+          outboundTagNumbers(client, m.id, start, endEx, needMeetings),
+          outboundTagNumbers(client, m.id, prevStart, prevEndEx, needMeetings),
+        ]);
         const pick = (n: typeof now) =>
           m.submetric === "contacts" ? n.contacts : m.submetric === "meetings" ? n.meetings : m.submetric === "reply_rate" ? (n.contacts ? n.replies / n.contacts : null) : n.replies;
         current = pick(now);
