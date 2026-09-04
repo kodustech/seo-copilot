@@ -3,12 +3,11 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 /**
  * Bets: what we run to move a goal. Not tasks. A bet names a hypothesis, the
  * action that tests it, the metric that proves it and the date the verdict
- * is due. At most MAX_ACTIVE_BETS are active at once; the rest queue.
+ * is due. Any number can be active; the queue is for what has not started.
  */
 
 export type BetStatus = "queued" | "active" | "won" | "lost" | "operation";
 export const BET_STATUSES: BetStatus[] = ["queued", "active", "won", "lost", "operation"];
-export const MAX_ACTIVE_BETS = 3;
 
 export type Bet = {
   id: string;
@@ -99,24 +98,9 @@ export async function countActiveBets(client: SupabaseClient): Promise<number> {
   return count ?? 0;
 }
 
-// The database enforces the same cap with a constraint trigger (see the bets
-// migration), so two writers racing past this check still cannot leave four
-// active; this read exists to give a readable message before the insert.
-async function assertActiveSlot(client: SupabaseClient, excludeId?: string): Promise<void> {
-  let q = client.from("bets").select("id", { count: "exact", head: true }).eq("status", "active");
-  if (excludeId) q = q.neq("id", excludeId);
-  const { count, error } = await q;
-  if (error) throw new Error(`bets: ${error.message}`);
-  if ((count ?? 0) >= MAX_ACTIVE_BETS) {
-    throw new Error(
-      `${MAX_ACTIVE_BETS} bets are already active. Decide one (won, lost or became operation) before activating another; this one can wait in the queue.`,
-    );
-  }
-}
 
 export async function createBet(client: SupabaseClient, input: CreateBetInput): Promise<Bet> {
   const status: BetStatus = input.status ?? "active";
-  if (status === "active") await assertActiveSlot(client);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.decisionAt)) throw new Error("decisionAt must be YYYY-MM-DD");
   const { data, error } = await client
     .from("bets")
@@ -150,7 +134,6 @@ export async function updateBet(client: SupabaseClient, id: string, updates: Upd
   }
   if (updates.status !== undefined) {
     if (!BET_STATUSES.includes(updates.status)) throw new Error(`invalid status: ${updates.status}`);
-    if (updates.status === "active") await assertActiveSlot(client, id);
     patch.status = updates.status;
   }
   if ("verdict" in updates) patch.verdict = updates.verdict?.trim() || null;

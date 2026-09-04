@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { listBets, MAX_ACTIVE_BETS } from "@/lib/bets";
+import { listBets } from "@/lib/bets";
 import { listGoals } from "@/lib/goals";
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 
@@ -23,7 +23,6 @@ export async function GET(req: Request) {
     ]);
     const goalById = new Map(goals.map((g) => [g.id, g]));
     return NextResponse.json({
-      maxActive: MAX_ACTIVE_BETS,
       bets: bets.map((b) => {
         const g = goalById.get(b.goalId);
         return {

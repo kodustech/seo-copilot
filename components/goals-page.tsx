@@ -1916,7 +1916,6 @@ function BetForm({ form, setForm, onCancel, onSubmit, creating, goalPicker }: {
 function BetsPanel({ token, refreshKey, onChanged }: { token: string | null; refreshKey: number; onChanged: () => void }) {
   const [bets, setBets] = useState<BetWithGoal[]>([]);
   const [goals, setGoals] = useState<{ id: string; title: string; periodStart: string; periodEnd: string }[]>([]);
-  const [maxActive, setMaxActive] = useState(3);
   const [loaded, setLoaded] = useState(false);
   const [showDecided, setShowDecided] = useState(false);
   const [open, setOpen] = useState(false);
@@ -1937,7 +1936,6 @@ function BetsPanel({ token, refreshKey, onChanged }: { token: string | null; ref
     if (res.ok) {
       setBets(json.bets as BetWithGoal[]);
       setGoals(json.goals as typeof goals);
-      setMaxActive(Number(json.maxActive ?? 3));
       setError(null);
     } else {
       const msg = (json.error as string | undefined) ?? "Could not load bets";
@@ -1997,7 +1995,7 @@ function BetsPanel({ token, refreshKey, onChanged }: { token: string | null; ref
       <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-sm font-medium text-neutral-100">
-            Bets{loaded ? ` · ${active.length} of ${maxActive} active` : ""}
+            Bets{loaded ? ` · ${active.length} active` : ""}
             {overdue.length > 0 ? <span className="ml-2 text-amber-300">· {overdue.length} past decision date</span> : null}
           </h2>
           <p className="mt-0.5 text-xs text-neutral-500">
