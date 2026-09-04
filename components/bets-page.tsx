@@ -163,7 +163,7 @@ type FormState = {
   action: string;
   metric: string;
   decisionAt: string;
-  status: "queued" | "active";
+  status: BetStatus;
   kanbanItemId: string;
   notes: string;
   measureKind: MeasureKind | "none";
@@ -208,7 +208,7 @@ function fromBet(b: BetRow): FormState {
     action: b.action,
     metric: b.metric,
     decisionAt: b.decisionAt,
-    status: b.status === "queued" ? "queued" : "active",
+    status: b.status,
     kanbanItemId: b.kanbanItemId ?? "",
     notes: b.notes ?? "",
     measureKind: b.measure?.kind ?? "none",
@@ -222,7 +222,7 @@ function fromBet(b: BetRow): FormState {
   };
 }
 
-function toPayload(f: FormState): Record<string, unknown> {
+function toPayload(f: FormState, mode: "create" | "edit"): Record<string, unknown> {
   const rate = f.measureKind === "funnel_rate" || f.measureKind === "ai_share" || (f.measureKind === "outbound_tag" && f.submetric === "reply_rate");
   const threshold = Number(f.threshold);
   const measure =
@@ -245,7 +245,9 @@ function toPayload(f: FormState): Record<string, unknown> {
     action: f.action,
     metric: f.metric,
     decisionAt: f.decisionAt,
-    status: f.status,
+    // Editing never changes the status: a decided bet stays decided; use
+    // the decide buttons for that.
+    ...(mode === "create" ? { status: f.status } : {}),
     kanbanItemId: f.kanbanItemId || null,
     notes: f.notes || null,
     measure,
@@ -285,11 +287,12 @@ function BetDialog({
   onSubmit: (payload: Record<string, unknown>) => Promise<boolean>;
   saving: boolean;
   title: string;
+  mode: "create" | "edit";
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[92vh] max-w-2xl overflow-y-auto border-white/10 bg-neutral-950 text-neutral-100">
-        <BetForm key={`${open}:${initial.goalId}:${initial.title}`} initial={initial} goals={goals} options={options} onSubmit={onSubmit} saving={saving} title={title} onClose={() => onOpenChange(false)} />
+        <BetForm key={`${open}:${initial.goalId}:${initial.title}`} initial={initial} goals={goals} options={options} onSubmit={onSubmit} saving={saving} title={title} mode={mode} onClose={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>
   );
@@ -310,6 +313,7 @@ function BetForm({
   onSubmit: (payload: Record<string, unknown>) => Promise<boolean>;
   saving: boolean;
   title: string;
+  mode: "create" | "edit";
   onClose: () => void;
 }) {
   const [f, setF] = useState<FormState>(initial);
@@ -490,17 +494,23 @@ function BetForm({
             </SelectContent>
           </Select>
         </Field>
-        <Field label="Status">
-          <Select value={f.status} onValueChange={(v) => set({ status: v as FormState["status"] })}>
-            <SelectTrigger className={selectCls}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className={menuCls}>
-              <SelectItem value="active">Active</SelectItem>
-              <SelectItem value="queued">Queued</SelectItem>
-            </SelectContent>
-          </Select>
-        </Field>
+        {mode === "create" ? (
+          <Field label="Status">
+            <Select value={f.status} onValueChange={(v) => set({ status: v as BetStatus })}>
+              <SelectTrigger className={selectCls}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className={menuCls}>
+                <SelectItem value="active">Active</SelectItem>
+                <SelectItem value="queued">Queued</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+        ) : (
+          <Field label="Status" hint="Use the decide buttons on the page to change it.">
+            <div className="flex h-9 items-center text-sm text-neutral-300">{STATUS_LABEL[f.status].label}</div>
+          </Field>
+        )}
         <div className="md:col-span-2">
           <Field label="Notes">
             <Textarea value={f.notes} onChange={(e) => set({ notes: e.target.value })} rows={2} className="border-white/10 bg-neutral-900 text-sm" />
@@ -515,7 +525,7 @@ function BetForm({
         <button
           type="button"
           onClick={async () => {
-            if (await onSubmit(toPayload(f))) onClose();
+            if (await onSubmit(toPayload(f, mode))) onClose();
           }}
           disabled={!valid || saving}
           className="rounded-md bg-violet-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-40"
@@ -874,6 +884,7 @@ export function BetsPage() {
         options={options}
         saving={saving}
         title={dialog?.mode === "edit" ? "Edit bet" : "New bet"}
+        mode={dialog?.mode === "edit" ? "edit" : "create"}
         onSubmit={async (payload) => {
           if (dialog?.mode === "edit" && dialog.bet) return call(`/api/bets/${dialog.bet.id}`, { method: "PATCH", body: JSON.stringify(payload) });
           return call("/api/bets", { method: "POST", body: JSON.stringify(payload) });

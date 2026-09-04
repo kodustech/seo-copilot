@@ -48,7 +48,10 @@ export async function GET(req: Request) {
     ]);
     const goalById = new Map(goals.map((g) => [g.id, g]));
     const tags = [...new Set((seqRows ?? []).flatMap((r) => (Array.isArray(r.tags) ? (r.tags as string[]) : [])))].sort();
-    const evaluations = withEvaluation ? await evaluateBets(client, bets) : {};
+    // Only open bets with a measure are worth a funnel read; decided ones
+    // keep their verdict, and a bet without a measure has nothing to read.
+    const toEvaluate = bets.filter((b) => b.measure && (b.status === "active" || b.status === "queued")).slice(0, 50);
+    const evaluations = withEvaluation ? await evaluateBets(client, toEvaluate) : {};
     return NextResponse.json({
       bets: bets.map((b) => {
         const g = goalById.get(b.goalId);

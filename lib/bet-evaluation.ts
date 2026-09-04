@@ -96,15 +96,23 @@ async function outboundTagNumbers(
   if (error) throw new Error(`outreach_sequences: ${error.message}`);
   const ids = (seqs ?? []).map((s) => String(s.id));
   if (ids.length === 0) return { contacts: 0, replies: 0, meetings: 0, sequences: [] };
-  const { data: enr, error: enrErr } = await client
-    .from("outreach_enrollments")
-    .select("id,status,crm_company_id,created_at")
-    .in("sequence_id", ids)
-    .gte("created_at", `${start}T00:00:00Z`)
-    .lt("created_at", `${endExclusive}T00:00:00Z`)
-    .limit(5000);
-  if (enrErr) throw new Error(`outreach_enrollments: ${enrErr.message}`);
-  const rows = enr ?? [];
+  // Paged, so a big campaign window never gets silently truncated.
+  const rows: Array<{ id: string; status: string; crm_company_id: string | null; created_at: string }> = [];
+  for (let from = 0; ; from += 1000) {
+    const { data: enr, error: enrErr } = await client
+      .from("outreach_enrollments")
+      .select("id,status,crm_company_id,created_at")
+      .in("sequence_id", ids)
+      .gte("created_at", `${start}T00:00:00Z`)
+      .lt("created_at", `${endExclusive}T00:00:00Z`)
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, from + 999);
+    if (enrErr) throw new Error(`outreach_enrollments: ${enrErr.message}`);
+    const page = (enr ?? []) as typeof rows;
+    rows.push(...page);
+    if (page.length < 1000) break;
+  }
   const replied = rows.filter((r) => r.status === "replied");
   // A meeting counts when the enrolled company moved to `meeting` after the
   // enrollment started (the calendar sync writes that status).
@@ -113,12 +121,16 @@ async function outboundTagNumbers(
   if (companyIds.length) {
     const startedAt = new Map<string, string>();
     for (const r of rows) if (r.crm_company_id) startedAt.set(String(r.crm_company_id), String(r.created_at));
+    // Bounded to the window on both ends, so the same meeting cannot count
+    // for this window and the one before.
     const { data: acts } = await client
       .from("crm_activities")
       .select("company_id,created_at,meta")
       .eq("kind", "status_change")
       .in("company_id", companyIds)
       .gte("created_at", `${start}T00:00:00Z`)
+      .lt("created_at", `${endExclusive}T00:00:00Z`)
+      .order("created_at", { ascending: true })
       .limit(5000);
     const seen = new Set<string>();
     for (const a of acts ?? []) {
