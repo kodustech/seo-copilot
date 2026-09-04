@@ -278,6 +278,7 @@ function BetDialog({
   onSubmit,
   saving,
   title,
+  mode,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -305,6 +306,7 @@ function BetForm({
   onSubmit,
   saving,
   title,
+  mode,
   onClose,
 }: {
   initial: FormState;
