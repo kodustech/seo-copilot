@@ -3321,7 +3321,7 @@ const updateAiVisibilitySettingsTool = tool({
 
 const listBetsTool = tool({
   description:
-    "List bets (hypothesis + action + proving metric + decision date) running on goals. Filter by goal (id or partial title) or status: queued, active, won, lost, operation. At most 3 bets are active at a time.",
+    "List bets (hypothesis + action + proving metric + decision date) running on goals. Filter by goal (id or partial title) or status: queued, active, won, lost, operation.",
   inputSchema: z.object({
     goalId: z.string().optional(),
     goalTitle: z.string().optional(),
@@ -3346,7 +3346,7 @@ const listBetsTool = tool({
 
 const createBetTool = tool({
   description:
-    "Create a bet on a goal. Requires all four fields: hypothesis (if we do X, metric Y moves because...), action (what exactly will be done), metric (the number that proves it, with threshold), decisionAt (YYYY-MM-DD when the verdict is due). Refused as active when 3 bets are already active; pass status 'queued' to park it.",
+    "Create a bet on a goal. Requires all four fields: hypothesis (if we do X, metric Y moves because...), action (what exactly will be done), metric (the number that proves it, with threshold), decisionAt (YYYY-MM-DD when the verdict is due). Pass status 'queued' to park it until it starts.",
   inputSchema: z.object({
     goalId: z.string().optional(),
     goalTitle: z.string().optional(),
@@ -3406,7 +3406,7 @@ const createBetTool = tool({
 
 const decideBetTool = tool({
   description:
-    "Decide or move a bet: status won, lost, operation (became routine work), active (start a queued bet; refused when 3 are active) or queued. Give a one-line verdict when deciding won or lost.",
+    "Decide or move a bet: status won, lost, operation (became routine work), active (start a queued bet) or queued. Give a one-line verdict when deciding won or lost.",
   inputSchema: z.object({
     betId: z.string(),
     status: z.enum(["queued", "active", "won", "lost", "operation"]),
