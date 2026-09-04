@@ -141,7 +141,10 @@ async function outboundTagNumbers(
     // short page, so rows inserted between the count and the reads still land.
     const pages = Math.ceil((withCompany ?? 0) / PAGE);
     const results = await Promise.all(Array.from({ length: pages }, (_, i) => page(i)));
-    for (let i = pages; ; i++) {
+    // Rows landing between the count and the reads are a page or two, never
+    // unbounded: a few extra pages, then stop.
+    const MAX_TAIL = 5;
+    for (let i = pages; i < pages + MAX_TAIL; i++) {
       const extra = await page(i);
       if (extra.error) throw new Error(`outreach_enrollments: ${extra.error.message}`);
       results.push(extra);
