@@ -255,7 +255,7 @@ function toPayload(f: FormState): Record<string, unknown> {
 
 function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
-    <label className="block">
+    <label className="block min-w-0">
       <span className="mb-1 block text-[11px] uppercase tracking-wider text-neutral-500">{label}</span>
       {children}
       {hint ? <span className="mt-1 block text-[11px] text-neutral-600">{hint}</span> : null}
@@ -264,7 +264,7 @@ function Field({ label, children, hint }: { label: string; children: React.React
 }
 
 const inputCls = "h-9 border-white/10 bg-neutral-900 text-sm";
-const selectCls = "h-9 border-white/10 bg-neutral-900 text-sm";
+const selectCls = "h-9 w-full min-w-0 border-white/10 bg-neutral-900 text-sm [&>span]:truncate";
 const menuCls = "border-white/10 bg-neutral-950 text-neutral-200";
 
 function BetDialog({
