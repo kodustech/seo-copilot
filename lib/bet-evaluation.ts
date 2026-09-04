@@ -73,9 +73,14 @@ function normalizeThreshold(m: BetMeasure): number {
   return isRateMeasure(m) && m.threshold > 1 ? m.threshold / 100 : m.threshold;
 }
 
-// Funnel results per spec, for one evaluation batch (a page load evaluates
-// every bet; most share windows).
-type FunnelCache = Map<string, Promise<FunnelData>>;
+// Shared reads for one evaluation batch (a page load evaluates every open
+// bet): funnel results per spec, and the AI visibility summary once.
+type FunnelCache = Map<string, Promise<FunnelData>> & { visibility?: Promise<Awaited<ReturnType<typeof getVisibilitySummary>>> };
+
+function visibilityFor(client: SupabaseClient, cache: FunnelCache) {
+  if (!cache.visibility) cache.visibility = getVisibilitySummary(client);
+  return cache.visibility;
+}
 
 function funnelFor(client: SupabaseClient, cache: FunnelCache, spec: string): Promise<FunnelData> {
   let p = cache.get(spec);
@@ -119,24 +124,34 @@ async function outboundTagNumbers(
     // that status). Companies are read in parallel pages; the status
     // changes are bounded to the window on both ends.
     const PAGE = 1000;
-    const { count: withCompany } = await windowed().not("crm_company_id", "is", null);
+    const { count: withCompany, error: wcErr } = await windowed().not("crm_company_id", "is", null);
+    if (wcErr) throw new Error(`outreach_enrollments: ${wcErr.message}`);
+    const page = (i: number) =>
+      client
+        .from("outreach_enrollments")
+        .select("crm_company_id,created_at")
+        .in("sequence_id", ids)
+        .not("crm_company_id", "is", null)
+        .gte("created_at", `${start}T00:00:00Z`)
+        .lt("created_at", `${endExclusive}T00:00:00Z`)
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(i * PAGE, i * PAGE + PAGE - 1);
+    // Pages read in parallel from the count, then one more at a time until a
+    // short page, so rows inserted between the count and the reads still land.
     const pages = Math.ceil((withCompany ?? 0) / PAGE);
-    const results = await Promise.all(
-      Array.from({ length: pages }, (_, i) =>
-        client
-          .from("outreach_enrollments")
-          .select("crm_company_id,created_at")
-          .in("sequence_id", ids)
-          .not("crm_company_id", "is", null)
-          .gte("created_at", `${start}T00:00:00Z`)
-          .lt("created_at", `${endExclusive}T00:00:00Z`)
-          .order("created_at", { ascending: true })
-          .order("id", { ascending: true })
-          .range(i * PAGE, i * PAGE + PAGE - 1),
-      ),
-    );
+    const results = await Promise.all(Array.from({ length: pages }, (_, i) => page(i)));
+    for (let i = pages; ; i++) {
+      const extra = await page(i);
+      if (extra.error) throw new Error(`outreach_enrollments: ${extra.error.message}`);
+      results.push(extra);
+      if ((extra.data ?? []).length < PAGE) break;
+    }
     const startedAt = new Map<string, string>();
-    for (const r of results) for (const row of r.data ?? []) startedAt.set(String(row.crm_company_id), String(row.created_at));
+    for (const r of results) {
+      if (r.error) throw new Error(`outreach_enrollments: ${r.error.message}`);
+      for (const row of r.data ?? []) startedAt.set(String(row.crm_company_id), String(row.created_at));
+    }
     const companyIds = [...startedAt.keys()];
     const seen = new Set<string>();
     for (let i = 0; i < companyIds.length; i += 200) {
@@ -229,7 +244,7 @@ export async function evaluateBet(client: SupabaseClient, betOrId: Bet | string,
         source = `Funnel rate "${r?.label ?? m.id}" over ${start} to ${effectiveEnd}`;
         if (!r) errors.push(`unknown funnel rate: ${m.id}`);
       } else if (m.kind === "ai_share") {
-        const s = await getVisibilitySummary(client);
+        const s = await visibilityFor(client, cache);
         if (m.id === "all") {
           current = s.overallShare;
           const runs = [...new Set(s.history.map((h) => h.runOn))].sort();
