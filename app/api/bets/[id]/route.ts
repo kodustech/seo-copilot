@@ -19,6 +19,12 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
   if (typeof body.status === "string" && (BET_STATUSES as string[]).includes(body.status)) updates.status = body.status as BetStatus;
   if ("verdict" in body) updates.verdict = typeof body.verdict === "string" ? body.verdict : null;
   if ("notes" in body) updates.notes = typeof body.notes === "string" ? body.notes : null;
+  if ("lever" in body) updates.lever = typeof body.lever === "string" ? body.lever : null;
+  if ("ownerEmail" in body) updates.ownerEmail = typeof body.ownerEmail === "string" ? body.ownerEmail : null;
+  if ("kanbanItemId" in body) updates.kanbanItemId = typeof body.kanbanItemId === "string" && body.kanbanItemId ? body.kanbanItemId : null;
+  if ("measure" in body) updates.measure = (body.measure ?? null) as Parameters<typeof updateBet>[2]["measure"];
+  if ("currentValue" in body) updates.currentValue = body.currentValue == null || body.currentValue === "" ? null : Number(body.currentValue);
+  if ("actionDoneAt" in body) updates.actionDoneAt = typeof body.actionDoneAt === "string" && body.actionDoneAt ? body.actionDoneAt : null;
   try {
     const bet = await updateBet(client, id, updates);
     return NextResponse.json({ bet });
