@@ -219,8 +219,8 @@ export async function evaluateBet(
   const journalP: Promise<BetEntry[]> = journalIn
     ? Promise.resolve(journalIn)
     : listBetEntries(client, [bet.id]).then((j) => j[bet.id] ?? []);
-  // Marked handled: a journal failure surfaces at the await below, not as an
-  // unhandled rejection while the metric reads are still in flight.
+  // Marked handled: a journal failure is recorded at the await below, not
+  // raised as an unhandled rejection while the metric reads are in flight.
   void journalP.catch(() => {});
   const errors: string[] = [];
   const today = iso(new Date());
@@ -330,7 +330,11 @@ export async function evaluateBet(
           detail: `${fmtValue(current, isRate)} now${previous != null ? ` vs ${fmtValue(previous, isRate)} in the window before` : ""}; threshold ${m.comparator} ${fmtValue(threshold, isRate)}.`,
         };
 
-  const journal = await journalP;
+  // A journal failure degrades like any other read: recorded, not fatal.
+  const journal = await journalP.catch((err) => {
+    errors.push(`journal: ${err instanceof Error ? err.message : String(err)}`);
+    return [] as BetEntry[];
+  });
   const action = await actionLevel(client, bet, journal);
 
   const display = m
@@ -381,9 +385,7 @@ export async function evaluateBets(
   await Promise.all(
     bets.map(async (b) => {
       try {
-        const slice = journalsP.then((j) => j[b.id] ?? []);
-        void slice.catch(() => {});
-        out[b.id] = await evaluateBet(client, b, cache, slice);
+        out[b.id] = await evaluateBet(client, b, cache, journalsP.then((j) => j[b.id] ?? []));
       } catch (err) {
         out[b.id] = {
           betId: b.id,
