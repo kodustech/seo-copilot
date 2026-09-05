@@ -274,20 +274,27 @@ function rowToEntry(r: Row): BetEntry {
 }
 
 /** Entries of one bet, or of many bets at once (keyed by bet id), oldest first. */
-export async function listBetEntries(client: SupabaseClient, betIds: string[], limit = 2000): Promise<Record<string, BetEntry[]>> {
+export async function listBetEntries(client: SupabaseClient, betIds: string[], maxRows = 20000): Promise<Record<string, BetEntry[]>> {
   const out: Record<string, BetEntry[]> = {};
   if (betIds.length === 0) return out;
-  const { data, error } = await client
-    .from("bet_entries")
-    .select("*")
-    .in("bet_id", betIds)
-    .order("happened_on", { ascending: true })
-    .order("created_at", { ascending: true })
-    .limit(limit);
-  if (error) throw new Error(`bet_entries: ${error.message}`);
-  for (const r of data ?? []) {
-    const e = rowToEntry(r as Row);
-    out[e.betId] = [...(out[e.betId] ?? []), e];
+  // Paged over a stable order, so a busy bet never loses its newest entries
+  // to a cap shared with the others.
+  const PAGE = 1000;
+  for (let from = 0; from < maxRows; from += PAGE) {
+    const { data, error } = await client
+      .from("bet_entries")
+      .select("*")
+      .in("bet_id", betIds)
+      .order("bet_id", { ascending: true })
+      .order("happened_on", { ascending: true })
+      .order("created_at", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`bet_entries: ${error.message}`);
+    for (const r of data ?? []) {
+      const e = rowToEntry(r as Row);
+      out[e.betId] = [...(out[e.betId] ?? []), e];
+    }
+    if ((data ?? []).length < PAGE) break;
   }
   return out;
 }

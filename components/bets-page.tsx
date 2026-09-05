@@ -56,8 +56,17 @@ function Journal({ bet, headers, onChanged }: { bet: BetRow; headers: Record<str
   };
   const remove = async (id: string) => {
     if (!window.confirm("Delete this entry?")) return;
-    await fetch(`/api/bet-entries/${id}`, { method: "DELETE", headers });
-    await onChanged();
+    setErr(null);
+    try {
+      const res = await fetch(`/api/bet-entries/${id}`, { method: "DELETE", headers });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error ?? "Failed");
+      }
+      await onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed");
+    }
   };
   return (
     <div>
