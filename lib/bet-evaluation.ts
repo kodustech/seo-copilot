@@ -362,13 +362,14 @@ export async function evaluateBet(
 export async function evaluateBets(
   client: SupabaseClient,
   bets: Bet[],
-  journalsIn?: Record<string, BetEntry[]>,
+  journalsIn?: Record<string, BetEntry[]> | Promise<Record<string, BetEntry[]>>,
 ): Promise<Record<string, BetEvaluation>> {
   const cache: FunnelCache = new Map();
   const out: Record<string, BetEvaluation> = {};
-  // A caller that already read the journals (the page) passes them in, so
-  // the entries are fetched once per request.
-  const journals = journalsIn ?? (await listBetEntries(client, bets.map((b) => b.id)));
+  // A caller that is already reading the journals (the page) passes that
+  // read in, so the entries are fetched once per request and the funnel
+  // reads start without waiting for them.
+  const journals = journalsIn ? await journalsIn : await listBetEntries(client, bets.map((b) => b.id));
   await Promise.all(
     bets.map(async (b) => {
       try {
