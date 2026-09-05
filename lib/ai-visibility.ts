@@ -914,10 +914,12 @@ function avg(nums: number[]): number | null {
  */
 export const FULL_RUN_MIN_SHARE = 0.5;
 
-async function fullRunDates(client: SupabaseClient, activePrompts: number, limit = 12): Promise<string[]> {
+async function fullRunDates(client: SupabaseClient, activePrompts: number, limit = 60): Promise<string[]> {
   const dates = await listRunDates(client, limit);
   if (dates.length === 0) return [];
-  const { data, error } = await client.from("ai_prompt_runs").select("run_on,prompt_id").in("run_on", dates).is("error", null).limit(20000);
+  // An errored prompt was still asked: a scheduled day where the provider
+  // failed is a full run with failures, not a partial day.
+  const { data, error } = await client.from("ai_prompt_runs").select("run_on,prompt_id").in("run_on", dates).limit(20000);
   if (error) throw new Error(`ai_prompt_runs: ${error.message}`);
   const promptsByDate = new Map<string, Set<string>>();
   for (const r of data ?? []) {
