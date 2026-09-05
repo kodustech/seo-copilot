@@ -52,10 +52,8 @@ export async function GET(req: Request) {
     // keep their verdict, and a bet without a measure has nothing to read.
     // Shared windows are computed once (funnel cache inside evaluateBets).
     const toEvaluate = bets.filter((b) => b.measure && (b.status === "active" || b.status === "queued"));
-    const [evaluations, journals] = await Promise.all([
-      withEvaluation ? evaluateBets(client, toEvaluate) : Promise.resolve({} as Record<string, BetEvaluation>),
-      listBetEntries(client, bets.map((b) => b.id)),
-    ]);
+    const journals = await listBetEntries(client, bets.map((b) => b.id));
+    const evaluations = withEvaluation ? await evaluateBets(client, toEvaluate, journals) : ({} as Record<string, BetEvaluation>);
     return NextResponse.json({
       bets: bets.map((b) => {
         const g = goalById.get(b.goalId);

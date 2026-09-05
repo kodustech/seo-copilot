@@ -359,10 +359,16 @@ export async function evaluateBet(
 }
 
 /** Evaluate many bets sharing one funnel cache. Failures land in `errors`, never throw. */
-export async function evaluateBets(client: SupabaseClient, bets: Bet[]): Promise<Record<string, BetEvaluation>> {
+export async function evaluateBets(
+  client: SupabaseClient,
+  bets: Bet[],
+  journalsIn?: Record<string, BetEntry[]>,
+): Promise<Record<string, BetEvaluation>> {
   const cache: FunnelCache = new Map();
   const out: Record<string, BetEvaluation> = {};
-  const journals = await listBetEntries(client, bets.map((b) => b.id));
+  // A caller that already read the journals (the page) passes them in, so
+  // the entries are fetched once per request.
+  const journals = journalsIn ?? (await listBetEntries(client, bets.map((b) => b.id)));
   await Promise.all(
     bets.map(async (b) => {
       try {

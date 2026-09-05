@@ -288,6 +288,7 @@ export async function listBetEntries(client: SupabaseClient, betIds: string[], m
       .order("bet_id", { ascending: true })
       .order("happened_on", { ascending: true })
       .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
       .range(from, from + PAGE - 1);
     if (error) throw new Error(`bet_entries: ${error.message}`);
     for (const r of data ?? []) {
