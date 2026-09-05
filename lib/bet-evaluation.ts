@@ -350,7 +350,7 @@ export async function evaluateBet(
   else if (met && action.status === "yes") suggestedVerdict = `Held: ${metricLevel.detail} ${opportunities.status === "yes" ? "Opportunities rose too." : "Opportunities did not rise yet; keep watching the next stage."}`;
   else if (met) suggestedVerdict = `Threshold met, but the action is not marked executed; confirm the movement came from this bet before calling it.`;
   else if (daysLeft > 0) suggestedVerdict = `Not yet: ${metricLevel.detail} ${daysLeft} day${daysLeft === 1 ? "" : "s"} to the decision date.`;
-  else if (action.status !== "yes" && journalReadFailed) suggestedVerdict = `Decision date passed but the journal could not be read; confirm the action was executed before deciding.`;
+  else if (action.status === "unknown" && journalReadFailed) suggestedVerdict = `Decision date passed but the journal could not be read; confirm the action was executed before deciding.`;
   else if (action.status !== "yes") suggestedVerdict = `Decision date passed and the action was not executed: this bet was not tested. Reschedule or drop it.`;
   else suggestedVerdict = `Did not hold: ${metricLevel.detail} The action was executed; the number did not follow.`;
 
