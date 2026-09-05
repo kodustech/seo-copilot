@@ -330,12 +330,16 @@ export async function evaluateBet(
           detail: `${fmtValue(current, isRate)} now${previous != null ? ` vs ${fmtValue(previous, isRate)} in the window before` : ""}; threshold ${m.comparator} ${fmtValue(threshold, isRate)}.`,
         };
 
-  // A journal failure degrades like any other read: recorded, not fatal.
+  // A journal failure degrades like any other read: recorded, not fatal,
+  // and never read as "nothing was logged".
+  let journalReadFailed = false;
   const journal = await journalP.catch((err) => {
     errors.push(`journal: ${err instanceof Error ? err.message : String(err)}`);
+    journalReadFailed = true;
     return [] as BetEntry[];
   });
-  const action = await actionLevel(client, bet, journal);
+  let action = await actionLevel(client, bet, journal);
+  if (journalReadFailed && action.status === "unknown") action = { ...action, detail: "Journal could not be read; execution is unknown." };
 
   const display = m
     ? `${fmtValue(current, isRate)} (${start} to ${effectiveEnd}) · threshold ${m.comparator} ${fmtValue(threshold, isRate)}${previous != null ? ` · before: ${fmtValue(previous, isRate)}` : ""}`
@@ -346,6 +350,7 @@ export async function evaluateBet(
   else if (met && action.status === "yes") suggestedVerdict = `Held: ${metricLevel.detail} ${opportunities.status === "yes" ? "Opportunities rose too." : "Opportunities did not rise yet; keep watching the next stage."}`;
   else if (met) suggestedVerdict = `Threshold met, but the action is not marked executed; confirm the movement came from this bet before calling it.`;
   else if (daysLeft > 0) suggestedVerdict = `Not yet: ${metricLevel.detail} ${daysLeft} day${daysLeft === 1 ? "" : "s"} to the decision date.`;
+  else if (action.status !== "yes" && journalReadFailed) suggestedVerdict = `Decision date passed but the journal could not be read; confirm the action was executed before deciding.`;
   else if (action.status !== "yes") suggestedVerdict = `Decision date passed and the action was not executed: this bet was not tested. Reschedule or drop it.`;
   else suggestedVerdict = `Did not hold: ${metricLevel.detail} The action was executed; the number did not follow.`;
 
