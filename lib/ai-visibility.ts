@@ -925,12 +925,21 @@ async function pageRuns<T>(
   maxRows = 200000,
 ): Promise<T[]> {
   const PAGE = 1000;
+  // Pages are fetched in parallel batches over the stable order, so a deep
+  // history costs one round trip per batch instead of one per page.
+  const BATCH = 5;
   const out: T[] = [];
-  for (let from = 0; from < maxRows; from += PAGE) {
-    const { data, error } = await query(from, from + PAGE - 1);
-    if (error) throw new Error(`ai_prompt_runs: ${error.message}`);
-    out.push(...(data ?? []));
-    if ((data ?? []).length < PAGE) break;
+  for (let from = 0; from < maxRows; from += PAGE * BATCH) {
+    const pages = await Promise.all(
+      Array.from({ length: BATCH }, (_, i) => query(from + i * PAGE, from + (i + 1) * PAGE - 1)),
+    );
+    let short = false;
+    for (const { data, error } of pages) {
+      if (error) throw new Error(`ai_prompt_runs: ${error.message}`);
+      out.push(...(data ?? []));
+      if ((data ?? []).length < PAGE) short = true;
+    }
+    if (short) break;
   }
   return out;
 }
