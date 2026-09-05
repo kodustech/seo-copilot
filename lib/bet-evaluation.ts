@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { getVisibilitySummary, ENGINE_LABEL, type AiEngine, AI_ENGINES } from "@/lib/ai-visibility";
-import { getBet, type Bet, type BetMeasure } from "@/lib/bets";
+import { getBet, listBetEntries, type Bet, type BetEntry, type BetMeasure } from "@/lib/bets";
 import { previousPeriodSpec } from "@/lib/funnel/graph";
 import { FUNNEL_METRICS } from "@/lib/funnel/goals";
 import { fetchFunnel, type FunnelData } from "@/lib/funnel/metrics";
@@ -41,6 +41,8 @@ export type BetEvaluation = {
   /** Human-readable "23 replies (window 2026-09-01 to 2026-09-14), threshold ≥ 30". */
   display: string;
   levels: { action: EvaluationLevel; metric: EvaluationLevel; opportunities: EvaluationLevel };
+  /** What was actually done, entry by entry, oldest first. */
+  journal: BetEntry[];
   /** What the evidence supports, for the verdict field. Not a decision. */
   suggestedVerdict: string;
   errors: string[];
@@ -178,8 +180,8 @@ async function outboundTagNumbers(
   return { contacts: contacts ?? 0, replies: replies ?? 0, meetings, sequences };
 }
 
-async function actionLevel(client: SupabaseClient, bet: Bet): Promise<EvaluationLevel> {
-  if (bet.actionDoneAt) return { label: "Action executed", status: "yes", detail: `Marked done ${bet.actionDoneAt.slice(0, 10)}.` };
+async function actionLevel(client: SupabaseClient, bet: Bet, journal: BetEntry[]): Promise<EvaluationLevel> {
+  if (bet.actionDoneAt) return { label: "Action executed", status: "yes", detail: `Marked done ${bet.actionDoneAt.slice(0, 10)}.${journal.length ? ` ${journal.length} journal entr${journal.length === 1 ? "y" : "ies"}.` : ""}` };
   if (bet.kanbanItemId) {
     const { data } = await client.from("growth_work_items").select("id,title,stage").eq("id", bet.kanbanItemId).maybeSingle();
     if (data) {
@@ -191,13 +193,35 @@ async function actionLevel(client: SupabaseClient, bet: Bet): Promise<Evaluation
       };
     }
   }
+  if (journal.length) {
+    const last = journal[journal.length - 1];
+    const artifacts = journal.filter((e) => e.kind === "artifact").length;
+    return {
+      label: "Action executed",
+      status: "partial",
+      detail: `${journal.length} journal entr${journal.length === 1 ? "y" : "ies"}${artifacts ? `, ${artifacts} with a link` : ""}; last on ${last.happenedOn}: "${last.text.slice(0, 80)}". Not marked done yet.`,
+    };
+  }
   if (bet.status === "queued") return { label: "Action executed", status: "no", detail: "Bet has not started." };
-  return { label: "Action executed", status: "unknown", detail: "No Kanban card linked and no done date; mark it by hand." };
+  return { label: "Action executed", status: "unknown", detail: "Nothing in the journal, no Kanban card, no done date. Log what was done, or mark it executed." };
 }
 
-export async function evaluateBet(client: SupabaseClient, betOrId: Bet | string, cache: FunnelCache = new Map()): Promise<BetEvaluation> {
+export async function evaluateBet(
+  client: SupabaseClient,
+  betOrId: Bet | string,
+  cache: FunnelCache = new Map(),
+  journalIn?: BetEntry[] | Promise<BetEntry[]>,
+): Promise<BetEvaluation> {
   const bet = typeof betOrId === "string" ? await getBet(client, betOrId) : betOrId;
   if (!bet) throw new Error("Bet not found");
+  // The journal is only needed for the action level, after the metric reads,
+  // so its fetch overlaps them instead of preceding them.
+  const journalP: Promise<BetEntry[]> = journalIn
+    ? Promise.resolve(journalIn)
+    : listBetEntries(client, [bet.id]).then((j) => j[bet.id] ?? []);
+  // Marked handled: a journal failure is recorded at the await below, not
+  // raised as an unhandled rejection while the metric reads are in flight.
+  void journalP.catch(() => {});
   const errors: string[] = [];
   const today = iso(new Date());
   const start = bet.measure?.window?.start ?? bet.createdAt.slice(0, 10);
@@ -306,7 +330,16 @@ export async function evaluateBet(client: SupabaseClient, betOrId: Bet | string,
           detail: `${fmtValue(current, isRate)} now${previous != null ? ` vs ${fmtValue(previous, isRate)} in the window before` : ""}; threshold ${m.comparator} ${fmtValue(threshold, isRate)}.`,
         };
 
-  const action = await actionLevel(client, bet);
+  // A journal failure degrades like any other read: recorded, not fatal,
+  // and never read as "nothing was logged".
+  let journalReadFailed = false;
+  const journal = await journalP.catch((err) => {
+    errors.push(`journal: ${err instanceof Error ? err.message : String(err)}`);
+    journalReadFailed = true;
+    return [] as BetEntry[];
+  });
+  let action = await actionLevel(client, bet, journal);
+  if (journalReadFailed && action.status === "unknown") action = { ...action, detail: "Journal could not be read; execution is unknown." };
 
   const display = m
     ? `${fmtValue(current, isRate)} (${start} to ${effectiveEnd}) · threshold ${m.comparator} ${fmtValue(threshold, isRate)}${previous != null ? ` · before: ${fmtValue(previous, isRate)}` : ""}`
@@ -317,6 +350,7 @@ export async function evaluateBet(client: SupabaseClient, betOrId: Bet | string,
   else if (met && action.status === "yes") suggestedVerdict = `Held: ${metricLevel.detail} ${opportunities.status === "yes" ? "Opportunities rose too." : "Opportunities did not rise yet; keep watching the next stage."}`;
   else if (met) suggestedVerdict = `Threshold met, but the action is not marked executed; confirm the movement came from this bet before calling it.`;
   else if (daysLeft > 0) suggestedVerdict = `Not yet: ${metricLevel.detail} ${daysLeft} day${daysLeft === 1 ? "" : "s"} to the decision date.`;
+  else if (action.status === "unknown" && journalReadFailed) suggestedVerdict = `Decision date passed but the journal could not be read; confirm the action was executed before deciding.`;
   else if (action.status !== "yes") suggestedVerdict = `Decision date passed and the action was not executed: this bet was not tested. Reschedule or drop it.`;
   else suggestedVerdict = `Did not hold: ${metricLevel.detail} The action was executed; the number did not follow.`;
 
@@ -335,19 +369,28 @@ export async function evaluateBet(client: SupabaseClient, betOrId: Bet | string,
     source,
     display,
     levels: { action, metric: metricLevel, opportunities },
+    journal,
     suggestedVerdict,
     errors,
   };
 }
 
 /** Evaluate many bets sharing one funnel cache. Failures land in `errors`, never throw. */
-export async function evaluateBets(client: SupabaseClient, bets: Bet[]): Promise<Record<string, BetEvaluation>> {
+export async function evaluateBets(
+  client: SupabaseClient,
+  bets: Bet[],
+  journalsIn?: Record<string, BetEntry[]> | Promise<Record<string, BetEntry[]>>,
+): Promise<Record<string, BetEvaluation>> {
   const cache: FunnelCache = new Map();
   const out: Record<string, BetEvaluation> = {};
+  // A caller that is already reading the journals (the page) passes that
+  // read in, so the entries are fetched once per request. Each bet awaits
+  // its own slice only when it needs it, so the metric reads run meanwhile.
+  const journalsP = Promise.resolve(journalsIn ?? listBetEntries(client, bets.map((b) => b.id)));
   await Promise.all(
     bets.map(async (b) => {
       try {
-        out[b.id] = await evaluateBet(client, b, cache);
+        out[b.id] = await evaluateBet(client, b, cache, journalsP.then((j) => j[b.id] ?? []));
       } catch (err) {
         out[b.id] = {
           betId: b.id,
@@ -368,6 +411,7 @@ export async function evaluateBets(client: SupabaseClient, bets: Bet[]): Promise
             metric: { label: "Metric moved", status: "unknown", detail: "" },
             opportunities: { label: "Reached opportunities", status: "unknown", detail: "" },
           },
+          journal: (await journalsP.catch(() => ({}) as Record<string, BetEntry[]>))[b.id] ?? [],
           suggestedVerdict: "Evaluation failed.",
           errors: [err instanceof Error ? err.message : String(err)],
         };
