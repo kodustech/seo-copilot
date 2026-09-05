@@ -64,7 +64,8 @@ import {
   updateWorkItem,
   deleteWorkItem,
 } from "@/lib/kanban";
-import { createBet, deleteBet, listBets, updateBet, type BetStatus } from "@/lib/bets";
+import { createBet, deleteBet, listBets, updateBet, MEASURE_KINDS, type BetMeasure, type BetStatus } from "@/lib/bets";
+import { evaluateBet, evaluateBets } from "@/lib/bet-evaluation";
 import { fetchFunnel } from "@/lib/funnel/metrics";
 import { FUNNEL_METRICS } from "@/lib/funnel/goals";
 import { FUNNEL_EDGES, FUNNEL_GUIDE, FUNNEL_LANES, STAGE_MECHANICS, previousPeriodSpec, rateBandTable, stageLinks } from "@/lib/funnel/graph";
@@ -3216,8 +3217,20 @@ const getFunnelTool = tool({
   },
 });
 
+const betMeasureSchema = z
+  .object({
+    kind: z.enum(MEASURE_KINDS).describe("funnel_stage (a stage count), funnel_rate (a conversion rate), ai_share (share of AI answers naming Kodus), outbound_tag (numbers of sequences carrying a tag), manual (typed by hand)"),
+    id: z.string().describe("Stage id (opportunities, icp, sh_trial, ob_replies...), rate id (cold_reply, reply_to_meeting, touch_48h...), assistant id (perplexity, chat_gpt, google_ai, claude, gemini) or 'all', a sequence tag, or a label for manual."),
+    submetric: z.enum(["contacts", "replies", "reply_rate", "meetings"]).optional().describe("outbound_tag only: which number."),
+    comparator: z.enum([">=", "<="]).optional().default(">="),
+    threshold: z.number().describe("Rates and shares as fractions (0.03 = 3%); counts as integers."),
+    window: z.object({ start: z.string(), end: z.string() }).optional().describe("YYYY-MM-DD both; default the bet's creation date to its decision date."),
+  })
+  .describe("The machine-readable metric that proves the bet; with it, evaluateBet can say whether the hypothesis held.");
+
 const updateBetTool = tool({
-  description: "Edit a bet's text: title, hypothesis, action, proving metric, decision date (YYYY-MM-DD) or notes. Use decideBet to change status.",
+  description:
+    "Edit a bet: title, hypothesis, action, proving metric text, decision date (YYYY-MM-DD), notes, lever, owner, the machine-readable measure, the Kanban card, the manual value (currentValue, for measure.kind = manual) or actionDoneAt (ISO timestamp when the action was executed). Use decideBet to change status.",
   inputSchema: z.object({
     betId: z.string(),
     title: z.string().optional(),
@@ -3226,13 +3239,50 @@ const updateBetTool = tool({
     metric: z.string().optional(),
     decisionAt: z.string().optional(),
     notes: z.string().optional(),
+    lever: z.string().optional(),
+    ownerEmail: z.string().optional(),
+    measure: betMeasureSchema.nullable().optional(),
+    kanbanItemId: z.string().nullable().optional(),
+    currentValue: z.number().nullable().optional(),
+    actionDoneAt: z.string().nullable().optional(),
   }),
-  execute: async ({ betId, ...patch }: { betId: string; title?: string; hypothesis?: string; action?: string; metric?: string; decisionAt?: string; notes?: string }) => {
+  execute: async ({
+    betId,
+    ...patch
+  }: {
+    betId: string;
+    title?: string;
+    hypothesis?: string;
+    action?: string;
+    metric?: string;
+    decisionAt?: string;
+    notes?: string;
+    lever?: string;
+    ownerEmail?: string;
+    measure?: BetMeasure | null;
+    kanbanItemId?: string | null;
+    currentValue?: number | null;
+    actionDoneAt?: string | null;
+  }) => {
     try {
       const bet = await updateBet(getSupabaseServiceClient(), betId, patch);
       return { success: true as const, bet };
     } catch (error) {
       return { success: false as const, message: error instanceof Error ? error.message : "Error updating bet." };
+    }
+  },
+});
+
+const evaluateBetTool = tool({
+  description:
+    "Read a bet against its measure: the current number and the one from the window before, the threshold, whether it is met, days left to the decision date, and the three follow-up levels (action executed? metric moved? reached opportunities?) with a suggested verdict and where every number came from. This is how to answer 'did this hypothesis hold'. It does not decide; use decideBet for that.",
+  inputSchema: z.object({ betId: z.string() }),
+  execute: async ({ betId }: { betId: string }) => {
+    try {
+      const evaluation = await evaluateBet(getSupabaseServiceClient(), betId);
+      return { success: true as const, evaluation };
+    } catch (error) {
+      return { success: false as const, message: error instanceof Error ? error.message : "Error evaluating bet." };
     }
   },
 });
@@ -3326,8 +3376,9 @@ const listBetsTool = tool({
     goalId: z.string().optional(),
     goalTitle: z.string().optional(),
     status: z.enum(["queued", "active", "won", "lost", "operation"]).optional(),
+    evaluate: z.boolean().optional().default(false).describe("Also evaluate each bet against its measure (current value, threshold met, follow-up levels). Costs funnel reads; use for a review."),
   }),
-  execute: async ({ goalId, goalTitle, status }: { goalId?: string; goalTitle?: string; status?: BetStatus }) => {
+  execute: async ({ goalId, goalTitle, status, evaluate }: { goalId?: string; goalTitle?: string; status?: BetStatus; evaluate?: boolean }) => {
     try {
       const client = getSupabaseServiceClient();
       let gid = goalId;
@@ -3337,7 +3388,9 @@ const listBetsTool = tool({
         gid = ref.goal.id;
       }
       const bets = await listBets(client, { goalId: gid, status });
-      return { success: true as const, count: bets.length, bets };
+      if (!evaluate) return { success: true as const, count: bets.length, bets };
+      const evaluations = await evaluateBets(client, bets);
+      return { success: true as const, count: bets.length, bets: bets.map((b) => ({ ...b, evaluation: evaluations[b.id] ?? null })) };
     } catch (error) {
       return { success: false as const, message: error instanceof Error ? error.message : "Error listing bets." };
     }
@@ -3346,7 +3399,7 @@ const listBetsTool = tool({
 
 const createBetTool = tool({
   description:
-    "Create a bet on a goal. Requires all four fields: hypothesis (if we do X, metric Y moves because...), action (what exactly will be done), metric (the number that proves it, with threshold), decisionAt (YYYY-MM-DD when the verdict is due). Pass status 'queued' to park it until it starts.",
+    "Create a bet on a goal. Requires: hypothesis (if we do X, metric Y moves because...), action (what exactly will be done), metric (the number that proves it, in words), decisionAt (YYYY-MM-DD when the verdict is due). Give it a `measure` so evaluateBet can read the number from the funnel, AI visibility or sequences; a lever (group) and an owner help the Bets page. Pass status 'queued' to park it until it starts.",
   inputSchema: z.object({
     goalId: z.string().optional(),
     goalTitle: z.string().optional(),
@@ -3357,6 +3410,10 @@ const createBetTool = tool({
     decisionAt: z.string().describe("YYYY-MM-DD"),
     status: z.enum(["queued", "active"]).optional(),
     notes: z.string().optional(),
+    lever: z.string().optional().describe("The lever this bet belongs to, e.g. 'Outbound messages', 'External presence', 'Self-hosted trial'."),
+    ownerEmail: z.string().optional(),
+    measure: betMeasureSchema.optional(),
+    kanbanItemId: z.string().optional().describe("Kanban card that carries the action; its stage tells whether the action was executed."),
     user_email: z.string().optional(),
   }),
   execute: async ({
@@ -3369,6 +3426,10 @@ const createBetTool = tool({
     decisionAt,
     status,
     notes,
+    lever,
+    ownerEmail,
+    measure,
+    kanbanItemId,
     user_email,
   }: {
     goalId?: string;
@@ -3380,6 +3441,10 @@ const createBetTool = tool({
     decisionAt: string;
     status?: "queued" | "active";
     notes?: string;
+    lever?: string;
+    ownerEmail?: string;
+    measure?: BetMeasure;
+    kanbanItemId?: string;
     user_email?: string;
   }) => {
     try {
@@ -3395,6 +3460,10 @@ const createBetTool = tool({
         decisionAt,
         status,
         notes: notes ?? null,
+        lever: lever ?? null,
+        ownerEmail: ownerEmail ?? null,
+        measure: measure ?? null,
+        kanbanItemId: kanbanItemId ?? null,
         createdByEmail: user_email ?? "agent@kodus.io",
       });
       return { success: true as const, bet };
@@ -7714,6 +7783,7 @@ export function createAgentTools(userEmail?: string) {
     updateAiVisibilitySettings: updateAiVisibilitySettingsTool,
     updateBet: updateBetTool,
     deleteBet: deleteBetTool,
+    evaluateBet: evaluateBetTool,
     createBet: createBetTool,
     decideBet: decideBetTool,
     updateGoal: updateGoalTool,

@@ -2,26 +2,26 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Target,
-  Plus,
-  Minus,
-  Loader2,
-  RefreshCw,
-  Trash2,
   Check,
   ChevronDown,
-  Search,
+  FlaskConical,
   Link2,
-  X,
-  Repeat,
-  Power,
+  Loader2,
+  Minus,
   Pencil,
+  Plus,
+  Power,
+  RefreshCw,
+  Repeat,
+  Search,
+  Target,
+  Trash2,
+  X,
 } from "lucide-react";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
 import { FUNNEL_METRICS } from "@/lib/funnel/goals";
-import type { Bet, BetStatus } from "@/lib/bets";
 import {
   GOAL_KINDS,
   GOAL_PRIORITIES,
@@ -141,7 +141,6 @@ function daysLeft(end: string): number {
 
 export function GoalsPage() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
-  const [betsVersion, setBetsVersion] = useState(0);
   const [token, setToken] = useState<string | null>(null);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [stats, setStats] = useState<Record<string, number>>({});
@@ -412,9 +411,6 @@ export function GoalsPage() {
         }}
       />
 
-      {/* Bets: what we are running to move the goals. Three active at most. */}
-      <BetsPanel token={token} refreshKey={betsVersion} onChanged={() => setBetsVersion((v) => v + 1)} />
-
       {/* Goal list */}
       {loading && goals.length === 0 ? (
         <div className="flex items-center justify-center py-20">
@@ -443,8 +439,6 @@ export function GoalsPage() {
               goal={g}
               teamMembers={teamMembers}
               token={token}
-              betsVersion={betsVersion}
-              onBetsChanged={() => setBetsVersion((v) => v + 1)}
               onIncrement={(delta) => incrementGoal(g.id, delta)}
               onUpdate={(updates) => updateInline(g.id, updates)}
               onEdit={() => setEditing(g)}
@@ -514,8 +508,6 @@ function GoalCard({
   onEdit,
   onDelete,
   onLinksChanged,
-  betsVersion,
-  onBetsChanged,
 }: {
   goal: Goal;
   teamMembers: TeamMember[];
@@ -525,8 +517,6 @@ function GoalCard({
   onEdit: () => void;
   onDelete: () => void;
   onLinksChanged: (goal: Goal) => void;
-  betsVersion: number;
-  onBetsChanged: () => void;
 }) {
   const pct = Math.min(
     100,
@@ -861,7 +851,9 @@ function GoalCard({
         )}
       </div>
 
-      <BetsSection goal={goal} token={token} refreshKey={betsVersion} onChanged={onBetsChanged} />
+      <a href={`/bets?goal=${goal.id}`} className="mt-3 flex items-center gap-1.5 border-t border-white/[0.04] pt-2 text-[11px] text-neutral-500 hover:text-neutral-300">
+        <FlaskConical className="size-3" /> Bets on this goal
+      </a>
 
       {picking && (
         <TaskPickerDialog
@@ -1815,332 +1807,6 @@ function RecurrenceFormDialog({
     </Dialog>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Bets: what we run to move a goal. Separate from tasks on purpose.
-// ---------------------------------------------------------------------------
-
-const BET_STATUS_LABEL: Record<BetStatus, { label: string; className: string }> = {
-  queued: { label: "queued", className: "bg-neutral-500/20 text-neutral-300" },
-  active: { label: "active", className: "bg-emerald-500/20 text-emerald-300" },
-  won: { label: "won", className: "bg-sky-500/20 text-sky-300" },
-  lost: { label: "lost", className: "bg-red-500/20 text-red-300" },
-  operation: { label: "became operation", className: "bg-violet-500/20 text-violet-300" },
-};
-
-type BetWithGoal = Bet & { goalTitle?: string | null; goalPeriod?: string | null; goalFunnelMetric?: string | null };
-type BetFormState = { title: string; hypothesis: string; action: string; metric: string; decisionAt: string };
-const EMPTY_BET_FORM: BetFormState = { title: "", hypothesis: "", action: "", metric: "", decisionAt: "" };
-
-async function decideBet(headers: Record<string, string>, bet: Bet, status: BetStatus): Promise<string | null> {
-  const verdict =
-    status === "won" || status === "lost"
-      ? window.prompt("One-line verdict (what the number showed):", bet.verdict ?? "")
-      : bet.verdict;
-  const res = await fetch(`/api/bets/${bet.id}`, { method: "PATCH", headers, body: JSON.stringify({ status, verdict }) });
-  const json = await res.json();
-  return res.ok ? null : ((json.error as string | undefined) ?? "Falhou");
-}
-
-/** One bet: what we believe, what we do, what proves it, when we decide. */
-function BetRow({ bet, onDecide, showGoal }: { bet: BetWithGoal; onDecide: (status: BetStatus) => void; showGoal?: boolean }) {
-  const b = bet;
-  return (
-    <li className="rounded-md border border-white/10 bg-white/[0.03] p-2 text-xs">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <span className={cn("mr-2 rounded px-1.5 py-0.5", BET_STATUS_LABEL[b.status].className)}>{BET_STATUS_LABEL[b.status].label}</span>
-          <span className="font-medium text-neutral-100">{b.title}</span>
-          {showGoal && b.goalTitle ? <span className="ml-2 text-neutral-500">goal: {b.goalTitle}</span> : null}
-          <p className="mt-1 text-neutral-400">
-            <span className="text-neutral-500">Hypothesis:</span> {b.hypothesis}
-          </p>
-          <p className="text-neutral-400">
-            <span className="text-neutral-500">Action:</span> {b.action}
-          </p>
-          <p className="text-neutral-400">
-            <span className="text-neutral-500">Proof:</span> {b.metric} · <span className="text-neutral-500">decide by</span> {b.decisionAt}
-          </p>
-          {b.verdict ? <p className="mt-1 text-neutral-300">Verdict: {b.verdict}</p> : null}
-        </div>
-        {b.status === "active" || b.status === "queued" ? (
-          <div className="flex shrink-0 flex-col gap-1">
-            {b.status === "queued" ? (
-              <button onClick={() => onDecide("active")} className="rounded border border-emerald-500/30 px-2 py-0.5 text-emerald-300 hover:bg-emerald-500/10">activate</button>
-            ) : (
-              <>
-                <button onClick={() => onDecide("won")} className="rounded border border-sky-500/30 px-2 py-0.5 text-sky-300 hover:bg-sky-500/10">won</button>
-                <button onClick={() => onDecide("lost")} className="rounded border border-red-500/30 px-2 py-0.5 text-red-300 hover:bg-red-500/10">lost</button>
-                <button onClick={() => onDecide("operation")} className="rounded border border-violet-500/30 px-2 py-0.5 text-violet-300 hover:bg-violet-500/10">became operation</button>
-              </>
-            )}
-          </div>
-        ) : null}
-      </div>
-    </li>
-  );
-}
-
-function BetForm({ form, setForm, onCancel, onSubmit, creating, goalPicker }: {
-  form: BetFormState;
-  setForm: (f: BetFormState) => void;
-  onCancel: () => void;
-  onSubmit: () => void;
-  creating: boolean;
-  goalPicker?: React.ReactNode;
-}) {
-  return (
-    <div className="mt-2 space-y-2 rounded-md border border-white/10 bg-neutral-950 p-2">
-      {goalPicker}
-      <Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Short title" className="border-white/10 bg-neutral-900 text-sm" />
-      <Textarea value={form.hypothesis} onChange={(e) => setForm({ ...form, hypothesis: e.target.value })} placeholder="Hypothesis: if we do X, number Y moves because..." rows={2} className="border-white/10 bg-neutral-900 text-sm" />
-      <Textarea value={form.action} onChange={(e) => setForm({ ...form, action: e.target.value })} placeholder="Action: exactly what will be done, by whom" rows={2} className="border-white/10 bg-neutral-900 text-sm" />
-      <div className="grid grid-cols-2 gap-2">
-        <Input value={form.metric} onChange={(e) => setForm({ ...form, metric: e.target.value })} placeholder="Metric that proves it (e.g. cold reply rate ≥ 3%)" className="border-white/10 bg-neutral-900 text-sm" />
-        <Input type="date" value={form.decisionAt} onChange={(e) => setForm({ ...form, decisionAt: e.target.value })} className="border-white/10 bg-neutral-900 text-sm" />
-      </div>
-      <div className="flex justify-end gap-2">
-        <button onClick={onCancel} className="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200">cancel</button>
-        <button onClick={onSubmit} disabled={creating} className="rounded bg-violet-500/20 px-3 py-1 text-xs text-violet-200 hover:bg-violet-500/30 disabled:opacity-50">
-          {creating ? "saving..." : "create bet"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/**
- * All bets, above the goal list. The three active ones are what the week is
- * about; queued ones wait for a slot; decided ones keep their verdict.
- */
-function BetsPanel({ token, refreshKey, onChanged }: { token: string | null; refreshKey: number; onChanged: () => void }) {
-  const [bets, setBets] = useState<BetWithGoal[]>([]);
-  const [goals, setGoals] = useState<{ id: string; title: string; periodStart: string; periodEnd: string }[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [showDecided, setShowDecided] = useState(false);
-  const [open, setOpen] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [goalId, setGoalId] = useState("");
-  const [form, setForm] = useState<BetFormState>(EMPTY_BET_FORM);
-
-  const headers = useMemo(
-    () => ({ Authorization: `Bearer ${token ?? ""}`, "Content-Type": "application/json" }),
-    [token],
-  );
-
-  const load = useCallback(async () => {
-    if (!token) return;
-    const res = await fetch("/api/bets", { headers });
-    const json = await res.json();
-    if (res.ok) {
-      setBets(json.bets as BetWithGoal[]);
-      setGoals(json.goals as typeof goals);
-      setError(null);
-    } else {
-      const msg = (json.error as string | undefined) ?? "Could not load bets";
-      // Before the migration runs there is no table; say that instead of
-      // leaking the PostgREST schema-cache message.
-      setError(
-        /public\.bets/.test(msg)
-          ? "The bets table does not exist in this environment yet. Run the migration supabase/migrations/20260902220000_goals_funnel_metric_bets.sql in Supabase."
-          : msg,
-      );
-    }
-    setLoaded(true);
-  }, [token, headers]);
-
-  useEffect(() => {
-    void load();
-  }, [load, refreshKey]);
-
-  const decide = async (bet: Bet, status: BetStatus) => {
-    const err = await decideBet(headers, bet, status);
-    if (err) {
-      setError(err);
-      return;
-    }
-    onChanged();
-  };
-
-  const create = async () => {
-    if (!goalId) {
-      setError("Pick the goal this bet serves.");
-      return;
-    }
-    setError(null);
-    setCreating(true);
-    try {
-      const res = await fetch(`/api/goals/${goalId}/bets`, { method: "POST", headers, body: JSON.stringify(form) });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Falhou");
-      setForm(EMPTY_BET_FORM);
-      setOpen(false);
-      onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Falhou");
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const today = new Date().toISOString().slice(0, 10);
-  const active = bets.filter((b) => b.status === "active");
-  const queued = bets.filter((b) => b.status === "queued");
-  const decided = bets.filter((b) => b.status !== "active" && b.status !== "queued");
-  const overdue = active.filter((b) => b.decisionAt < today);
-
-  return (
-    <div className="mb-6 rounded-xl border border-violet-500/20 bg-violet-500/[0.04] p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-medium text-neutral-100">
-            Bets{loaded ? ` · ${active.length} active` : ""}
-            {overdue.length > 0 ? <span className="ml-2 text-amber-300">· {overdue.length} past decision date</span> : null}
-          </h2>
-          <p className="mt-0.5 text-xs text-neutral-500">
-            Hypothesis + action + metric that proves it + decision date. Each bet serves a goal; tasks live on the Kanban.
-          </p>
-        </div>
-        <button onClick={() => setOpen((v) => !v)} className="shrink-0 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500">
-          {open ? "close" : "+ bet"}
-        </button>
-      </div>
-      {error ? <p className="mt-2 text-xs text-red-300">{error}</p> : null}
-      {open ? (
-        <BetForm
-          form={form}
-          setForm={setForm}
-          onCancel={() => setOpen(false)}
-          onSubmit={create}
-          creating={creating}
-          goalPicker={
-            <Select value={goalId} onValueChange={setGoalId}>
-              <SelectTrigger className="h-9 border-white/10 bg-neutral-900 text-xs text-neutral-200">
-                <SelectValue placeholder="Goal this bet serves" />
-              </SelectTrigger>
-              <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
-                {goals.map((g) => (
-                  <SelectItem key={g.id} value={g.id}>
-                    {g.title} · {g.periodStart} to {g.periodEnd}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          }
-        />
-      ) : null}
-      {loaded && active.length + queued.length === 0 ? (
-        <p className="mt-3 text-xs text-neutral-500">
-          No active bet. {goals.length === 0 ? "Create a goal first; a bet is what you do to move its number." : "Click + bet and pick the goal."}
-        </p>
-      ) : null}
-      {active.length + queued.length > 0 ? (
-        <ul className="mt-3 space-y-2">
-          {[...active, ...queued].map((b) => (
-            <BetRow key={b.id} bet={b} showGoal onDecide={(st) => decide(b, st)} />
-          ))}
-        </ul>
-      ) : null}
-      {decided.length > 0 ? (
-        <div className="mt-3">
-          <button onClick={() => setShowDecided((v) => !v)} className="text-xs text-neutral-500 hover:text-neutral-300">
-            {showDecided ? "hide" : "show"} {decided.length} decided
-          </button>
-          {showDecided ? (
-            <ul className="mt-2 space-y-2">
-              {decided.map((b) => (
-                <BetRow key={b.id} bet={b} showGoal onDecide={(st) => decide(b, st)} />
-              ))}
-            </ul>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function BetsSection({ goal, token, refreshKey, onChanged }: { goal: Goal; token: string | null; refreshKey: number; onChanged: () => void }) {
-  const [bets, setBets] = useState<Bet[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [open, setOpen] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState<BetFormState>(EMPTY_BET_FORM);
-
-  const headers = useMemo(
-    () => ({ Authorization: `Bearer ${token ?? ""}`, "Content-Type": "application/json" }),
-    [token],
-  );
-
-  const load = useCallback(async () => {
-    if (!token) return;
-    const res = await fetch(`/api/goals/${goal.id}/bets`, { headers });
-    const json = await res.json();
-    if (res.ok) setBets(json.bets as Bet[]);
-    setLoaded(true);
-  }, [token, goal.id, headers]);
-
-  useEffect(() => {
-    void load();
-  }, [load, refreshKey]);
-
-  const decide = async (bet: Bet, status: BetStatus) => {
-    setError(null);
-    const err = await decideBet(headers, bet, status);
-    if (err) {
-      setError(err);
-      return;
-    }
-    onChanged();
-  };
-
-  const create = async () => {
-    setError(null);
-    setCreating(true);
-    try {
-      const res = await fetch(`/api/goals/${goal.id}/bets`, { method: "POST", headers, body: JSON.stringify(form) });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Falhou");
-      setForm(EMPTY_BET_FORM);
-      setOpen(false);
-      onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Falhou");
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const active = bets.filter((b) => b.status === "active").length;
-  const overdue = bets.filter((b) => b.status === "active" && b.decisionAt < new Date().toISOString().slice(0, 10));
-
-  return (
-    <div className="mt-3 border-t border-white/10 pt-3">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-neutral-400">
-          {loaded ? `${bets.length} bet${bets.length === 1 ? "" : "s"} · ${active} active` : "Bets"}
-          {overdue.length > 0 ? <span className="ml-2 text-amber-300">· {overdue.length} past decision date</span> : null}
-        </p>
-        <button onClick={() => setOpen((v) => !v)} className="text-xs text-violet-300 hover:text-violet-200">
-          {open ? "close" : "+ bet"}
-        </button>
-      </div>
-      {error ? <p className="mt-1 text-xs text-red-300">{error}</p> : null}
-      {bets.length > 0 ? (
-        <ul className="mt-2 space-y-2">
-          {bets.map((b) => (
-            <BetRow key={b.id} bet={b} onDecide={(st) => decide(b, st)} />
-          ))}
-        </ul>
-      ) : loaded ? (
-        <p className="mt-1 text-xs text-neutral-600">No bets yet. A bet is hypothesis + action + metric that proves it + decision date.</p>
-      ) : null}
-      {open ? <BetForm form={form} setForm={setForm} onCancel={() => setOpen(false)} onSubmit={create} creating={creating} /> : null}
-    </div>
-  );
-}
-
 
 function Field({
   label,

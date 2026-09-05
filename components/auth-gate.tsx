@@ -11,6 +11,7 @@ import {
   ChevronRight,
   Clock,
   Filter,
+  FlaskConical,
   Inbox,
   KanbanSquare,
   Lightbulb,
@@ -78,6 +79,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         items: [
           { href: "/central", label: "Home", icon: Inbox },
           { href: "/goals", label: "Goals", icon: Target },
+          { href: "/bets", label: "Bets", icon: FlaskConical },
           { href: "/funnel", label: "Funnel", icon: Filter },
           { href: "/kanban", label: "Kanban", icon: KanbanSquare },
         ],
