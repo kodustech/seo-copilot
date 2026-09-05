@@ -219,6 +219,9 @@ export async function evaluateBet(
   const journalP: Promise<BetEntry[]> = journalIn
     ? Promise.resolve(journalIn)
     : listBetEntries(client, [bet.id]).then((j) => j[bet.id] ?? []);
+  // Marked handled: a journal failure surfaces at the await below, not as an
+  // unhandled rejection while the metric reads are still in flight.
+  void journalP.catch(() => {});
   const errors: string[] = [];
   const today = iso(new Date());
   const start = bet.measure?.window?.start ?? bet.createdAt.slice(0, 10);
@@ -378,7 +381,9 @@ export async function evaluateBets(
   await Promise.all(
     bets.map(async (b) => {
       try {
-        out[b.id] = await evaluateBet(client, b, cache, journalsP.then((j) => j[b.id] ?? []));
+        const slice = journalsP.then((j) => j[b.id] ?? []);
+        void slice.catch(() => {});
+        out[b.id] = await evaluateBet(client, b, cache, slice);
       } catch (err) {
         out[b.id] = {
           betId: b.id,
