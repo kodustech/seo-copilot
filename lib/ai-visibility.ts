@@ -914,20 +914,57 @@ function avg(nums: number[]): number | null {
  */
 export const FULL_RUN_MIN_SHARE = 0.5;
 
+/**
+ * Reads every row of a run-date query, page by page, in a stable order.
+ * Sixty dates of prompts × engines × samples outgrow a single PostgREST
+ * page long before the prompt list feels large, and an unordered cap would
+ * count an arbitrary subset.
+ */
+async function pageRuns<T>(
+  query: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+  maxRows = 200000,
+): Promise<T[]> {
+  const PAGE = 1000;
+  const out: T[] = [];
+  for (let from = 0; from < maxRows; from += PAGE) {
+    const { data, error } = await query(from, from + PAGE - 1);
+    if (error) throw new Error(`ai_prompt_runs: ${error.message}`);
+    out.push(...(data ?? []));
+    if ((data ?? []).length < PAGE) break;
+  }
+  return out;
+}
+
 async function fullRunDates(client: SupabaseClient, activePrompts: number, limit = 60): Promise<string[]> {
   const dates = await listRunDates(client, limit);
   if (dates.length === 0) return [];
-  // An errored prompt was still asked: a scheduled day where the provider
-  // failed is a full run with failures, not a partial day.
-  const { data, error } = await client.from("ai_prompt_runs").select("run_on,prompt_id").in("run_on", dates).limit(20000);
-  if (error) throw new Error(`ai_prompt_runs: ${error.message}`);
-  const promptsByDate = new Map<string, Set<string>>();
-  for (const r of data ?? []) {
+  const rows = await pageRuns<{ run_on: string; prompt_id: string; error: string | null }>((from, to) =>
+    client
+      .from("ai_prompt_runs")
+      .select("run_on,prompt_id,error")
+      .in("run_on", dates)
+      .order("run_on", { ascending: false })
+      .order("id", { ascending: true })
+      .range(from, to),
+  );
+  const askedByDate = new Map<string, Set<string>>();
+  const succeededByDate = new Map<string, Set<string>>();
+  for (const r of rows) {
     const d = String(r.run_on);
-    promptsByDate.set(d, (promptsByDate.get(d) ?? new Set()).add(String(r.prompt_id)));
+    const id = String(r.prompt_id);
+    askedByDate.set(d, (askedByDate.get(d) ?? new Set()).add(id));
+    if (!r.error) succeededByDate.set(d, (succeededByDate.get(d) ?? new Set()).add(id));
   }
   const need = Math.max(1, Math.ceil(activePrompts * FULL_RUN_MIN_SHARE));
-  const full = dates.filter((d) => (promptsByDate.get(d)?.size ?? 0) >= need);
+  // A day is full when enough prompts got an answer, or when the whole
+  // active set was attempted: a scheduled day where the provider failed is a
+  // full run with failures, while an errored prompt asked by hand must not
+  // push a partial day over the threshold.
+  const full = dates.filter((d) => {
+    const succeeded = succeededByDate.get(d)?.size ?? 0;
+    const asked = askedByDate.get(d)?.size ?? 0;
+    return succeeded >= need || (activePrompts > 0 && asked >= activePrompts);
+  });
   // With no full run at all (first days), the latest date is the best there is.
   return full.length ? full : dates.slice(0, 1);
 }
@@ -955,15 +992,17 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
   // The rolling window and the trend read full runs only, by date, so a
   // partial day (one prompt asked by hand) neither dilutes nor truncates them.
   const rollingDates = fullDates.filter((d) => d <= runOn!).slice(0, ROLLING_RUNS);
-  const [{ data: runRows, error }, { data: histRows }] = await Promise.all([
+  const [{ data: runRows, error }, histRows] = await Promise.all([
     client.from("ai_prompt_runs").select("*").eq("run_on", runOn).order("created_at", { ascending: true }).order("id", { ascending: true }).limit(5000),
-    client
-      .from("ai_prompt_runs")
-      .select("run_on,engine,mentioned,error")
-      .in("run_on", [...new Set([...rollingDates, ...fullDates])])
-      .order("run_on", { ascending: false })
-      .order("id", { ascending: true })
-      .limit(20000),
+    pageRuns<{ run_on: string; engine: string; mentioned: boolean | null; error: string | null }>((from, to) =>
+      client
+        .from("ai_prompt_runs")
+        .select("run_on,engine,mentioned,error")
+        .in("run_on", [...new Set([...rollingDates, ...fullDates])])
+        .order("run_on", { ascending: false })
+        .order("id", { ascending: true })
+        .range(from, to),
+    ),
   ]);
   if (error) throw new Error(`ai_prompt_runs: ${error.message}`);
   const runs = (runRows ?? []).map((r) => rowToRun(r as RunRow));
