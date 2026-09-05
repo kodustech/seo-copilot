@@ -906,14 +906,36 @@ function avg(nums: number[]): number | null {
   return nums.length ? Math.round((nums.reduce((s, n) => s + n, 0) / nums.length) * 10) / 10 : null;
 }
 
+/**
+ * A run date counts as a full run when at least half of the active prompts
+ * were asked that day. A day where one new prompt was asked with the play
+ * button is a partial run: it stays in the date picker, but it is not what
+ * the page or a bet should read as "the latest picture".
+ */
+export const FULL_RUN_MIN_SHARE = 0.5;
+
+async function fullRunDates(client: SupabaseClient, activePrompts: number, limit = 12): Promise<string[]> {
+  const dates = await listRunDates(client, limit);
+  if (dates.length === 0) return [];
+  const { data, error } = await client.from("ai_prompt_runs").select("run_on,prompt_id").in("run_on", dates).is("error", null).limit(20000);
+  if (error) throw new Error(`ai_prompt_runs: ${error.message}`);
+  const promptsByDate = new Map<string, Set<string>>();
+  for (const r of data ?? []) {
+    const d = String(r.run_on);
+    promptsByDate.set(d, (promptsByDate.get(d) ?? new Set()).add(String(r.prompt_id)));
+  }
+  const need = Math.max(1, Math.ceil(activePrompts * FULL_RUN_MIN_SHARE));
+  const full = dates.filter((d) => (promptsByDate.get(d)?.size ?? 0) >= need);
+  // With no full run at all (first days), the latest date is the best there is.
+  return full.length ? full : dates.slice(0, 1);
+}
+
 export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn?: string } = {}): Promise<VisibilitySummary> {
   const [settings, prompts] = await Promise.all([getSettings(client), listPrompts(client)]);
-  // Latest run date, or the one asked for.
-  let runOn = opts.runOn ?? null;
-  if (!runOn) {
-    const { data } = await client.from("ai_prompt_runs").select("run_on").order("run_on", { ascending: false }).limit(1);
-    runOn = (data?.[0]?.run_on as string | undefined) ?? null;
-  }
+  const activePrompts = prompts.filter((p) => p.active).length;
+  // The run asked for, or the latest full run.
+  const fullDates = await fullRunDates(client, activePrompts);
+  const runOn = opts.runOn ?? fullDates[0] ?? null;
   const empty: VisibilitySummary = {
     runOn,
     settings,
@@ -928,17 +950,15 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
   };
   if (!runOn) return empty;
 
-  // The rolling window is read by date, so growth in samples per week can
-  // never truncate it; the broader history (for the trend) keeps a cap and
-  // drops the oldest weeks first.
-  const allDates = await listRunDates(client, 500);
-  const rollingDates = allDates.filter((d) => d <= runOn!).slice(0, ROLLING_RUNS);
+  // The rolling window and the trend read full runs only, by date, so a
+  // partial day (one prompt asked by hand) neither dilutes nor truncates them.
+  const rollingDates = fullDates.filter((d) => d <= runOn!).slice(0, ROLLING_RUNS);
   const [{ data: runRows, error }, { data: histRows }] = await Promise.all([
     client.from("ai_prompt_runs").select("*").eq("run_on", runOn).order("created_at", { ascending: true }).order("id", { ascending: true }).limit(5000),
     client
       .from("ai_prompt_runs")
       .select("run_on,engine,mentioned,error")
-      .in("run_on", [...new Set([...rollingDates, ...allDates.slice(0, 60)])])
+      .in("run_on", [...new Set([...rollingDates, ...fullDates])])
       .order("run_on", { ascending: false })
       .order("id", { ascending: true })
       .limit(20000),
