@@ -4,10 +4,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { CheckCircle2, ChevronDown, ChevronRight, CircleDashed, FlaskConical, Loader2, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, CircleDashed, FlaskConical, Link2, Loader2, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react";
 
 import type { BetEvaluation, EvaluationLevel } from "@/lib/bet-evaluation";
-import type { Bet, BetMeasure, BetStatus, MeasureKind } from "@/lib/bets";
+import type { Bet, BetEntry, BetEntryKind, BetMeasure, BetStatus, MeasureKind } from "@/lib/bets";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -24,7 +24,93 @@ type BetRow = Bet & {
   goalPeriod: string | null;
   goalFunnelMetric: string | null;
   evaluation: BetEvaluation | null;
+  entries: BetEntry[];
 };
+
+const ENTRY_KIND_LABEL: Record<BetEntryKind, string> = { note: "note", artifact: "artifact", result: "result", decision: "decision" };
+
+/** The journal of a bet: what was done, with dates and links, plus the box to add to it. */
+function Journal({ bet, headers, onChanged }: { bet: BetRow; headers: Record<string, string>; onChanged: () => Promise<void> }) {
+  const [text, setText] = useState("");
+  const [url, setUrl] = useState("");
+  const [kind, setKind] = useState<BetEntryKind>("note");
+  const [when, setWhen] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const add = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch(`/api/bets/${bet.id}/entries`, { method: "POST", headers, body: JSON.stringify({ text, url: url || null, kind, happenedOn: when || null }) });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error ?? "Failed");
+      setText("");
+      setUrl("");
+      setWhen("");
+      await onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async (id: string) => {
+    if (!window.confirm("Delete this entry?")) return;
+    await fetch(`/api/bet-entries/${id}`, { method: "DELETE", headers });
+    await onChanged();
+  };
+  return (
+    <div>
+      <p className="text-[11px] uppercase tracking-wider text-neutral-500">Journal · what was done</p>
+      {bet.entries.length ? (
+        <ol className="mt-1 divide-y divide-white/[0.06]">
+          {bet.entries.map((e) => (
+            <li key={e.id} className="group/entry flex items-start gap-3 py-1.5 text-sm">
+              <span className="w-[76px] shrink-0 text-[11px] tabular-nums text-neutral-500">{e.happenedOn}</span>
+              <span className="min-w-0 flex-1">
+                <span className="text-neutral-200">{e.text}</span>
+                {e.url ? (
+                  <a href={e.url} target="_blank" rel="noreferrer" className="ml-2 inline-flex items-center gap-1 text-xs text-sky-300 hover:underline">
+                    <Link2 className="size-3" /> {e.url.replace(/^https?:\/\/(www\.)?/, "").slice(0, 48)}
+                  </a>
+                ) : null}
+                <span className="ml-2 text-[11px] text-neutral-600">
+                  {ENTRY_KIND_LABEL[e.kind]}
+                  {e.authorEmail ? ` · ${e.authorEmail.split("@")[0]}` : ""}
+                </span>
+              </span>
+              <button type="button" onClick={() => remove(e.id)} aria-label="Delete entry" className="opacity-0 transition-opacity group-hover/entry:opacity-100 text-neutral-600 hover:text-red-300">
+                <X className="size-3.5" />
+              </button>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="mt-1 text-xs text-neutral-500">Nothing logged yet. Write what was done, with a link when there is one: an article, a sequence, a list, a page.</p>
+      )}
+      <div className="mt-2 grid gap-2 md:grid-cols-[minmax(0,1fr)_180px_110px_128px_auto]">
+        <Input value={text} onChange={(e) => setText(e.target.value)} placeholder="Published 3 articles on devtools-weekly.com" className="h-8 border-white/10 bg-neutral-950 text-xs" onKeyDown={(e) => { if (e.key === "Enter" && text.trim()) void add(); }} />
+        <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://… (optional)" className="h-8 border-white/10 bg-neutral-950 text-xs" />
+        <Select value={kind} onValueChange={(v) => setKind(v as BetEntryKind)}>
+          <SelectTrigger className="h-8 border-white/10 bg-neutral-950 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className={menuCls}>
+            <SelectItem value="note">note</SelectItem>
+            <SelectItem value="artifact">artifact</SelectItem>
+            <SelectItem value="result">result</SelectItem>
+            <SelectItem value="decision">decision</SelectItem>
+          </SelectContent>
+        </Select>
+        <Input type="date" value={when} onChange={(e) => setWhen(e.target.value)} className="h-8 border-white/10 bg-neutral-950 text-xs" title="When it happened (default today)" />
+        <button type="button" onClick={add} disabled={busy || !text.trim()} className="h-8 rounded-md bg-white/[0.08] px-3 text-xs text-neutral-100 hover:bg-white/[0.12] disabled:opacity-40">
+          {busy ? "…" : "Log"}
+        </button>
+      </div>
+      {err ? <p className="mt-1 text-xs text-red-300">{err}</p> : null}
+    </div>
+  );
+}
 
 type GoalOption = { id: string; title: string; periodStart: string; periodEnd: string; funnelMetric: string | null };
 
@@ -752,6 +838,7 @@ export function BetsPage() {
                           <span className="mt-1 block text-[11px] text-neutral-500">
                             {b.goalTitle ? <>goal: {b.goalTitle}</> : null}
                             {b.ownerEmail ? <> · {b.ownerEmail.split("@")[0]}</> : null}
+                            {b.entries.length ? <> · {b.entries.length} journal entr{b.entries.length === 1 ? "y" : "ies"}</> : null}
                           </span>
                         </span>
                       </button>
@@ -836,6 +923,7 @@ export function BetsPage() {
                             <p className="whitespace-pre-wrap text-neutral-400">{b.notes}</p>
                           </div>
                         ) : null}
+                        <Journal bet={b} headers={headers} onChanged={load} />
                       </div>
                       <div className="space-y-3">
                         <p className="text-[11px] uppercase tracking-wider text-neutral-500">Follow-up</p>

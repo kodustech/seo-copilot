@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 
 import { AI_ENGINES, ENGINE_LABEL } from "@/lib/ai-visibility";
-import { evaluateBets } from "@/lib/bet-evaluation";
-import { BET_STATUSES, createBet, listBets, type BetStatus } from "@/lib/bets";
+import { evaluateBets, type BetEvaluation } from "@/lib/bet-evaluation";
+import { BET_STATUSES, createBet, listBetEntries, listBets, type BetStatus } from "@/lib/bets";
 import { FUNNEL_METRICS } from "@/lib/funnel/goals";
 import { listGoals } from "@/lib/goals";
 import { getSupabaseUserClient } from "@/lib/supabase-server";
@@ -52,11 +52,21 @@ export async function GET(req: Request) {
     // keep their verdict, and a bet without a measure has nothing to read.
     // Shared windows are computed once (funnel cache inside evaluateBets).
     const toEvaluate = bets.filter((b) => b.measure && (b.status === "active" || b.status === "queued"));
-    const evaluations = withEvaluation ? await evaluateBets(client, toEvaluate) : {};
+    const [evaluations, journals] = await Promise.all([
+      withEvaluation ? evaluateBets(client, toEvaluate) : Promise.resolve({} as Record<string, BetEvaluation>),
+      listBetEntries(client, bets.map((b) => b.id)),
+    ]);
     return NextResponse.json({
       bets: bets.map((b) => {
         const g = goalById.get(b.goalId);
-        return { ...b, goalTitle: g?.title ?? null, goalPeriod: g ? `${g.periodStart}..${g.periodEnd}` : null, goalFunnelMetric: g?.funnelMetric ?? null, evaluation: evaluations[b.id] ?? null };
+        return {
+          ...b,
+          goalTitle: g?.title ?? null,
+          goalPeriod: g ? `${g.periodStart}..${g.periodEnd}` : null,
+          goalFunnelMetric: g?.funnelMetric ?? null,
+          evaluation: evaluations[b.id] ?? null,
+          entries: journals[b.id] ?? [],
+        };
       }),
       goals: goals.filter((g) => g.status === "active").map((g) => ({ id: g.id, title: g.title, periodStart: g.periodStart, periodEnd: g.periodEnd, funnelMetric: g.funnelMetric ?? null })),
       options: {

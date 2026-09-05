@@ -241,3 +241,83 @@ export async function deleteBet(client: SupabaseClient, id: string): Promise<voi
   const { error } = await client.from("bets").delete().eq("id", id);
   if (error) throw new Error(`bets: ${error.message}`);
 }
+
+// ---------------------------------------------------------------------------
+// Journal: what was actually done, entry by entry
+// ---------------------------------------------------------------------------
+
+export type BetEntryKind = "note" | "artifact" | "result" | "decision";
+export const BET_ENTRY_KINDS: BetEntryKind[] = ["note", "artifact", "result", "decision"];
+
+export type BetEntry = {
+  id: string;
+  betId: string;
+  kind: BetEntryKind;
+  text: string;
+  url: string | null;
+  authorEmail: string | null;
+  happenedOn: string; // YYYY-MM-DD
+  createdAt: string;
+};
+
+function rowToEntry(r: Row): BetEntry {
+  return {
+    id: r.id as string,
+    betId: r.bet_id as string,
+    kind: (BET_ENTRY_KINDS as string[]).includes(String(r.kind)) ? (r.kind as BetEntryKind) : "note",
+    text: r.text as string,
+    url: (r.url as string | null) ?? null,
+    authorEmail: (r.author_email as string | null) ?? null,
+    happenedOn: String(r.happened_on).slice(0, 10),
+    createdAt: r.created_at as string,
+  };
+}
+
+/** Entries of one bet, or of many bets at once (keyed by bet id), oldest first. */
+export async function listBetEntries(client: SupabaseClient, betIds: string[], limit = 2000): Promise<Record<string, BetEntry[]>> {
+  const out: Record<string, BetEntry[]> = {};
+  if (betIds.length === 0) return out;
+  const { data, error } = await client
+    .from("bet_entries")
+    .select("*")
+    .in("bet_id", betIds)
+    .order("happened_on", { ascending: true })
+    .order("created_at", { ascending: true })
+    .limit(limit);
+  if (error) throw new Error(`bet_entries: ${error.message}`);
+  for (const r of data ?? []) {
+    const e = rowToEntry(r as Row);
+    out[e.betId] = [...(out[e.betId] ?? []), e];
+  }
+  return out;
+}
+
+export async function addBetEntry(
+  client: SupabaseClient,
+  input: { betId: string; text: string; kind?: BetEntryKind; url?: string | null; happenedOn?: string | null; authorEmail?: string | null },
+): Promise<BetEntry> {
+  const text = input.text.trim();
+  if (!text) throw new Error("text is required");
+  if (input.happenedOn && !/^\d{4}-\d{2}-\d{2}$/.test(input.happenedOn)) throw new Error("happenedOn must be YYYY-MM-DD");
+  const url = input.url?.trim() || null;
+  if (url && !/^https?:\/\//i.test(url)) throw new Error("url must start with http:// or https://");
+  const { data, error } = await client
+    .from("bet_entries")
+    .insert({
+      bet_id: input.betId,
+      kind: input.kind && BET_ENTRY_KINDS.includes(input.kind) ? input.kind : url ? "artifact" : "note",
+      text,
+      url,
+      author_email: input.authorEmail ?? null,
+      ...(input.happenedOn ? { happened_on: input.happenedOn } : {}),
+    })
+    .select("*")
+    .single();
+  if (error) throw new Error(`bet_entries: ${error.message}`);
+  return rowToEntry(data as Row);
+}
+
+export async function deleteBetEntry(client: SupabaseClient, id: string): Promise<void> {
+  const { error } = await client.from("bet_entries").delete().eq("id", id);
+  if (error) throw new Error(`bet_entries: ${error.message}`);
+}

@@ -64,7 +64,7 @@ import {
   updateWorkItem,
   deleteWorkItem,
 } from "@/lib/kanban";
-import { createBet, deleteBet, listBets, updateBet, MEASURE_KINDS, type BetMeasure, type BetStatus } from "@/lib/bets";
+import { addBetEntry, createBet, deleteBet, listBetEntries, listBets, updateBet, BET_ENTRY_KINDS, MEASURE_KINDS, type BetEntryKind, type BetMeasure, type BetStatus } from "@/lib/bets";
 import { evaluateBet, evaluateBets } from "@/lib/bet-evaluation";
 import { fetchFunnel } from "@/lib/funnel/metrics";
 import { FUNNEL_METRICS } from "@/lib/funnel/goals";
@@ -3283,6 +3283,40 @@ const evaluateBetTool = tool({
       return { success: true as const, evaluation };
     } catch (error) {
       return { success: false as const, message: error instanceof Error ? error.message : "Error evaluating bet." };
+    }
+  },
+});
+
+const logBetEntryTool = tool({
+  description:
+    "Write to a bet's journal: what was actually done, with a date and an optional link (an article published, a sequence created, a list put online, a page shipped). Kind: note (default), artifact (something with a URL), result (a number observed), decision. This is the record evaluateBet and a reviewer read to answer 'did we do the thing'.",
+  inputSchema: z.object({
+    betId: z.string(),
+    text: z.string().min(1).max(4000),
+    kind: z.enum(BET_ENTRY_KINDS).optional(),
+    url: z.string().optional(),
+    happenedOn: z.string().optional().describe("YYYY-MM-DD; default today."),
+    user_email: z.string().optional(),
+  }),
+  execute: async ({ betId, text, kind, url, happenedOn, user_email }: { betId: string; text: string; kind?: BetEntryKind; url?: string; happenedOn?: string; user_email?: string }) => {
+    try {
+      const entry = await addBetEntry(getSupabaseServiceClient(), { betId, text, kind, url: url ?? null, happenedOn: happenedOn ?? null, authorEmail: user_email ?? "agent@kodus.io" });
+      return { success: true as const, entry };
+    } catch (error) {
+      return { success: false as const, message: error instanceof Error ? error.message : "Error logging entry." };
+    }
+  },
+});
+
+const listBetJournalTool = tool({
+  description: "Read a bet's journal: every entry (date, kind, text, link, author), oldest first. evaluateBet includes it too; use this when only the record is needed.",
+  inputSchema: z.object({ betId: z.string() }),
+  execute: async ({ betId }: { betId: string }) => {
+    try {
+      const entries = (await listBetEntries(getSupabaseServiceClient(), [betId]))[betId] ?? [];
+      return { success: true as const, count: entries.length, entries };
+    } catch (error) {
+      return { success: false as const, message: error instanceof Error ? error.message : "Error reading journal." };
     }
   },
 });
@@ -7784,6 +7818,8 @@ export function createAgentTools(userEmail?: string) {
     updateBet: updateBetTool,
     deleteBet: deleteBetTool,
     evaluateBet: evaluateBetTool,
+    logBetEntry: logBetEntryTool,
+    listBetJournal: listBetJournalTool,
     createBet: createBetTool,
     decideBet: decideBetTool,
     updateGoal: updateGoalTool,
