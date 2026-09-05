@@ -210,11 +210,15 @@ export async function evaluateBet(
   client: SupabaseClient,
   betOrId: Bet | string,
   cache: FunnelCache = new Map(),
-  journalIn?: BetEntry[],
+  journalIn?: BetEntry[] | Promise<BetEntry[]>,
 ): Promise<BetEvaluation> {
   const bet = typeof betOrId === "string" ? await getBet(client, betOrId) : betOrId;
   if (!bet) throw new Error("Bet not found");
-  const journal = journalIn ?? (await listBetEntries(client, [bet.id]))[bet.id] ?? [];
+  // The journal is only needed for the action level, after the metric reads,
+  // so its fetch overlaps them instead of preceding them.
+  const journalP: Promise<BetEntry[]> = journalIn
+    ? Promise.resolve(journalIn)
+    : listBetEntries(client, [bet.id]).then((j) => j[bet.id] ?? []);
   const errors: string[] = [];
   const today = iso(new Date());
   const start = bet.measure?.window?.start ?? bet.createdAt.slice(0, 10);
@@ -323,6 +327,7 @@ export async function evaluateBet(
           detail: `${fmtValue(current, isRate)} now${previous != null ? ` vs ${fmtValue(previous, isRate)} in the window before` : ""}; threshold ${m.comparator} ${fmtValue(threshold, isRate)}.`,
         };
 
+  const journal = await journalP;
   const action = await actionLevel(client, bet, journal);
 
   const display = m
@@ -367,13 +372,13 @@ export async function evaluateBets(
   const cache: FunnelCache = new Map();
   const out: Record<string, BetEvaluation> = {};
   // A caller that is already reading the journals (the page) passes that
-  // read in, so the entries are fetched once per request and the funnel
-  // reads start without waiting for them.
-  const journals = journalsIn ? await journalsIn : await listBetEntries(client, bets.map((b) => b.id));
+  // read in, so the entries are fetched once per request. Each bet awaits
+  // its own slice only when it needs it, so the metric reads run meanwhile.
+  const journalsP = Promise.resolve(journalsIn ?? listBetEntries(client, bets.map((b) => b.id)));
   await Promise.all(
     bets.map(async (b) => {
       try {
-        out[b.id] = await evaluateBet(client, b, cache, journals[b.id] ?? []);
+        out[b.id] = await evaluateBet(client, b, cache, journalsP.then((j) => j[b.id] ?? []));
       } catch (err) {
         out[b.id] = {
           betId: b.id,
@@ -394,7 +399,7 @@ export async function evaluateBets(
             metric: { label: "Metric moved", status: "unknown", detail: "" },
             opportunities: { label: "Reached opportunities", status: "unknown", detail: "" },
           },
-          journal: journals[b.id] ?? [],
+          journal: (await journalsP.catch(() => ({}) as Record<string, BetEntry[]>))[b.id] ?? [],
           suggestedVerdict: "Evaluation failed.",
           errors: [err instanceof Error ? err.message : String(err)],
         };
