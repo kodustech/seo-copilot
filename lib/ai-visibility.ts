@@ -927,14 +927,20 @@ async function pageRuns<T>(
   const PAGE = 1000;
   // Pages are fetched in parallel batches over the stable order, so a deep
   // history costs one round trip per batch instead of one per page.
+  // The first page of each batch is probed alone: a small history costs
+  // one request, and the rest of the batch fires only when it proved full.
   const BATCH = 5;
   const out: T[] = [];
   for (let from = 0; from < maxRows; from += PAGE * BATCH) {
-    const pages = await Promise.all(
-      Array.from({ length: BATCH }, (_, i) => query(from + i * PAGE, from + (i + 1) * PAGE - 1)),
+    const first = await query(from, from + PAGE - 1);
+    if (first.error) throw new Error(`ai_prompt_runs: ${first.error.message}`);
+    out.push(...(first.data ?? []));
+    if ((first.data ?? []).length < PAGE) break;
+    const rest = await Promise.all(
+      Array.from({ length: BATCH - 1 }, (_, i) => query(from + (i + 1) * PAGE, from + (i + 2) * PAGE - 1)),
     );
     let short = false;
-    for (const { data, error } of pages) {
+    for (const { data, error } of rest) {
       if (error) throw new Error(`ai_prompt_runs: ${error.message}`);
       out.push(...(data ?? []));
       if ((data ?? []).length < PAGE) short = true;
