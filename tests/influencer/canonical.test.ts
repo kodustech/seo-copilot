@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { isOwnedCanonical } from "../../lib/influencer/url-guard";
+import { isOwnedCanonical, matchesOwnOriginal } from "../../lib/influencer/url-guard";
 
 describe("isOwnedCanonical", () => {
   it("accepts an article on one of our own sites", () => {
@@ -32,5 +32,35 @@ describe("isOwnedCanonical", () => {
   it("is not fooled by our domain appearing elsewhere in the URL", () => {
     expect(isOwnedCanonical("https://evil.com/?u=https://kodus.io")).toBe(false);
     expect(isOwnedCanonical("https://kodus.io.evil.com/post")).toBe(false);
+  });
+});
+
+describe("matchesOwnOriginal", () => {
+  const published = [
+    "https://aicodereview.io/blog/ai-code-review-benchmarks/",
+    "https://dev.to/noobz4ro/how-i-actually-eval-ai-code-review-tools-621",
+  ];
+
+  it("accepts the exact URL of something the persona published", () => {
+    expect(matchesOwnOriginal(published[0], published)).toBe(true);
+    expect(matchesOwnOriginal(published[1], published)).toBe(true);
+  });
+
+  it("rejects a page on our domain that was never written", () => {
+    // Owning the domain only closes the competitor case. A canonical pointing
+    // at a page that doesn't exist hands the ranking to a 404.
+    expect(matchesOwnOriginal("https://aicodereview.io/blog/never-written", published)).toBe(false);
+    expect(matchesOwnOriginal("https://aicodereview.io/", published)).toBe(false);
+    expect(matchesOwnOriginal("https://kodus.io/blog/someone-elses-post", published)).toBe(false);
+  });
+
+  it("forgives a trailing slash and case, which don't mean a different page", () => {
+    expect(matchesOwnOriginal("https://aicodereview.io/blog/ai-code-review-benchmarks", published)).toBe(true);
+    expect(matchesOwnOriginal("  HTTPS://AICODEREVIEW.IO/blog/ai-code-review-benchmarks/  ", published)).toBe(true);
+  });
+
+  it("rejects everything when the persona has published nothing", () => {
+    expect(matchesOwnOriginal(published[0], [])).toBe(false);
+    expect(matchesOwnOriginal("", published)).toBe(false);
   });
 });

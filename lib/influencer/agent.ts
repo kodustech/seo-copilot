@@ -20,7 +20,11 @@ import { querySearchPerformance, queryTopContent } from "@/lib/bigquery";
 import { fetchSerpResults } from "@/lib/dataforseo";
 import { decryptPersonaKey } from "@/lib/crypto/persona-secrets";
 import { browsePage } from "@/lib/influencer/browser";
-import { assertPublicUrl, isOwnedCanonical } from "@/lib/influencer/url-guard";
+import {
+  assertPublicUrl,
+  isOwnedCanonical,
+  matchesOwnOriginal,
+} from "@/lib/influencer/url-guard";
 import { getChannelCredentialCipher } from "@/lib/influencer/credentials";
 import { addSkill, listSkills } from "@/lib/influencer/feedback";
 import { saveMemory, searchMemory } from "@/lib/influencer/memory";
@@ -784,6 +788,28 @@ export async function runInfluencerAgentSession({
               payload: { error: "canonical_not_owned" },
             });
             return `canonical_url must be an http(s) URL on a site we own (${OWNED_DOMAINS.join(", ")}). Drop it, or use the exact URL of your own original.`;
+          }
+          // Owning the domain only closes the competitor case. A canonical
+          // pointing at a page that was never written hands the ranking to a
+          // 404, so it has to be one of this persona's own published originals.
+          const { data: originals, error: originalsError } = await client
+            .from("persona_activities")
+            .select("external_url")
+            .eq("persona_id", persona.id)
+            .eq("status", "published")
+            .not("external_url", "is", null);
+          const publishedUrls = (originals ?? [])
+            .map((r) => (typeof r.external_url === "string" ? r.external_url : ""))
+            .filter(Boolean);
+          if (originalsError || !matchesOwnOriginal(canonical, publishedUrls)) {
+            await step({
+              kind: "tool_result",
+              tool: "queue_draft",
+              payload: { error: "canonical_not_published" },
+            });
+            return originalsError
+              ? "Couldn't verify that canonical_url is one of your own published pieces. Queue it again without canonical_url, or retry next shift."
+              : "canonical_url has to be a piece you actually published — copy the exact URL from your recent posts, don't write one from memory. Queue it without canonical_url if the original isn't live yet.";
           }
         }
         // Honor the channel's automation level: an `auto` channel publishes

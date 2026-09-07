@@ -83,3 +83,22 @@ export function isOwnedCanonical(raw: string): boolean {
     return false;
   }
 }
+
+/** Trailing slashes and case differ between what an API returns and what a
+ *  model copies back, and neither difference means a different page. */
+function normalizeUrl(raw: string): string {
+  return raw.trim().toLowerCase().replace(/\/+$/, "");
+}
+
+/**
+ * A canonical must be a page the persona actually published, not merely a page
+ * on a domain we own. Owning the domain closes the competitor case; it does
+ * nothing about an invented URL, and a canonical pointing at a page that was
+ * never written hands the ranking to a 404. The shift prompt hands the persona
+ * its own live URLs precisely so it doesn't have to remember one.
+ */
+export function matchesOwnOriginal(canonical: string, publishedUrls: string[]): boolean {
+  const target = normalizeUrl(canonical);
+  if (!target) return false;
+  return publishedUrls.some((url) => normalizeUrl(url) === target);
+}
