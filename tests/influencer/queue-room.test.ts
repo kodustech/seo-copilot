@@ -121,18 +121,40 @@ describe("pickChannel", () => {
     expect(pickChannel([oldest, needsReview, sibling], "x", ["x3", "x2"])?.id).toBe("x2");
   });
 
-  it("crosses automation levels rather than refuse a channel that has room", () => {
-    // The counterfactual isn't "it publishes on the cadence someone chose" —
-    // it's nothing being written at all. Room is the invariant; level is not.
+  it("crosses onto a review-gated sibling rather than refuse a channel with room", () => {
+    // Deflecting upward only parks the piece for a human. Refusing would mean
+    // nothing gets written at all, which is worse for everyone.
     const needsReview = makeChannel({ id: "x3", platform: "x", automation_level: "approve_first" });
     expect(pickChannel([oldest, needsReview], "x", ["x3"])?.id).toBe("x3");
   });
 
+  it("never crosses off a review gate onto an auto channel", () => {
+    // queue_draft takes the activity's status from the channel it lands on, so
+    // this deflection would publish unreviewed exactly what a human asked to
+    // see first. Refusing is the safe direction; the shift writes elsewhere.
+    const gated = makeChannel({ id: "g1", platform: "x", automation_level: "approve_first" });
+    const auto = makeChannel({ id: "g2", platform: "x", automation_level: "auto" });
+    expect(pickChannel([gated, auto], "x", ["g2"])).toBeUndefined();
+  });
+
+  it("still deflects between two gated channels", () => {
+    const gated = makeChannel({ id: "g1", platform: "x", automation_level: "approve_first" });
+    const gatedSibling = makeChannel({ id: "g3", platform: "x", automation_level: "approve_first" });
+    expect(pickChannel([gated, gatedSibling], "x", ["g3"])?.id).toBe("g3");
+  });
+
   it("is not deadlocked by a draft_only oldest channel", () => {
-    // draft_only channels never reach openChannelIds, so keying the level rule
-    // off the oldest channel used to refuse every deflection, forever.
+    // The tool never publishes a draft_only channel, so its queue never drains.
+    // Letting it anchor the posture would refuse every deflection, forever.
     const draftOnly = makeChannel({ id: "x0", platform: "x", automation_level: "draft_only" });
     expect(pickChannel([draftOnly, sibling], "x", ["x2"])?.id).toBe("x2");
+  });
+
+  it("anchors past a draft_only channel onto the gate behind it", () => {
+    const draftOnly = makeChannel({ id: "x0", platform: "x", automation_level: "draft_only" });
+    const gated = makeChannel({ id: "g1", platform: "x", automation_level: "approve_first" });
+    const auto = makeChannel({ id: "g2", platform: "x", automation_level: "auto" });
+    expect(pickChannel([draftOnly, gated, auto], "x", ["g2"])).toBeUndefined();
   });
 
   it("returns nothing rather than a channel without room", () => {

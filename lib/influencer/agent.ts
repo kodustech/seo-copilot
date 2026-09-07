@@ -129,12 +129,15 @@ function buildAgentSystem(
  * write past its buffer — one draft per shift, which is exactly the arithmetic
  * that grew the queue to 58 in the first place.
  *
- * Automation level is a preference on top, not a second invariant. An `auto`
- * channel publishes on its own and an `approve_first` one waits for a review,
- * so a same-level sibling is chosen first and the contract survives the common
- * case. Making it a hard rule refuses the draft whenever the oldest channel is
- * the odd one out — and the honest counterfactual there isn't "it publishes on
- * the cadence someone chose", it's "nothing gets written at all".
+ * Automation level orders the candidates rather than vetoing them, with one
+ * asymmetry: a deflection may ADD review, never remove it. queue_draft takes an
+ * activity's status from the channel it lands on, so crossing from a gated
+ * channel onto an `auto` sibling would publish, unreviewed, exactly what a
+ * human asked to see first. Crossing the other way only parks it for review.
+ *
+ * The anchor skips `draft_only` channels. The tool never publishes those, so
+ * their queue never drains, and letting one define the platform's posture would
+ * refuse every deflection forever.
  */
 export function pickChannel(
   channels: PersonaChannel[],
@@ -149,7 +152,12 @@ export function pickChannel(
     const withRoom = new Set(openChannelIds);
     if (withRoom.has(oldest.id)) return oldest;
     const roomy = active.filter((c) => withRoom.has(c.id));
-    return roomy.find((c) => c.automation_level === oldest.automation_level) ?? roomy[0];
+    const anchor = active.find((c) => c.automation_level !== "draft_only") ?? oldest;
+    const sameLevel = roomy.find((c) => c.automation_level === anchor.automation_level);
+    if (sameLevel) return sameLevel;
+    return anchor.automation_level === "auto"
+      ? roomy[0]
+      : roomy.find((c) => c.automation_level !== "auto");
   }
   return oldest ?? channels.find((c) => c.platform === platform);
 }
