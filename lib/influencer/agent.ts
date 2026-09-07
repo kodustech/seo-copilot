@@ -119,25 +119,17 @@ function buildAgentSystem(
 }
 
 /**
- * Which channel of a platform a draft is written to. When the caller says which
- * channels still have queue room, prefer one of those: a platform is open when
- * ANY of its channels has room, and picking the oldest regardless would pile
- * every draft onto the full one while the empty channel starves.
+ * Which channel of a platform a draft is written to.
  *
- * Room is the invariant: when the caller names the channels with room, this
- * returns one of those or nothing at all. Falling back to a full channel would
- * write past its buffer — one draft per shift, which is exactly the arithmetic
- * that grew the queue to 58 in the first place.
+ * When the caller says which channels have room it names ONE per platform — the
+ * channel the writer would have used — so this either returns that channel or
+ * nothing. It carries no policy of its own: choosing a different sibling
+ * because the first is full would decide, silently and here, whether a piece
+ * skips a review gate a human configured. That decision lives in
+ * splitPlatformsByQueueRoom, where the shift brief is built from the same
+ * answer and the two cannot disagree.
  *
- * Automation level orders the candidates rather than vetoing them, with one
- * asymmetry: a deflection may ADD review, never remove it. queue_draft takes an
- * activity's status from the channel it lands on, so crossing from a gated
- * channel onto an `auto` sibling would publish, unreviewed, exactly what a
- * human asked to see first. Crossing the other way only parks it for review.
- *
- * The anchor skips `draft_only` channels. The tool never publishes those, so
- * their queue never drains, and letting one define the platform's posture would
- * refuse every deflection forever.
+ * With no open list given (a manual run), the old behaviour stands.
  */
 export function pickChannel(
   channels: PersonaChannel[],
@@ -145,21 +137,11 @@ export function pickChannel(
   openChannelIds?: string[],
 ): PersonaChannel | undefined {
   const active = channels.filter((c) => c.platform === platform && c.status !== "paused");
-  const oldest = active[0];
-  // `undefined` means the caller didn't say; `[]` means nothing has room. Only
-  // the first one is allowed to fall through to the unchecked oldest channel.
-  if (openChannelIds !== undefined && oldest) {
+  if (openChannelIds !== undefined) {
     const withRoom = new Set(openChannelIds);
-    if (withRoom.has(oldest.id)) return oldest;
-    const roomy = active.filter((c) => withRoom.has(c.id));
-    const anchor = active.find((c) => c.automation_level !== "draft_only") ?? oldest;
-    const sameLevel = roomy.find((c) => c.automation_level === anchor.automation_level);
-    if (sameLevel) return sameLevel;
-    return anchor.automation_level === "auto"
-      ? roomy[0]
-      : roomy.find((c) => c.automation_level !== "auto");
+    return active.find((c) => withRoom.has(c.id));
   }
-  return oldest ?? channels.find((c) => c.platform === platform);
+  return active[0] ?? channels.find((c) => c.platform === platform);
 }
 
 export type AgentRunResult = {

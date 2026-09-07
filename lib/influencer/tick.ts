@@ -50,16 +50,21 @@ function channelBuffer(channel: PersonaChannel): number {
 }
 
 /**
- * Which channels still have queue room, which platforms that leaves open, and
- * which platforms are backed up. Pure, so the rule is testable without a
- * database.
+ * Which platforms the shift can write for, and the exact channel each draft
+ * will land on. Pure, so the rule is testable without a database.
  *
- * The channel ids are the part that has to travel: a platform is open when ANY
- * of its channels has room, but the draft is written to ONE channel. Without the
- * ids the writer falls back to the oldest channel of that platform, so with two
- * blogs where the older one is full the persona would draft for an "open"
- * platform every shift and pile every draft onto the full channel — this bug,
- * one level down.
+ * One channel per platform decides — the first actionable one, which is the
+ * only channel the writer would have used anyway. A platform is open when THAT
+ * channel has room, never when some sibling does.
+ *
+ * The alternative, opening a platform because any of its channels has room and
+ * letting the writer deflect onto the free one, needs a policy nobody has
+ * chosen: an activity takes its status from the channel it lands on, so
+ * deflecting off an `approve_first` channel publishes unreviewed what a human
+ * asked to see first, and refusing that deflection contradicts a brief that
+ * just called the platform open. Deciding here, once, means the brief and the
+ * tool cannot disagree — and no persona has two channels on one platform yet,
+ * so nothing is given up today.
  */
 export function splitPlatformsByQueueRoom(
   channels: PersonaChannel[],
@@ -69,6 +74,7 @@ export function splitPlatformsByQueueRoom(
   const seen = new Set<string>();
   const openChannelIds: string[] = [];
   for (const channel of channels) {
+    if (seen.has(channel.platform)) continue; // a later channel never overrides
     seen.add(channel.platform);
     if ((pendingByChannel.get(channel.id) ?? 0) < channelBuffer(channel)) {
       open.add(channel.platform);
