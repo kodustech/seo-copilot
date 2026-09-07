@@ -26,7 +26,7 @@ import {
   markFeedbackApplied,
   type Feedback,
 } from "@/lib/influencer/feedback";
-import { buildGoalsBrief, computeProgress } from "@/lib/influencer/goals";
+import { buildGoalsBrief, computeProgress, silentChannels, startOfIsoWeek } from "@/lib/influencer/goals";
 import { recentMemoryTitles } from "@/lib/influencer/memory";
 import { formatVisibilityBrief } from "@/lib/influencer/visibility-brief";
 import { getModelForPersona } from "@/lib/influencer/model";
@@ -346,7 +346,19 @@ export async function runPersonaTick({
   );
   const postingAllowed = open.length > 0;
 
-  const goalsBrief = buildGoalsBrief(await computeProgress(client, persona, now));
+  const progress = await computeProgress(client, persona, now);
+  const goalsBrief = buildGoalsBrief(progress);
+  // A channel that has published nothing all week is invisible from the inside:
+  // the persona is busy every hour and the feed looks healthy. Say it out loud,
+  // once per channel per week (the dedupe key carries the week).
+  for (const silent of silentChannels(progress, now)) {
+    await alertOperator(client, {
+      userEmail: persona.created_by,
+      title: `@${persona.handle}: nothing published on ${silent.channel} this week`,
+      body: `The weekly quota is ${silent.target} and it is still at 0. Check whether the channel is connected, whether its queue is backed up, and whether the shift is being spent elsewhere.`,
+      dedupeKey: `silent-${persona.id}-${silent.channel}-${startOfIsoWeek(now).toISOString().slice(0, 10)}`,
+    }).catch(() => {});
+  }
   // Best-effort: a shift is still worth running without the scoreboard.
   const visibilityBrief = await getVisibilitySummary(client)
     .then(formatVisibilityBrief)
