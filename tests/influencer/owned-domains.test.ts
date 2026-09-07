@@ -60,6 +60,10 @@ describe("isOwnedUrl", () => {
     expect(isOwnedUrl("https://codeant.ai/blogs/best-ai-code-review-tools")).toBe(false);
   });
 
+  it("ignores a trailing dot, like isOwnedDomain does", () => {
+    expect(isOwnedUrl("https://github.com./kodustech/awesome-ai-code-review")).toBe(true);
+  });
+
   it("is not fooled by a path that merely looks like ours", () => {
     expect(isOwnedUrl("https://evil.com/github.com/kodustech")).toBe(false);
     expect(isOwnedUrl("not a url")).toBe(false);

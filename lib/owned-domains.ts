@@ -60,7 +60,7 @@ export function isOwnedUrl(url: string): boolean {
     return false;
   }
   if (isOwnedDomain(parsed.hostname)) return true;
-  const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
   const path = `${host}${parsed.pathname.toLowerCase().replace(/\/$/, "")}`;
   return BRAND_DOMAINS.some((own) => own.includes("/") && (path === own || path.startsWith(`${own}/`)));
 }
