@@ -15,6 +15,7 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { getVisibilitySummary } from "@/lib/ai-visibility";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 
 import { runInfluencerAgentSession } from "@/lib/influencer/agent";
@@ -27,6 +28,7 @@ import {
 } from "@/lib/influencer/feedback";
 import { buildGoalsBrief, computeProgress } from "@/lib/influencer/goals";
 import { recentMemoryTitles } from "@/lib/influencer/memory";
+import { formatVisibilityBrief } from "@/lib/influencer/visibility-brief";
 import { getModelForPersona } from "@/lib/influencer/model";
 import {
   listActivePersonas,
@@ -156,6 +158,7 @@ function buildShiftGoal(
   open: string[],
   backedUp: string[],
   goalsBrief: string,
+  visibilityBrief: string,
   memoryTitles: string[],
   postingAllowed: boolean,
   feedback: Feedback[],
@@ -200,6 +203,7 @@ function buildShiftGoal(
     failureLine,
     feedbackLine,
     goalsBrief,
+    visibilityBrief,
     "Attack whatever goal you're most behind on THIS shift. If a channel's weekly quota is short, write for that channel now. There is no 'nothing to show' and no 'taking a break' — if you truly can't post, you research, engage, and plan instead. Idle is failure.",
     recentPostsLine,
     memoryLine,
@@ -343,6 +347,10 @@ export async function runPersonaTick({
   const postingAllowed = open.length > 0;
 
   const goalsBrief = buildGoalsBrief(await computeProgress(client, persona, now));
+  // Best-effort: a shift is still worth running without the scoreboard.
+  const visibilityBrief = await getVisibilitySummary(client)
+    .then(formatVisibilityBrief)
+    .catch(() => "");
   const memoryTitles = await recentMemoryTitles(client, persona.id).catch(() => []);
   const feedback = await listNewFeedback(client, persona.id).catch(() => []);
   // Publish failures since the last shift, so it learns from its own errors.
@@ -366,6 +374,7 @@ export async function runPersonaTick({
       open,
       backedUp,
       goalsBrief,
+      visibilityBrief,
       memoryTitles,
       postingAllowed,
       feedback,
