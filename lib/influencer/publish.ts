@@ -398,16 +398,32 @@ export function isAllowedContentEnvName(name: string): boolean {
  *  env var of its own — it means "the shared key". */
 export const CONTENT_KEY_SENTINEL = "env:content_api";
 
+/** Whether this channel publishes to the default site rather than a farm one. */
+function isDefaultSite(channel: PersonaChannel): boolean {
+  const configured =
+    typeof channel.channel_config.blog_api_url === "string"
+      ? channel.channel_config.blog_api_url.trim().toLowerCase().replace(/\/$/, "")
+      : "";
+  return !configured || configured === DEFAULT_BLOG_API_URL.toLowerCase();
+}
+
 /**
- * Which env var holds this blog channel's key, or null when the channel names
- * something we will not read. Both the publisher and the shift's actionability
+ * Which env var holds this blog channel's key, or null when we have no key we
+ * are willing to send it. Both the publisher and the shift's actionability
  * check go through here: a gate that answers differently from the resolver
  * either spends shifts writing for a site that can't publish, or silences a
  * site that can.
+ *
+ * The shared key belongs to the default site, so it is only offered to a
+ * channel that publishes there. A farm site inherits nothing — it names its own
+ * CONTENT_API_KEY_<SITE> or it gets no key, because the alternative is sending
+ * one site's writer credential to another host and finding out from the 401.
  */
 export function contentEnvNameFor(channel: PersonaChannel): string | null {
   const ref = channel.credentials_ref?.trim();
-  if (!ref || ref === CONTENT_KEY_SENTINEL) return "CONTENT_API_KEY";
+  if (!ref || ref === CONTENT_KEY_SENTINEL) {
+    return isDefaultSite(channel) ? "CONTENT_API_KEY" : null;
+  }
   return isAllowedContentEnvName(ref) ? ref : null;
 }
 
@@ -421,7 +437,9 @@ function resolveBlogApiKey(channel: PersonaChannel): string {
   const envName = contentEnvNameFor(channel);
   if (!envName) {
     throw new Error(
-      `credentials_ref "${channel.credentials_ref}" is not allowed. Use CONTENT_API_KEY or CONTENT_API_KEY_<SITE>.`,
+      `No key for this blog. A channel publishing to ${resolveBlogApiUrl(channel)} needs its own ` +
+        `credentials_ref naming CONTENT_API_KEY_<SITE> — the shared CONTENT_API_KEY belongs to ` +
+        `${DEFAULT_BLOG_API_URL} and is not sent anywhere else.`,
     );
   }
   const key = process.env[envName]?.trim();

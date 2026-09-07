@@ -290,6 +290,32 @@ describe("blog destination", () => {
     expect(isAllowedContentEnvName("CONTENT_API_KEY;cat")).toBe(false);
   });
 
+  it("does not send the shared key to a farm site", () => {
+    // The connect flow writes the sentinel for every blog channel, so a farm
+    // site activated through the UI would otherwise publish with the default
+    // site's writer credential — and find out from the 401.
+    const farm = makeChannel({
+      platform: "blog",
+      publish_via: "api",
+      credentials_ref: "env:content_api",
+      channel_config: { blog_api_url: "https://codereviewbench.com" },
+    });
+    expect(contentEnvNameFor(farm)).toBeNull();
+    expect(
+      contentEnvNameFor({ ...farm, credentials_ref: "CONTENT_API_KEY_BENCH" }),
+    ).toBe("CONTENT_API_KEY_BENCH");
+  });
+
+  it("still offers the shared key when the channel names the default site", () => {
+    const explicit = makeChannel({
+      platform: "blog",
+      publish_via: "api",
+      credentials_ref: "env:content_api",
+      channel_config: { blog_api_url: "https://aicodereview.io/" },
+    });
+    expect(contentEnvNameFor(explicit)).toBe("CONTENT_API_KEY");
+  });
+
   it("resolves the connect flow's sentinel to the shared key", () => {
     // "env:content_api" is what the UI writes and is what the live channel
     // carries; it names no env var of its own.
