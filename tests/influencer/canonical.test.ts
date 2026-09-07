@@ -77,6 +77,16 @@ describe("matchesOwnOriginal", () => {
     ).toBe(false);
   });
 
+  it("accepts a spelled-out default port and a trailing dot", () => {
+    // The parser drops :443 on https, and a trailing dot is the same host.
+    expect(
+      matchesOwnOriginal("https://aicodereview.io:443/blog/ai-code-review-benchmarks", published),
+    ).toBe(true);
+    expect(
+      matchesOwnOriginal("https://aicodereview.io./blog/ai-code-review-benchmarks", published),
+    ).toBe(true);
+  });
+
   it("rejects everything when the persona has published nothing", () => {
     expect(matchesOwnOriginal(published[0], [])).toBe(false);
     expect(matchesOwnOriginal("", published)).toBe(false);

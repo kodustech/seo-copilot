@@ -95,10 +95,14 @@ function normalizeUrl(raw: string): string {
   const trimmed = raw.trim();
   try {
     const url = new URL(trimmed);
-    // `host`, not `hostname`: the latter drops the port, so a canonical on
-    // :8443 would compare equal to the real page on the default port and the
-    // tag would be written pointing at a different origin.
-    const host = url.host.toLowerCase().replace(/\.$/, "");
+    // The port has to survive — a canonical on :8443 is a different origin from
+    // the real page on the default one — but it can't be taken from `host`
+    // wholesale, because a trailing-dot hostname puts the dot mid-string
+    // ("example.com.:8443") where it stops matching the same page written
+    // without it. A default port never reaches here: the URL parser drops :443
+    // on https and :80 on http, leaving `port` empty.
+    const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+    const host = url.port ? `${hostname}:${url.port}` : hostname;
     const path = url.pathname.replace(/\/+$/, "");
     return `${url.protocol.toLowerCase()}//${host}${path}${url.search}`;
   } catch {
