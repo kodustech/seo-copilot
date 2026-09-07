@@ -9,8 +9,11 @@ import { describe, expect, it } from "vitest";
 import {
   buildFleetHandles,
   dayStartUtcIso,
+  contentEnvNameFor,
+  isAllowedContentEnvName,
   isAllowedDevtoEnvName,
   nextDayStartUtcIso,
+  resolveBlogApiUrl,
   resolvePublishDecision,
 } from "../../lib/influencer/publish";
 import {
@@ -248,5 +251,131 @@ describe("UTC day helpers", () => {
     expect(nextDayStartUtcIso(new Date("2026-08-31T23:59:00.000Z"))).toBe(
       "2026-09-01T00:00:00.000Z",
     );
+  });
+});
+
+describe("blog destination", () => {
+  const blogChannel = (config: Record<string, unknown>) =>
+    makeChannel({ platform: "blog", publish_via: "api", channel_config: config });
+
+  it("falls back to the default site when the channel names none", () => {
+    expect(resolveBlogApiUrl(blogChannel({}))).toBe("https://aicodereview.io");
+  });
+
+  it("publishes to the site the channel names, so a farm is possible", () => {
+    expect(resolveBlogApiUrl(blogChannel({ blog_api_url: "https://codereviewbench.com/" }))).toBe(
+      "https://codereviewbench.com",
+    );
+  });
+
+  it("refuses a host we don't own — the request carries the API key", () => {
+    expect(() => resolveBlogApiUrl(blogChannel({ blog_api_url: "https://evil.com" }))).toThrow(
+      /not a site we own/,
+    );
+  });
+
+  it("refuses plaintext http and a malformed URL", () => {
+    expect(() => resolveBlogApiUrl(blogChannel({ blog_api_url: "http://kodus.io" }))).toThrow(
+      /must be https/,
+    );
+    expect(() => resolveBlogApiUrl(blogChannel({ blog_api_url: "not-a-url" }))).toThrow(
+      /not a valid URL/,
+    );
+  });
+
+  it("allows a per-site key env name, and nothing else", () => {
+    expect(isAllowedContentEnvName("CONTENT_API_KEY")).toBe(true);
+    expect(isAllowedContentEnvName("CONTENT_API_KEY_BENCH")).toBe(true);
+    expect(isAllowedContentEnvName("SUPABASE_SERVICE_ROLE_KEY")).toBe(false);
+    expect(isAllowedContentEnvName("CONTENT_API_KEY;cat")).toBe(false);
+  });
+
+  it("does not send the shared key to a farm site", () => {
+    // The connect flow writes the sentinel for every blog channel, so a farm
+    // site activated through the UI would otherwise publish with the default
+    // site's writer credential — and find out from the 401.
+    const farm = makeChannel({
+      platform: "blog",
+      publish_via: "api",
+      credentials_ref: "env:content_api",
+      channel_config: { blog_api_url: "https://codereviewbench.com" },
+    });
+    expect(contentEnvNameFor(farm)).toBeNull();
+    expect(
+      contentEnvNameFor({ ...farm, credentials_ref: "CONTENT_API_KEY_BENCH" }),
+    ).toBe("CONTENT_API_KEY_BENCH");
+  });
+
+  it("closes the same leak spelled out longhand", () => {
+    // Naming CONTENT_API_KEY outright is the same request as the sentinel, and
+    // credentials_ref is patchable by anyone with API access.
+    const farm = makeChannel({
+      platform: "blog",
+      publish_via: "api",
+      credentials_ref: "CONTENT_API_KEY",
+      channel_config: { blog_api_url: "https://codereviewbench.com" },
+    });
+    expect(contentEnvNameFor(farm)).toBeNull();
+  });
+
+  it("counts the default site by host, not by literal string", () => {
+    // A base URL with a path or a trailing slash is the same site, and the
+    // resolver already accepts it — denying it the key would silence a channel
+    // that is entitled to it.
+    const at = (blog_api_url: string) =>
+      contentEnvNameFor(
+        makeChannel({
+          platform: "blog",
+          publish_via: "api",
+          credentials_ref: "env:content_api",
+          channel_config: { blog_api_url },
+        }),
+      );
+    expect(at("https://aicodereview.io/")).toBe("CONTENT_API_KEY");
+    expect(at("https://www.aicodereview.io")).toBe("CONTENT_API_KEY");
+    expect(at("https://aicodereview.io/base//")).toBe("CONTENT_API_KEY");
+    expect(at("https://codereviewbench.com/")).toBeNull();
+    expect(at("not-a-url")).toBeNull();
+  });
+
+  it("counts a different scheme or port as a different service", () => {
+    // The key is sent to whatever this URL names. A path doesn't change who
+    // receives it; a port does, and http is refused by the resolver anyway —
+    // granting the key there would have the gate promising what the publisher
+    // then refuses to do.
+    const at = (blog_api_url: string) =>
+      contentEnvNameFor(
+        makeChannel({
+          platform: "blog",
+          publish_via: "api",
+          credentials_ref: "env:content_api",
+          channel_config: { blog_api_url },
+        }),
+      );
+    expect(at("https://aicodereview.io:8443")).toBeNull();
+    expect(at("http://aicodereview.io")).toBeNull();
+    expect(at("https://aicodereview.io:443")).toBe("CONTENT_API_KEY");
+  });
+
+  it("still offers the shared key when the channel names the default site", () => {
+    const explicit = makeChannel({
+      platform: "blog",
+      publish_via: "api",
+      credentials_ref: "env:content_api",
+      channel_config: { blog_api_url: "https://aicodereview.io/" },
+    });
+    expect(contentEnvNameFor(explicit)).toBe("CONTENT_API_KEY");
+  });
+
+  it("resolves the connect flow's sentinel to the shared key", () => {
+    // "env:content_api" is what the UI writes and is what the live channel
+    // carries; it names no env var of its own.
+    const ch = (ref: string | null) =>
+      makeChannel({ platform: "blog", publish_via: "api", credentials_ref: ref });
+    expect(contentEnvNameFor(ch("env:content_api"))).toBe("CONTENT_API_KEY");
+    expect(contentEnvNameFor(ch(null))).toBe("CONTENT_API_KEY");
+    expect(contentEnvNameFor(ch("  "))).toBe("CONTENT_API_KEY");
+    expect(contentEnvNameFor(ch("CONTENT_API_KEY_BENCH"))).toBe("CONTENT_API_KEY_BENCH");
+    expect(contentEnvNameFor(ch("DATABASE_URL"))).toBeNull();
   });
 });

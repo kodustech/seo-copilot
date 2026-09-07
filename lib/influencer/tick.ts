@@ -18,6 +18,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 
 import { runInfluencerAgentSession } from "@/lib/influencer/agent";
+import { contentEnvNameFor } from "@/lib/influencer/publish";
 import { alertOperator } from "@/lib/influencer/alerts";
 import {
   listNewFeedback,
@@ -106,11 +107,17 @@ export function isDue(persona: Persona, now: Date): boolean {
 }
 
 /** A channel the persona can publish to on its own, right now. */
-function isActionable(channel: PersonaChannel): boolean {
+export function isActionable(channel: PersonaChannel): boolean {
   if (channel.status !== "active") return false;
   if (channel.automation_level === "draft_only") return false;
-  // Blog (aicodereview.io) publishes via the content API keyed by env.
-  if (channel.platform === "blog") return Boolean(process.env.CONTENT_API_KEY);
+  // Literally the same question the publisher asks, through the same resolver.
+  // Answering it here by hand is how the sentinel the connect flow writes got
+  // read as an env var name, which would have silenced every blog channel
+  // activated through the UI — including the live one.
+  if (channel.platform === "blog") {
+    const envName = contentEnvNameFor(channel);
+    return Boolean(envName && process.env[envName]?.trim());
+  }
   if (channel.publish_via === "post_bridge") {
     return Number(channel.channel_config.post_bridge_account_id) > 0;
   }
