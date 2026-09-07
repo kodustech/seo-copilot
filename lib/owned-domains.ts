@@ -44,3 +44,23 @@ export function isOwnedDomain(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
   return OWNED_DOMAINS.some((own) => host === own || host.endsWith(`.${own}`));
 }
+
+/**
+ * True when a URL points at a page of ours, including one that lives on a host
+ * we don't own — the org on GitHub, say. A shared host can't be classified by
+ * hostname: github.com carries our repos AND the awesome-lists we want to be
+ * listed on, so the domain stays a legitimate outreach target while individual
+ * pages of ours do not.
+ */
+export function isOwnedUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (isOwnedDomain(parsed.hostname)) return true;
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+  const path = `${host}${parsed.pathname.toLowerCase().replace(/\/$/, "")}`;
+  return BRAND_DOMAINS.some((own) => own.includes("/") && (path === own || path.startsWith(`${own}/`)));
+}

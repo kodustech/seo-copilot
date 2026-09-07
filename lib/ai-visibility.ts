@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { BRAND_DOMAINS, isOwnedDomain } from "@/lib/owned-domains";
+import { BRAND_DOMAINS, isOwnedDomain, isOwnedUrl } from "@/lib/owned-domains";
 
 /**
  * AI visibility: a list of buyer prompts, asked every week to the assistants
@@ -1116,7 +1116,12 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
         const agg = domainAgg.get(d) ?? { domain: d, citations: 0, runsWithoutBrand: 0, urls: [] };
         agg.citations += 1;
         if (!r.mentioned) agg.runsWithoutBrand += 1;
-        if (agg.urls.length < 3 && !agg.urls.includes(c.url)) agg.urls.push(c.url);
+        // A shared host stays on the list — github.com carries the awesome-lists
+        // we want to be on — but our own pages there are not somewhere to go
+        // ask for a listing, so they never become the example URLs.
+        if (agg.urls.length < 3 && !agg.urls.includes(c.url) && !isOwnedUrl(c.url)) {
+          agg.urls.push(c.url);
+        }
         domainAgg.set(d, agg);
       }
       for (const name of r.competitors) compAgg.set(name, (compAgg.get(name) ?? 0) + 1);
