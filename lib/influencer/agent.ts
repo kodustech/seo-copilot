@@ -123,18 +123,29 @@ function buildAgentSystem(
  * channels still have queue room, prefer one of those: a platform is open when
  * ANY of its channels has room, and picking the oldest regardless would pile
  * every draft onto the full one while the empty channel starves.
+ *
+ * Deflecting to a sibling must not change the human contract, though. An `auto`
+ * channel publishes on its own; an `approve_first` one waits for a review. A
+ * draft that silently crosses that line goes out on a cadence nobody chose, so
+ * the deflection only ever happens within the same automation level — and when
+ * no same-level sibling has room we stay put and let the buffer do its job.
  */
-function pickChannel(
+export function pickChannel(
   channels: PersonaChannel[],
   platform: string,
   openChannelIds?: string[],
 ): PersonaChannel | undefined {
   const active = channels.filter((c) => c.platform === platform && c.status !== "paused");
-  if (openChannelIds?.length) {
-    const roomy = active.find((c) => openChannelIds.includes(c.id));
-    if (roomy) return roomy;
+  const oldest = active[0];
+  if (openChannelIds?.length && oldest) {
+    const withRoom = new Set(openChannelIds);
+    if (withRoom.has(oldest.id)) return oldest;
+    const sibling = active.find(
+      (c) => withRoom.has(c.id) && c.automation_level === oldest.automation_level,
+    );
+    if (sibling) return sibling;
   }
-  return active[0] ?? channels.find((c) => c.platform === platform);
+  return oldest ?? channels.find((c) => c.platform === platform);
 }
 
 export type AgentRunResult = {
@@ -721,8 +732,15 @@ export async function runInfluencerAgentSession({
           await step({ kind: "tool_result", tool: "queue_draft", payload: { blocked: platform } });
           return msg;
         }
+        // A reply belongs to the account whose timeline it was read from, so it
+        // never deflects to a sibling channel — replying from the other account
+        // is wrong no matter how much room that one has.
         const channel = normalizedPlatform
-          ? pickChannel(channels, normalizedPlatform, openChannelIds)
+          ? pickChannel(
+              channels,
+              normalizedPlatform,
+              normalizedKind === "reply" ? undefined : openChannelIds,
+            )
           : undefined;
         if (!channel) {
           const msg = `No "${platform}" channel exists for this persona. Add the channel first, or use one it has.`;

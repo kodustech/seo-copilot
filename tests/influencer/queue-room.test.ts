@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { pickChannel } from "../../lib/influencer/agent";
 import { splitPlatformsByQueueRoom } from "../../lib/influencer/tick";
 import type { PersonaChannel } from "../../lib/influencer/types";
 
@@ -98,5 +99,34 @@ describe("splitPlatformsByQueueRoom", () => {
     const { open } = splitPlatformsByQueueRoom([paused], new Map());
     expect(open).toEqual(["blog"]);
     expect(splitPlatformsByQueueRoom([paused], new Map([["z1", 1]])).open).toEqual([]);
+  });
+});
+
+describe("pickChannel", () => {
+  const oldest = makeChannel({ id: "x1", platform: "x", automation_level: "auto" });
+  const sibling = makeChannel({ id: "x2", platform: "x", automation_level: "auto" });
+
+  it("keeps the oldest channel when it has room", () => {
+    expect(pickChannel([oldest, sibling], "x", ["x1", "x2"])?.id).toBe("x1");
+  });
+
+  it("deflects to a sibling with room when the oldest is full", () => {
+    expect(pickChannel([oldest, sibling], "x", ["x2"])?.id).toBe("x2");
+  });
+
+  it("will not deflect across automation levels", () => {
+    // An auto channel publishes on its own and an approve_first one waits for a
+    // human. Crossing that line silently puts the post on a cadence nobody chose.
+    const needsReview = makeChannel({ id: "x3", platform: "x", automation_level: "approve_first" });
+    expect(pickChannel([oldest, needsReview], "x", ["x3"])?.id).toBe("x1");
+  });
+
+  it("behaves as before when the caller names no open channels", () => {
+    expect(pickChannel([oldest, sibling], "x")?.id).toBe("x1");
+  });
+
+  it("falls back to a paused channel only when nothing is active", () => {
+    const paused = makeChannel({ id: "x9", platform: "x", status: "paused" });
+    expect(pickChannel([paused], "x", [])?.id).toBe("x9");
   });
 });
