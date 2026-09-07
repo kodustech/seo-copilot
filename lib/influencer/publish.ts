@@ -8,6 +8,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { scheduleSocialPost } from "@/lib/copilot";
+import { isOwnedDomain } from "@/lib/owned-domains";
 import { parseImageIntent, resolvePostImage } from "@/lib/influencer/post-image";
 import { postReplyOnX } from "@/lib/influencer/browser";
 import { decryptPersonaKey } from "@/lib/crypto/persona-secrets";
@@ -351,17 +352,76 @@ async function publishToDevto(
 
 // `||` (not `??`) so an empty AICODEREVIEW_API_URL falls back instead of
 // producing a broken relative URL.
-const BLOG_API_URL = (
+const DEFAULT_BLOG_API_URL = (
   process.env.AICODEREVIEW_API_URL?.trim() || "https://aicodereview.io"
 ).replace(/\/$/, "");
 
-async function publishToBlog(activity: PersonaActivity): Promise<PublishOutcome> {
-  const key = process.env.CONTENT_API_KEY?.trim();
-  if (!key) {
+/**
+ * Which site this blog channel publishes to. A network of blogs is the point —
+ * one env var could only ever address one of them — so the destination lives on
+ * the channel and the env var is just the default.
+ *
+ * It must be https on a domain we own. Publishing sends the article AND a bearer
+ * token to this host, so a typo (or a channel edited by the wrong person) would
+ * hand the content API key to a stranger. Adding a site to the farm means adding
+ * it to lib/owned-domains.ts, which is where it has to be listed anyway for the
+ * AI-visibility report to stop treating it as someone else's page.
+ */
+export function resolveBlogApiUrl(channel: PersonaChannel): string {
+  const configured =
+    typeof channel.channel_config.blog_api_url === "string"
+      ? channel.channel_config.blog_api_url.trim()
+      : "";
+  const raw = (configured || DEFAULT_BLOG_API_URL).replace(/\/$/, "");
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(`blog_api_url "${raw}" is not a valid URL.`);
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error(`blog_api_url must be https (got "${raw}") — it carries the API key.`);
+  }
+  if (!isOwnedDomain(parsed.hostname)) {
     throw new Error(
-      "Missing CONTENT_API_KEY — set it to publish to aicodereview.io.",
+      `blog_api_url "${parsed.hostname}" is not a site we own. Add it to lib/owned-domains.ts first.`,
     );
   }
+  return raw;
+}
+
+export function isAllowedContentEnvName(name: string): boolean {
+  return /^CONTENT_API_KEY(_[A-Z0-9_]+)?$/.test(name);
+}
+
+/**
+ * The blog key comes from an env var named by credentials_ref, so a second site
+ * gets its own key instead of inheriting the first one's. There is no vault
+ * option here yet: the credential vault only accepts dev.to, and teaching it a
+ * new provider is a change to the connect flow, not to the publisher.
+ */
+function resolveBlogApiKey(channel: PersonaChannel): string {
+  const envName = channel.credentials_ref?.trim() || "CONTENT_API_KEY";
+  if (!isAllowedContentEnvName(envName)) {
+    throw new Error(
+      `credentials_ref "${envName}" is not allowed. Use CONTENT_API_KEY or CONTENT_API_KEY_<SITE>.`,
+    );
+  }
+  const key = process.env[envName]?.trim();
+  if (!key) {
+    throw new Error(
+      `No content API credential for this blog. Connect one, or set ${envName} in the environment.`,
+    );
+  }
+  return key;
+}
+
+async function publishToBlog(
+  activity: PersonaActivity,
+  channel: PersonaChannel,
+): Promise<PublishOutcome> {
+  const blogApiUrl = resolveBlogApiUrl(channel);
+  const key = resolveBlogApiKey(channel);
   const meta = activity.content_meta ?? {};
   const asString = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
   const tags = sanitizeTags(meta.tags);
@@ -393,7 +453,7 @@ async function publishToBlog(activity: PersonaActivity): Promise<PublishOutcome>
     faq: faq?.length ? faq : undefined,
   };
 
-  const response = await fetch(`${BLOG_API_URL}/api/posts`, {
+  const response = await fetch(`${blogApiUrl}/api/posts`, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     cache: "no-store",
@@ -402,7 +462,7 @@ async function publishToBlog(activity: PersonaActivity): Promise<PublishOutcome>
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`aicodereview.io API ${response.status}: ${text.slice(0, 300)}`);
+    throw new Error(`${blogApiUrl} API ${response.status}: ${text.slice(0, 300)}`);
   }
 
   const body = (await response.json().catch(() => ({}))) as {
@@ -412,7 +472,7 @@ async function publishToBlog(activity: PersonaActivity): Promise<PublishOutcome>
   };
   return {
     external_id: body.id != null ? String(body.id) : null,
-    external_url: body.url ?? (body.slug ? `${BLOG_API_URL}/${body.slug}` : null),
+    external_url: body.url ?? (body.slug ? `${blogApiUrl}/${body.slug}` : null),
   };
 }
 
@@ -439,9 +499,9 @@ async function publishActivity(
   activity: PersonaActivity,
   channel: PersonaChannel,
 ): Promise<PublishOutcome> {
-  // The blog (aicodereview.io) publishes via its own content API regardless of
-  // the channel's stored publish_via.
-  if (channel.platform === "blog") return publishToBlog(activity);
+  // A blog publishes via its own content API regardless of the channel's stored
+  // publish_via; which site that is comes from the channel.
+  if (channel.platform === "blog") return publishToBlog(activity, channel);
 
   switch (channel.publish_via) {
     case "post_bridge":

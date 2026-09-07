@@ -9,8 +9,10 @@ import { describe, expect, it } from "vitest";
 import {
   buildFleetHandles,
   dayStartUtcIso,
+  isAllowedContentEnvName,
   isAllowedDevtoEnvName,
   nextDayStartUtcIso,
+  resolveBlogApiUrl,
   resolvePublishDecision,
 } from "../../lib/influencer/publish";
 import {
@@ -248,5 +250,42 @@ describe("UTC day helpers", () => {
     expect(nextDayStartUtcIso(new Date("2026-08-31T23:59:00.000Z"))).toBe(
       "2026-09-01T00:00:00.000Z",
     );
+  });
+});
+
+describe("blog destination", () => {
+  const blogChannel = (config: Record<string, unknown>) =>
+    makeChannel({ platform: "blog", publish_via: "api", channel_config: config });
+
+  it("falls back to the default site when the channel names none", () => {
+    expect(resolveBlogApiUrl(blogChannel({}))).toBe("https://aicodereview.io");
+  });
+
+  it("publishes to the site the channel names, so a farm is possible", () => {
+    expect(resolveBlogApiUrl(blogChannel({ blog_api_url: "https://codereviewbench.com/" }))).toBe(
+      "https://codereviewbench.com",
+    );
+  });
+
+  it("refuses a host we don't own — the request carries the API key", () => {
+    expect(() => resolveBlogApiUrl(blogChannel({ blog_api_url: "https://evil.com" }))).toThrow(
+      /not a site we own/,
+    );
+  });
+
+  it("refuses plaintext http and a malformed URL", () => {
+    expect(() => resolveBlogApiUrl(blogChannel({ blog_api_url: "http://kodus.io" }))).toThrow(
+      /must be https/,
+    );
+    expect(() => resolveBlogApiUrl(blogChannel({ blog_api_url: "not-a-url" }))).toThrow(
+      /not a valid URL/,
+    );
+  });
+
+  it("allows a per-site key env name, and nothing else", () => {
+    expect(isAllowedContentEnvName("CONTENT_API_KEY")).toBe(true);
+    expect(isAllowedContentEnvName("CONTENT_API_KEY_BENCH")).toBe(true);
+    expect(isAllowedContentEnvName("SUPABASE_SERVICE_ROLE_KEY")).toBe(false);
+    expect(isAllowedContentEnvName("CONTENT_API_KEY;cat")).toBe(false);
   });
 });

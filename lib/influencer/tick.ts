@@ -109,8 +109,11 @@ export function isDue(persona: Persona, now: Date): boolean {
 function isActionable(channel: PersonaChannel): boolean {
   if (channel.status !== "active") return false;
   if (channel.automation_level === "draft_only") return false;
-  // Blog (aicodereview.io) publishes via the content API keyed by env.
-  if (channel.platform === "blog") return Boolean(process.env.CONTENT_API_KEY);
+  // A blog publishes through its site's content API. The key can also live in
+  // the vault, which we can't read synchronously — same limit as dev.to below.
+  if (channel.platform === "blog") {
+    return Boolean(process.env.CONTENT_API_KEY) || Boolean(channel.credentials_ref);
+  }
   if (channel.publish_via === "post_bridge") {
     return Number(channel.channel_config.post_bridge_account_id) > 0;
   }
