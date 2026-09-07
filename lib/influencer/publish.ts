@@ -398,9 +398,13 @@ export function isAllowedContentEnvName(name: string): boolean {
  *  env var of its own — it means "the shared key". */
 export const CONTENT_KEY_SENTINEL = "env:content_api";
 
-function hostOf(url: string): string | null {
+/** Scheme, host and port — everything that decides which service receives the
+ *  request. A path doesn't; `www.` and a trailing dot are the same host. */
+function originOf(url: string): string | null {
   try {
-    return new URL(url).hostname.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
+    return `${u.protocol.toLowerCase()}//${host}${u.port ? `:${u.port}` : ""}`;
   } catch {
     return null;
   }
@@ -408,18 +412,24 @@ function hostOf(url: string): string | null {
 
 /**
  * Whether this channel publishes to the default site rather than a farm one.
- * Compared by host, the same notion of "site" the resolver uses — a base URL
- * carrying a path or a trailing slash is still the same site, and denying it
- * the shared key would silence a channel that is entitled to it.
+ *
+ * Asked through resolveBlogApiUrl on purpose. Every attempt to answer it
+ * separately has drifted from the resolver in a way that either leaked the
+ * shared key or silenced a channel entitled to it: comparing whole strings
+ * denied a base URL with a path, comparing hostnames granted a different scheme
+ * and a different port. Routing the question through the resolver means the two
+ * cannot disagree, because there is only one answer — https, a domain we own,
+ * and then the same origin as the default.
  */
 function isDefaultSite(channel: PersonaChannel): boolean {
-  const configured =
-    typeof channel.channel_config.blog_api_url === "string"
-      ? channel.channel_config.blog_api_url.trim()
-      : "";
-  if (!configured) return true;
-  const host = hostOf(configured);
-  return host !== null && host === hostOf(DEFAULT_BLOG_API_URL);
+  let resolved: string;
+  try {
+    resolved = resolveBlogApiUrl(channel);
+  } catch {
+    return false;
+  }
+  const origin = originOf(resolved);
+  return origin !== null && origin === originOf(DEFAULT_BLOG_API_URL);
 }
 
 /**

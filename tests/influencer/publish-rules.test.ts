@@ -338,6 +338,25 @@ describe("blog destination", () => {
     expect(at("not-a-url")).toBeNull();
   });
 
+  it("counts a different scheme or port as a different service", () => {
+    // The key is sent to whatever this URL names. A path doesn't change who
+    // receives it; a port does, and http is refused by the resolver anyway —
+    // granting the key there would have the gate promising what the publisher
+    // then refuses to do.
+    const at = (blog_api_url: string) =>
+      contentEnvNameFor(
+        makeChannel({
+          platform: "blog",
+          publish_via: "api",
+          credentials_ref: "env:content_api",
+          channel_config: { blog_api_url },
+        }),
+      );
+    expect(at("https://aicodereview.io:8443")).toBeNull();
+    expect(at("http://aicodereview.io")).toBeNull();
+    expect(at("https://aicodereview.io:443")).toBe("CONTENT_API_KEY");
+  });
+
   it("still offers the shared key when the channel names the default site", () => {
     const explicit = makeChannel({
       platform: "blog",
