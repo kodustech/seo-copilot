@@ -121,3 +121,27 @@ export function buildGoalsBrief(progress: GoalProgress[]): string {
     "Let what you're behind on shape this shift: if you're short on a channel's weekly quota, write for that channel now; if you're chasing followers or a notable mention, make this post genuinely worth sharing and engage the right people.",
   ].join("\n");
 }
+
+/**
+ * A channel with a weekly quota that has published nothing this week, once the
+ * week is far enough along that "it's early" no longer explains it.
+ *
+ * This is the failure the fleet cannot see from the inside. A persona saturating
+ * one channel reports a busy shift every hour and looks healthy from every
+ * angle, while a channel with a quota sits at zero for weeks — that is exactly
+ * how the blog went 18 days without an article. Nobody was going to notice by
+ * reading the activity feed; there was plenty of activity.
+ */
+const SILENT_AFTER_WEEK_FRACTION = 0.5;
+
+export function silentChannels(
+  progress: GoalProgress[],
+  now: Date,
+): { channel: string; target: number }[] {
+  const weekStart = startOfIsoWeek(now).getTime();
+  const elapsed = (now.getTime() - weekStart) / (7 * 24 * 60 * 60 * 1000);
+  if (elapsed < SILENT_AFTER_WEEK_FRACTION) return [];
+  return progress
+    .filter((p) => p.type === "posts_per_week" && p.channel && p.current === 0)
+    .map((p) => ({ channel: p.channel as string, target: p.target ?? 1 }));
+}
