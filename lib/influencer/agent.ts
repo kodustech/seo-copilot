@@ -124,15 +124,17 @@ function buildAgentSystem(
  * ANY of its channels has room, and picking the oldest regardless would pile
  * every draft onto the full one while the empty channel starves.
  *
- * Deflecting to a sibling must not change the human contract, though. An `auto`
- * channel publishes on its own; an `approve_first` one waits for a review. A
- * draft that silently crosses that line goes out on a cadence nobody chose, so
- * the deflection only ever happens within the same automation level.
- *
- * When the caller names the channels with room, this returns nothing rather
- * than a channel without room. Falling back to the full oldest channel would
+ * Room is the invariant: when the caller names the channels with room, this
+ * returns one of those or nothing at all. Falling back to a full channel would
  * write past its buffer — one draft per shift, which is exactly the arithmetic
  * that grew the queue to 58 in the first place.
+ *
+ * Automation level is a preference on top, not a second invariant. An `auto`
+ * channel publishes on its own and an `approve_first` one waits for a review,
+ * so a same-level sibling is chosen first and the contract survives the common
+ * case. Making it a hard rule refuses the draft whenever the oldest channel is
+ * the odd one out — and the honest counterfactual there isn't "it publishes on
+ * the cadence someone chose", it's "nothing gets written at all".
  */
 export function pickChannel(
   channels: PersonaChannel[],
@@ -146,9 +148,8 @@ export function pickChannel(
   if (openChannelIds !== undefined && oldest) {
     const withRoom = new Set(openChannelIds);
     if (withRoom.has(oldest.id)) return oldest;
-    return active.find(
-      (c) => withRoom.has(c.id) && c.automation_level === oldest.automation_level,
-    );
+    const roomy = active.filter((c) => withRoom.has(c.id));
+    return roomy.find((c) => c.automation_level === oldest.automation_level) ?? roomy[0];
   }
   return oldest ?? channels.find((c) => c.platform === platform);
 }
@@ -196,6 +197,7 @@ export async function runInfluencerAgentSession({
 }): Promise<AgentRunResult> {
   const model = await getModelForPersona(client, persona);
   const channels = await listChannelsForPersona(client, persona.id);
+  const platformsWithChannel = new Set(channels.map((c) => c.platform));
   const executor = getExecutor();
 
   const session = await createSession(client, {
@@ -744,7 +746,7 @@ export async function runInfluencerAgentSession({
           // Two different failures, and telling them apart matters: "add a
           // channel" is useless advice when the channel exists and is simply
           // holding a full buffer.
-          const exists = channels.some((c) => c.platform === normalizedPlatform);
+          const exists = normalizedPlatform ? platformsWithChannel.has(normalizedPlatform) : false;
           const msg = exists
             ? `Every "${platform}" channel is backed up right now — don't queue for it this shift. Write for an open channel instead, or research and engage.`
             : `No "${platform}" channel exists for this persona. Add the channel first, or use one it has.`;

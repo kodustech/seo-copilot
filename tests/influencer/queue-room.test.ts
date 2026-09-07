@@ -114,11 +114,25 @@ describe("pickChannel", () => {
     expect(pickChannel([oldest, sibling], "x", ["x2"])?.id).toBe("x2");
   });
 
-  it("will not deflect across automation levels", () => {
+  it("prefers a sibling at the same automation level", () => {
     // An auto channel publishes on its own and an approve_first one waits for a
-    // human. Crossing that line silently puts the post on a cadence nobody chose.
+    // human, so the contract survives the common case.
     const needsReview = makeChannel({ id: "x3", platform: "x", automation_level: "approve_first" });
-    expect(pickChannel([oldest, needsReview], "x", ["x3"])).toBeUndefined();
+    expect(pickChannel([oldest, needsReview, sibling], "x", ["x3", "x2"])?.id).toBe("x2");
+  });
+
+  it("crosses automation levels rather than refuse a channel that has room", () => {
+    // The counterfactual isn't "it publishes on the cadence someone chose" —
+    // it's nothing being written at all. Room is the invariant; level is not.
+    const needsReview = makeChannel({ id: "x3", platform: "x", automation_level: "approve_first" });
+    expect(pickChannel([oldest, needsReview], "x", ["x3"])?.id).toBe("x3");
+  });
+
+  it("is not deadlocked by a draft_only oldest channel", () => {
+    // draft_only channels never reach openChannelIds, so keying the level rule
+    // off the oldest channel used to refuse every deflection, forever.
+    const draftOnly = makeChannel({ id: "x0", platform: "x", automation_level: "draft_only" });
+    expect(pickChannel([draftOnly, sibling], "x", ["x2"])?.id).toBe("x2");
   });
 
   it("returns nothing rather than a channel without room", () => {
