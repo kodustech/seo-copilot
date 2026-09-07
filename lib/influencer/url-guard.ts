@@ -18,6 +18,8 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
+import { isOwnedDomain } from "@/lib/owned-domains";
+
 const BLOCKED_HOSTS = new Set(["localhost", "metadata.google.internal", "metadata"]);
 
 /** Private / reserved / loopback / link-local address → not fetchable. */
@@ -64,4 +66,20 @@ export async function assertPublicUrl(url: string): Promise<URL> {
     throw new Error("URL resolves to a private or reserved address.");
   }
   return parsed;
+}
+
+/**
+ * A canonical tag hands the ranking to whatever it points at, so a model-chosen
+ * canonical may only ever point at a site we own — otherwise a crosspost credits
+ * someone else's page for our own writing. Not an SSRF check: nothing fetches
+ * this URL, it is written into the published article.
+ */
+export function isOwnedCanonical(raw: string): boolean {
+  try {
+    const parsed = new URL(raw.trim());
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    return isOwnedDomain(parsed.hostname);
+  } catch {
+    return false;
+  }
 }

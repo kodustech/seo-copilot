@@ -15,11 +15,12 @@ import {
   platformRules,
 } from "@/lib/social-writing-style";
 import { fetchFeedPosts } from "@/lib/feed-sources";
+import { OWNED_DOMAINS } from "@/lib/owned-domains";
 import { querySearchPerformance, queryTopContent } from "@/lib/bigquery";
 import { fetchSerpResults } from "@/lib/dataforseo";
 import { decryptPersonaKey } from "@/lib/crypto/persona-secrets";
 import { browsePage } from "@/lib/influencer/browser";
-import { assertPublicUrl } from "@/lib/influencer/url-guard";
+import { assertPublicUrl, isOwnedCanonical } from "@/lib/influencer/url-guard";
 import { getChannelCredentialCipher } from "@/lib/influencer/credentials";
 import { addSkill, listSkills } from "@/lib/influencer/feedback";
 import { saveMemory, searchMemory } from "@/lib/influencer/memory";
@@ -685,6 +686,13 @@ export async function runInfluencerAgentSession({
           .array(z.object({ q: z.string(), a: z.string() }))
           .optional()
           .describe("Optional FAQ entries for a blog post (aicodereview.io)"),
+        canonical_url: z
+          .string()
+          .nullable()
+          .optional()
+          .describe(
+            "When this piece is a crosspost of something you already published on one of our own sites, the URL of that original. Search engines and assistants then credit the original instead of splitting it between two copies. Must be a page on a site we own — use the exact URL from your recent posts, never a guess.",
+          ),
         reply_to: z
           .string()
           .nullable()
@@ -707,7 +715,7 @@ export async function runInfluencerAgentSession({
             "Optionally attach an image to a social post. 'screenshot' captures a REAL page (a benchmark chart, a tool's UI, a tweet, a GitHub diff) — real evidence, on-brand. 'image_url' attaches a public image URL (e.g. an article's own image). Use it when a visual genuinely strengthens the post.",
           ),
       }),
-      execute: async ({ kind, platform, title, content, description, category, tags, faq, image, reply_to }) => {
+      execute: async ({ kind, platform, title, content, description, category, tags, faq, image, reply_to, canonical_url }) => {
         await step({ kind: "tool_call", tool: "queue_draft", payload: { kind, platform } });
         // Hard backpressure, enforced live against the running draft counter (not
         // a stale snapshot): 0 = queue is full, don't post; 1 = one post/shift.
@@ -764,6 +772,20 @@ export async function runInfluencerAgentSession({
             return "A reply needs reply_to = the full https://x.com/<user>/status/<id> URL of the tweet you're replying to. Find a real one with x_read.";
           }
         }
+        // A canonical tag hands the ranking to whatever it points at, so it may
+        // only ever point at a site we own. The model picks this URL, and a
+        // wrong one would credit a competitor's page for our own writing.
+        const canonical = typeof canonical_url === "string" ? canonical_url.trim() : "";
+        if (canonical) {
+          if (!isOwnedCanonical(canonical)) {
+            await step({
+              kind: "tool_result",
+              tool: "queue_draft",
+              payload: { error: "canonical_not_owned" },
+            });
+            return `canonical_url must be an http(s) URL on a site we own (${OWNED_DOMAINS.join(", ")}). Drop it, or use the exact URL of your own original.`;
+          }
+        }
         // Honor the channel's automation level: an `auto` channel publishes
         // without review; everything else waits in the queue for a human.
         const autoPublish = channel.automation_level === "auto";
@@ -784,6 +806,7 @@ export async function runInfluencerAgentSession({
                 ...(faq?.length ? { faq } : {}),
                 ...(image?.url ? { image } : {}),
                 ...(reply_to ? { reply_to } : {}),
+                ...(canonical ? { canonical_url: canonical } : {}),
               },
               source_kind: "agent",
               source_ref: session.id,
