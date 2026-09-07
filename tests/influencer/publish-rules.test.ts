@@ -306,6 +306,38 @@ describe("blog destination", () => {
     ).toBe("CONTENT_API_KEY_BENCH");
   });
 
+  it("closes the same leak spelled out longhand", () => {
+    // Naming CONTENT_API_KEY outright is the same request as the sentinel, and
+    // credentials_ref is patchable by anyone with API access.
+    const farm = makeChannel({
+      platform: "blog",
+      publish_via: "api",
+      credentials_ref: "CONTENT_API_KEY",
+      channel_config: { blog_api_url: "https://codereviewbench.com" },
+    });
+    expect(contentEnvNameFor(farm)).toBeNull();
+  });
+
+  it("counts the default site by host, not by literal string", () => {
+    // A base URL with a path or a trailing slash is the same site, and the
+    // resolver already accepts it — denying it the key would silence a channel
+    // that is entitled to it.
+    const at = (blog_api_url: string) =>
+      contentEnvNameFor(
+        makeChannel({
+          platform: "blog",
+          publish_via: "api",
+          credentials_ref: "env:content_api",
+          channel_config: { blog_api_url },
+        }),
+      );
+    expect(at("https://aicodereview.io/")).toBe("CONTENT_API_KEY");
+    expect(at("https://www.aicodereview.io")).toBe("CONTENT_API_KEY");
+    expect(at("https://aicodereview.io/base//")).toBe("CONTENT_API_KEY");
+    expect(at("https://codereviewbench.com/")).toBeNull();
+    expect(at("not-a-url")).toBeNull();
+  });
+
   it("still offers the shared key when the channel names the default site", () => {
     const explicit = makeChannel({
       platform: "blog",

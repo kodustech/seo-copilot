@@ -398,13 +398,28 @@ export function isAllowedContentEnvName(name: string): boolean {
  *  env var of its own — it means "the shared key". */
 export const CONTENT_KEY_SENTINEL = "env:content_api";
 
-/** Whether this channel publishes to the default site rather than a farm one. */
+function hostOf(url: string): string | null {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether this channel publishes to the default site rather than a farm one.
+ * Compared by host, the same notion of "site" the resolver uses — a base URL
+ * carrying a path or a trailing slash is still the same site, and denying it
+ * the shared key would silence a channel that is entitled to it.
+ */
 function isDefaultSite(channel: PersonaChannel): boolean {
   const configured =
     typeof channel.channel_config.blog_api_url === "string"
-      ? channel.channel_config.blog_api_url.trim().toLowerCase().replace(/\/$/, "")
+      ? channel.channel_config.blog_api_url.trim()
       : "";
-  return !configured || configured === DEFAULT_BLOG_API_URL.toLowerCase();
+  if (!configured) return true;
+  const host = hostOf(configured);
+  return host !== null && host === hostOf(DEFAULT_BLOG_API_URL);
 }
 
 /**
@@ -421,7 +436,10 @@ function isDefaultSite(channel: PersonaChannel): boolean {
  */
 export function contentEnvNameFor(channel: PersonaChannel): string | null {
   const ref = channel.credentials_ref?.trim();
-  if (!ref || ref === CONTENT_KEY_SENTINEL) {
+  // Naming the shared key outright is the same request as the sentinel, so it
+  // meets the same condition. Anything else is a per-site key, which is only
+  // ever deployed for the site it belongs to.
+  if (!ref || ref === CONTENT_KEY_SENTINEL || ref === "CONTENT_API_KEY") {
     return isDefaultSite(channel) ? "CONTENT_API_KEY" : null;
   }
   return isAllowedContentEnvName(ref) ? ref : null;
