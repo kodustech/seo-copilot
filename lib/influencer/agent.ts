@@ -118,12 +118,39 @@ function buildAgentSystem(
   ].join("\n");
 }
 
-function pickChannel(
+/**
+ * Which channel of a platform a draft is written to. When the caller says which
+ * channels still have queue room, prefer one of those: a platform is open when
+ * ANY of its channels has room, and picking the oldest regardless would pile
+ * every draft onto the full one while the empty channel starves.
+ *
+ * Deflecting to a sibling must not change the human contract, though. An `auto`
+ * channel publishes on its own; an `approve_first` one waits for a review. A
+ * draft that silently crosses that line goes out on a cadence nobody chose, so
+ * the deflection only ever happens within the same automation level.
+ *
+ * When the caller names the channels with room, this returns nothing rather
+ * than a channel without room. Falling back to the full oldest channel would
+ * write past its buffer — one draft per shift, which is exactly the arithmetic
+ * that grew the queue to 58 in the first place.
+ */
+export function pickChannel(
   channels: PersonaChannel[],
   platform: string,
+  openChannelIds?: string[],
 ): PersonaChannel | undefined {
   const active = channels.filter((c) => c.platform === platform && c.status !== "paused");
-  return active[0] ?? channels.find((c) => c.platform === platform);
+  const oldest = active[0];
+  // `undefined` means the caller didn't say; `[]` means nothing has room. Only
+  // the first one is allowed to fall through to the unchecked oldest channel.
+  if (openChannelIds !== undefined && oldest) {
+    const withRoom = new Set(openChannelIds);
+    if (withRoom.has(oldest.id)) return oldest;
+    return active.find(
+      (c) => withRoom.has(c.id) && c.automation_level === oldest.automation_level,
+    );
+  }
+  return oldest ?? channels.find((c) => c.platform === platform);
 }
 
 export type AgentRunResult = {
@@ -147,6 +174,7 @@ export async function runInfluencerAgentSession({
   trigger,
   createdBy,
   allowedPlatforms,
+  openChannelIds,
   maxSteps,
   maxDrafts,
 }: {
@@ -157,6 +185,9 @@ export async function runInfluencerAgentSession({
   createdBy?: string;
   /** If set, queue_draft may only target these platforms (connected channels). */
   allowedPlatforms?: string[];
+  /** If set, the channels with queue room — a draft lands on one of these
+   *  rather than on whichever channel of the platform is oldest. */
+  openChannelIds?: string[];
   /** Override the per-session step budget (a self-paced shift runs longer). */
   maxSteps?: number;
   /** Hard cap on drafts this session (0 = none; 1 = one post/shift). Enforced
@@ -707,11 +738,21 @@ export async function runInfluencerAgentSession({
           return msg;
         }
         const channel = normalizedPlatform
-          ? pickChannel(channels, normalizedPlatform)
+          ? pickChannel(channels, normalizedPlatform, openChannelIds)
           : undefined;
         if (!channel) {
-          const msg = `No "${platform}" channel exists for this persona. Add the channel first, or use one it has.`;
-          await step({ kind: "tool_result", tool: "queue_draft", payload: { error: msg } });
+          // Two different failures, and telling them apart matters: "add a
+          // channel" is useless advice when the channel exists and is simply
+          // holding a full buffer.
+          const exists = channels.some((c) => c.platform === normalizedPlatform);
+          const msg = exists
+            ? `Every "${platform}" channel is backed up right now — don't queue for it this shift. Write for an open channel instead, or research and engage.`
+            : `No "${platform}" channel exists for this persona. Add the channel first, or use one it has.`;
+          await step({
+            kind: "tool_result",
+            tool: "queue_draft",
+            payload: { error: exists ? "no_room" : "no_channel", platform },
+          });
           return msg;
         }
         // Hard platform limit: an X post is one tweet. A thread is many drafts.

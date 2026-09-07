@@ -40,11 +40,47 @@ const MIN_WAIT_MIN = 15;
 const MAX_WAIT_MIN = 8 * 60;
 const NO_CHANNEL_WAIT_MIN = 6 * 60;
 const FAILURE_WAIT_MIN = 60;
-// Soft ceiling on the unpublished buffer, sized to ~one day of the combined
-// daily caps (X 8 + devto 2 + blog 1). Kept small on purpose: a bigger buffer
-// just becomes a multi-day backlog of stale takes that publish days late and
-// freeze new production. The per-channel daily caps still do the real pacing.
-const MAX_PENDING = 12;
+// The unpublished buffer is held PER CHANNEL: a channel has room while it holds
+// less than one day of its own cap. A single global ceiling looks tidier but
+// starves the slow channels — X fills 8 a day, so a week of queued tweets froze
+// every blog and dev.to draft even though those queues were empty and their
+// weekly quota was behind. The per-channel daily caps still do the real pacing.
+function channelBuffer(channel: PersonaChannel): number {
+  return Math.max(1, channel.max_posts_per_day);
+}
+
+/**
+ * Which channels still have queue room, which platforms that leaves open, and
+ * which platforms are backed up. Pure, so the rule is testable without a
+ * database.
+ *
+ * The channel ids are the part that has to travel: a platform is open when ANY
+ * of its channels has room, but the draft is written to ONE channel. Without the
+ * ids the writer falls back to the oldest channel of that platform, so with two
+ * blogs where the older one is full the persona would draft for an "open"
+ * platform every shift and pile every draft onto the full channel — this bug,
+ * one level down.
+ */
+export function splitPlatformsByQueueRoom(
+  channels: PersonaChannel[],
+  pendingByChannel: Map<string, number>,
+): { open: string[]; backedUp: string[]; openChannelIds: string[] } {
+  const open = new Set<string>();
+  const seen = new Set<string>();
+  const openChannelIds: string[] = [];
+  for (const channel of channels) {
+    seen.add(channel.platform);
+    if ((pendingByChannel.get(channel.id) ?? 0) < channelBuffer(channel)) {
+      open.add(channel.platform);
+      openChannelIds.push(channel.id);
+    }
+  }
+  return {
+    open: [...open],
+    backedUp: [...seen].filter((p) => !open.has(p)),
+    openChannelIds,
+  };
+}
 
 export type Cadence = "off" | "daily" | "weekly";
 
@@ -104,7 +140,8 @@ const ReflectionSchema = z.object({
 
 function buildShiftGoal(
   persona: Persona,
-  allowed: string[],
+  open: string[],
+  backedUp: string[],
   goalsBrief: string,
   memoryTitles: string[],
   postingAllowed: boolean,
@@ -133,12 +170,20 @@ function buildShiftGoal(
         .join(", ")}`
     : "";
   const postBeat = postingAllowed
-    ? "4) WRITE and queue ONE self-contained piece with queue_draft. For X, a single standalone tweet that stands on its own — never a thread. A shift with no draft is wasted unless nothing is genuinely worth posting."
-    : "4) Your post queue is full right now — do NOT queue a new post. Instead go deeper: read more, save what you learn to memory, and engage (read your inbox / reply if you have email).";
+    ? `4) WRITE and queue ONE self-contained piece with queue_draft, for one of: ${open.join(", ")}. For X, a single standalone tweet that stands on its own — never a thread. A shift with no draft is wasted unless nothing is genuinely worth posting.`
+    : "4) Every one of your channels is backed up right now — do NOT queue a new post. Instead go deeper: read more, save what you learn to memory, and engage (read your inbox / reply if you have email).";
+  // Naming the backed-up channels matters: without it the persona keeps writing
+  // for the channel it always writes for and the draft is rejected downstream.
+  const backedUpLine = backedUp.length
+    ? `These channels are backed up and closed this shift: ${backedUp.join(", ")}. Do NOT write for them — put the work into the ones that are open.`
+    : "";
   return [
     `This is your shift as ${persona.display_name} (@${persona.handle}). You are a relentless operator: your job is to HIT YOUR GOALS, and you do whatever it takes and never stop working to get there.`,
     `Your beat: ${persona.beat}.`,
-    `Channels you can post to right now: ${allowed.join(", ")}.`,
+    postingAllowed
+      ? `Channels you can post to right now: ${open.join(", ")}.`
+      : "None of your channels have queue room this shift.",
+    backedUpLine,
     failureLine,
     feedbackLine,
     goalsBrief,
@@ -179,18 +224,24 @@ async function recentPublishFailures(
   }));
 }
 
-/** Pieces already waiting to publish — used to avoid out-producing the queue. */
-async function countPendingActivities(
+/** Unpublished activities per channel — the buffer each channel is holding. */
+async function countPendingByChannel(
   client: SupabaseClient,
   personaId: string,
-): Promise<number> {
-  const { count, error } = await client
+): Promise<Map<string, number>> {
+  const { data, error } = await client
     .from("persona_activities")
-    .select("id", { count: "exact", head: true })
+    .select("channel_id")
     .eq("persona_id", personaId)
     .in("status", ["draft", "approved", "scheduled"]);
   if (error) throw new Error(error.message);
-  return count ?? 0;
+  const counts = new Map<string, number>();
+  for (const row of data ?? []) {
+    const id = typeof row.channel_id === "string" ? row.channel_id : null;
+    if (!id) continue;
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return counts;
 }
 
 /** Titles of the persona's most recent posts, so a shift avoids repeating them. */
@@ -238,9 +289,8 @@ export async function runPersonaTick({
   now: Date;
 }): Promise<TickResult> {
   const channels = await listChannelsForPersona(client, persona.id);
-  const allowed = Array.from(
-    new Set(channels.filter(isActionable).map((c) => c.platform)),
-  );
+  const actionable = channels.filter(isActionable);
+  const allowed = Array.from(new Set(actionable.map((c) => c.platform)));
 
   const base: TickResult = {
     persona_id: persona.id,
@@ -263,10 +313,15 @@ export async function runPersonaTick({
     return { ...base, wait_minutes: NO_CHANNEL_WAIT_MIN, note };
   }
 
-  // Backpressure: if the publish queue is full, still work this shift — just
-  // don't add a new post (research, memory, and engagement instead).
-  const pending = await countPendingActivities(client, persona.id);
-  const postingAllowed = pending < MAX_PENDING;
+  // Backpressure, per channel: a channel holding a full buffer is off the table
+  // this shift, but the others stay open. With nothing open at all the persona
+  // still works the shift — it just researches and engages instead of posting.
+  const pendingByChannel = await countPendingByChannel(client, persona.id);
+  const { open, backedUp, openChannelIds } = splitPlatformsByQueueRoom(
+    actionable,
+    pendingByChannel,
+  );
+  const postingAllowed = open.length > 0;
 
   const goalsBrief = buildGoalsBrief(await computeProgress(client, persona, now));
   const memoryTitles = await recentMemoryTitles(client, persona.id).catch(() => []);
@@ -289,7 +344,8 @@ export async function runPersonaTick({
     persona,
     goal: buildShiftGoal(
       persona,
-      allowed,
+      open,
+      backedUp,
       goalsBrief,
       memoryTitles,
       postingAllowed,
@@ -298,10 +354,14 @@ export async function runPersonaTick({
       recentPosts,
     ),
     trigger: "scheduled",
-    allowedPlatforms: allowed,
+    // Only the channels with room: a draft for a backed-up channel would just be
+    // rejected by queue_draft, wasting the shift's one post.
+    allowedPlatforms: open,
+    // Which channel of that platform the draft actually lands on.
+    openChannelIds,
     maxSteps: SHIFT_STEPS,
-    // One post per shift; 0 when the publish queue is full. Deterministic — the
-    // running counter can't overshoot MAX_PENDING across shifts.
+    // One post per shift; 0 when every channel is backed up. Deterministic — the
+    // running counter can't overshoot a channel's buffer across shifts.
     maxDrafts: postingAllowed ? 1 : 0,
   });
 
