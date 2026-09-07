@@ -11,6 +11,7 @@ import { generateText } from "ai";
 
 import { getModel } from "@/lib/ai/provider";
 import { searchWebContent, scrapePageContent } from "@/lib/exa";
+import { OWNED_DOMAINS } from "@/lib/owned-domains";
 
 export type BrandMentionCandidate = {
   url: string;
@@ -60,12 +61,8 @@ export const NOISE_DOMAINS = [
   "instagram.com",
   "tiktok.com",
   "medium.com", // medium-as-blog is real, but spam-heavy. include for V1; revisit V2.
-  "kodus.io", // self
-  "docs.kodus.io",
-  "growth.kodus.io",
-  "app.kodus.io",
-  "codereviewbench.com", // owned
-  "aicodereviews.io", // owned
+  // Everything we own — never a link-reclamation target.
+  ...OWNED_DOMAINS,
 ];
 
 // Conservative cap to prevent accidental Exa quota burns.

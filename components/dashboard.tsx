@@ -1315,9 +1315,16 @@ function AIVisibilitySection({ summary }: { summary: VisibilitySummary }) {
                 {absent.map((d) => (
                   <TableRow key={d.domain} className="border-white/5">
                     <TableCell className="text-neutral-200">
-                      <a href={d.urls[0]} target="_blank" rel="noreferrer" className="hover:underline">
-                        {d.domain}
-                      </a>
+                      {/* A shared host whose every cited page turns out to be
+                          ours leaves no example to link to. Render the name
+                          rather than an anchor with nothing behind it. */}
+                      {d.urls[0] ? (
+                        <a href={d.urls[0]} target="_blank" rel="noreferrer" className="hover:underline">
+                          {d.domain}
+                        </a>
+                      ) : (
+                        d.domain
+                      )}
                     </TableCell>
                     <TableCell className="text-right text-amber-300">{d.runsWithoutBrand}</TableCell>
                     <TableCell className="text-right text-neutral-300">{d.citations}</TableCell>

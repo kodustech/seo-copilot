@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { BRAND_DOMAINS, isOwnedDomain, isOwnedUrl } from "@/lib/owned-domains";
+
 /**
  * AI visibility: a list of buyer prompts, asked every week to the assistants
  * people actually use, through DataForSEO's LLM Responses API (the real
@@ -535,7 +537,9 @@ export function domainOf(url: string): string | null {
   }
 }
 
-const OWN_DOMAINS = ["kodus.io", "trykodus.com", "github.com/kodustech"];
+/** A citation of a page that carries the Kodus brand. Owned-but-unbranded
+ *  properties are deliberately NOT here — see lib/owned-domains.ts. */
+const OWN_DOMAINS: readonly string[] = BRAND_DOMAINS;
 
 /**
  * Read the answer the way a buyer would: is the brand there, which place in
@@ -1112,7 +1116,12 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
         const agg = domainAgg.get(d) ?? { domain: d, citations: 0, runsWithoutBrand: 0, urls: [] };
         agg.citations += 1;
         if (!r.mentioned) agg.runsWithoutBrand += 1;
-        if (agg.urls.length < 3 && !agg.urls.includes(c.url)) agg.urls.push(c.url);
+        // A shared host stays on the list — github.com carries the awesome-lists
+        // we want to be on — but our own pages there are not somewhere to go
+        // ask for a listing, so they never become the example URLs.
+        if (agg.urls.length < 3 && !agg.urls.includes(c.url) && !isOwnedUrl(c.url)) {
+          agg.urls.push(c.url);
+        }
         domainAgg.set(d, agg);
       }
       for (const name of r.competitors) compAgg.set(name, (compAgg.get(name) ?? 0) + 1);
@@ -1159,9 +1168,10 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
   });
   engines.sort((a, b) => AI_ENGINES.indexOf(a.engine) - AI_ENGINES.indexOf(b.engine));
 
-  const ownDomains = new Set(["kodus.io", "trykodus.com"]);
+  // Our own sites are not link targets to go pitch — including the unbranded
+  // editorial properties, which read exactly like a third-party source here.
   const domains = [...domainAgg.values()]
-    .filter((d) => !ownDomains.has(d.domain))
+    .filter((d) => !isOwnedDomain(d.domain))
     .sort((a, b) => b.runsWithoutBrand - a.runsWithoutBrand || b.citations - a.citations)
     .slice(0, 40);
 
