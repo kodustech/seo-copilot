@@ -49,24 +49,36 @@ function channelBuffer(channel: PersonaChannel): number {
   return Math.max(1, channel.max_posts_per_day);
 }
 
-/** Which platforms still have queue room and which are backed up. Pure, so the
- *  rule is testable without a database. A platform is open when ANY of its
- *  actionable channels has room. */
+/**
+ * Which channels still have queue room, which platforms that leaves open, and
+ * which platforms are backed up. Pure, so the rule is testable without a
+ * database.
+ *
+ * The channel ids are the part that has to travel: a platform is open when ANY
+ * of its channels has room, but the draft is written to ONE channel. Without the
+ * ids the writer falls back to the oldest channel of that platform, so with two
+ * blogs where the older one is full the persona would draft for an "open"
+ * platform every shift and pile every draft onto the full channel — this bug,
+ * one level down.
+ */
 export function splitPlatformsByQueueRoom(
   channels: PersonaChannel[],
   pendingByChannel: Map<string, number>,
-): { open: string[]; backedUp: string[] } {
+): { open: string[]; backedUp: string[]; openChannelIds: string[] } {
   const open = new Set<string>();
   const seen = new Set<string>();
+  const openChannelIds: string[] = [];
   for (const channel of channels) {
     seen.add(channel.platform);
     if ((pendingByChannel.get(channel.id) ?? 0) < channelBuffer(channel)) {
       open.add(channel.platform);
+      openChannelIds.push(channel.id);
     }
   }
   return {
     open: [...open],
     backedUp: [...seen].filter((p) => !open.has(p)),
+    openChannelIds,
   };
 }
 
@@ -305,7 +317,10 @@ export async function runPersonaTick({
   // this shift, but the others stay open. With nothing open at all the persona
   // still works the shift — it just researches and engages instead of posting.
   const pendingByChannel = await countPendingByChannel(client, persona.id);
-  const { open, backedUp } = splitPlatformsByQueueRoom(actionable, pendingByChannel);
+  const { open, backedUp, openChannelIds } = splitPlatformsByQueueRoom(
+    actionable,
+    pendingByChannel,
+  );
   const postingAllowed = open.length > 0;
 
   const goalsBrief = buildGoalsBrief(await computeProgress(client, persona, now));
@@ -342,6 +357,8 @@ export async function runPersonaTick({
     // Only the channels with room: a draft for a backed-up channel would just be
     // rejected by queue_draft, wasting the shift's one post.
     allowedPlatforms: open,
+    // Which channel of that platform the draft actually lands on.
+    openChannelIds,
     maxSteps: SHIFT_STEPS,
     // One post per shift; 0 when every channel is backed up. Deterministic — the
     // running counter can't overshoot a channel's buffer across shifts.

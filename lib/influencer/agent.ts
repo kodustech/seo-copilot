@@ -118,11 +118,22 @@ function buildAgentSystem(
   ].join("\n");
 }
 
+/**
+ * Which channel of a platform a draft is written to. When the caller says which
+ * channels still have queue room, prefer one of those: a platform is open when
+ * ANY of its channels has room, and picking the oldest regardless would pile
+ * every draft onto the full one while the empty channel starves.
+ */
 function pickChannel(
   channels: PersonaChannel[],
   platform: string,
+  openChannelIds?: string[],
 ): PersonaChannel | undefined {
   const active = channels.filter((c) => c.platform === platform && c.status !== "paused");
+  if (openChannelIds?.length) {
+    const roomy = active.find((c) => openChannelIds.includes(c.id));
+    if (roomy) return roomy;
+  }
   return active[0] ?? channels.find((c) => c.platform === platform);
 }
 
@@ -147,6 +158,7 @@ export async function runInfluencerAgentSession({
   trigger,
   createdBy,
   allowedPlatforms,
+  openChannelIds,
   maxSteps,
   maxDrafts,
 }: {
@@ -157,6 +169,9 @@ export async function runInfluencerAgentSession({
   createdBy?: string;
   /** If set, queue_draft may only target these platforms (connected channels). */
   allowedPlatforms?: string[];
+  /** If set, the channels with queue room — a draft lands on one of these
+   *  rather than on whichever channel of the platform is oldest. */
+  openChannelIds?: string[];
   /** Override the per-session step budget (a self-paced shift runs longer). */
   maxSteps?: number;
   /** Hard cap on drafts this session (0 = none; 1 = one post/shift). Enforced
@@ -707,7 +722,7 @@ export async function runInfluencerAgentSession({
           return msg;
         }
         const channel = normalizedPlatform
-          ? pickChannel(channels, normalizedPlatform)
+          ? pickChannel(channels, normalizedPlatform, openChannelIds)
           : undefined;
         if (!channel) {
           const msg = `No "${platform}" channel exists for this persona. Add the channel first, or use one it has.`;

@@ -75,6 +75,24 @@ describe("splitPlatformsByQueueRoom", () => {
     expect(backedUp).toEqual([]);
   });
 
+  it("names the channel with room, not just its platform", () => {
+    // The draft lands on ONE channel. Reporting only "x is open" would send
+    // every draft to the oldest channel of that platform — the full one — and
+    // reproduce the queue drift one level down.
+    const second = makeChannel({ id: "x2", platform: "x", max_posts_per_day: 8 });
+    const pending = new Map([["x1", 8]]);
+    const { openChannelIds } = splitPlatformsByQueueRoom([x, second], pending);
+    expect(openChannelIds).toEqual(["x2"]);
+  });
+
+  it("lists every channel with room across platforms", () => {
+    const { openChannelIds } = splitPlatformsByQueueRoom(
+      [x, devto, blog],
+      new Map([["d1", 2]]),
+    );
+    expect(openChannelIds).toEqual(["x1", "b1"]);
+  });
+
   it("still allows one queued item on a channel capped at zero per day", () => {
     const paused = makeChannel({ id: "z1", platform: "blog", max_posts_per_day: 0 });
     const { open } = splitPlatformsByQueueRoom([paused], new Map());
