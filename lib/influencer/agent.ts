@@ -797,7 +797,11 @@ export async function runInfluencerAgentSession({
             .select("external_url")
             .eq("persona_id", persona.id)
             .eq("status", "published")
-            .not("external_url", "is", null);
+            .not("external_url", "is", null)
+            // Only recent work gets crossposted, and the whole history would
+            // grow this query for the life of the persona.
+            .order("created_at", { ascending: false })
+            .limit(100);
           const publishedUrls = (originals ?? [])
             .map((r) => (typeof r.external_url === "string" ? r.external_url : ""))
             .filter(Boolean);

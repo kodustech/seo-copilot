@@ -54,9 +54,19 @@ describe("matchesOwnOriginal", () => {
     expect(matchesOwnOriginal("https://kodus.io/blog/someone-elses-post", published)).toBe(false);
   });
 
-  it("forgives a trailing slash and case, which don't mean a different page", () => {
+  it("forgives a trailing slash, and case where the spec says to", () => {
+    // Scheme and host are case-insensitive; an API returning /slug/ and a model
+    // copying /slug are the same page.
     expect(matchesOwnOriginal("https://aicodereview.io/blog/ai-code-review-benchmarks", published)).toBe(true);
     expect(matchesOwnOriginal("  HTTPS://AICODEREVIEW.IO/blog/ai-code-review-benchmarks/  ", published)).toBe(true);
+  });
+
+  it("does not forgive a difference in the path's case", () => {
+    // The path is case-sensitive. Accepting one that differs only in case would
+    // send the ranking to a 404 on any host that means it.
+    expect(
+      matchesOwnOriginal("https://aicodereview.io/blog/AI-Code-Review-Benchmarks", published),
+    ).toBe(false);
   });
 
   it("rejects everything when the persona has published nothing", () => {

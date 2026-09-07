@@ -84,10 +84,23 @@ export function isOwnedCanonical(raw: string): boolean {
   }
 }
 
-/** Trailing slashes and case differ between what an API returns and what a
- *  model copies back, and neither difference means a different page. */
+/**
+ * Trailing slashes differ between what an API returns and what a model copies
+ * back, and that isn't a different page. Case is only forgiving where the spec
+ * says it is: scheme and host are case-insensitive, the path is not. Folding
+ * the path too would accept /blog/DevOps-Guide for /blog/devops-guide and send
+ * the ranking to a 404 on any case-sensitive host.
+ */
 function normalizeUrl(raw: string): string {
-  return raw.trim().toLowerCase().replace(/\/+$/, "");
+  const trimmed = raw.trim();
+  try {
+    const url = new URL(trimmed);
+    const host = url.hostname.toLowerCase().replace(/\.$/, "");
+    const path = url.pathname.replace(/\/+$/, "");
+    return `${url.protocol.toLowerCase()}//${host}${path}${url.search}`;
+  } catch {
+    return trimmed.replace(/\/+$/, "");
+  }
 }
 
 /**
