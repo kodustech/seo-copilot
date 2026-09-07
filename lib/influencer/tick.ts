@@ -173,7 +173,7 @@ function buildShiftGoal(
   const recentPostsLine = recentPosts.length
     ? `You've recently posted or lined up these — do NOT repeat the same take, topic, or angle; if the story is the same, you must bring a genuinely new angle or move to a different subject: ${recentPosts
         .map((t) => `"${t}"`)
-        .join(", ")}`
+        .join(", ")}. The exception is a deliberate CROSSPOST: an article of yours that already went live on one of our own sites can run again on another channel, as long as you pass canonical_url with that exact URL so the original keeps the credit.`
     : "";
   const postBeat = postingAllowed
     ? `4) WRITE and queue ONE self-contained piece with queue_draft, for one of: ${open.join(", ")}. For X, a single standalone tweet that stands on its own — never a thread. A shift with no draft is wasted unless nothing is genuinely worth posting.`
@@ -258,7 +258,7 @@ async function recentPostTitles(
 ): Promise<string[]> {
   const { data, error } = await client
     .from("persona_activities")
-    .select("title, content, created_at")
+    .select("title, content, created_at, external_url")
     .eq("persona_id", personaId)
     // Only real posts/articles that went out or are lined up — not failed
     // attempts or non-content rows, so the "don't repeat" list stays honest.
@@ -270,7 +270,13 @@ async function recentPostTitles(
   return (data ?? [])
     .map((r) => {
       const raw = typeof r.title === "string" && r.title ? r.title : r.content;
-      return typeof raw === "string" ? raw.replace(/\s+/g, " ").trim().slice(0, 80) : "";
+      const label =
+        typeof raw === "string" ? raw.replace(/\s+/g, " ").trim().slice(0, 80) : "";
+      if (!label) return "";
+      // The live URL is what makes a crosspost possible: canonical_url has to be
+      // the exact original, and a persona with no URL in front of it invents one.
+      const url = typeof r.external_url === "string" ? r.external_url : "";
+      return url ? `${label} (${url})` : label;
     })
     .filter(Boolean);
 }

@@ -18,6 +18,8 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
+import { isOwnedDomain } from "@/lib/owned-domains";
+
 const BLOCKED_HOSTS = new Set(["localhost", "metadata.google.internal", "metadata"]);
 
 /** Private / reserved / loopback / link-local address → not fetchable. */
@@ -64,4 +66,59 @@ export async function assertPublicUrl(url: string): Promise<URL> {
     throw new Error("URL resolves to a private or reserved address.");
   }
   return parsed;
+}
+
+/**
+ * A canonical tag hands the ranking to whatever it points at, so a model-chosen
+ * canonical may only ever point at a site we own — otherwise a crosspost credits
+ * someone else's page for our own writing. Not an SSRF check: nothing fetches
+ * this URL, it is written into the published article.
+ */
+export function isOwnedCanonical(raw: string): boolean {
+  try {
+    const parsed = new URL(raw.trim());
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    return isOwnedDomain(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Trailing slashes differ between what an API returns and what a model copies
+ * back, and that isn't a different page. Case is only forgiving where the spec
+ * says it is: scheme and host are case-insensitive, the path is not. Folding
+ * the path too would accept /blog/DevOps-Guide for /blog/devops-guide and send
+ * the ranking to a 404 on any case-sensitive host.
+ */
+function normalizeUrl(raw: string): string {
+  const trimmed = raw.trim();
+  try {
+    const url = new URL(trimmed);
+    // The port has to survive — a canonical on :8443 is a different origin from
+    // the real page on the default one — but it can't be taken from `host`
+    // wholesale, because a trailing-dot hostname puts the dot mid-string
+    // ("example.com.:8443") where it stops matching the same page written
+    // without it. A default port never reaches here: the URL parser drops :443
+    // on https and :80 on http, leaving `port` empty.
+    const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+    const host = url.port ? `${hostname}:${url.port}` : hostname;
+    const path = url.pathname.replace(/\/+$/, "");
+    return `${url.protocol.toLowerCase()}//${host}${path}${url.search}`;
+  } catch {
+    return trimmed.replace(/\/+$/, "");
+  }
+}
+
+/**
+ * A canonical must be a page the persona actually published, not merely a page
+ * on a domain we own. Owning the domain closes the competitor case; it does
+ * nothing about an invented URL, and a canonical pointing at a page that was
+ * never written hands the ranking to a 404. The shift prompt hands the persona
+ * its own live URLs precisely so it doesn't have to remember one.
+ */
+export function matchesOwnOriginal(canonical: string, publishedUrls: string[]): boolean {
+  const target = normalizeUrl(canonical);
+  if (!target) return false;
+  return publishedUrls.some((url) => normalizeUrl(url) === target);
 }
