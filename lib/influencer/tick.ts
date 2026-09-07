@@ -106,13 +106,15 @@ export function isDue(persona: Persona, now: Date): boolean {
 }
 
 /** A channel the persona can publish to on its own, right now. */
-function isActionable(channel: PersonaChannel): boolean {
+export function isActionable(channel: PersonaChannel): boolean {
   if (channel.status !== "active") return false;
   if (channel.automation_level === "draft_only") return false;
-  // A blog publishes through its site's content API. The key can also live in
-  // the vault, which we can't read synchronously — same limit as dev.to below.
+  // Ask the same question the publisher will ask: is THIS site's key present?
+  // Accepting any channel that merely names one lets a persona spend shifts
+  // writing for a site whose key was never deployed, and every publish then
+  // fails at cron time.
   if (channel.platform === "blog") {
-    return Boolean(process.env.CONTENT_API_KEY) || Boolean(channel.credentials_ref);
+    return Boolean(process.env[channel.credentials_ref?.trim() || "CONTENT_API_KEY"]);
   }
   if (channel.publish_via === "post_bridge") {
     return Number(channel.channel_config.post_bridge_account_id) > 0;
