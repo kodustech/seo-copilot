@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { BRAND_DOMAINS, isOwnedDomain } from "@/lib/owned-domains";
+
 /**
  * AI visibility: a list of buyer prompts, asked every week to the assistants
  * people actually use, through DataForSEO's LLM Responses API (the real
@@ -535,7 +537,9 @@ export function domainOf(url: string): string | null {
   }
 }
 
-const OWN_DOMAINS = ["kodus.io", "trykodus.com", "github.com/kodustech"];
+/** A citation of a page that carries the Kodus brand. Owned-but-unbranded
+ *  properties are deliberately NOT here — see lib/owned-domains.ts. */
+const OWN_DOMAINS: readonly string[] = BRAND_DOMAINS;
 
 /**
  * Read the answer the way a buyer would: is the brand there, which place in
@@ -1159,9 +1163,10 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
   });
   engines.sort((a, b) => AI_ENGINES.indexOf(a.engine) - AI_ENGINES.indexOf(b.engine));
 
-  const ownDomains = new Set(["kodus.io", "trykodus.com"]);
+  // Our own sites are not link targets to go pitch — including the unbranded
+  // editorial properties, which read exactly like a third-party source here.
   const domains = [...domainAgg.values()]
-    .filter((d) => !ownDomains.has(d.domain))
+    .filter((d) => !isOwnedDomain(d.domain))
     .sort((a, b) => b.runsWithoutBrand - a.runsWithoutBrand || b.citations - a.citations)
     .slice(0, 40);
 

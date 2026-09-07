@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { searchWebContent } from "@/lib/exa";
 import { getModel } from "@/lib/ai/provider";
+import { OWNED_DOMAINS } from "@/lib/owned-domains";
 import { getCompetitorDomains } from "@/lib/voice-policy";
 
 // ---------------------------------------------------------------------------
@@ -635,13 +636,7 @@ const WEB_EXPERIENCE_DOMAINS = [
 ];
 
 // Exclude our own properties + obvious non-articles.
-const WEB_EXCLUDE_DOMAINS = [
-  "kodus.io",
-  "aicodereviews.io",
-  "codereviewbench.com",
-  "youtube.com",
-  "github.com",
-];
+const WEB_EXCLUDE_DOMAINS = [...OWNED_DOMAINS, "youtube.com", "github.com"];
 
 // Direct AI-code-review competitors. Listicles hosted on these domains will
 // never include Kodus (the host won't link out to a competitor), so we drop
