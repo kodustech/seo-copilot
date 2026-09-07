@@ -118,15 +118,22 @@ describe("pickChannel", () => {
     // An auto channel publishes on its own and an approve_first one waits for a
     // human. Crossing that line silently puts the post on a cadence nobody chose.
     const needsReview = makeChannel({ id: "x3", platform: "x", automation_level: "approve_first" });
-    expect(pickChannel([oldest, needsReview], "x", ["x3"])?.id).toBe("x1");
+    expect(pickChannel([oldest, needsReview], "x", ["x3"])).toBeUndefined();
+  });
+
+  it("returns nothing rather than a channel without room", () => {
+    // Handing back the full oldest channel would write past its buffer — one
+    // draft a shift, which is the arithmetic that grew the queue to 58.
+    expect(pickChannel([oldest, sibling], "x", [])).toBeUndefined();
+    expect(pickChannel([oldest, sibling], "x", ["other-platform-id"])).toBeUndefined();
   });
 
   it("behaves as before when the caller names no open channels", () => {
     expect(pickChannel([oldest, sibling], "x")?.id).toBe("x1");
   });
 
-  it("falls back to a paused channel only when nothing is active", () => {
+  it("falls back to a paused channel only when the caller names no open ones", () => {
     const paused = makeChannel({ id: "x9", platform: "x", status: "paused" });
-    expect(pickChannel([paused], "x", [])?.id).toBe("x9");
+    expect(pickChannel([paused], "x")?.id).toBe("x9");
   });
 });

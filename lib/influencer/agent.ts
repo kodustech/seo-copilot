@@ -127,8 +127,12 @@ function buildAgentSystem(
  * Deflecting to a sibling must not change the human contract, though. An `auto`
  * channel publishes on its own; an `approve_first` one waits for a review. A
  * draft that silently crosses that line goes out on a cadence nobody chose, so
- * the deflection only ever happens within the same automation level — and when
- * no same-level sibling has room we stay put and let the buffer do its job.
+ * the deflection only ever happens within the same automation level.
+ *
+ * When the caller names the channels with room, this returns nothing rather
+ * than a channel without room. Falling back to the full oldest channel would
+ * write past its buffer — one draft per shift, which is exactly the arithmetic
+ * that grew the queue to 58 in the first place.
  */
 export function pickChannel(
   channels: PersonaChannel[],
@@ -137,13 +141,14 @@ export function pickChannel(
 ): PersonaChannel | undefined {
   const active = channels.filter((c) => c.platform === platform && c.status !== "paused");
   const oldest = active[0];
-  if (openChannelIds?.length && oldest) {
+  // `undefined` means the caller didn't say; `[]` means nothing has room. Only
+  // the first one is allowed to fall through to the unchecked oldest channel.
+  if (openChannelIds !== undefined && oldest) {
     const withRoom = new Set(openChannelIds);
     if (withRoom.has(oldest.id)) return oldest;
-    const sibling = active.find(
+    return active.find(
       (c) => withRoom.has(c.id) && c.automation_level === oldest.automation_level,
     );
-    if (sibling) return sibling;
   }
   return oldest ?? channels.find((c) => c.platform === platform);
 }
@@ -732,19 +737,22 @@ export async function runInfluencerAgentSession({
           await step({ kind: "tool_result", tool: "queue_draft", payload: { blocked: platform } });
           return msg;
         }
-        // A reply belongs to the account whose timeline it was read from, so it
-        // never deflects to a sibling channel — replying from the other account
-        // is wrong no matter how much room that one has.
         const channel = normalizedPlatform
-          ? pickChannel(
-              channels,
-              normalizedPlatform,
-              normalizedKind === "reply" ? undefined : openChannelIds,
-            )
+          ? pickChannel(channels, normalizedPlatform, openChannelIds)
           : undefined;
         if (!channel) {
-          const msg = `No "${platform}" channel exists for this persona. Add the channel first, or use one it has.`;
-          await step({ kind: "tool_result", tool: "queue_draft", payload: { error: msg } });
+          // Two different failures, and telling them apart matters: "add a
+          // channel" is useless advice when the channel exists and is simply
+          // holding a full buffer.
+          const exists = channels.some((c) => c.platform === normalizedPlatform);
+          const msg = exists
+            ? `Every "${platform}" channel is backed up right now — don't queue for it this shift. Write for an open channel instead, or research and engage.`
+            : `No "${platform}" channel exists for this persona. Add the channel first, or use one it has.`;
+          await step({
+            kind: "tool_result",
+            tool: "queue_draft",
+            payload: { error: exists ? "no_room" : "no_channel", platform },
+          });
           return msg;
         }
         // Hard platform limit: an X post is one tweet. A thread is many drafts.
