@@ -798,8 +798,11 @@ export async function runInfluencerAgentSession({
             .eq("persona_id", persona.id)
             .eq("status", "published")
             .not("external_url", "is", null)
-            // Only recent work gets crossposted, and the whole history would
-            // grow this query for the life of the persona.
+            // The same window the shift prompt exposes (recentPostTitles filters
+            // to these kinds), so the persona can never be handed a URL it is
+            // then told it may not use. Bounded because only recent work gets
+            // crossposted and the history grows for the life of the persona.
+            .in("kind", ["post", "article"])
             .order("created_at", { ascending: false })
             .limit(100);
           const publishedUrls = (originals ?? [])

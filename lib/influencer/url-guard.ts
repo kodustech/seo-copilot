@@ -95,7 +95,10 @@ function normalizeUrl(raw: string): string {
   const trimmed = raw.trim();
   try {
     const url = new URL(trimmed);
-    const host = url.hostname.toLowerCase().replace(/\.$/, "");
+    // `host`, not `hostname`: the latter drops the port, so a canonical on
+    // :8443 would compare equal to the real page on the default port and the
+    // tag would be written pointing at a different origin.
+    const host = url.host.toLowerCase().replace(/\.$/, "");
     const path = url.pathname.replace(/\/+$/, "");
     return `${url.protocol.toLowerCase()}//${host}${path}${url.search}`;
   } catch {

@@ -69,6 +69,14 @@ describe("matchesOwnOriginal", () => {
     ).toBe(false);
   });
 
+  it("treats a different port as a different origin", () => {
+    // The raw string is what gets written as the tag, so approving :8443
+    // against the real page would point the canonical at another service.
+    expect(
+      matchesOwnOriginal("https://aicodereview.io:8443/blog/ai-code-review-benchmarks", published),
+    ).toBe(false);
+  });
+
   it("rejects everything when the persona has published nothing", () => {
     expect(matchesOwnOriginal(published[0], [])).toBe(false);
     expect(matchesOwnOriginal("", published)).toBe(false);
