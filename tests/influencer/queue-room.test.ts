@@ -68,22 +68,24 @@ describe("splitPlatformsByQueueRoom", () => {
     expect(open.sort()).toEqual(["devto", "x"]);
   });
 
-  it("treats a platform as open when any of its channels has room", () => {
+  it("judges a platform by its first channel, not by a free sibling", () => {
+    // Opening the platform because a sibling is free would need a policy for
+    // which channel the draft lands on — and that policy decides whether a
+    // piece skips a review gate. One channel decides, in one place.
     const second = makeChannel({ id: "x2", platform: "x", max_posts_per_day: 8 });
     const pending = new Map([["x1", 8]]);
-    const { open, backedUp } = splitPlatformsByQueueRoom([x, second], pending);
-    expect(open).toEqual(["x"]);
-    expect(backedUp).toEqual([]);
+    const { open, backedUp, openChannelIds } = splitPlatformsByQueueRoom([x, second], pending);
+    expect(open).toEqual([]);
+    expect(backedUp).toEqual(["x"]);
+    expect(openChannelIds).toEqual([]);
   });
 
-  it("names the channel with room, not just its platform", () => {
-    // The draft lands on ONE channel. Reporting only "x is open" would send
-    // every draft to the oldest channel of that platform — the full one — and
-    // reproduce the queue drift one level down.
+  it("names the channel each draft will land on", () => {
+    // The tool needs the id, not just the platform: without it the writer picks
+    // for itself and can write past a channel's buffer.
     const second = makeChannel({ id: "x2", platform: "x", max_posts_per_day: 8 });
-    const pending = new Map([["x1", 8]]);
-    const { openChannelIds } = splitPlatformsByQueueRoom([x, second], pending);
-    expect(openChannelIds).toEqual(["x2"]);
+    const { openChannelIds } = splitPlatformsByQueueRoom([x, second], new Map());
+    expect(openChannelIds).toEqual(["x1"]);
   });
 
   it("lists every channel with room across platforms", () => {
@@ -106,33 +108,29 @@ describe("pickChannel", () => {
   const oldest = makeChannel({ id: "x1", platform: "x", automation_level: "auto" });
   const sibling = makeChannel({ id: "x2", platform: "x", automation_level: "auto" });
 
-  it("keeps the oldest channel when it has room", () => {
-    expect(pickChannel([oldest, sibling], "x", ["x1", "x2"])?.id).toBe("x1");
+  it("writes to the channel the caller named", () => {
+    expect(pickChannel([oldest, sibling], "x", ["x1"])?.id).toBe("x1");
   });
 
-  it("deflects to a sibling with room when the oldest is full", () => {
-    expect(pickChannel([oldest, sibling], "x", ["x2"])?.id).toBe("x2");
-  });
-
-  it("will not deflect across automation levels", () => {
-    // An auto channel publishes on its own and an approve_first one waits for a
-    // human. Crossing that line silently puts the post on a cadence nobody chose.
-    const needsReview = makeChannel({ id: "x3", platform: "x", automation_level: "approve_first" });
-    expect(pickChannel([oldest, needsReview], "x", ["x3"])).toBeUndefined();
-  });
-
-  it("returns nothing rather than a channel without room", () => {
-    // Handing back the full oldest channel would write past its buffer — one
-    // draft a shift, which is the arithmetic that grew the queue to 58.
+  it("returns nothing when that channel has no room", () => {
+    // Handing back a full channel would write past its buffer — one draft a
+    // shift, which is the arithmetic that grew the queue to 58.
     expect(pickChannel([oldest, sibling], "x", [])).toBeUndefined();
-    expect(pickChannel([oldest, sibling], "x", ["other-platform-id"])).toBeUndefined();
+  });
+
+  it("carries no policy of its own about which sibling to use", () => {
+    // splitPlatformsByQueueRoom names one channel per platform, so there is
+    // never a second candidate here to silently choose between.
+    const gated = makeChannel({ id: "g1", platform: "x", automation_level: "approve_first" });
+    expect(pickChannel([gated, sibling], "x", ["x2"])?.id).toBe("x2");
+    expect(pickChannel([gated, sibling], "x", ["g1"])?.id).toBe("g1");
   });
 
   it("behaves as before when the caller names no open channels", () => {
     expect(pickChannel([oldest, sibling], "x")?.id).toBe("x1");
   });
 
-  it("falls back to a paused channel only when the caller names no open ones", () => {
+  it("falls back to a paused channel only when nothing is active", () => {
     const paused = makeChannel({ id: "x9", platform: "x", status: "paused" });
     expect(pickChannel([paused], "x")?.id).toBe("x9");
   });

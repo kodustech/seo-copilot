@@ -119,20 +119,17 @@ function buildAgentSystem(
 }
 
 /**
- * Which channel of a platform a draft is written to. When the caller says which
- * channels still have queue room, prefer one of those: a platform is open when
- * ANY of its channels has room, and picking the oldest regardless would pile
- * every draft onto the full one while the empty channel starves.
+ * Which channel of a platform a draft is written to.
  *
- * Deflecting to a sibling must not change the human contract, though. An `auto`
- * channel publishes on its own; an `approve_first` one waits for a review. A
- * draft that silently crosses that line goes out on a cadence nobody chose, so
- * the deflection only ever happens within the same automation level.
+ * When the caller says which channels have room it names ONE per platform — the
+ * channel the writer would have used — so this either returns that channel or
+ * nothing. It carries no policy of its own: choosing a different sibling
+ * because the first is full would decide, silently and here, whether a piece
+ * skips a review gate a human configured. That decision lives in
+ * splitPlatformsByQueueRoom, where the shift brief is built from the same
+ * answer and the two cannot disagree.
  *
- * When the caller names the channels with room, this returns nothing rather
- * than a channel without room. Falling back to the full oldest channel would
- * write past its buffer — one draft per shift, which is exactly the arithmetic
- * that grew the queue to 58 in the first place.
+ * With no open list given (a manual run), the old behaviour stands.
  */
 export function pickChannel(
   channels: PersonaChannel[],
@@ -140,17 +137,11 @@ export function pickChannel(
   openChannelIds?: string[],
 ): PersonaChannel | undefined {
   const active = channels.filter((c) => c.platform === platform && c.status !== "paused");
-  const oldest = active[0];
-  // `undefined` means the caller didn't say; `[]` means nothing has room. Only
-  // the first one is allowed to fall through to the unchecked oldest channel.
-  if (openChannelIds !== undefined && oldest) {
+  if (openChannelIds !== undefined) {
     const withRoom = new Set(openChannelIds);
-    if (withRoom.has(oldest.id)) return oldest;
-    return active.find(
-      (c) => withRoom.has(c.id) && c.automation_level === oldest.automation_level,
-    );
+    return active.find((c) => withRoom.has(c.id));
   }
-  return oldest ?? channels.find((c) => c.platform === platform);
+  return active[0] ?? channels.find((c) => c.platform === platform);
 }
 
 export type AgentRunResult = {
@@ -196,6 +187,7 @@ export async function runInfluencerAgentSession({
 }): Promise<AgentRunResult> {
   const model = await getModelForPersona(client, persona);
   const channels = await listChannelsForPersona(client, persona.id);
+  const platformsWithChannel = new Set(channels.map((c) => c.platform));
   const executor = getExecutor();
 
   const session = await createSession(client, {
@@ -744,7 +736,7 @@ export async function runInfluencerAgentSession({
           // Two different failures, and telling them apart matters: "add a
           // channel" is useless advice when the channel exists and is simply
           // holding a full buffer.
-          const exists = channels.some((c) => c.platform === normalizedPlatform);
+          const exists = normalizedPlatform ? platformsWithChannel.has(normalizedPlatform) : false;
           const msg = exists
             ? `Every "${platform}" channel is backed up right now — don't queue for it this shift. Write for an open channel instead, or research and engage.`
             : `No "${platform}" channel exists for this persona. Add the channel first, or use one it has.`;
