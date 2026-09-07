@@ -18,6 +18,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 
 import { runInfluencerAgentSession } from "@/lib/influencer/agent";
+import { contentEnvNameFor } from "@/lib/influencer/publish";
 import { alertOperator } from "@/lib/influencer/alerts";
 import {
   listNewFeedback,
@@ -109,12 +110,13 @@ export function isDue(persona: Persona, now: Date): boolean {
 export function isActionable(channel: PersonaChannel): boolean {
   if (channel.status !== "active") return false;
   if (channel.automation_level === "draft_only") return false;
-  // Ask the same question the publisher will ask: is THIS site's key present?
-  // Accepting any channel that merely names one lets a persona spend shifts
-  // writing for a site whose key was never deployed, and every publish then
-  // fails at cron time.
+  // Literally the same question the publisher asks, through the same resolver.
+  // Answering it here by hand is how the sentinel the connect flow writes got
+  // read as an env var name, which would have silenced every blog channel
+  // activated through the UI — including the live one.
   if (channel.platform === "blog") {
-    return Boolean(process.env[channel.credentials_ref?.trim() || "CONTENT_API_KEY"]);
+    const envName = contentEnvNameFor(channel);
+    return Boolean(envName && process.env[envName]?.trim());
   }
   if (channel.publish_via === "post_bridge") {
     return Number(channel.channel_config.post_bridge_account_id) > 0;

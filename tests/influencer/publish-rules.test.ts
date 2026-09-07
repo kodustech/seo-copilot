@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildFleetHandles,
   dayStartUtcIso,
+  contentEnvNameFor,
   isAllowedContentEnvName,
   isAllowedDevtoEnvName,
   nextDayStartUtcIso,
@@ -287,5 +288,17 @@ describe("blog destination", () => {
     expect(isAllowedContentEnvName("CONTENT_API_KEY_BENCH")).toBe(true);
     expect(isAllowedContentEnvName("SUPABASE_SERVICE_ROLE_KEY")).toBe(false);
     expect(isAllowedContentEnvName("CONTENT_API_KEY;cat")).toBe(false);
+  });
+
+  it("resolves the connect flow's sentinel to the shared key", () => {
+    // "env:content_api" is what the UI writes and is what the live channel
+    // carries; it names no env var of its own.
+    const ch = (ref: string | null) =>
+      makeChannel({ platform: "blog", publish_via: "api", credentials_ref: ref });
+    expect(contentEnvNameFor(ch("env:content_api"))).toBe("CONTENT_API_KEY");
+    expect(contentEnvNameFor(ch(null))).toBe("CONTENT_API_KEY");
+    expect(contentEnvNameFor(ch("  "))).toBe("CONTENT_API_KEY");
+    expect(contentEnvNameFor(ch("CONTENT_API_KEY_BENCH"))).toBe("CONTENT_API_KEY_BENCH");
+    expect(contentEnvNameFor(ch("DATABASE_URL"))).toBeNull();
   });
 });

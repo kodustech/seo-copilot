@@ -150,6 +150,25 @@ describe("isActionable, for a blog channel", () => {
     expect(isActionable(blogChannel("CONTENT_API_KEY_BENCH"))).toBe(true);
   });
 
+  it("understands the sentinel the connect flow writes", () => {
+    // The live channel carries credentials_ref "env:content_api", which names
+    // no env var. Reading it as one silences every UI-connected blog channel.
+    process.env.CONTENT_API_KEY = "key";
+    expect(isActionable(blogChannel("env:content_api"))).toBe(true);
+  });
+
+  it("refuses a credentials_ref that is not a content key name", () => {
+    // The publisher rejects these, so accepting them here buys wasted shifts.
+    process.env.DATABASE_URL = "postgres://somewhere";
+    process.env.CONTENT_API_KEY = "key";
+    expect(isActionable(blogChannel("DATABASE_URL"))).toBe(false);
+    delete process.env.DATABASE_URL;
+  });
+
+  it("refuses the sentinel when the shared key is missing", () => {
+    expect(isActionable(blogChannel("env:content_api"))).toBe(false);
+  });
+
   it("refuses a channel naming a key that was never deployed", () => {
     // Accepting it would spend shifts writing for a site whose publish then
     // throws at cron time, every time.

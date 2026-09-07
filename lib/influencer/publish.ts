@@ -394,6 +394,23 @@ export function isAllowedContentEnvName(name: string): boolean {
   return /^CONTENT_API_KEY(_[A-Z0-9_]+)?$/.test(name);
 }
 
+/** What the connect flow writes for a channel on the default site. It names no
+ *  env var of its own — it means "the shared key". */
+export const CONTENT_KEY_SENTINEL = "env:content_api";
+
+/**
+ * Which env var holds this blog channel's key, or null when the channel names
+ * something we will not read. Both the publisher and the shift's actionability
+ * check go through here: a gate that answers differently from the resolver
+ * either spends shifts writing for a site that can't publish, or silences a
+ * site that can.
+ */
+export function contentEnvNameFor(channel: PersonaChannel): string | null {
+  const ref = channel.credentials_ref?.trim();
+  if (!ref || ref === CONTENT_KEY_SENTINEL) return "CONTENT_API_KEY";
+  return isAllowedContentEnvName(ref) ? ref : null;
+}
+
 /**
  * The blog key comes from an env var named by credentials_ref, so a second site
  * gets its own key instead of inheriting the first one's. There is no vault
@@ -401,10 +418,10 @@ export function isAllowedContentEnvName(name: string): boolean {
  * new provider is a change to the connect flow, not to the publisher.
  */
 function resolveBlogApiKey(channel: PersonaChannel): string {
-  const envName = channel.credentials_ref?.trim() || "CONTENT_API_KEY";
-  if (!isAllowedContentEnvName(envName)) {
+  const envName = contentEnvNameFor(channel);
+  if (!envName) {
     throw new Error(
-      `credentials_ref "${envName}" is not allowed. Use CONTENT_API_KEY or CONTENT_API_KEY_<SITE>.`,
+      `credentials_ref "${channel.credentials_ref}" is not allowed. Use CONTENT_API_KEY or CONTENT_API_KEY_<SITE>.`,
     );
   }
   const key = process.env[envName]?.trim();
