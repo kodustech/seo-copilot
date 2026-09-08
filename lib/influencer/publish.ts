@@ -390,6 +390,22 @@ export function resolveBlogApiUrl(channel: PersonaChannel): string {
   return raw;
 }
 
+/**
+ * Where a blog channel's markdown can be read back from, so a persona can
+ * revise a page instead of only ever adding one. The published page is no use
+ * for that: it is rendered HTML, and round-tripping it through the model would
+ * lose the frontmatter and mangle the body.
+ *
+ * Configured per channel because the path convention belongs to the site's
+ * repo. No credential travels with this read — the farm repos are public — so
+ * it is guarded as a public URL rather than against the owned-domain list.
+ */
+export function resolveBlogSourceBase(channel: PersonaChannel): string | null {
+  const raw = channel.channel_config.blog_source_base;
+  const base = typeof raw === "string" ? raw.trim().replace(/\/+$/, "") : "";
+  return base || null;
+}
+
 export function isAllowedContentEnvName(name: string): boolean {
   return /^CONTENT_API_KEY(_[A-Z0-9_]+)?$/.test(name);
 }
@@ -507,6 +523,11 @@ async function publishToBlog(
     "review",
   ]);
   const category = asString(meta.category);
+  // A revision is the same call with the slug it replaces: the content API
+  // refuses an existing slug unless overwrite says so, and the site is
+  // git-backed, so a rewrite lands as a commit over the old file rather than
+  // as a second page competing with the first.
+  const replaces = asString(meta.replaces_slug);
   const payload = {
     title: activity.title || activity.content.slice(0, 80),
     description: asString(meta.description),
@@ -514,6 +535,7 @@ async function publishToBlog(
     tags: tags?.length ? tags : undefined,
     content: activity.content, // markdown, no H1 (layout renders the title)
     faq: faq?.length ? faq : undefined,
+    ...(replaces ? { slug: replaces, overwrite: true } : {}),
   };
 
   const response = await fetch(`${blogApiUrl}/api/posts`, {
