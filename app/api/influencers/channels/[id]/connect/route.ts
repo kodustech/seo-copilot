@@ -11,8 +11,9 @@ import {
   CONTENT_KEY_SENTINEL,
   CONTENT_KEY_VAULT,
   DEFAULT_BLOG_API_URL,
+  blogDestination,
+  findBlogKeyClash,
   isDefaultBlogSite,
-  sameBlogSite,
 } from "@/lib/influencer/publish";
 import { influencerTableMissingMessage } from "@/lib/influencer/types";
 
@@ -144,20 +145,15 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       // Without a key of its own a channel borrows the shared one, and that one
       // only ever serves the default site. Saying "connected" here and failing
       // at publish time would be a form that lies.
+      // Where this channel will actually publish once connected. Both checks
+      // below judge this, never the request on its own.
+      const destination = blogDestination(channel, apiUrl);
+
       if (!key) {
-        // The URL the PUBLISHER will resolve, not the one in this request: a
-        // blank api_url leaves whatever the channel already had, so judging the
-        // request alone would approve a farm channel as "default site" and the
-        // form would lie in the other direction.
-        const stored =
-          typeof channel.channel_config.blog_api_url === "string"
-            ? channel.channel_config.blog_api_url.trim()
-            : "";
-        const target = apiUrl || stored || DEFAULT_BLOG_API_URL;
-        if (!isDefaultBlogSite(target)) {
+        if (!isDefaultBlogSite(destination)) {
           return NextResponse.json(
             {
-              error: `A blog on ${target} needs its own content API key — the shared CONTENT_API_KEY only publishes to ${DEFAULT_BLOG_API_URL}.`,
+              error: `A blog on ${destination} needs its own content API key — the shared CONTENT_API_KEY only publishes to ${DEFAULT_BLOG_API_URL}.`,
             },
             { status: 400 },
           );
@@ -176,13 +172,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       // this makes it a refusal instead of a silent swap.
       if (key) {
         const siblings = await listChannelsForPersona(client, channel.persona_id);
-        const clash = siblings.find(
-          (c) =>
-            c.id !== id &&
-            c.platform === "blog" &&
-            c.credentials_ref?.trim() === CONTENT_KEY_VAULT &&
-            !sameBlogSite(String(c.channel_config.blog_api_url ?? ""), apiUrl),
-        );
+        const clash = findBlogKeyClash(siblings, { channelId: id, destination });
         if (clash) {
           return NextResponse.json(
             {

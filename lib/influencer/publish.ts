@@ -458,6 +458,43 @@ export function isDefaultBlogSite(url: string): boolean {
 }
 
 /**
+ * The site a blog channel will publish to after this connect: what the request
+ * carries, else what the channel already stored, else the default. Every check
+ * around connecting has to judge THIS, not the request — a blank api_url keeps
+ * the stored URL, and judging the request alone has now produced the same bug
+ * three times, in both directions.
+ */
+export function blogDestination(
+  channel: Pick<PersonaChannel, "channel_config">,
+  requestedApiUrl: string,
+): string {
+  const stored =
+    typeof channel.channel_config.blog_api_url === "string"
+      ? channel.channel_config.blog_api_url.trim()
+      : "";
+  return requestedApiUrl.trim() || stored || DEFAULT_BLOG_API_URL;
+}
+
+/**
+ * The sibling channel whose stored blog key this connect would overwrite, if
+ * any. The vault holds one row per persona per provider, so a second farm site
+ * on the same persona silently takes the first one's key and both then publish
+ * with whichever was written last.
+ */
+export function findBlogKeyClash(
+  siblings: PersonaChannel[],
+  opts: { channelId: string; destination: string },
+): PersonaChannel | undefined {
+  return siblings.find(
+    (c) =>
+      c.id !== opts.channelId &&
+      c.platform === "blog" &&
+      c.credentials_ref?.trim() === CONTENT_KEY_VAULT &&
+      !sameBlogSite(String(c.channel_config.blog_api_url ?? ""), opts.destination),
+  );
+}
+
+/**
  * Whether two base URLs name the same site. Blank means the default, since that
  * is what the publisher resolves, and the comparison is by origin — a trailing
  * slash, a `www.` or a different case is the same host, and comparing the raw
