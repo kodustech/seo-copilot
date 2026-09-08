@@ -144,7 +144,15 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       // only ever serves the default site. Saying "connected" here and failing
       // at publish time would be a form that lies.
       if (!key) {
-        const target = apiUrl || DEFAULT_BLOG_API_URL;
+        // The URL the PUBLISHER will resolve, not the one in this request: a
+        // blank api_url leaves whatever the channel already had, so judging the
+        // request alone would approve a farm channel as "default site" and the
+        // form would lie in the other direction.
+        const stored =
+          typeof channel.channel_config.blog_api_url === "string"
+            ? channel.channel_config.blog_api_url.trim()
+            : "";
+        const target = apiUrl || stored || DEFAULT_BLOG_API_URL;
         if (!isDefaultBlogSite(target)) {
           return NextResponse.json(
             {
@@ -216,9 +224,15 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
         status: "pending_setup",
       });
     } else if (channel.platform === "blog") {
-      // The stored key outlives the channel otherwise, and reconnecting to a
-      // different site would publish there with the old site's credential.
-      await deleteChannelCredential(client, channel.persona_id, "blog");
+      // The stored key is NOT deleted here, unlike dev.to's. The vault row is
+      // keyed by persona and provider, so it is shared by every blog channel of
+      // this persona — deleting it on one channel's disconnect would take the
+      // sibling's key with it, and the sibling would keep saying it is
+      // connected while every publish failed.
+      //
+      // Nothing is left exposed by keeping it: credentials_ref goes null here,
+      // and resolveBlogApiKey only reads the vault when it says vault:blog. A
+      // reconnect rewrites the marker either way.
       await updateChannel(client, id, {
         status: "pending_setup",
         credentials_ref: null,
