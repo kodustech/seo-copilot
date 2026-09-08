@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { getVisibilitySummary, ENGINE_LABEL, type AiEngine, AI_ENGINES } from "@/lib/ai-visibility";
 import { getBet, listBetEntries, type Bet, type BetEntry, type BetMeasure } from "@/lib/bets";
+import { isOwnedProperty, urlMatchesProperty } from "@/lib/owned-domains";
 import { previousPeriodSpec } from "@/lib/funnel/graph";
 import { FUNNEL_METRICS } from "@/lib/funnel/goals";
 import { fetchFunnel, type FunnelData } from "@/lib/funnel/metrics";
@@ -82,6 +83,30 @@ type FunnelCache = Map<string, Promise<FunnelData>> & { visibility?: Promise<Awa
 function visibilityFor(client: SupabaseClient, cache: FunnelCache) {
   if (!cache.visibility) cache.visibility = getVisibilitySummary(client);
   return cache.visibility;
+}
+
+/**
+ * How many ANSWERS in one run cited a given property of ours.
+ *
+ * Not "how many citations": one answer can cite the same site three times, and
+ * the bet asks in how many answers the site was leaned on. The per-sample runs
+ * carry their own citations, so this counts them one answer at a time.
+ */
+function countAnswersCiting(
+  summary: Awaited<ReturnType<typeof getVisibilitySummary>>,
+  property: string,
+): number {
+  let n = 0;
+  for (const p of summary.prompts) {
+    for (const res of Object.values(p.runs)) {
+      if (!res) continue;
+      for (const r of res.runs) {
+        if (r.error) continue;
+        if (r.citations.some((c) => urlMatchesProperty(c.url, property))) n += 1;
+      }
+    }
+  }
+  return n;
 }
 
 function funnelFor(client: SupabaseClient, cache: FunnelCache, spec: string): Promise<FunnelData> {
@@ -290,6 +315,20 @@ export async function evaluateBet(
           previous = ph && ph.samples ? ph.mentioned / ph.samples : null;
           source = `AI visibility, ${ENGINE_LABEL[m.id as AiEngine] ?? m.id}, run ${s.runOn ?? "none"}`;
           if (!(AI_ENGINES as readonly string[]).includes(m.id)) errors.push(`unknown assistant: ${m.id}`);
+        }
+      } else if (m.kind === "owned_citations") {
+        // The site the bet is about, in the run the summary is showing.
+        const s = await visibilityFor(client, cache);
+        current = s.runOn ? countAnswersCiting(s, m.id) : null;
+        const prevRun = [...new Set(s.history.map((h) => h.runOn))].sort().filter((d) => d < (s.runOn ?? "")).pop();
+        if (prevRun) {
+          const before = await getVisibilitySummary(client, { runOn: prevRun });
+          previous = countAnswersCiting(before, m.id);
+        }
+        const what = m.id === "any" ? "any page of ours" : m.id;
+        source = `AI visibility, answers citing ${what}, run ${s.runOn ?? "none"}`;
+        if (m.id !== "any" && !isOwnedProperty(m.id)) {
+          errors.push(`"${m.id}" is not a property we own — add it to lib/owned-domains.ts first`);
         }
       } else if (m.kind === "outbound_tag") {
         const endEx = iso(new Date(new Date(`${effectiveEnd}T00:00:00Z`).getTime() + DAY));

@@ -8,6 +8,7 @@ import { CheckCircle2, ChevronDown, ChevronRight, CircleDashed, FlaskConical, Li
 
 import type { BetEvaluation, EvaluationLevel } from "@/lib/bet-evaluation";
 import type { Bet, BetEntry, BetEntryKind, BetMeasure, BetStatus, MeasureKind } from "@/lib/bets";
+import { OWNED_PROPERTIES } from "@/lib/owned-domains";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -145,6 +146,7 @@ const KIND_LABEL: Record<MeasureKind, string> = {
   funnel_stage: "Funnel stage",
   funnel_rate: "Funnel rate",
   ai_share: "AI visibility share",
+  owned_citations: "Answers citing a page of ours",
   outbound_tag: "Sequences with a tag",
   manual: "Typed by hand",
 };
@@ -425,9 +427,14 @@ function BetForm({
         ? (options?.funnelRates ?? [])
         : f.measureKind === "ai_share"
           ? (options?.assistants ?? [])
-          : f.measureKind === "outbound_tag"
-            ? (options?.sequenceTags ?? []).map((t) => ({ id: t, label: t }))
-            : [];
+          : f.measureKind === "owned_citations"
+            ? [
+                { id: "any", label: "Any page of ours" },
+                ...OWNED_PROPERTIES.map((p) => ({ id: p, label: p })),
+              ]
+            : f.measureKind === "outbound_tag"
+              ? (options?.sequenceTags ?? []).map((t) => ({ id: t, label: t }))
+              : [];
 
   return (
     <>
@@ -508,7 +515,15 @@ function BetForm({
                 <Input value={f.measureId} onChange={(e) => set({ measureId: e.target.value })} placeholder="Conversations recovered" className={inputCls} />
               </Field>
             ) : f.measureKind !== "none" ? (
-              <Field label={f.measureKind === "outbound_tag" ? "Sequence tag" : "Which one"}>
+              <Field
+                label={
+                  f.measureKind === "outbound_tag"
+                    ? "Sequence tag"
+                    : f.measureKind === "owned_citations"
+                      ? "Which site of ours"
+                      : "Which one"
+                }
+              >
                 <Select value={f.measureId} onValueChange={(v) => set({ measureId: v })}>
                   <SelectTrigger className={selectCls}>
                     <SelectValue placeholder={idOptions.length ? "Pick" : "Nothing available"} />

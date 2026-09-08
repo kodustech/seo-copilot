@@ -14,8 +14,21 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 export type BetStatus = "queued" | "active" | "won" | "lost" | "operation";
 export const BET_STATUSES: BetStatus[] = ["queued", "active", "won", "lost", "operation"];
 
-export type MeasureKind = "funnel_stage" | "funnel_rate" | "ai_share" | "outbound_tag" | "manual";
-export const MEASURE_KINDS: MeasureKind[] = ["funnel_stage", "funnel_rate", "ai_share", "outbound_tag", "manual"];
+export type MeasureKind =
+  | "funnel_stage"
+  | "funnel_rate"
+  | "ai_share"
+  | "owned_citations"
+  | "outbound_tag"
+  | "manual";
+export const MEASURE_KINDS: MeasureKind[] = [
+  "funnel_stage",
+  "funnel_rate",
+  "ai_share",
+  "owned_citations",
+  "outbound_tag",
+  "manual",
+];
 export type OutboundSubmetric = "contacts" | "replies" | "reply_rate" | "meetings";
 export type Comparator = ">=" | "<=";
 
@@ -25,6 +38,8 @@ export type BetMeasure = {
    * funnel_stage: a stage id (opportunities, icp, sh_trial...).
    * funnel_rate: a rate id (cold_reply, reply_to_meeting, touch_48h...).
    * ai_share: an engine id (perplexity, chat_gpt, google_ai, claude, gemini) or "all".
+   * owned_citations: a property of ours, as a host ("aicodereview.io") or a
+   *   host and path prefix ("github.com/kodustech"), or "any" for all of them.
    * outbound_tag: a sequence tag; `submetric` says which number.
    * manual: a free label; the value comes from current_value.
    */

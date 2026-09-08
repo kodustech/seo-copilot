@@ -3219,8 +3219,8 @@ const getFunnelTool = tool({
 
 const betMeasureSchema = z
   .object({
-    kind: z.enum(MEASURE_KINDS).describe("funnel_stage (a stage count), funnel_rate (a conversion rate), ai_share (share of AI answers naming Kodus), outbound_tag (numbers of sequences carrying a tag), manual (typed by hand)"),
-    id: z.string().describe("Stage id (opportunities, icp, sh_trial, ob_replies...), rate id (cold_reply, reply_to_meeting, touch_48h...), assistant id (perplexity, chat_gpt, google_ai, claude, gemini) or 'all', a sequence tag, or a label for manual."),
+    kind: z.enum(MEASURE_KINDS).describe("funnel_stage (a stage count), funnel_rate (a conversion rate), ai_share (share of AI answers naming Kodus), owned_citations (how many answers in a run cited a site of ours), outbound_tag (numbers of sequences carrying a tag), manual (typed by hand)"),
+    id: z.string().describe("Stage id (opportunities, icp, sh_trial, ob_replies...), rate id (cold_reply, reply_to_meeting, touch_48h...), assistant id (perplexity, chat_gpt, google_ai, claude, gemini) or 'all', a site of ours for owned_citations (aicodereview.io, github.com/kodustech, or 'any'), a sequence tag, or a label for manual."),
     submetric: z.enum(["contacts", "replies", "reply_rate", "meetings"]).optional().describe("outbound_tag only: which number."),
     comparator: z.enum([">=", "<="]).optional().default(">="),
     threshold: z.number().describe("Rates and shares as fractions (0.03 = 3%); counts as integers."),
