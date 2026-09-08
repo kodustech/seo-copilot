@@ -6,7 +6,15 @@ import {
   deleteChannelCredential,
   setChannelCredential,
 } from "@/lib/influencer/credentials";
-import { getChannel, updateChannel } from "@/lib/influencer/personas";
+import { getChannel, listChannelsForPersona, updateChannel } from "@/lib/influencer/personas";
+import {
+  CONTENT_KEY_SENTINEL,
+  CONTENT_KEY_VAULT,
+  DEFAULT_BLOG_API_URL,
+  blogDestination,
+  findBlogKeyClash,
+  isDefaultBlogSite,
+} from "@/lib/influencer/publish";
 import { influencerTableMissingMessage } from "@/lib/influencer/types";
 
 export const maxDuration = 60;
@@ -111,15 +119,86 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     }
 
     if (channel.platform === "blog") {
-      if (!process.env.CONTENT_API_KEY?.trim()) {
-        return NextResponse.json(
-          { error: "Set CONTENT_API_KEY in the environment to publish to aicodereview.io." },
-          { status: 400 },
-        );
+      // A farm site connects here: its content API, where its markdown can be
+      // read back, and its own key. Adding a site used to mean an env var and a
+      // deploy; the key belongs to the site, so it belongs with the channel.
+      const apiUrl = typeof body.api_url === "string" ? body.api_url.trim().replace(/\/+$/, "") : "";
+      const sourceBase =
+        typeof body.source_base === "string" ? body.source_base.trim().replace(/\/+$/, "") : "";
+      const key = typeof body.key === "string" ? body.key.trim() : "";
+
+      const httpsOnly = (value: string, field: string) => {
+        if (!value) return null;
+        let parsed: URL;
+        try {
+          parsed = new URL(value);
+        } catch {
+          return `${field} is not a valid URL.`;
+        }
+        // The article and the key travel over this, and the source read comes
+        // back into the model's context — neither goes over plaintext.
+        return parsed.protocol === "https:" ? null : `${field} must be https.`;
+      };
+      const urlError = httpsOnly(apiUrl, "api_url") ?? httpsOnly(sourceBase, "source_base");
+      if (urlError) return NextResponse.json({ error: urlError }, { status: 400 });
+
+      // Without a key of its own a channel borrows the shared one, and that one
+      // only ever serves the default site. Saying "connected" here and failing
+      // at publish time would be a form that lies.
+      // Where this channel will actually publish once connected. Both checks
+      // below judge this, never the request on its own.
+      const destination = blogDestination(channel, apiUrl);
+
+      if (!key) {
+        if (!isDefaultBlogSite(destination)) {
+          return NextResponse.json(
+            {
+              error: `A blog on ${destination} needs its own content API key — the shared CONTENT_API_KEY only publishes to ${DEFAULT_BLOG_API_URL}.`,
+            },
+            { status: 400 },
+          );
+        }
+        if (!process.env.CONTENT_API_KEY?.trim()) {
+          return NextResponse.json(
+            { error: `Set CONTENT_API_KEY to publish to ${DEFAULT_BLOG_API_URL}, or give this blog its own key.` },
+            { status: 400 },
+          );
+        }
+      }
+      // The vault holds one row per persona per provider, so a second farm
+      // channel on this persona would overwrite the first site's key while both
+      // kept the vault marker — and whichever key was written last would then be
+      // sent to both hosts. One persona per site is the farm's shape anyway;
+      // this makes it a refusal instead of a silent swap.
+      if (key) {
+        const siblings = await listChannelsForPersona(client, channel.persona_id);
+        const clash = findBlogKeyClash(siblings, { channelId: id, destination });
+        if (clash) {
+          return NextResponse.json(
+            {
+              error: `This persona already keeps a blog key for ${String(clash.channel_config.blog_api_url ?? "another site")}, and the vault holds one per persona. Give the second site its own persona, or disconnect that channel first.`,
+            },
+            { status: 400 },
+          );
+        }
+      }
+      if (key) {
+        await setChannelCredential(client, {
+          persona_id: channel.persona_id,
+          platform: "blog",
+          key,
+          label: apiUrl ? new URL(apiUrl).hostname : null,
+          created_by: userEmail,
+        });
       }
       const updated = await updateChannel(client, id, {
         status: "active",
-        credentials_ref: "env:content_api",
+        credentials_ref: key ? CONTENT_KEY_VAULT : CONTENT_KEY_SENTINEL,
+        channel_config: {
+          ...channel.channel_config,
+          ...(apiUrl ? { blog_api_url: apiUrl } : {}),
+          ...(sourceBase ? { blog_source_base: sourceBase } : {}),
+        },
       });
       return NextResponse.json({ connected: true, platform: "blog", channel: updated });
     }
@@ -159,6 +238,15 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
         status: "pending_setup",
       });
     } else if (channel.platform === "blog") {
+      // The stored key is NOT deleted here, unlike dev.to's. The vault row is
+      // keyed by persona and provider, so it is shared by every blog channel of
+      // this persona — deleting it on one channel's disconnect would take the
+      // sibling's key with it, and the sibling would keep saying it is
+      // connected while every publish failed.
+      //
+      // Nothing is left exposed by keeping it: credentials_ref goes null here,
+      // and resolveBlogApiKey only reads the vault when it says vault:blog. A
+      // reconnect rewrites the marker either way.
       await updateChannel(client, id, {
         status: "pending_setup",
         credentials_ref: null,

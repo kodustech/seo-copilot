@@ -11,10 +11,14 @@ import {
   dayStartUtcIso,
   contentEnvNameFor,
   isAllowedContentEnvName,
+  isDefaultBlogSite,
   isAllowedDevtoEnvName,
   nextDayStartUtcIso,
+  blogDestination,
+  findBlogKeyClash,
   resolveBlogApiUrl,
   resolvePublishDecision,
+  sameBlogSite,
 } from "../../lib/influencer/publish";
 import {
   isOnboardingComplete,
@@ -268,10 +272,42 @@ describe("blog destination", () => {
     );
   });
 
-  it("refuses a host we don't own — the request carries the API key", () => {
-    expect(() => resolveBlogApiUrl(blogChannel({ blog_api_url: "https://evil.com" }))).toThrow(
-      /not a site we own/,
+  it("accepts a farm host, because adding a site must not need a deploy", () => {
+    // The URL used to have to be on a hardcoded list. That list was what made
+    // adding a site to the farm cost a commit, so the guard moved: the token
+    // is protected by being per site, not by the host being in the code.
+    expect(resolveBlogApiUrl(blogChannel({ blog_api_url: "https://newfarmsite.dev" }))).toBe(
+      "https://newfarmsite.dev",
     );
+  });
+
+  it("knows the default site by origin, so the form can refuse a keyless farm host", () => {
+    expect(isDefaultBlogSite("https://aicodereview.io")).toBe(true);
+    expect(isDefaultBlogSite("https://www.aicodereview.io/")).toBe(true);
+    expect(isDefaultBlogSite("https://newfarmsite.dev")).toBe(false);
+    expect(isDefaultBlogSite("http://aicodereview.io")).toBe(false);
+    expect(isDefaultBlogSite("not-a-url")).toBe(false);
+  });
+
+  it("treats the spellings of one site as one site", () => {
+    // The connect form compares a sibling's stored URL against the one being
+    // typed. Comparing raw strings would refuse connects the publisher accepts.
+    expect(sameBlogSite("https://aicodereview.io/", "https://www.AICODEREVIEW.io")).toBe(true);
+    expect(sameBlogSite("", "https://aicodereview.io")).toBe(true);
+    expect(sameBlogSite("https://newfarmsite.dev", "https://aicodereview.io")).toBe(false);
+    expect(sameBlogSite("https://newfarmsite.dev:8443", "https://newfarmsite.dev")).toBe(false);
+  });
+
+  it("still refuses to send the SHARED key anywhere but the default site", () => {
+    // That is the key worth guarding: it belongs to the default site, and a
+    // channel without its own credential must not borrow it for another host.
+    const farm = makeChannel({
+      platform: "blog",
+      publish_via: "api",
+      credentials_ref: "env:content_api",
+      channel_config: { blog_api_url: "https://newfarmsite.dev" },
+    });
+    expect(contentEnvNameFor(farm)).toBeNull();
   });
 
   it("refuses plaintext http and a malformed URL", () => {
@@ -377,5 +413,57 @@ describe("blog destination", () => {
     expect(contentEnvNameFor(ch("  "))).toBe("CONTENT_API_KEY");
     expect(contentEnvNameFor(ch("CONTENT_API_KEY_BENCH"))).toBe("CONTENT_API_KEY_BENCH");
     expect(contentEnvNameFor(ch("DATABASE_URL"))).toBeNull();
+  });
+});
+
+describe("connecting a blog channel", () => {
+  const blogChannel = (id: string, config: Record<string, unknown>, ref: string | null) =>
+    makeChannel({ id, platform: "blog", publish_via: "api", credentials_ref: ref, channel_config: config });
+
+  const FARM = "https://newfarmsite.dev";
+  const DEFAULT_SITE = "https://aicodereview.io";
+
+  describe("blogDestination", () => {
+    it("prefers the request, then what the channel stored, then the default", () => {
+      const stored = blogChannel("c1", { blog_api_url: FARM }, null);
+      expect(blogDestination(stored, "https://other.dev")).toBe("https://other.dev");
+      // A blank api_url keeps the stored URL — judging the request alone is the
+      // bug this exists to stop, and it appeared in both directions.
+      expect(blogDestination(stored, "")).toBe(FARM);
+      expect(blogDestination(blogChannel("c1", {}, null), "")).toBe(DEFAULT_SITE);
+    });
+  });
+
+  describe("findBlogKeyClash", () => {
+    const vaultAtDefault = blogChannel("a", { blog_api_url: DEFAULT_SITE }, "vault:blog");
+    const vaultAtFarm = blogChannel("b", { blog_api_url: FARM }, "vault:blog");
+
+    it("refuses a farm site when the persona already keeps a default-site key", () => {
+      expect(findBlogKeyClash([vaultAtDefault], { channelId: "me", destination: FARM })?.id).toBe("a");
+    });
+
+    it("refuses the default site when the persona already keeps a farm key", () => {
+      expect(findBlogKeyClash([vaultAtFarm], { channelId: "me", destination: DEFAULT_SITE })?.id).toBe("b");
+    });
+
+    it("allows reconnecting the same site, however it is spelled", () => {
+      expect(findBlogKeyClash([vaultAtDefault], { channelId: "me", destination: DEFAULT_SITE })).toBeUndefined();
+      const blankSibling = blogChannel("a", {}, "vault:blog");
+      expect(findBlogKeyClash([blankSibling], { channelId: "me", destination: `${DEFAULT_SITE}/` })).toBeUndefined();
+    });
+
+    it("clashes on the destination, not on a blank request", () => {
+      // The regression: the request omits api_url, so the destination is the
+      // farm URL this channel already stored — and it must still clash.
+      const me = blogChannel("me", { blog_api_url: FARM }, "vault:blog");
+      const destination = blogDestination(me, "");
+      expect(findBlogKeyClash([vaultAtDefault], { channelId: "me", destination })?.id).toBe("a");
+    });
+
+    it("ignores the channel being connected, and channels without a vault key", () => {
+      expect(findBlogKeyClash([vaultAtFarm], { channelId: "b", destination: DEFAULT_SITE })).toBeUndefined();
+      const envSibling = blogChannel("c", { blog_api_url: FARM }, "env:content_api");
+      expect(findBlogKeyClash([envSibling], { channelId: "me", destination: DEFAULT_SITE })).toBeUndefined();
+    });
   });
 });

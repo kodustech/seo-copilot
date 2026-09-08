@@ -1,8 +1,6 @@
--- Channel connect: a persona can store a channel API key (dev.to, blog)
--- in the same encrypted persona_credentials vault it uses for model keys, so
--- "Connect dev.to" stores the key in-app instead of an env var. Post-Bridge
--- channels (X etc.) need no new storage — they reference an account id that
--- already lives in persona_channels.channel_config.
+-- A blog channel can keep its content-API key in the same encrypted vault the
+-- other channel keys use, so adding a site to the farm is a form in the app
+-- instead of an environment variable and a deploy.
 --
 -- Safe to re-run.
 

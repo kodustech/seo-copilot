@@ -352,7 +352,7 @@ async function publishToDevto(
 
 // `||` (not `??`) so an empty AICODEREVIEW_API_URL falls back instead of
 // producing a broken relative URL.
-const DEFAULT_BLOG_API_URL = (
+export const DEFAULT_BLOG_API_URL = (
   process.env.AICODEREVIEW_API_URL?.trim() || "https://aicodereview.io"
 ).replace(/\/$/, "");
 
@@ -361,11 +361,14 @@ const DEFAULT_BLOG_API_URL = (
  * one env var could only ever address one of them — so the destination lives on
  * the channel and the env var is just the default.
  *
- * It must be https on a domain we own. Publishing sends the article AND a bearer
- * token to this host, so a typo (or a channel edited by the wrong person) would
- * hand the content API key to a stranger. Adding a site to the farm means adding
- * it to lib/owned-domains.ts, which is where it has to be listed anyway for the
- * AI-visibility report to stop treating it as someone else's page.
+ * It must be https, because the article travels with a bearer token. It does NOT
+ * have to be on a domain we hardcode: a farm site is connected in the app, and
+ * requiring a deploy to add one was the thing that made the farm expensive.
+ *
+ * What protects the token instead is that it is per site. A channel connected
+ * with its own key can only ever leak that key, to the host whoever connected
+ * it typed. The SHARED key is the one worth guarding, and contentEnvNameFor
+ * still refuses to hand it to anything but the default site.
  */
 export function resolveBlogApiUrl(channel: PersonaChannel): string {
   const configured =
@@ -381,11 +384,6 @@ export function resolveBlogApiUrl(channel: PersonaChannel): string {
   }
   if (parsed.protocol !== "https:") {
     throw new Error(`blog_api_url must be https (got "${raw}") — it carries the API key.`);
-  }
-  if (!isOwnedDomain(parsed.hostname)) {
-    throw new Error(
-      `blog_api_url "${parsed.hostname}" is not a site we own. Add it to lib/owned-domains.ts first.`,
-    );
   }
   return raw;
 }
@@ -413,6 +411,10 @@ export function isAllowedContentEnvName(name: string): boolean {
 /** What the connect flow writes for a channel on the default site. It names no
  *  env var of its own — it means "the shared key". */
 export const CONTENT_KEY_SENTINEL = "env:content_api";
+
+/** What it writes for a site whose own key went into the vault. Also not an env
+ *  var name: the key is read from persona_credentials, not the environment. */
+export const CONTENT_KEY_VAULT = "vault:blog";
 
 /** Scheme, host and port — everything that decides which service receives the
  *  request. A path doesn't; `www.` and a trailing dot are the same host. */
@@ -444,8 +446,64 @@ function isDefaultSite(channel: PersonaChannel): boolean {
   } catch {
     return false;
   }
-  const origin = originOf(resolved);
-  return origin !== null && origin === originOf(DEFAULT_BLOG_API_URL);
+  return isDefaultBlogSite(resolved);
+}
+
+/** Whether a base URL points at the default site — the only one the shared key
+ *  is ever sent to. Exported so the connect form can refuse a farm host with no
+ *  key of its own, instead of reporting success on a channel that can never
+ *  publish. */
+export function isDefaultBlogSite(url: string): boolean {
+  return sameBlogSite(url, DEFAULT_BLOG_API_URL);
+}
+
+/**
+ * The site a blog channel will publish to after this connect: what the request
+ * carries, else what the channel already stored, else the default. Every check
+ * around connecting has to judge THIS, not the request — a blank api_url keeps
+ * the stored URL, and judging the request alone has now produced the same bug
+ * three times, in both directions.
+ */
+export function blogDestination(
+  channel: Pick<PersonaChannel, "channel_config">,
+  requestedApiUrl: string,
+): string {
+  const stored =
+    typeof channel.channel_config.blog_api_url === "string"
+      ? channel.channel_config.blog_api_url.trim()
+      : "";
+  return requestedApiUrl.trim() || stored || DEFAULT_BLOG_API_URL;
+}
+
+/**
+ * The sibling channel whose stored blog key this connect would overwrite, if
+ * any. The vault holds one row per persona per provider, so a second farm site
+ * on the same persona silently takes the first one's key and both then publish
+ * with whichever was written last.
+ */
+export function findBlogKeyClash(
+  siblings: PersonaChannel[],
+  opts: { channelId: string; destination: string },
+): PersonaChannel | undefined {
+  return siblings.find(
+    (c) =>
+      c.id !== opts.channelId &&
+      c.platform === "blog" &&
+      c.credentials_ref?.trim() === CONTENT_KEY_VAULT &&
+      !sameBlogSite(String(c.channel_config.blog_api_url ?? ""), opts.destination),
+  );
+}
+
+/**
+ * Whether two base URLs name the same site. Blank means the default, since that
+ * is what the publisher resolves, and the comparison is by origin — a trailing
+ * slash, a `www.` or a different case is the same host, and comparing the raw
+ * strings would refuse connects the publisher would have accepted.
+ */
+export function sameBlogSite(a: string, b: string): boolean {
+  const left = originOf(a.trim() || DEFAULT_BLOG_API_URL);
+  const right = originOf(b.trim() || DEFAULT_BLOG_API_URL);
+  return left !== null && left === right;
 }
 
 /**
@@ -472,12 +530,37 @@ export function contentEnvNameFor(channel: PersonaChannel): string | null {
 }
 
 /**
- * The blog key comes from an env var named by credentials_ref, so a second site
- * gets its own key instead of inheriting the first one's. There is no vault
- * option here yet: the credential vault only accepts dev.to, and teaching it a
- * new provider is a change to the connect flow, not to the publisher.
+ * The key a blog channel publishes with. The vault comes first when the channel
+ * says its key lives there: connecting a farm site in the app is the point, and
+ * an env var per site means a deploy per site. The env path stays for sites
+ * configured before the vault learned this provider.
+ *
+ * The marker is load-bearing, not decoration. Reading the vault unconditionally
+ * would hand a persona's stored key to ANY of its blog channels — including one
+ * pointed at a different site, and including after a disconnect, since the row
+ * outlives the channel it was connected for. That would send one site's writer
+ * credential to another host, which is the exact thing the per-site key exists
+ * to prevent.
+ *
+ * Note the vault holds one key per persona per provider. A persona with two
+ * blog channels shares it; a farm keeps one persona per site, which is also how
+ * the voice stays separate.
  */
-function resolveBlogApiKey(channel: PersonaChannel): string {
+async function resolveBlogApiKey(
+  client: SupabaseClient,
+  channel: PersonaChannel,
+): Promise<string> {
+  if (channel.credentials_ref?.trim() === CONTENT_KEY_VAULT) {
+    const cipher = await getChannelCredentialCipher(client, channel.persona_id, "blog");
+    if (cipher) {
+      const key = decryptPersonaKey(cipher).trim();
+      if (key) return key;
+    }
+  }
+  return resolveBlogApiKeyFromEnv(channel);
+}
+
+function resolveBlogApiKeyFromEnv(channel: PersonaChannel): string {
   const envName = contentEnvNameFor(channel);
   if (!envName) {
     throw new Error(
@@ -496,11 +579,12 @@ function resolveBlogApiKey(channel: PersonaChannel): string {
 }
 
 async function publishToBlog(
+  client: SupabaseClient,
   activity: PersonaActivity,
   channel: PersonaChannel,
 ): Promise<PublishOutcome> {
   const blogApiUrl = resolveBlogApiUrl(channel);
-  const key = resolveBlogApiKey(channel);
+  const key = await resolveBlogApiKey(client, channel);
   const meta = activity.content_meta ?? {};
   const asString = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
   const tags = sanitizeTags(meta.tags);
@@ -586,7 +670,7 @@ async function publishActivity(
 ): Promise<PublishOutcome> {
   // A blog publishes via its own content API regardless of the channel's stored
   // publish_via; which site that is comes from the channel.
-  if (channel.platform === "blog") return publishToBlog(activity, channel);
+  if (channel.platform === "blog") return publishToBlog(client, activity, channel);
 
   switch (channel.publish_via) {
     case "post_bridge":

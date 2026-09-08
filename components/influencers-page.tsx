@@ -1065,7 +1065,7 @@ function ChannelConnect({
         channel={channel}
         busy={busy}
         error={error}
-        onConnect={() => connect({})}
+        onConnect={(payload) => connect(payload)}
         onDisconnect={disconnect}
       />
     );
@@ -1245,18 +1245,46 @@ function BlogConnect({
   channel: Channel;
   busy: boolean;
   error: string | null;
-  onConnect: () => void;
+  onConnect: (payload: Record<string, string>) => void;
   onDisconnect: () => void;
 }) {
+  const cfg = (channel.channel_config ?? {}) as Record<string, unknown>;
+  const [apiUrl, setApiUrl] = useState(
+    typeof cfg.blog_api_url === "string" ? cfg.blog_api_url : "",
+  );
+  const [sourceBase, setSourceBase] = useState(
+    typeof cfg.blog_source_base === "string" ? cfg.blog_source_base : "",
+  );
+  const [key, setKey] = useState("");
   const connected =
-    channel.credentials_ref?.startsWith("env:") || channel.status === "active";
+    channel.credentials_ref?.startsWith("env:") ||
+    channel.credentials_ref?.startsWith("vault:") ||
+    channel.status === "active";
+
+  const site = (() => {
+    const raw = typeof cfg.blog_api_url === "string" ? cfg.blog_api_url : "";
+    try {
+      return raw ? new URL(raw).hostname : "aicodereview.io";
+    } catch {
+      return raw || "aicodereview.io";
+    }
+  })();
 
   if (connected) {
     return (
       <ConnectShell status="connected">
         <p className="text-xs text-muted-foreground">
-          Publishing long-form articles to aicodereview.io via its content API.
+          Publishing long-form articles to {site} via its content API
+          {channel.credentials_ref?.startsWith("vault:")
+            ? ", with a key stored for this site."
+            : ", using the workspace CONTENT_API_KEY."}
         </p>
+        {!cfg.blog_source_base && (
+          <p className="text-xs text-amber-600">
+            No source base set, so the persona can publish here but cannot revise
+            a page. Reconnect with the raw URL of the site’s content folder.
+          </p>
+        )}
         {error && <p className="text-xs text-red-600">{error}</p>}
         <Button size="sm" variant="outline" disabled={busy} onClick={onDisconnect}>
           Disconnect
@@ -1268,11 +1296,42 @@ function BlogConnect({
   return (
     <ConnectShell status="not connected">
       <p className="text-xs text-muted-foreground">
-        Publishes to aicodereview.io using the workspace CONTENT_API_KEY. Connect
-        to activate — if the key isn’t set, you’ll get told to set it first.
+        A site in the farm: where its content API lives, where its markdown can
+        be read back for revisions, and its own key. Leave the key empty to use
+        the workspace CONTENT_API_KEY — that one only publishes to the default
+        site.
       </p>
+      <Input
+        value={apiUrl}
+        onChange={(e) => setApiUrl(e.target.value)}
+        placeholder="https://aicodereview.io"
+        className="h-8 text-xs"
+      />
+      <Input
+        value={sourceBase}
+        onChange={(e) => setSourceBase(e.target.value)}
+        placeholder="https://raw.githubusercontent.com/org/repo/main/src/content/blog"
+        className="h-8 text-xs"
+      />
+      <Input
+        type="password"
+        value={key}
+        onChange={(e) => setKey(e.target.value)}
+        placeholder="Content API key for this site (optional)"
+        className="h-8 text-xs"
+      />
       <div className="flex items-center gap-2">
-        <Button size="sm" disabled={busy} onClick={onConnect}>
+        <Button
+          size="sm"
+          disabled={busy}
+          onClick={() =>
+            onConnect({
+              ...(apiUrl.trim() ? { api_url: apiUrl.trim() } : {}),
+              ...(sourceBase.trim() ? { source_base: sourceBase.trim() } : {}),
+              ...(key.trim() ? { key: key.trim() } : {}),
+            })
+          }
+        >
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Connect"}
         </Button>
       </div>
