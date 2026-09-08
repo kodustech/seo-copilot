@@ -28,7 +28,10 @@ export async function POST(req: Request) {
     if (!force && !isDueToday(settings)) {
       return NextResponse.json({ ok: true, ran: false, weekday: settings.weekday, lastRunOn: settings.lastRunOn });
     }
-    const summary = await runAiVisibility(client, { force });
+    // This route is behind the same request ceiling as everything else; the
+    // in-process scheduler is what runs the whole thing uninterrupted. Take a
+    // slice here and report the rest rather than being killed mid-run.
+    const summary = await runAiVisibility(client, { force, budgetMs: 240_000 });
     return NextResponse.json({ ok: true, ran: true, summary });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : "Failed" }, { status: 500 });

@@ -671,6 +671,14 @@ export type RunOptions = {
   /** Re-ask prompts that already have a run for that day and engine. */
   force?: boolean;
   concurrency?: number;
+  /**
+   * Stop taking new jobs once this many ms have passed, and return what is
+   * done. A full run is far longer than any HTTP request is allowed to live —
+   * 220 answers at three at a time is tens of minutes — so the caller asks for
+   * a slice it can finish, reports progress, and comes back for the rest.
+   * Every answer is written as it lands, so stopping loses nothing.
+   */
+  budgetMs?: number;
 };
 
 export type RunSummary = {
@@ -681,6 +689,8 @@ export type RunSummary = {
   failed: number;
   costUsd: number;
   errors: string[];
+  /** Jobs this call did not get to. > 0 means call again to continue. */
+  remaining: number;
 };
 
 export function todayIso(): string {
@@ -694,7 +704,7 @@ export async function runAiVisibility(client: SupabaseClient, opts: RunOptions =
   const prompts = (await listPrompts(client, { activeOnly: true })).filter(
     (p) => !opts.promptIds || opts.promptIds.includes(p.id),
   );
-  const summary: RunSummary = { runOn, asked: 0, skipped: 0, mentioned: 0, failed: 0, costUsd: 0, errors: [] };
+  const summary: RunSummary = { runOn, asked: 0, skipped: 0, mentioned: 0, failed: 0, costUsd: 0, errors: [], remaining: 0 };
   if (prompts.length === 0 || engines.length === 0) return summary;
 
   // What already exists for the day, so a re-run after a crash only asks
@@ -724,9 +734,13 @@ export async function runAiVisibility(client: SupabaseClient, opts: RunOptions =
   }
 
   const concurrency = Math.max(1, Math.min(opts.concurrency ?? 3, 6));
+  const deadline = opts.budgetMs != null ? Date.now() + Math.max(0, opts.budgetMs) : null;
   let cursor = 0;
   const worker = async () => {
     while (cursor < jobs.length) {
+      // Checked before claiming the job, so a job is never half-taken: what is
+      // left is exactly what the next call will pick up.
+      if (deadline != null && Date.now() >= deadline) return;
       const job = jobs[cursor++];
       const base = {
         prompt_id: job.prompt.id,
@@ -774,8 +788,28 @@ export async function runAiVisibility(client: SupabaseClient, opts: RunOptions =
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, worker));
+  // Every claimed job has finished by now, so what is left is what no worker
+  // reached before the budget ran out.
+  summary.remaining = Math.max(0, jobs.length - cursor);
 
-  if (summary.asked > 0) {
+  // Only a finished run over the WHOLE active set marks the day, and only
+  // completion counts — not success.
+  //
+  // A budgeted slice that claimed the day would make isDueToday false for the
+  // rest of it, so the scheduler meant to finish the run would skip it, and a
+  // day that asked half the prompts would pass as a full run and be read as
+  // the week's number. A subset run has the same effect from the other side:
+  // "ask only this prompt" finishes its own jobs, and claiming the day on that
+  // would park the other twenty-one for a week.
+  //
+  // `failed` counts too, because a job that errored was still consumed. Errors
+  // are not written into the day's existing set, so a tail that fails every
+  // job would otherwise leave the day unmarked forever and re-ask — and re-pay
+  // for — the same failing questions on every run.
+  // A job set is narrowed on two axes, and either one makes the run a subset:
+  // the agent tool can scope by engine the same way the page scopes by prompt.
+  const wholeSet = !opts.promptIds?.length && !opts.engines?.length;
+  if (wholeSet && summary.remaining === 0 && (summary.asked > 0 || summary.failed > 0)) {
     await client.from("ai_visibility_settings").upsert({ id: 1, last_run_on: runOn, updated_at: new Date().toISOString() }, { onConflict: "id" });
   }
   summary.costUsd = Math.round(summary.costUsd * 1e6) / 1e6;

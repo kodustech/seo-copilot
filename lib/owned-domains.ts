@@ -39,10 +39,17 @@ export const OWNED_DOMAINS: string[] = [
   ...PROPERTY_DOMAINS,
 ];
 
+/** Every property a bet can be measured against, as the picker offers them:
+ *  the hosts we own plus the path-scoped ones on a shared host. */
+export const OWNED_PROPERTIES: string[] = [
+  ...OWNED_DOMAINS,
+  ...BRAND_DOMAINS.filter((d) => d.includes("/")),
+];
+
 /** True when a hostname is ours, including any subdomain of a domain we own. */
 export function isOwnedDomain(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
-  return OWNED_DOMAINS.some((own) => host === own || host.endsWith(`.${own}`));
+  return OWNED_HOSTS.has(host) || OWNED_DOMAINS.some((own) => host.endsWith(`.${own}`));
 }
 
 /**
@@ -63,4 +70,61 @@ export function isOwnedUrl(url: string): boolean {
   const host = parsed.hostname.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
   const path = `${host}${parsed.pathname.toLowerCase().replace(/\/$/, "")}`;
   return BRAND_DOMAINS.some((own) => own.includes("/") && (path === own || path.startsWith(`${own}/`)));
+}
+
+/** Exact-host lookup, so the common case is a hash and not a scan. */
+const OWNED_HOSTS = new Set<string>(OWNED_DOMAINS);
+
+/** The path-scoped brand entries, filtered once instead of on every check. */
+const BRAND_PATH_PROPERTIES: string[] = BRAND_DOMAINS.filter((d) => d.includes("/"));
+
+function normalizeProperty(raw: string): string {
+  return raw.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/+$/, "");
+}
+
+function matchesOne(url: string, target: string): boolean {
+  if (!target) return false;
+  if (target === "any") return isOwnedUrl(url);
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
+  if (!target.includes("/")) return host === target || host.endsWith(`.${target}`);
+  const path = `${host}${parsed.pathname.toLowerCase().replace(/\/+$/, "")}`;
+  return path === target || path.startsWith(`${target}/`);
+}
+
+/**
+ * True when a URL points at one named property of ours — a host
+ * ("aicodereview.io", subdomains included) or a host and path prefix
+ * ("github.com/kodustech"). "any" matches every property we own.
+ *
+ * A property can be written as a comma-separated list, because a site is not
+ * always a domain: the directory answers on aicodereview.io AND
+ * aicodereviews.io, and the assistants cite whichever they found. Counting one
+ * of them would read as half the presence the site actually has.
+ *
+ * This is what a bet on external presence asks: not "was some page of ours
+ * cited" but "was THIS site cited", because each site is a separate test.
+ */
+export function urlMatchesProperty(url: string, property: string): boolean {
+  const targets = property.split(",").map(normalizeProperty).filter(Boolean);
+  return targets.some((t) => matchesOne(url, t));
+}
+
+/** True when a string names a property we own — the guard for a measure that
+ *  claims to count citations of one. A typo would otherwise read as zero
+ *  forever, which looks exactly like a hypothesis that did not work. */
+export function isOwnedProperty(property: string): boolean {
+  const targets = property.split(",").map(normalizeProperty).filter(Boolean);
+  if (!targets.length) return false;
+  return targets.every(
+    (t) =>
+      OWNED_HOSTS.has(t) ||
+      OWNED_DOMAINS.some((own) => t.endsWith(`.${own}`)) ||
+      BRAND_PATH_PROPERTIES.some((own) => t === own || t.startsWith(`${own}/`)),
+  );
 }

@@ -420,7 +420,9 @@ export function AiVisibilityPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState<string | "all" | null>(null);
-  const [lastRun, setLastRun] = useState<RunSummary | null>(null);
+  // `stalled` is what is left after the loop gave up, as opposed to `remaining`
+  // which is what is left while it is still going.
+  const [lastRun, setLastRun] = useState<(RunSummary & { stalled: number }) | null>(null);
   const [open, setOpen] = useState<{ promptId: string; engine: AiEngine } | null>(null);
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ prompt: "", language: "en", tags: "" });
@@ -478,15 +480,46 @@ export function AiVisibilityPage() {
     }
   };
 
+  /**
+   * A full run does not fit in one request — 220 answers, three at a time, is
+   * tens of minutes against a five-minute ceiling. The server does a slice it
+   * can finish and says how much is left; this keeps asking until nothing is.
+   * Every answer is stored as it lands, so a slice never loses work and the
+   * totals below add up across slices.
+   */
   const runNow = async (promptIds?: string[]) => {
     setRunning(promptIds?.[0] ?? "all");
     setError(null);
     setLastRun(null);
+    const total: RunSummary & { stalled: number } = { runOn: "", asked: 0, skipped: 0, mentioned: 0, failed: 0, costUsd: 0, errors: [], remaining: 0, stalled: 0 };
     try {
-      const res = await fetch("/api/ai-visibility/run", { method: "POST", headers, body: JSON.stringify({ promptIds, force: Boolean(promptIds) }) });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Falhou");
-      setLastRun(json.summary as RunSummary);
+      for (let slice = 0; ; slice++) {
+        const res = await fetch("/api/ai-visibility/run", {
+          method: "POST",
+          headers,
+          // Only the first slice may force: on a continuation it would re-ask
+          // what the earlier slices just finished.
+          body: JSON.stringify({ promptIds, force: Boolean(promptIds) && slice === 0 }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error ?? "Falhou");
+        const s = json.summary as RunSummary;
+        total.runOn = s.runOn;
+        total.asked += s.asked;
+        total.skipped += s.skipped;
+        total.mentioned += s.mentioned;
+        total.failed += s.failed;
+        total.costUsd += s.costUsd;
+        for (const e of s.errors) if (!total.errors.includes(e)) total.errors.push(e);
+        // A slice that asked nothing and still reports work left would loop
+        // forever. Stop — and say stopped, not running, or the line sits at
+        // "Running: N left" over a run that is no longer going.
+        const stalled = s.asked === 0 && s.remaining > 0;
+        total.remaining = stalled ? 0 : s.remaining;
+        total.stalled = stalled ? s.remaining : 0;
+        setLastRun({ ...total });
+        if (s.remaining <= 0 || stalled) break;
+      }
       setRunOn(null);
       await load();
     } catch (err) {
@@ -612,7 +645,12 @@ export function AiVisibilityPage() {
       {error ? <p className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">{error}</p> : null}
       {lastRun ? (
         <p className="rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-200">
-          Done: {lastRun.asked} questions, Kodus named in {lastRun.mentioned}. {lastRun.skipped} already asked today, {lastRun.failed} failed, {usd(lastRun.costUsd)}.
+          {lastRun.remaining > 0
+            ? `Running: ${lastRun.remaining} left. `
+            : lastRun.stalled
+              ? `Stopped with ${lastRun.stalled} left — click run again. `
+              : "Done: "}
+          {lastRun.asked} questions, Kodus named in {lastRun.mentioned}. {lastRun.skipped} already asked today, {lastRun.failed} failed, {usd(lastRun.costUsd)}.
           {lastRun.errors.length ? ` Errors: ${lastRun.errors.slice(0, 2).join(" | ")}` : ""}
         </p>
       ) : null}
