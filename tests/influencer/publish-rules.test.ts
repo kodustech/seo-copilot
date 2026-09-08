@@ -268,10 +268,25 @@ describe("blog destination", () => {
     );
   });
 
-  it("refuses a host we don't own — the request carries the API key", () => {
-    expect(() => resolveBlogApiUrl(blogChannel({ blog_api_url: "https://evil.com" }))).toThrow(
-      /not a site we own/,
+  it("accepts a farm host, because adding a site must not need a deploy", () => {
+    // The URL used to have to be on a hardcoded list. That list was what made
+    // adding a site to the farm cost a commit, so the guard moved: the token
+    // is protected by being per site, not by the host being in the code.
+    expect(resolveBlogApiUrl(blogChannel({ blog_api_url: "https://newfarmsite.dev" }))).toBe(
+      "https://newfarmsite.dev",
     );
+  });
+
+  it("still refuses to send the SHARED key anywhere but the default site", () => {
+    // That is the key worth guarding: it belongs to the default site, and a
+    // channel without its own credential must not borrow it for another host.
+    const farm = makeChannel({
+      platform: "blog",
+      publish_via: "api",
+      credentials_ref: "env:content_api",
+      channel_config: { blog_api_url: "https://newfarmsite.dev" },
+    });
+    expect(contentEnvNameFor(farm)).toBeNull();
   });
 
   it("refuses plaintext http and a malformed URL", () => {

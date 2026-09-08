@@ -1022,8 +1022,36 @@ async function fullRunDates(client: SupabaseClient, activePrompts: number, limit
   return full.length ? full : dates.slice(0, 1);
 }
 
+/**
+ * Hosts the fleet publishes to, read from the channels rather than a hardcoded
+ * list. A site a persona publishes into is ours by definition, and making the
+ * report know that should not cost a deploy — that was what made adding a farm
+ * site expensive.
+ */
+async function configuredBlogHosts(client: SupabaseClient): Promise<Set<string>> {
+  const hosts = new Set<string>();
+  const { data } = await client
+    .from("persona_channels")
+    .select("channel_config")
+    .eq("platform", "blog");
+  for (const row of data ?? []) {
+    const cfg = (row.channel_config ?? {}) as Record<string, unknown>;
+    for (const key of ["blog_api_url", "blog_source_base"]) {
+      const raw = cfg[key];
+      if (typeof raw !== "string" || !raw.trim()) continue;
+      const host = domainOf(raw.trim());
+      if (host) hosts.add(host);
+    }
+  }
+  return hosts;
+}
+
 export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn?: string } = {}): Promise<VisibilitySummary> {
-  const [settings, prompts] = await Promise.all([getSettings(client), listPrompts(client)]);
+  const [settings, prompts, ourBlogHosts] = await Promise.all([
+    getSettings(client),
+    listPrompts(client),
+    configuredBlogHosts(client).catch(() => new Set<string>()),
+  ]);
   const activePrompts = prompts.filter((p) => p.active).length;
   // The run asked for, or the latest full run.
   const fullDates = await fullRunDates(client, activePrompts);
@@ -1205,7 +1233,7 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
   // Our own sites are not link targets to go pitch — including the unbranded
   // editorial properties, which read exactly like a third-party source here.
   const domains = [...domainAgg.values()]
-    .filter((d) => !isOwnedDomain(d.domain))
+    .filter((d) => !isOwnedDomain(d.domain) && !ourBlogHosts.has(d.domain))
     .sort((a, b) => b.runsWithoutBrand - a.runsWithoutBrand || b.citations - a.citations)
     .slice(0, 40);
 

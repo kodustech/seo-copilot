@@ -361,11 +361,14 @@ const DEFAULT_BLOG_API_URL = (
  * one env var could only ever address one of them — so the destination lives on
  * the channel and the env var is just the default.
  *
- * It must be https on a domain we own. Publishing sends the article AND a bearer
- * token to this host, so a typo (or a channel edited by the wrong person) would
- * hand the content API key to a stranger. Adding a site to the farm means adding
- * it to lib/owned-domains.ts, which is where it has to be listed anyway for the
- * AI-visibility report to stop treating it as someone else's page.
+ * It must be https, because the article travels with a bearer token. It does NOT
+ * have to be on a domain we hardcode: a farm site is connected in the app, and
+ * requiring a deploy to add one was the thing that made the farm expensive.
+ *
+ * What protects the token instead is that it is per site. A channel connected
+ * with its own key can only ever leak that key, to the host whoever connected
+ * it typed. The SHARED key is the one worth guarding, and contentEnvNameFor
+ * still refuses to hand it to anything but the default site.
  */
 export function resolveBlogApiUrl(channel: PersonaChannel): string {
   const configured =
@@ -381,11 +384,6 @@ export function resolveBlogApiUrl(channel: PersonaChannel): string {
   }
   if (parsed.protocol !== "https:") {
     throw new Error(`blog_api_url must be https (got "${raw}") — it carries the API key.`);
-  }
-  if (!isOwnedDomain(parsed.hostname)) {
-    throw new Error(
-      `blog_api_url "${parsed.hostname}" is not a site we own. Add it to lib/owned-domains.ts first.`,
-    );
   }
   return raw;
 }
@@ -413,6 +411,10 @@ export function isAllowedContentEnvName(name: string): boolean {
 /** What the connect flow writes for a channel on the default site. It names no
  *  env var of its own — it means "the shared key". */
 export const CONTENT_KEY_SENTINEL = "env:content_api";
+
+/** What it writes for a site whose own key went into the vault. Also not an env
+ *  var name: the key is read from persona_credentials, not the environment. */
+export const CONTENT_KEY_VAULT = "vault:blog";
 
 /** Scheme, host and port — everything that decides which service receives the
  *  request. A path doesn't; `www.` and a trailing dot are the same host. */
@@ -472,12 +474,24 @@ export function contentEnvNameFor(channel: PersonaChannel): string | null {
 }
 
 /**
- * The blog key comes from an env var named by credentials_ref, so a second site
- * gets its own key instead of inheriting the first one's. There is no vault
- * option here yet: the credential vault only accepts dev.to, and teaching it a
- * new provider is a change to the connect flow, not to the publisher.
+ * The key a blog channel publishes with. The vault comes first: connecting a
+ * farm site in the app is the whole point, and an env var per site means a
+ * deploy per site. The env path stays for the sites configured before the
+ * vault learned this provider.
  */
-function resolveBlogApiKey(channel: PersonaChannel): string {
+async function resolveBlogApiKey(
+  client: SupabaseClient,
+  channel: PersonaChannel,
+): Promise<string> {
+  const cipher = await getChannelCredentialCipher(client, channel.persona_id, "blog");
+  if (cipher) {
+    const key = decryptPersonaKey(cipher).trim();
+    if (key) return key;
+  }
+  return resolveBlogApiKeyFromEnv(channel);
+}
+
+function resolveBlogApiKeyFromEnv(channel: PersonaChannel): string {
   const envName = contentEnvNameFor(channel);
   if (!envName) {
     throw new Error(
@@ -496,11 +510,12 @@ function resolveBlogApiKey(channel: PersonaChannel): string {
 }
 
 async function publishToBlog(
+  client: SupabaseClient,
   activity: PersonaActivity,
   channel: PersonaChannel,
 ): Promise<PublishOutcome> {
   const blogApiUrl = resolveBlogApiUrl(channel);
-  const key = resolveBlogApiKey(channel);
+  const key = await resolveBlogApiKey(client, channel);
   const meta = activity.content_meta ?? {};
   const asString = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
   const tags = sanitizeTags(meta.tags);
@@ -586,7 +601,7 @@ async function publishActivity(
 ): Promise<PublishOutcome> {
   // A blog publishes via its own content API regardless of the channel's stored
   // publish_via; which site that is comes from the channel.
-  if (channel.platform === "blog") return publishToBlog(activity, channel);
+  if (channel.platform === "blog") return publishToBlog(client, activity, channel);
 
   switch (channel.publish_via) {
     case "post_bridge":

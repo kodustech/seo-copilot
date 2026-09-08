@@ -7,6 +7,7 @@ import {
   setChannelCredential,
 } from "@/lib/influencer/credentials";
 import { getChannel, updateChannel } from "@/lib/influencer/personas";
+import { CONTENT_KEY_SENTINEL, CONTENT_KEY_VAULT } from "@/lib/influencer/publish";
 import { influencerTableMissingMessage } from "@/lib/influencer/types";
 
 export const maxDuration = 60;
@@ -111,15 +112,54 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     }
 
     if (channel.platform === "blog") {
-      if (!process.env.CONTENT_API_KEY?.trim()) {
+      // A farm site connects here: its content API, where its markdown can be
+      // read back, and its own key. Adding a site used to mean an env var and a
+      // deploy; the key belongs to the site, so it belongs with the channel.
+      const apiUrl = typeof body.api_url === "string" ? body.api_url.trim().replace(/\/+$/, "") : "";
+      const sourceBase =
+        typeof body.source_base === "string" ? body.source_base.trim().replace(/\/+$/, "") : "";
+      const key = typeof body.key === "string" ? body.key.trim() : "";
+
+      const httpsOnly = (value: string, field: string) => {
+        if (!value) return null;
+        let parsed: URL;
+        try {
+          parsed = new URL(value);
+        } catch {
+          return `${field} is not a valid URL.`;
+        }
+        // The article and the key travel over this, and the source read comes
+        // back into the model's context — neither goes over plaintext.
+        return parsed.protocol === "https:" ? null : `${field} must be https.`;
+      };
+      const urlError = httpsOnly(apiUrl, "api_url") ?? httpsOnly(sourceBase, "source_base");
+      if (urlError) return NextResponse.json({ error: urlError }, { status: 400 });
+
+      // Falling back to the shared key is only honest for the default site;
+      // resolveBlogApiKey enforces the same thing at publish time.
+      if (!key && !process.env.CONTENT_API_KEY?.trim()) {
         return NextResponse.json(
-          { error: "Set CONTENT_API_KEY in the environment to publish to aicodereview.io." },
+          { error: "This blog needs its own content API key, or CONTENT_API_KEY set for the default site." },
           { status: 400 },
         );
       }
+      if (key) {
+        await setChannelCredential(client, {
+          persona_id: channel.persona_id,
+          platform: "blog",
+          key,
+          label: apiUrl ? new URL(apiUrl).hostname : null,
+          created_by: userEmail,
+        });
+      }
       const updated = await updateChannel(client, id, {
         status: "active",
-        credentials_ref: "env:content_api",
+        credentials_ref: key ? CONTENT_KEY_VAULT : CONTENT_KEY_SENTINEL,
+        channel_config: {
+          ...channel.channel_config,
+          ...(apiUrl ? { blog_api_url: apiUrl } : {}),
+          ...(sourceBase ? { blog_source_base: sourceBase } : {}),
+        },
       });
       return NextResponse.json({ connected: true, platform: "blog", channel: updated });
     }

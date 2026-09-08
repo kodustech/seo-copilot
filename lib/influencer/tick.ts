@@ -19,7 +19,7 @@ import { getVisibilitySummary } from "@/lib/ai-visibility";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 
 import { runInfluencerAgentSession } from "@/lib/influencer/agent";
-import { contentEnvNameFor } from "@/lib/influencer/publish";
+import { CONTENT_KEY_VAULT, contentEnvNameFor } from "@/lib/influencer/publish";
 import { alertOperator } from "@/lib/influencer/alerts";
 import {
   listNewFeedback,
@@ -117,6 +117,9 @@ export function isActionable(channel: PersonaChannel): boolean {
   // read as an env var name, which would have silenced every blog channel
   // activated through the UI — including the live one.
   if (channel.platform === "blog") {
+    // A key in the vault cannot be checked synchronously — same limit as dev.to
+    // below, where the marker on the channel stands in for the key.
+    if (channel.credentials_ref?.trim() === CONTENT_KEY_VAULT) return true;
     const envName = contentEnvNameFor(channel);
     return Boolean(envName && process.env[envName]?.trim());
   }
