@@ -792,7 +792,11 @@ export async function runAiVisibility(client: SupabaseClient, opts: RunOptions =
   // reached before the budget ran out.
   summary.remaining = Math.max(0, jobs.length - cursor);
 
-  if (summary.asked > 0) {
+  // Only a finished run marks the day. A budgeted slice that claimed the day
+  // would make isDueToday false for the rest of it, so the scheduler meant to
+  // finish the run would skip it — and a day that asked half the prompts would
+  // pass as a full run and be read as the week's number.
+  if (summary.asked > 0 && summary.remaining === 0) {
     await client.from("ai_visibility_settings").upsert({ id: 1, last_run_on: runOn, updated_at: new Date().toISOString() }, { onConflict: "id" });
   }
   summary.costUsd = Math.round(summary.costUsd * 1e6) / 1e6;

@@ -78,11 +78,27 @@ function normalizeThreshold(m: BetMeasure): number {
 
 // Shared reads for one evaluation batch (a page load evaluates every open
 // bet): funnel results per spec, and the AI visibility summary once.
-type FunnelCache = Map<string, Promise<FunnelData>> & { visibility?: Promise<Awaited<ReturnType<typeof getVisibilitySummary>>> };
+type VisibilitySummaryPromise = Promise<Awaited<ReturnType<typeof getVisibilitySummary>>>;
+type FunnelCache = Map<string, Promise<FunnelData>> & {
+  visibility?: VisibilitySummaryPromise;
+  visibilityByRun?: Map<string, VisibilitySummaryPromise>;
+};
 
 function visibilityFor(client: SupabaseClient, cache: FunnelCache) {
   if (!cache.visibility) cache.visibility = getVisibilitySummary(client);
   return cache.visibility;
+}
+
+/** The summary of one past run, shared across the bets of a page load: every
+ *  owned_citations bet wants the same previous run, and it is a heavy read. */
+function visibilityForRun(client: SupabaseClient, cache: FunnelCache, runOn: string) {
+  if (!cache.visibilityByRun) cache.visibilityByRun = new Map();
+  let p = cache.visibilityByRun.get(runOn);
+  if (!p) {
+    p = getVisibilitySummary(client, { runOn });
+    cache.visibilityByRun.set(runOn, p);
+  }
+  return p;
 }
 
 /**
@@ -322,7 +338,7 @@ export async function evaluateBet(
         current = s.runOn ? countAnswersCiting(s, m.id) : null;
         const prevRun = [...new Set(s.history.map((h) => h.runOn))].sort().filter((d) => d < (s.runOn ?? "")).pop();
         if (prevRun) {
-          const before = await getVisibilitySummary(client, { runOn: prevRun });
+          const before = await visibilityForRun(client, cache, prevRun);
           previous = countAnswersCiting(before, m.id);
         }
         const what = m.id === "any" ? "any page of ours" : m.id;

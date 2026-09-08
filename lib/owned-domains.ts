@@ -49,7 +49,7 @@ export const OWNED_PROPERTIES: string[] = [
 /** True when a hostname is ours, including any subdomain of a domain we own. */
 export function isOwnedDomain(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
-  return OWNED_DOMAINS.some((own) => host === own || host.endsWith(`.${own}`));
+  return OWNED_HOSTS.has(host) || OWNED_DOMAINS.some((own) => host.endsWith(`.${own}`));
 }
 
 /**
@@ -71,6 +71,12 @@ export function isOwnedUrl(url: string): boolean {
   const path = `${host}${parsed.pathname.toLowerCase().replace(/\/$/, "")}`;
   return BRAND_DOMAINS.some((own) => own.includes("/") && (path === own || path.startsWith(`${own}/`)));
 }
+
+/** Exact-host lookup, so the common case is a hash and not a scan. */
+const OWNED_HOSTS = new Set<string>(OWNED_DOMAINS);
+
+/** The path-scoped brand entries, filtered once instead of on every check. */
+const BRAND_PATH_PROPERTIES: string[] = BRAND_DOMAINS.filter((d) => d.includes("/"));
 
 function normalizeProperty(raw: string): string {
   return raw.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/+$/, "");
@@ -117,7 +123,8 @@ export function isOwnedProperty(property: string): boolean {
   if (!targets.length) return false;
   return targets.every(
     (t) =>
-      OWNED_DOMAINS.some((own) => t === own || t.endsWith(`.${own}`)) ||
-      BRAND_DOMAINS.some((own) => own.includes("/") && (t === own || t.startsWith(`${own}/`))),
+      OWNED_HOSTS.has(t) ||
+      OWNED_DOMAINS.some((own) => t.endsWith(`.${own}`)) ||
+      BRAND_PATH_PROPERTIES.some((own) => t === own || t.startsWith(`${own}/`)),
   );
 }

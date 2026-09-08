@@ -420,7 +420,9 @@ export function AiVisibilityPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState<string | "all" | null>(null);
-  const [lastRun, setLastRun] = useState<RunSummary | null>(null);
+  // `stalled` is what is left after the loop gave up, as opposed to `remaining`
+  // which is what is left while it is still going.
+  const [lastRun, setLastRun] = useState<(RunSummary & { stalled: number }) | null>(null);
   const [open, setOpen] = useState<{ promptId: string; engine: AiEngine } | null>(null);
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ prompt: "", language: "en", tags: "" });
@@ -489,7 +491,7 @@ export function AiVisibilityPage() {
     setRunning(promptIds?.[0] ?? "all");
     setError(null);
     setLastRun(null);
-    const total: RunSummary = { runOn: "", asked: 0, skipped: 0, mentioned: 0, failed: 0, costUsd: 0, errors: [], remaining: 0 };
+    const total: RunSummary & { stalled: number } = { runOn: "", asked: 0, skipped: 0, mentioned: 0, failed: 0, costUsd: 0, errors: [], remaining: 0, stalled: 0 };
     try {
       for (let slice = 0; ; slice++) {
         const res = await fetch("/api/ai-visibility/run", {
@@ -509,11 +511,14 @@ export function AiVisibilityPage() {
         total.failed += s.failed;
         total.costUsd += s.costUsd;
         for (const e of s.errors) if (!total.errors.includes(e)) total.errors.push(e);
-        total.remaining = s.remaining;
-        setLastRun({ ...total });
         // A slice that asked nothing and still reports work left would loop
-        // forever — stop and let the message say what is missing.
-        if (s.remaining <= 0 || s.asked === 0) break;
+        // forever. Stop — and say stopped, not running, or the line sits at
+        // "Running: N left" over a run that is no longer going.
+        const stalled = s.asked === 0 && s.remaining > 0;
+        total.remaining = stalled ? 0 : s.remaining;
+        total.stalled = stalled ? s.remaining : 0;
+        setLastRun({ ...total });
+        if (s.remaining <= 0 || stalled) break;
       }
       setRunOn(null);
       await load();
@@ -640,7 +645,11 @@ export function AiVisibilityPage() {
       {error ? <p className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">{error}</p> : null}
       {lastRun ? (
         <p className="rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-200">
-          {lastRun.remaining > 0 ? `Running: ${lastRun.remaining} left. ` : "Done: "}
+          {lastRun.remaining > 0
+            ? `Running: ${lastRun.remaining} left. `
+            : lastRun.stalled
+              ? `Stopped with ${lastRun.stalled} left — click run again. `
+              : "Done: "}
           {lastRun.asked} questions, Kodus named in {lastRun.mentioned}. {lastRun.skipped} already asked today, {lastRun.failed} failed, {usd(lastRun.costUsd)}.
           {lastRun.errors.length ? ` Errors: ${lastRun.errors.slice(0, 2).join(" | ")}` : ""}
         </p>
