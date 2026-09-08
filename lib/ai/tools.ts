@@ -3076,8 +3076,17 @@ const runAiVisibilityTool = tool({
         const configured = (await getAiVisibilitySettings(client)).engines;
         engineConfigs = engines.map((e) => configured.find((c) => c.engine === e) ?? { engine: e, model: DEFAULT_MODELS[e], samples: 1 });
       }
-      const summary = await runAiVisibility(client, { promptIds, force, engines: engineConfigs });
-      return { success: true as const, summary };
+      // The chat request has the same five-minute ceiling as the page, and a
+      // full run is tens of minutes. Take a slice and say what is left, so the
+      // agent calls again instead of the gateway killing the answer.
+      const summary = await runAiVisibility(client, { promptIds, force, engines: engineConfigs, budgetMs: 240_000 });
+      return {
+        success: true as const,
+        summary,
+        ...(summary.remaining > 0
+          ? { note: `${summary.remaining} answers still to ask — call runAiVisibility again (without force) to continue.` }
+          : {}),
+      };
     } catch (err) {
       return { success: false as const, error: err instanceof Error ? err.message : String(err) };
     }
