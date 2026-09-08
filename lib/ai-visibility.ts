@@ -806,7 +806,9 @@ export async function runAiVisibility(client: SupabaseClient, opts: RunOptions =
   // are not written into the day's existing set, so a tail that fails every
   // job would otherwise leave the day unmarked forever and re-ask — and re-pay
   // for — the same failing questions on every run.
-  const wholeSet = !opts.promptIds?.length;
+  // A job set is narrowed on two axes, and either one makes the run a subset:
+  // the agent tool can scope by engine the same way the page scopes by prompt.
+  const wholeSet = !opts.promptIds?.length && !opts.engines?.length;
   if (wholeSet && summary.remaining === 0 && (summary.asked > 0 || summary.failed > 0)) {
     await client.from("ai_visibility_settings").upsert({ id: 1, last_run_on: runOn, updated_at: new Date().toISOString() }, { onConflict: "id" });
   }
