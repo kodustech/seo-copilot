@@ -6,7 +6,7 @@ import {
   deleteChannelCredential,
   setChannelCredential,
 } from "@/lib/influencer/credentials";
-import { getChannel, updateChannel } from "@/lib/influencer/personas";
+import { getChannel, listChannelsForPersona, updateChannel } from "@/lib/influencer/personas";
 import {
   CONTENT_KEY_SENTINEL,
   CONTENT_KEY_VAULT,
@@ -164,6 +164,29 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         if (!process.env.CONTENT_API_KEY?.trim()) {
           return NextResponse.json(
             { error: `Set CONTENT_API_KEY to publish to ${DEFAULT_BLOG_API_URL}, or give this blog its own key.` },
+            { status: 400 },
+          );
+        }
+      }
+      // The vault holds one row per persona per provider, so a second farm
+      // channel on this persona would overwrite the first site's key while both
+      // kept the vault marker — and whichever key was written last would then be
+      // sent to both hosts. One persona per site is the farm's shape anyway;
+      // this makes it a refusal instead of a silent swap.
+      if (key) {
+        const siblings = await listChannelsForPersona(client, channel.persona_id);
+        const clash = siblings.find(
+          (c) =>
+            c.id !== id &&
+            c.platform === "blog" &&
+            c.credentials_ref?.trim() === CONTENT_KEY_VAULT &&
+            String(c.channel_config.blog_api_url ?? "").trim() !== apiUrl,
+        );
+        if (clash) {
+          return NextResponse.json(
+            {
+              error: `This persona already keeps a blog key for ${String(clash.channel_config.blog_api_url ?? "another site")}, and the vault holds one per persona. Give the second site its own persona, or disconnect that channel first.`,
+            },
             { status: 400 },
           );
         }
