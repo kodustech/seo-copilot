@@ -16,6 +16,7 @@ import {
   nextDayStartUtcIso,
   resolveBlogApiUrl,
   resolvePublishDecision,
+  sameBlogSite,
 } from "../../lib/influencer/publish";
 import {
   isOnboardingComplete,
@@ -284,6 +285,15 @@ describe("blog destination", () => {
     expect(isDefaultBlogSite("https://newfarmsite.dev")).toBe(false);
     expect(isDefaultBlogSite("http://aicodereview.io")).toBe(false);
     expect(isDefaultBlogSite("not-a-url")).toBe(false);
+  });
+
+  it("treats the spellings of one site as one site", () => {
+    // The connect form compares a sibling's stored URL against the one being
+    // typed. Comparing raw strings would refuse connects the publisher accepts.
+    expect(sameBlogSite("https://aicodereview.io/", "https://www.AICODEREVIEW.io")).toBe(true);
+    expect(sameBlogSite("", "https://aicodereview.io")).toBe(true);
+    expect(sameBlogSite("https://newfarmsite.dev", "https://aicodereview.io")).toBe(false);
+    expect(sameBlogSite("https://newfarmsite.dev:8443", "https://newfarmsite.dev")).toBe(false);
   });
 
   it("still refuses to send the SHARED key anywhere but the default site", () => {

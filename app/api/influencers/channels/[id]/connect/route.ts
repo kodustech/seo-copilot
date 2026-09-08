@@ -12,6 +12,7 @@ import {
   CONTENT_KEY_VAULT,
   DEFAULT_BLOG_API_URL,
   isDefaultBlogSite,
+  sameBlogSite,
 } from "@/lib/influencer/publish";
 import { influencerTableMissingMessage } from "@/lib/influencer/types";
 
@@ -180,7 +181,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
             c.id !== id &&
             c.platform === "blog" &&
             c.credentials_ref?.trim() === CONTENT_KEY_VAULT &&
-            String(c.channel_config.blog_api_url ?? "").trim() !== apiUrl,
+            !sameBlogSite(String(c.channel_config.blog_api_url ?? ""), apiUrl),
         );
         if (clash) {
           return NextResponse.json(

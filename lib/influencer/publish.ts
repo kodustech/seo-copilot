@@ -454,8 +454,19 @@ function isDefaultSite(channel: PersonaChannel): boolean {
  *  key of its own, instead of reporting success on a channel that can never
  *  publish. */
 export function isDefaultBlogSite(url: string): boolean {
-  const origin = originOf(url);
-  return origin !== null && origin === originOf(DEFAULT_BLOG_API_URL);
+  return sameBlogSite(url, DEFAULT_BLOG_API_URL);
+}
+
+/**
+ * Whether two base URLs name the same site. Blank means the default, since that
+ * is what the publisher resolves, and the comparison is by origin — a trailing
+ * slash, a `www.` or a different case is the same host, and comparing the raw
+ * strings would refuse connects the publisher would have accepted.
+ */
+export function sameBlogSite(a: string, b: string): boolean {
+  const left = originOf(a.trim() || DEFAULT_BLOG_API_URL);
+  const right = originOf(b.trim() || DEFAULT_BLOG_API_URL);
+  return left !== null && left === right;
 }
 
 /**
