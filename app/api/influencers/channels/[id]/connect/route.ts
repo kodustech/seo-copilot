@@ -7,7 +7,12 @@ import {
   setChannelCredential,
 } from "@/lib/influencer/credentials";
 import { getChannel, updateChannel } from "@/lib/influencer/personas";
-import { CONTENT_KEY_SENTINEL, CONTENT_KEY_VAULT } from "@/lib/influencer/publish";
+import {
+  CONTENT_KEY_SENTINEL,
+  CONTENT_KEY_VAULT,
+  DEFAULT_BLOG_API_URL,
+  isDefaultBlogSite,
+} from "@/lib/influencer/publish";
 import { influencerTableMissingMessage } from "@/lib/influencer/types";
 
 export const maxDuration = 60;
@@ -135,13 +140,25 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       const urlError = httpsOnly(apiUrl, "api_url") ?? httpsOnly(sourceBase, "source_base");
       if (urlError) return NextResponse.json({ error: urlError }, { status: 400 });
 
-      // Falling back to the shared key is only honest for the default site;
-      // resolveBlogApiKey enforces the same thing at publish time.
-      if (!key && !process.env.CONTENT_API_KEY?.trim()) {
-        return NextResponse.json(
-          { error: "This blog needs its own content API key, or CONTENT_API_KEY set for the default site." },
-          { status: 400 },
-        );
+      // Without a key of its own a channel borrows the shared one, and that one
+      // only ever serves the default site. Saying "connected" here and failing
+      // at publish time would be a form that lies.
+      if (!key) {
+        const target = apiUrl || DEFAULT_BLOG_API_URL;
+        if (!isDefaultBlogSite(target)) {
+          return NextResponse.json(
+            {
+              error: `A blog on ${target} needs its own content API key — the shared CONTENT_API_KEY only publishes to ${DEFAULT_BLOG_API_URL}.`,
+            },
+            { status: 400 },
+          );
+        }
+        if (!process.env.CONTENT_API_KEY?.trim()) {
+          return NextResponse.json(
+            { error: `Set CONTENT_API_KEY to publish to ${DEFAULT_BLOG_API_URL}, or give this blog its own key.` },
+            { status: 400 },
+          );
+        }
       }
       if (key) {
         await setChannelCredential(client, {
@@ -199,6 +216,9 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
         status: "pending_setup",
       });
     } else if (channel.platform === "blog") {
+      // The stored key outlives the channel otherwise, and reconnecting to a
+      // different site would publish there with the old site's credential.
+      await deleteChannelCredential(client, channel.persona_id, "blog");
       await updateChannel(client, id, {
         status: "pending_setup",
         credentials_ref: null,

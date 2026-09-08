@@ -352,7 +352,7 @@ async function publishToDevto(
 
 // `||` (not `??`) so an empty AICODEREVIEW_API_URL falls back instead of
 // producing a broken relative URL.
-const DEFAULT_BLOG_API_URL = (
+export const DEFAULT_BLOG_API_URL = (
   process.env.AICODEREVIEW_API_URL?.trim() || "https://aicodereview.io"
 ).replace(/\/$/, "");
 
@@ -446,7 +446,15 @@ function isDefaultSite(channel: PersonaChannel): boolean {
   } catch {
     return false;
   }
-  const origin = originOf(resolved);
+  return isDefaultBlogSite(resolved);
+}
+
+/** Whether a base URL points at the default site — the only one the shared key
+ *  is ever sent to. Exported so the connect form can refuse a farm host with no
+ *  key of its own, instead of reporting success on a channel that can never
+ *  publish. */
+export function isDefaultBlogSite(url: string): boolean {
+  const origin = originOf(url);
   return origin !== null && origin === originOf(DEFAULT_BLOG_API_URL);
 }
 
@@ -474,19 +482,32 @@ export function contentEnvNameFor(channel: PersonaChannel): string | null {
 }
 
 /**
- * The key a blog channel publishes with. The vault comes first: connecting a
- * farm site in the app is the whole point, and an env var per site means a
- * deploy per site. The env path stays for the sites configured before the
- * vault learned this provider.
+ * The key a blog channel publishes with. The vault comes first when the channel
+ * says its key lives there: connecting a farm site in the app is the point, and
+ * an env var per site means a deploy per site. The env path stays for sites
+ * configured before the vault learned this provider.
+ *
+ * The marker is load-bearing, not decoration. Reading the vault unconditionally
+ * would hand a persona's stored key to ANY of its blog channels — including one
+ * pointed at a different site, and including after a disconnect, since the row
+ * outlives the channel it was connected for. That would send one site's writer
+ * credential to another host, which is the exact thing the per-site key exists
+ * to prevent.
+ *
+ * Note the vault holds one key per persona per provider. A persona with two
+ * blog channels shares it; a farm keeps one persona per site, which is also how
+ * the voice stays separate.
  */
 async function resolveBlogApiKey(
   client: SupabaseClient,
   channel: PersonaChannel,
 ): Promise<string> {
-  const cipher = await getChannelCredentialCipher(client, channel.persona_id, "blog");
-  if (cipher) {
-    const key = decryptPersonaKey(cipher).trim();
-    if (key) return key;
+  if (channel.credentials_ref?.trim() === CONTENT_KEY_VAULT) {
+    const cipher = await getChannelCredentialCipher(client, channel.persona_id, "blog");
+    if (cipher) {
+      const key = decryptPersonaKey(cipher).trim();
+      if (key) return key;
+    }
   }
   return resolveBlogApiKeyFromEnv(channel);
 }

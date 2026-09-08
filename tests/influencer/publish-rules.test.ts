@@ -11,6 +11,7 @@ import {
   dayStartUtcIso,
   contentEnvNameFor,
   isAllowedContentEnvName,
+  isDefaultBlogSite,
   isAllowedDevtoEnvName,
   nextDayStartUtcIso,
   resolveBlogApiUrl,
@@ -275,6 +276,14 @@ describe("blog destination", () => {
     expect(resolveBlogApiUrl(blogChannel({ blog_api_url: "https://newfarmsite.dev" }))).toBe(
       "https://newfarmsite.dev",
     );
+  });
+
+  it("knows the default site by origin, so the form can refuse a keyless farm host", () => {
+    expect(isDefaultBlogSite("https://aicodereview.io")).toBe(true);
+    expect(isDefaultBlogSite("https://www.aicodereview.io/")).toBe(true);
+    expect(isDefaultBlogSite("https://newfarmsite.dev")).toBe(false);
+    expect(isDefaultBlogSite("http://aicodereview.io")).toBe(false);
+    expect(isDefaultBlogSite("not-a-url")).toBe(false);
   });
 
   it("still refuses to send the SHARED key anywhere but the default site", () => {
