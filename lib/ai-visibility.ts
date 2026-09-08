@@ -792,11 +792,22 @@ export async function runAiVisibility(client: SupabaseClient, opts: RunOptions =
   // reached before the budget ran out.
   summary.remaining = Math.max(0, jobs.length - cursor);
 
-  // Only a finished run marks the day. A budgeted slice that claimed the day
-  // would make isDueToday false for the rest of it, so the scheduler meant to
-  // finish the run would skip it — and a day that asked half the prompts would
-  // pass as a full run and be read as the week's number.
-  if (summary.asked > 0 && summary.remaining === 0) {
+  // Only a finished run over the WHOLE active set marks the day, and only
+  // completion counts — not success.
+  //
+  // A budgeted slice that claimed the day would make isDueToday false for the
+  // rest of it, so the scheduler meant to finish the run would skip it, and a
+  // day that asked half the prompts would pass as a full run and be read as
+  // the week's number. A subset run has the same effect from the other side:
+  // "ask only this prompt" finishes its own jobs, and claiming the day on that
+  // would park the other twenty-one for a week.
+  //
+  // `failed` counts too, because a job that errored was still consumed. Errors
+  // are not written into the day's existing set, so a tail that fails every
+  // job would otherwise leave the day unmarked forever and re-ask — and re-pay
+  // for — the same failing questions on every run.
+  const wholeSet = !opts.promptIds?.length;
+  if (wholeSet && summary.remaining === 0 && (summary.asked > 0 || summary.failed > 0)) {
     await client.from("ai_visibility_settings").upsert({ id: 1, last_run_on: runOn, updated_at: new Date().toISOString() }, { onConflict: "id" });
   }
   summary.costUsd = Math.round(summary.costUsd * 1e6) / 1e6;
