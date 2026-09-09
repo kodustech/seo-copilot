@@ -718,13 +718,18 @@ export function BetsPage() {
   };
 
   const decide = async (bet: BetRow, status: BetStatus) => {
-    let verdict = bet.verdict ?? "";
-    if (status === "won" || status === "lost") {
+    const records = status === "won" || status === "lost";
+    let verdict = "";
+    if (records) {
       const suggested = bet.evaluation?.suggestedVerdict ?? "";
-      const v = window.prompt("One-line verdict (what the number showed):", verdict || suggested);
+      const v = window.prompt("One-line verdict (what the number showed):", bet.verdict || suggested);
       if (v == null) return;
       verdict = v;
     }
+    // A verdict is the decision we recorded, so only won and lost carry one.
+    // Sending the old one back would leave a bet that was decided, reopened and
+    // then parked still showing why it was closed — which is exactly the thing
+    // parking is for not saying.
     await call(`/api/bets/${bet.id}`, { method: "PATCH", body: JSON.stringify({ status, verdict }) });
   };
 
