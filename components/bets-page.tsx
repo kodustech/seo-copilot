@@ -718,19 +718,22 @@ export function BetsPage() {
   };
 
   const decide = async (bet: BetRow, status: BetStatus) => {
-    const records = status === "won" || status === "lost";
-    let verdict = "";
-    if (records) {
+    // The route only writes the fields the body carries, so a transition that
+    // says nothing about the verdict leaves the one on record alone. Won and
+    // lost write a new one; park clears it, because a bet back in the queue
+    // showing why it was once closed is what park exists to avoid. Reopen and
+    // became-operation touch neither — the sentence is written by a person and
+    // one stray click should not be able to erase it.
+    const body: Record<string, unknown> = { status };
+    if (status === "won" || status === "lost") {
       const suggested = bet.evaluation?.suggestedVerdict ?? "";
       const v = window.prompt("One-line verdict (what the number showed):", bet.verdict || suggested);
       if (v == null) return;
-      verdict = v;
+      body.verdict = v;
+    } else if (status === "queued") {
+      body.verdict = "";
     }
-    // A verdict is the decision we recorded, so only won and lost carry one.
-    // Sending the old one back would leave a bet that was decided, reopened and
-    // then parked still showing why it was closed — which is exactly the thing
-    // parking is for not saying.
-    await call(`/api/bets/${bet.id}`, { method: "PATCH", body: JSON.stringify({ status, verdict }) });
+    await call(`/api/bets/${bet.id}`, { method: "PATCH", body: JSON.stringify(body) });
   };
 
   const markActionDone = async (bet: BetRow, done: boolean) => {
