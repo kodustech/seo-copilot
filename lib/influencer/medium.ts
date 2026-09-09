@@ -102,8 +102,8 @@ export function htmlToText(html: string): string {
     html
       // The end tag may carry whitespace (</script >); the body may hold
       // anything, including a "<" that is not a tag.
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ")
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, " ")
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/gi, " ")
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style\b[^>]*>/gi, " ")
       .replace(/<\/(p|div|h[1-6]|li|br|section|article)\s*>/gi, "\n")
       .replace(/<[^>]+>/g, " ")
       // One pass over entities, so "&amp;lt;" decodes to "&lt;" and stops there.

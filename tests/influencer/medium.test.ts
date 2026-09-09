@@ -83,6 +83,7 @@ describe("htmlToText", () => {
 
   it("matches a script end tag with whitespace and never double-decodes an entity", () => {
     expect(htmlToText("<p>a</p><script>x()</script ><p>b</p>")).toBe("a\nb");
+    expect(htmlToText("<p>a</p><script>x()</script\t\n bar><p>b</p>")).toBe("a\nb");
     expect(htmlToText("<p>&amp;lt;</p>")).toBe("&lt;");
   });
 });
