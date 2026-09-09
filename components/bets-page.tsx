@@ -665,6 +665,7 @@ export function BetsPage() {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<"open" | "decided">("open");
   const [lever, setLever] = useState<string>("all");
+  const [owner, setOwner] = useState<string>("all");
   const [open, setOpen] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{ mode: "create" | "edit"; bet?: BetRow } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -739,6 +740,7 @@ export function BetsPage() {
   const visible = bets
     .filter((b) => (tab === "open" ? b.status === "active" || b.status === "queued" : b.status !== "active" && b.status !== "queued"))
     .filter((b) => (lever === "all" ? true : lever === "none" ? !b.lever : b.lever === lever))
+    .filter((b) => (owner === "all" ? true : owner === "none" ? !b.ownerEmail : b.ownerEmail === owner))
     .filter((b) => (goalFilter ? b.goalId === goalFilter : true));
   const groups = useMemo(() => {
     const m = new Map<string, BetRow[]>();
@@ -795,6 +797,20 @@ export function BetsPage() {
                 </SelectItem>
               ))}
               <SelectItem value="none">No lever</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={owner} onValueChange={setOwner}>
+            <SelectTrigger className="h-8 w-[170px] border-white/[0.08] bg-transparent text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className={menuCls}>
+              <SelectItem value="all">Anyone</SelectItem>
+              {(options?.owners ?? []).map((o) => (
+                <SelectItem key={o} value={o}>
+                  {o.split("@")[0]}
+                </SelectItem>
+              ))}
+              <SelectItem value="none">Nobody yet</SelectItem>
             </SelectContent>
           </Select>
           <button type="button" onClick={() => load()} title="Reload" aria-label="Reload" className="inline-flex size-8 items-center justify-center rounded-md border border-white/[0.08] text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-100">
@@ -886,6 +902,12 @@ export function BetsPage() {
                             </button>
                             <button type="button" onClick={() => decide(b, "operation")} className="rounded border border-violet-500/30 px-2 py-0.5 text-[11px] text-violet-300 hover:bg-violet-500/10">
                               became operation
+                            </button>
+                            {/* Not every bet that stops is a bet that failed:
+                                parking one puts it back in the queue with no
+                                verdict on its record. */}
+                            <button type="button" onClick={() => decide(b, "queued")} className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-neutral-400 hover:bg-white/5">
+                              park
                             </button>
                           </>
                         ) : (
