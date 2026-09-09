@@ -7,6 +7,7 @@ import {
   updateActivityIfStatus,
   type ActivityPatch,
 } from "@/lib/influencer/activities";
+import { getChannel } from "@/lib/influencer/personas";
 import {
   influencerTableMissingMessage,
   type ActivityStatus,
@@ -32,13 +33,16 @@ export async function PATCH(
     const { id } = await ctx.params;
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     const action =
-      body.action === "approve" || body.action === "discard" || body.action === "edit"
+      body.action === "approve" ||
+      body.action === "discard" ||
+      body.action === "edit" ||
+      body.action === "published"
         ? body.action
         : null;
 
     if (!action) {
       return NextResponse.json(
-        { error: "action must be approve, discard or edit." },
+        { error: "action must be approve, discard, edit or published." },
         { status: 400 },
       );
     }
@@ -46,6 +50,32 @@ export async function PATCH(
     const current = await getActivity(client, id);
     if (!current) {
       return NextResponse.json({ error: "Activity not found" }, { status: 404 });
+    }
+
+    // A hand-posted channel has no publisher: a person posts and records the
+    // link. "approve" there would park the draft forever, and "published"
+    // anywhere else would claim a post the tool never sent.
+    const channel = await getChannel(client, current.channel_id);
+    const handPosted = channel?.publish_via === "manual";
+    if (action === "approve" && handPosted) {
+      return NextResponse.json(
+        { error: "This channel is posted by hand. Post it from your account, then mark it published with the link." },
+        { status: 400 },
+      );
+    }
+    if (action === "published" && !handPosted) {
+      return NextResponse.json(
+        { error: "Only hand-posted channels are marked published by a person; this one publishes on its own." },
+        { status: 400 },
+      );
+    }
+    const externalUrl =
+      typeof body.external_url === "string" ? body.external_url.trim() : "";
+    if (action === "published" && externalUrl && !/^https?:\/\/\S+$/i.test(externalUrl)) {
+      return NextResponse.json(
+        { error: "external_url must be a full http(s) link to the post." },
+        { status: 400 },
+      );
     }
 
     const patch: ActivityPatch = {};
@@ -61,6 +91,12 @@ export async function PATCH(
 
     if (action === "approve") {
       patch.status = "approved";
+      patch.approved_by = userEmail;
+      patch.error = null;
+    } else if (action === "published") {
+      patch.status = "published";
+      patch.published_at = new Date().toISOString();
+      patch.external_url = externalUrl || null;
       patch.approved_by = userEmail;
       patch.error = null;
     } else if (action === "discard") {

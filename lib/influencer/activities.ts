@@ -217,12 +217,18 @@ export async function listDueForPublish(
   client: SupabaseClient,
   nowIso: string,
   limit = 50,
+  /** Channels whose activities are never the publisher's to send (hand-posted). */
+  excludeChannelIds: string[] = [],
 ): Promise<PersonaActivity[]> {
-  const { data, error } = await client
+  let query = client
     .from("persona_activities")
     .select("*")
     .in("status", ["approved", "scheduled"])
-    .or(`scheduled_at.is.null,scheduled_at.lte.${nowIso}`)
+    .or(`scheduled_at.is.null,scheduled_at.lte.${nowIso}`);
+  if (excludeChannelIds.length) {
+    query = query.not("channel_id", "in", `(${excludeChannelIds.join(",")})`);
+  }
+  const { data, error } = await query
     .order("created_at", { ascending: true })
     .limit(limit);
 

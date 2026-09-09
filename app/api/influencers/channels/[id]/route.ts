@@ -63,7 +63,9 @@ export async function PATCH(
         return NextResponse.json({ error: "Channel not found" }, { status: 404 });
       }
       const needsCredential =
-        current.publish_via === "post_bridge" || current.publish_via === "api";
+        current.publish_via === "post_bridge" ||
+        current.publish_via === "api" ||
+        current.publish_via === "browser";
       // Validate the state the write will actually persist: updateChannel does
       // a blind .update(patch), so channel_config is REPLACED (not merged) when
       // the patch carries it. Merging here would pass the check while the write
@@ -73,7 +75,8 @@ export async function PATCH(
         patch.credentials_ref !== undefined ? patch.credentials_ref : current.credentials_ref;
       const hasCredential =
         (typeof credentialsRef === "string" && credentialsRef.length > 0) ||
-        config.post_bridge_account_id != null;
+        config.post_bridge_account_id != null ||
+        config.browserbase_context_id != null;
       if (needsCredential && !hasCredential) {
         return NextResponse.json(
           { error: "Connect a credential before activating this channel." },

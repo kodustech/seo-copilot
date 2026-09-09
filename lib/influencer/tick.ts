@@ -111,6 +111,10 @@ export function isDue(persona: Persona, now: Date): boolean {
 /** A channel the persona can publish to on its own, right now. */
 export function isActionable(channel: PersonaChannel): boolean {
   if (channel.status !== "active") return false;
+  // A hand-posted channel is the persona writing for a person to post. There
+  // is nothing to connect and no automation level to earn: active means the
+  // person asked for drafts, and the queue's per-channel buffer still paces it.
+  if (channel.publish_via === "manual") return true;
   if (channel.automation_level === "draft_only") return false;
   // Literally the same question the publisher asks, through the same resolver.
   // Answering it here by hand is how the sentinel the connect flow writes got
@@ -160,6 +164,7 @@ function buildShiftGoal(
   persona: Persona,
   open: string[],
   backedUp: string[],
+  manualOpen: string[],
   goalsBrief: string,
   visibilityBrief: string,
   memoryTitles: string[],
@@ -196,6 +201,17 @@ function buildShiftGoal(
   const backedUpLine = backedUp.length
     ? `These channels are backed up and closed this shift: ${backedUp.join(", ")}. Do NOT write for them — put the work into the ones that are open.`
     : "";
+  // Medium has no API: it imports a page of ours. Said here, in the brief,
+  // because a persona that writes a Medium post from scratch produces a draft
+  // the publisher can only reject.
+  const mediumLine = open.includes("medium")
+    ? "MEDIUM is import-only — never write a Medium post from scratch. Queue kind 'crosspost' for platform 'medium' with canonical_url = the exact live URL of an article of yours (from your recent posts); Medium imports that page and points its canonical back at it. Medium shows AI writing to followers only unless the page opens with a disclosure line in its first two paragraphs, so if your original has none, read_post it and queue the rewrite (replaces_slug) that adds one BEFORE you crosspost. The content field is a one-line note for the reviewer; the page is what gets imported."
+    : "";
+  // Hand-posted channels: the persona writes, a person posts from a real
+  // account and marks it published. Ready to paste is the whole job.
+  const manualLine = manualOpen.length
+    ? `HAND-POSTED CHANNELS (${manualOpen.join(", ")}): you write, a person posts it from their own account and marks it published with the link. Write it ready to paste. For reddit: a reply or comment that adds something concrete to a specific live thread — pass target_url = that thread's URL and name the subreddit in the title — never a link drop or a standalone promo post. For hackernoon: a complete article in markdown with a title, which a person submits to their editors. The person posting handles whatever disclosure the platform asks for.`
+    : "";
   return [
     `This is your shift as ${persona.display_name} (@${persona.handle}). You are a relentless operator: your job is to HIT YOUR GOALS, and you do whatever it takes and never stop working to get there.`,
     `Your beat: ${persona.beat}.`,
@@ -203,6 +219,8 @@ function buildShiftGoal(
       ? `Channels you can post to right now: ${open.join(", ")}.`
       : "None of your channels have queue room this shift.",
     backedUpLine,
+    mediumLine,
+    manualLine,
     failureLine,
     feedbackLine,
     goalsBrief,
@@ -389,6 +407,9 @@ export async function runPersonaTick({
       persona,
       open,
       backedUp,
+      open.filter((p) =>
+        actionable.some((c) => c.platform === p && c.publish_via === "manual"),
+      ),
       goalsBrief,
       visibilityBrief,
       memoryTitles,

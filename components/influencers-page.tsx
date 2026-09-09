@@ -42,7 +42,7 @@ import { Textarea } from "@/components/ui/textarea";
 type Channel = {
   id: string;
   persona_id: string;
-  platform: "x" | "devto" | "blog" | "medium" | "reddit" | "hackernews";
+  platform: "x" | "devto" | "blog" | "medium" | "reddit" | "hackernews" | "hackernoon";
   external_handle: string | null;
   publish_via: string;
   automation_level: "auto" | "approve_first" | "draft_only";
@@ -382,13 +382,18 @@ function ReviewQueue({
 
   async function review(
     id: string,
-    action: "approve" | "discard",
+    action: "approve" | "discard" | "published",
     content?: string,
+    externalUrl?: string,
   ) {
     const res = await fetch(`/api/influencers/activities/${id}`, {
       method: "PATCH",
       headers: authHeaders(token),
-      body: JSON.stringify({ action, ...(content ? { content } : {}) }),
+      body: JSON.stringify({
+        action,
+        ...(content ? { content } : {}),
+        ...(externalUrl ? { external_url: externalUrl } : {}),
+      }),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -437,6 +442,9 @@ function ReviewQueue({
               key={activity.id}
               activity={activity}
               persona={personaById.get(activity.persona_id)}
+              channel={personaById
+                .get(activity.persona_id)
+                ?.channels.find((c) => c.id === activity.channel_id)}
               onReview={review}
             />
           ))}
@@ -449,30 +457,50 @@ function ReviewQueue({
 function QueueItem({
   activity,
   persona,
+  channel,
   onReview,
 }: {
   activity: Activity;
   persona: Persona | undefined;
+  channel: Channel | undefined;
   onReview: (
     id: string,
-    action: "approve" | "discard",
+    action: "approve" | "discard" | "published",
     content?: string,
+    externalUrl?: string,
   ) => Promise<void>;
 }) {
   const [content, setContent] = useState(activity.content);
-  const [busy, setBusy] = useState<"approve" | "discard" | null>(null);
+  const [postedUrl, setPostedUrl] = useState("");
+  const [busy, setBusy] = useState<"approve" | "discard" | "published" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const edited = content.trim() !== activity.content;
   const lane =
     typeof activity.content_meta.lane === "string"
       ? activity.content_meta.lane
       : null;
+  // A hand-posted channel has no publisher: the person copies the text, posts
+  // it from their own account, and records the link here.
+  const handPosted = channel?.publish_via === "manual";
+  const targetUrl =
+    typeof activity.content_meta.target_url === "string"
+      ? activity.content_meta.target_url
+      : null;
+  const canonicalUrl =
+    typeof activity.content_meta.canonical_url === "string"
+      ? activity.content_meta.canonical_url
+      : null;
 
-  async function act(action: "approve" | "discard") {
+  async function act(action: "approve" | "discard" | "published") {
     setBusy(action);
     setActionError(null);
     try {
-      await onReview(activity.id, action, edited ? content.trim() : undefined);
+      await onReview(
+        activity.id,
+        action,
+        edited ? content.trim() : undefined,
+        action === "published" ? postedUrl.trim() || undefined : undefined,
+      );
     } catch (err) {
       setActionError(
         err instanceof Error ? err.message : `Failed to ${action}`,
@@ -490,7 +518,29 @@ function QueueItem({
             @{persona?.handle ?? "?"}
           </span>
           {lane && <Badge variant="outline">{lane}</Badge>}
+          {channel && <Badge variant="outline">{channel.platform}</Badge>}
+          {handPosted && <Badge variant="secondary">post by hand</Badge>}
           <Badge className={STATUS_BADGE[activity.status]}>{activity.status}</Badge>
+          {targetUrl && (
+            <a
+              href={targetUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="underline truncate max-w-[16rem]"
+            >
+              where to post
+            </a>
+          )}
+          {channel?.platform === "medium" && canonicalUrl && (
+            <a
+              href={canonicalUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="underline truncate max-w-[16rem]"
+            >
+              page to import
+            </a>
+          )}
           {activity.source_ref && (
             <a
               href={activity.source_ref}
@@ -518,19 +568,43 @@ function QueueItem({
           className="text-sm"
         />
 
+        {handPosted && (
+          <Input
+            value={postedUrl}
+            onChange={(event) => setPostedUrl(event.target.value)}
+            placeholder="Link to the post once it is up (optional)"
+            className="h-8 text-xs"
+          />
+        )}
+
         <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            disabled={busy !== null || !content.trim()}
-            onClick={() => act("approve")}
-          >
-            {busy === "approve" ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Check className="h-4 w-4 mr-1" />
-            )}
-            {edited ? "Save & approve" : "Approve"}
-          </Button>
+          {handPosted ? (
+            <Button
+              size="sm"
+              disabled={busy !== null || !content.trim()}
+              onClick={() => act("published")}
+            >
+              {busy === "published" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Check className="h-4 w-4 mr-1" />
+              )}
+              Mark as published
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              disabled={busy !== null || !content.trim()}
+              onClick={() => act("approve")}
+            >
+              {busy === "approve" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Check className="h-4 w-4 mr-1" />
+              )}
+              {edited ? "Save & approve" : "Approve"}
+            </Button>
+          )}
           <Button
             size="sm"
             variant="ghost"
@@ -1071,6 +1145,34 @@ function ChannelConnect({
     );
   }
 
+  // Medium: a person signs in through a live remote browser; that login is
+  // the credential. Publishing is Medium's own "Import a story".
+  if (channel.platform === "medium") {
+    return (
+      <MediumConnect
+        token={token}
+        channel={channel}
+        busy={busy}
+        error={error}
+        onConnect={(payload) => connect(payload)}
+        onDisconnect={disconnect}
+      />
+    );
+  }
+
+  // Hand-posted: the persona drafts, a person posts and marks it published.
+  if (channel.publish_via === "manual") {
+    return (
+      <ManualConnect
+        channel={channel}
+        busy={busy}
+        error={error}
+        onConnect={() => connect({ enable: true })}
+        onDisconnect={disconnect}
+      />
+    );
+  }
+
   // No direct publishing integration — the tool drafts, a human posts.
   return (
     <ConnectShell status="draft-only">
@@ -1078,6 +1180,166 @@ function ChannelConnect({
         No direct publishing integration for {channel.platform} yet — the persona
         drafts here and a human posts from their own account.
       </p>
+    </ConnectShell>
+  );
+}
+
+function ManualConnect({
+  channel,
+  busy,
+  error,
+  onConnect,
+  onDisconnect,
+}: {
+  channel: Channel;
+  busy: boolean;
+  error: string | null;
+  onConnect: () => void;
+  onDisconnect: () => void;
+}) {
+  const label =
+    channel.platform === "reddit"
+      ? "a reply in a live thread, with the thread URL"
+      : channel.platform === "hackernoon"
+        ? "a full article for a person to submit to Hacker Noon's editors"
+        : "a piece ready to paste";
+  if (channel.status === "active") {
+    return (
+      <ConnectShell status="connected">
+        <p className="text-xs text-muted-foreground">
+          Posted by hand. The persona drafts {label}; you post it from your own
+          account and mark it published in the queue with the link.
+        </p>
+        {error && <p className="text-xs text-red-600">{error}</p>}
+        <Button size="sm" variant="outline" disabled={busy} onClick={onDisconnect}>
+          Stop drafting
+        </Button>
+      </ConnectShell>
+    );
+  }
+  return (
+    <ConnectShell status="not connected">
+      <p className="text-xs text-muted-foreground">
+        {channel.platform} has no publishing API worth using. Turn this on and
+        the persona drafts {label}; you post it and mark it published.
+      </p>
+      {error && <p className="text-xs text-red-600">{error}</p>}
+      <Button size="sm" disabled={busy} onClick={onConnect}>
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Start drafting"}
+      </Button>
+    </ConnectShell>
+  );
+}
+
+function MediumConnect({
+  token,
+  channel,
+  busy,
+  error,
+  onConnect,
+  onDisconnect,
+}: {
+  token: string;
+  channel: Channel;
+  busy: boolean;
+  error: string | null;
+  onConnect: (payload: Record<string, unknown>) => void;
+  onDisconnect: () => void;
+}) {
+  const cfg = (channel.channel_config ?? {}) as Record<string, unknown>;
+  const connected =
+    typeof cfg.browserbase_context_id === "string" && cfg.browserbase_context_id.length > 0;
+  const [login, setLogin] = useState<{ live_url: string; context_id: string; expires_at: string } | null>(
+    null,
+  );
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+  const pendingContext = typeof cfg.pending_context_id === "string" ? cfg.pending_context_id : null;
+
+  async function startLogin() {
+    setStarting(true);
+    setStartError(null);
+    try {
+      const res = await fetch(`/api/influencers/channels/${channel.id}/connect`, {
+        method: "POST",
+        headers: authHeaders(token),
+        body: JSON.stringify({ start_login: true }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Could not open the login browser");
+      setLogin(body.login);
+    } catch (err) {
+      setStartError(err instanceof Error ? err.message : "Could not open the login browser");
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  if (connected) {
+    return (
+      <ConnectShell status="connected">
+        <p className="text-xs text-muted-foreground">
+          Signed in to Medium in a remote browser. Each approved crosspost is
+          imported through Medium’s “Import a story” from the page it links, so
+          the original keeps the canonical. Medium shows AI writing to followers
+          only unless the page opens with a disclosure line; the import refuses
+          a page without one.
+        </p>
+        {error && <p className="text-xs text-red-600">{error}</p>}
+        <Button size="sm" variant="outline" disabled={busy} onClick={onDisconnect}>
+          Disconnect
+        </Button>
+      </ConnectShell>
+    );
+  }
+
+  return (
+    <ConnectShell status="not connected">
+      <p className="text-xs text-muted-foreground">
+        Medium has no API for new integrations. Connect by signing in once
+        inside a live remote browser; that login is what the persona publishes
+        with. 1) Open the login. 2) Sign in as the persona’s Medium account in
+        the tab that opens. 3) Come back and confirm.
+      </p>
+      {!login && !pendingContext && (
+        <Button size="sm" disabled={starting || busy} onClick={startLogin}>
+          {starting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Open Medium login"}
+        </Button>
+      )}
+      {login && (
+        <div className="space-y-2">
+          <a
+            href={login.live_url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs underline"
+          >
+            Open the live browser and sign in to Medium
+          </a>
+          <p className="text-xs text-muted-foreground">
+            The browser closes on its own at {new Date(login.expires_at).toLocaleTimeString()}.
+            Confirm once you see your Medium home.
+          </p>
+        </div>
+      )}
+      {(login || pendingContext) && (
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={() =>
+              onConnect({ browserbase_context_id: login?.context_id ?? pendingContext })
+            }
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "I’m signed in, connect"}
+          </Button>
+          <Button size="sm" variant="ghost" disabled={starting || busy} onClick={startLogin}>
+            Open the login again
+          </Button>
+        </div>
+      )}
+      {startError && <p className="text-xs text-red-600">{startError}</p>}
+      {error && <p className="text-xs text-red-600">{error}</p>}
     </ConnectShell>
   );
 }
@@ -1396,8 +1658,10 @@ function WizardDialog({
           channels: [
             { platform: "x" },
             { platform: "devto" },
+            { platform: "medium" },
             { platform: "reddit" },
             { platform: "hackernews" },
+            { platform: "hackernoon" },
           ],
         }),
       });
