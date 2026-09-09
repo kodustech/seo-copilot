@@ -88,22 +88,31 @@ export function hasAiDisclosure(text: string, personaDisclosure?: string | null)
 
 /** Readable text of an HTML page, no tags, scripts or styles. Good enough for a
  *  disclosure check; never for anything that reads meaning into markup. */
+const ENTITIES: Record<string, string> = {
+  nbsp: " ",
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  "#39": "'",
+};
+
 export function htmlToText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<\/(p|div|h[1-6]|li|br|section|article)>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/[ \t]+/g, " ")
-    .replace(/ ?\n ?/g, "\n")
-    .replace(/\n\s*\n+/g, "\n")
-    .trim();
+  return (
+    html
+      // The end tag may carry whitespace (</script >); the body may hold
+      // anything, including a "<" that is not a tag.
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ")
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, " ")
+      .replace(/<\/(p|div|h[1-6]|li|br|section|article)\s*>/gi, "\n")
+      .replace(/<[^>]+>/g, " ")
+      // One pass over entities, so "&amp;lt;" decodes to "&lt;" and stops there.
+      .replace(/&(nbsp|amp|lt|gt|quot|#39);/g, (_, name: string) => ENTITIES[name] ?? "")
+      .replace(/[ \t]+/g, " ")
+      .replace(/ ?\n ?/g, "\n")
+      .replace(/\n\s*\n+/g, "\n")
+      .trim()
+  );
 }
 
 /** Whether the channel asks for the disclosure check. On unless it says off —

@@ -80,6 +80,11 @@ describe("htmlToText", () => {
       "<html><head><style>p{}</style><script>x()</script></head><body><h1>T</h1><p>One &amp; two</p><p>Three</p></body></html>";
     expect(htmlToText(html)).toBe("T\nOne & two\nThree");
   });
+
+  it("matches a script end tag with whitespace and never double-decodes an entity", () => {
+    expect(htmlToText("<p>a</p><script>x()</script ><p>b</p>")).toBe("a\nb");
+    expect(htmlToText("<p>&amp;lt;</p>")).toBe("&lt;");
+  });
 });
 
 describe("Medium URLs", () => {
