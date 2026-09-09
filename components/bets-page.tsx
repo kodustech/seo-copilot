@@ -726,8 +726,12 @@ export function BetsPage() {
     // one stray click should not be able to erase it.
     const body: Record<string, unknown> = { status };
     if (status === "won" || status === "lost") {
+      // What the measure says now comes first. Since reopen stopped clearing the
+      // verdict, the old one is still on the bet when won/lost is clickable —
+      // and offering "the number tanked" as the default for a win records the
+      // previous decision's sentence on this one.
       const suggested = bet.evaluation?.suggestedVerdict ?? "";
-      const v = window.prompt("One-line verdict (what the number showed):", bet.verdict || suggested);
+      const v = window.prompt("One-line verdict (what the number showed):", suggested || bet.verdict || "");
       if (v == null) return;
       body.verdict = v;
     } else if (status === "queued") {
