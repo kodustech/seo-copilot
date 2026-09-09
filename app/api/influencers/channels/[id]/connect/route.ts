@@ -220,9 +220,21 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       // Step 1: open a browser a person can sign in with. The context it lands
       // in is remembered on the channel so step 2 can only confirm THAT one.
       if (body.start_login === true) {
+        // The proxy choice is part of the login: a session signed in from a
+        // residential IP and reused from a datacenter one reads as another
+        // device. An explicit boolean wins; otherwise the stored choice holds.
+        // Written as a boolean either way, so "off" is a value, not a missing key.
+        const proxies =
+          typeof body.proxies === "boolean" ? body.proxies : channel.channel_config.proxies === true;
+        const login = await startLoginSession(MEDIUM_SIGNIN_URL, {
+          name: `medium-${channel.persona_id.slice(0, 8)}-${Date.now()}`,
+          proxies,
+        });
+
         // "Open the login again" must not orphan the previous attempt: a
         // context nobody points at any more still holds whatever login the
-        // person completed in it, and nothing in the app could see it.
+        // person completed in it. Retired only now, after the replacement
+        // exists — a failed replacement must leave the previous attempt usable.
         const prevContext =
           typeof channel.channel_config.pending_context_id === "string"
             ? channel.channel_config.pending_context_id
@@ -232,22 +244,14 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
             ? channel.channel_config.pending_session_id
             : "";
         if (prevSession) await releaseSession(prevSession);
-        if (prevContext) await deleteContext(prevContext);
+        if (prevContext && prevContext !== login.context_id) await deleteContext(prevContext);
 
-        // The proxy choice is part of the login: a session signed in from a
-        // residential IP and reused from a datacenter one reads as another
-        // device. Stored now so the confirm step and every import match it.
-        const proxies = body.proxies === true || channel.channel_config.proxies === true;
-        const login = await startLoginSession(MEDIUM_SIGNIN_URL, {
-          name: `medium-${channel.persona_id.slice(0, 8)}-${Date.now()}`,
-          proxies,
-        });
         await updateChannel(client, id, {
           channel_config: {
             ...channel.channel_config,
             pending_context_id: login.context_id,
             pending_session_id: login.session_id,
-            ...(proxies ? { proxies: true } : {}),
+            proxies,
           },
         });
         return NextResponse.json({ login });
@@ -278,7 +282,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         // check from reading the jar before the login is in it.
         await new Promise((r) => setTimeout(r, 4_000));
       }
-      const proxies = body.proxies === true || channel.channel_config.proxies === true;
+      const proxies =
+        typeof body.proxies === "boolean" ? body.proxies : channel.channel_config.proxies === true;
       const check = await checkMediumSession(contextId, { proxies });
       if (!check.loggedIn) {
         return NextResponse.json(
@@ -291,7 +296,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       const config: Record<string, unknown> = {
         ...channel.channel_config,
         [MEDIUM_CONTEXT_KEY]: contextId,
-        ...(proxies ? { proxies: true } : {}),
+        proxies,
       };
       delete config.pending_context_id;
       delete config.pending_session_id;
