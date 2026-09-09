@@ -133,6 +133,14 @@ export function isActionable(channel: PersonaChannel): boolean {
   if (channel.publish_via === "api") {
     return typeof channel.credentials_ref === "string" && channel.credentials_ref.length > 0;
   }
+  // A browser channel publishes with a logged-in context; the connect flow
+  // stores its id and a marker in credentials_ref. Either says "connected".
+  if (channel.publish_via === "browser") {
+    return (
+      typeof channel.channel_config.browserbase_context_id === "string" &&
+      channel.channel_config.browserbase_context_id.length > 0
+    );
+  }
   return false;
 }
 
@@ -367,6 +375,9 @@ export async function runPersonaTick({
     pendingByChannel,
   );
   const postingAllowed = open.length > 0;
+  const manualPlatforms = new Set<string>(
+    actionable.filter((c) => c.publish_via === "manual").map((c) => c.platform),
+  );
 
   const progress = await computeProgress(client, persona, now);
   const goalsBrief = buildGoalsBrief(progress);
@@ -407,9 +418,7 @@ export async function runPersonaTick({
       persona,
       open,
       backedUp,
-      open.filter((p) =>
-        actionable.some((c) => c.platform === p && c.publish_via === "manual"),
-      ),
+      open.filter((p) => manualPlatforms.has(p)),
       goalsBrief,
       visibilityBrief,
       memoryTitles,

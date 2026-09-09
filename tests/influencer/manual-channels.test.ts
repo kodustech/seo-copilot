@@ -104,6 +104,21 @@ describe("isActionable, for a hand-posted channel", () => {
   });
 });
 
+describe("isActionable, for a browser channel (Medium)", () => {
+  it("is open once a logged-in context is attached, and closed before", () => {
+    const medium = makeChannel({
+      id: "m1",
+      platform: "medium",
+      publish_via: "browser",
+      automation_level: "approve_first",
+      credentials_ref: "browserbase:medium",
+    });
+    expect(isActionable({ ...medium, channel_config: { browserbase_context_id: "ctx1" } })).toBe(true);
+    expect(isActionable(medium)).toBe(false);
+    expect(isActionable({ ...medium, channel_config: { browserbase_context_id: "ctx1" }, status: "paused" })).toBe(false);
+  });
+});
+
 describe("resolvePublishDecision, for a hand-posted channel", () => {
   it("skips rather than fails — the draft is waiting for a person, not broken", () => {
     const decision = resolvePublishDecision({

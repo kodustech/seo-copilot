@@ -220,15 +220,34 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       // Step 1: open a browser a person can sign in with. The context it lands
       // in is remembered on the channel so step 2 can only confirm THAT one.
       if (body.start_login === true) {
+        // "Open the login again" must not orphan the previous attempt: a
+        // context nobody points at any more still holds whatever login the
+        // person completed in it, and nothing in the app could see it.
+        const prevContext =
+          typeof channel.channel_config.pending_context_id === "string"
+            ? channel.channel_config.pending_context_id
+            : "";
+        const prevSession =
+          typeof channel.channel_config.pending_session_id === "string"
+            ? channel.channel_config.pending_session_id
+            : "";
+        if (prevSession) await releaseSession(prevSession);
+        if (prevContext) await deleteContext(prevContext);
+
+        // The proxy choice is part of the login: a session signed in from a
+        // residential IP and reused from a datacenter one reads as another
+        // device. Stored now so the confirm step and every import match it.
+        const proxies = body.proxies === true || channel.channel_config.proxies === true;
         const login = await startLoginSession(MEDIUM_SIGNIN_URL, {
           name: `medium-${channel.persona_id.slice(0, 8)}-${Date.now()}`,
-          proxies: body.proxies === true,
+          proxies,
         });
         await updateChannel(client, id, {
           channel_config: {
             ...channel.channel_config,
             pending_context_id: login.context_id,
             pending_session_id: login.session_id,
+            ...(proxies ? { proxies: true } : {}),
           },
         });
         return NextResponse.json({ login });
