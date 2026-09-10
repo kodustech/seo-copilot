@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { MarkdownContent } from "@/components/markdown-content";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -47,6 +48,43 @@ function briefHeadline(goal: string): string {
   const firstLine = goal.split("\n")[0] ?? goal;
   const sentence = firstLine.split(/(?<=\.)\s/)[0] ?? firstLine;
   return sentence.length > 140 ? `${sentence.slice(0, 137).trimEnd()}…` : sentence;
+}
+
+/**
+ * Markdown clipped to four rendered lines, with More/Less only when the clamp
+ * actually hides something. Measured after layout and again on resize, since
+ * whether four lines fit depends on the viewport, not on the character count.
+ */
+function ClampedMarkdown({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      if (open) return;
+      setOverflows(el.scrollHeight > el.clientHeight + 1);
+    };
+    measure();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    observer?.observe(el);
+    return () => observer?.disconnect();
+  }, [text, open]);
+
+  return (
+    <div>
+      <div ref={ref} className={cn(!open && "line-clamp-4")}>
+        <MarkdownContent text={text} />
+      </div>
+      {overflows || open ? (
+        <button type="button" onClick={() => setOpen((v) => !v)} className="mt-1 text-xs text-neutral-500 hover:text-neutral-200">
+          {open ? "Less" : "More"}
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 /**
@@ -179,7 +217,9 @@ export function RunsTab({ token, persona, onChanged }: { token: string; persona:
                   ) : null}
 
                   {s.result_summary ? (
-                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-neutral-200">{s.result_summary}</p>
+                    // The persona writes its summary in markdown; shown as such,
+                    // and clipped to a few lines until asked for the whole thing.
+                    <ClampedMarkdown text={s.result_summary} />
                   ) : null}
                   {s.error ? <p className={cls.errorText}>{s.error}</p> : null}
 

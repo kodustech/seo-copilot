@@ -116,7 +116,9 @@ function ChannelRow({
 
         <button type="button" onClick={onToggle} className="min-w-0 text-left">
           <p className="text-sm font-medium text-neutral-100">{platformLabel(channel.platform)}</p>
-          <p className="truncate text-xs text-neutral-500">{channel.external_handle ? `@${channel.external_handle.replace(/^@/, "")}` : "no handle"}</p>
+          {channel.external_handle ? (
+            <p className="truncate text-xs text-neutral-500">@{channel.external_handle.replace(/^@/, "")}</p>
+          ) : null}
         </button>
 
         <div className="col-span-2 flex flex-wrap items-center gap-x-4 gap-y-1 md:col-span-1">
