@@ -713,8 +713,10 @@ export async function runInfluencerAgentSession({
           .enum(["post", "reply", "quote", "article", "crosspost"])
           .describe("The kind of content"),
         platform: z
-          .enum(["x", "devto", "blog", "medium", "reddit", "hackernews"])
-          .describe("Which channel this is for"),
+          .enum(["x", "devto", "blog", "medium", "reddit", "hackernews", "hackernoon"])
+          .describe(
+            "Which channel this is for. 'medium' is import-only: kind 'crosspost' + canonical_url of your own live article. 'reddit' and 'hackernoon' are posted by a person from the draft you queue.",
+          ),
         title: z.string().nullable().optional().describe("Title (for articles)"),
         content: z.string().describe("The full content, in the persona's voice"),
         description: z
@@ -753,6 +755,13 @@ export async function runInfluencerAgentSession({
           .describe(
             "For kind 'reply': the FULL URL of the tweet you're replying to (https://x.com/<user>/status/<id>), taken from x_read. Required for a reply.",
           ),
+        target_url: z
+          .string()
+          .nullable()
+          .optional()
+          .describe(
+            "For a hand-posted channel (reddit, hackernoon): the thread or page the person should post this in — a reddit thread URL, or where on Hacker Noon it belongs. http(s) only, copied from a tool result, never guessed.",
+          ),
         image: z
           .object({
             kind: z.enum(["screenshot", "image_url"]),
@@ -768,7 +777,7 @@ export async function runInfluencerAgentSession({
             "Optionally attach an image to a social post. 'screenshot' captures a REAL page (a benchmark chart, a tool's UI, a tweet, a GitHub diff) — real evidence, on-brand. 'image_url' attaches a public image URL (e.g. an article's own image). Use it when a visual genuinely strengthens the post.",
           ),
       }),
-      execute: async ({ kind, platform, title, content, description, category, tags, faq, image, reply_to, canonical_url, replaces_slug }) => {
+      execute: async ({ kind, platform, title, content, description, category, tags, faq, image, reply_to, canonical_url, replaces_slug, target_url }) => {
         await step({ kind: "tool_call", tool: "queue_draft", payload: { kind, platform } });
         // Hard backpressure, enforced live against the running draft counter (not
         // a stale snapshot): 0 = queue is full, don't post; 1 = one post/shift.
@@ -836,6 +845,18 @@ export async function runInfluencerAgentSession({
           return `replaces_slug only works on the blog — "${platform}" has no post to rewrite. Drop it, or queue this for the blog.`;
         }
         const canonical = typeof canonical_url === "string" ? canonical_url.trim() : "";
+        // Medium has no API and nothing is typed into it: it imports one of our
+        // pages. A Medium draft that isn't a crosspost of a live original is a
+        // draft the publisher can only reject, so refuse it here with the fix.
+        if (normalizedPlatform === "medium" && (normalizedKind !== "crosspost" || !canonical)) {
+          await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "medium_not_crosspost" } });
+          return "Medium is import-only: queue kind 'crosspost' with canonical_url = the exact URL of an article you already published on one of our sites (copy it from your recent posts). Medium imports that page; nothing is typed into Medium.";
+        }
+        const target = typeof target_url === "string" ? target_url.trim() : "";
+        if (target && !/^https?:\/\/\S+$/i.test(target)) {
+          await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "target_not_url" } });
+          return "target_url must be a full http(s) URL — the thread or page the person should post this in. Drop it if you don't have one from a tool result.";
+        }
         if (canonical) {
           if (!isOwnedCanonical(canonical)) {
             await step({
@@ -897,6 +918,7 @@ export async function runInfluencerAgentSession({
                 ...(reply_to ? { reply_to } : {}),
                 ...(canonical ? { canonical_url: canonical } : {}),
                 ...(replaces ? { replaces_slug: replaces } : {}),
+                ...(target ? { target_url: target } : {}),
               },
               source_kind: "agent",
               source_ref: session.id,

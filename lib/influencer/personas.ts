@@ -294,6 +294,9 @@ export async function createChannel(
 
 export type ChannelPatch = Partial<{
   external_handle: string | null;
+  // Connecting can change HOW a channel publishes: a Medium channel created
+  // as "manual" becomes "browser" once a logged-in session is attached.
+  publish_via: PublishVia;
   automation_level: AutomationLevel;
   max_posts_per_day: number;
   max_replies_per_day: number;

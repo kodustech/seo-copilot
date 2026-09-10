@@ -15,6 +15,19 @@ import {
 
 export const maxDuration = 60;
 
+/**
+ * Keys in channel_config that name remote browser state (a logged-in
+ * Browserbase context, a login in progress). Only /connect writes them, and
+ * /connect is also what releases and deletes them — so a value planted here
+ * would let a channel edit tear down another persona's login. The generic
+ * PATCH keeps whatever the row already has for these.
+ */
+const CONNECT_OWNED_CONFIG_KEYS = [
+  "browserbase_context_id",
+  "pending_context_id",
+  "pending_session_id",
+] as const;
+
 function unauthorized(message = "Unauthorized") {
   return NextResponse.json({ error: message }, { status: 401 });
 }
@@ -48,7 +61,16 @@ export async function PATCH(
       patch.credentials_ref = body.credentials_ref;
     }
     if (body.channel_config && typeof body.channel_config === "object") {
-      patch.channel_config = body.channel_config as Record<string, unknown>;
+      const requested = { ...(body.channel_config as Record<string, unknown>) };
+      const current = await getChannel(client, id);
+      if (!current) {
+        return NextResponse.json({ error: "Channel not found" }, { status: 404 });
+      }
+      for (const key of CONNECT_OWNED_CONFIG_KEYS) {
+        if (key in current.channel_config) requested[key] = current.channel_config[key];
+        else delete requested[key];
+      }
+      patch.channel_config = requested;
     }
     const status = normalizeChannelStatus(body.status);
     if (status) patch.status = status;
@@ -63,7 +85,9 @@ export async function PATCH(
         return NextResponse.json({ error: "Channel not found" }, { status: 404 });
       }
       const needsCredential =
-        current.publish_via === "post_bridge" || current.publish_via === "api";
+        current.publish_via === "post_bridge" ||
+        current.publish_via === "api" ||
+        current.publish_via === "browser";
       // Validate the state the write will actually persist: updateChannel does
       // a blind .update(patch), so channel_config is REPLACED (not merged) when
       // the patch carries it. Merging here would pass the check while the write
@@ -73,7 +97,8 @@ export async function PATCH(
         patch.credentials_ref !== undefined ? patch.credentials_ref : current.credentials_ref;
       const hasCredential =
         (typeof credentialsRef === "string" && credentialsRef.length > 0) ||
-        config.post_bridge_account_id != null;
+        config.post_bridge_account_id != null ||
+        config.browserbase_context_id != null;
       if (needsCredential && !hasCredential) {
         return NextResponse.json(
           { error: "Connect a credential before activating this channel." },

@@ -155,10 +155,14 @@ export async function POST(req: Request) {
               ? "api"
               : platform === "blog"
                 ? "n8n"
-                : "manual",
+                : platform === "medium"
+                  ? "browser"
+                  : "manual",
+        // Hand-posted platforms are draft-only by nature. Medium is not: the
+        // tool publishes there (by import), and a person approves each one.
         automation_level:
           normalizeAutomationLevel(raw.automation_level) ??
-          (platform === "reddit" || platform === "hackernews" || platform === "medium"
+          (platform === "reddit" || platform === "hackernews" || platform === "hackernoon"
             ? "draft_only"
             : "approve_first"),
       };

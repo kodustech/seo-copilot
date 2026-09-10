@@ -12,9 +12,15 @@ export type ChannelPlatform =
   | "blog"
   | "medium"
   | "reddit"
-  | "hackernews";
+  | "hackernews"
+  // Hacker Noon, not Hacker News: a different site, and a manual channel — it
+  // has no publishing API and every story passes a human editor.
+  | "hackernoon";
 
-export type PublishVia = "post_bridge" | "api" | "n8n" | "manual";
+// "browser" drives the persona's logged-in session in a remote browser. It is
+// how Medium gets published: the API stopped issuing integration tokens in 2023,
+// and "Import a story" is the one automated path it still has.
+export type PublishVia = "post_bridge" | "api" | "n8n" | "manual" | "browser";
 
 export type AutomationLevel = "auto" | "approve_first" | "draft_only";
 
@@ -139,6 +145,7 @@ const CHANNEL_PLATFORMS: ChannelPlatform[] = [
   "medium",
   "reddit",
   "hackernews",
+  "hackernoon",
 ];
 const AUTOMATION_LEVELS: AutomationLevel[] = [
   "auto",

@@ -6,6 +6,14 @@ import {
   deleteChannelCredential,
   setChannelCredential,
 } from "@/lib/influencer/credentials";
+import { deleteContext, releaseSession, startLoginSession } from "@/lib/influencer/browser";
+import {
+  MEDIUM_CONTEXT_KEY,
+  MEDIUM_CREDENTIAL_MARKER,
+  MEDIUM_SIGNIN_URL,
+  checkMediumSession,
+  mediumContextId,
+} from "@/lib/influencer/medium";
 import { getChannel, listChannelsForPersona, updateChannel } from "@/lib/influencer/personas";
 import {
   CONTENT_KEY_SENTINEL,
@@ -52,7 +60,12 @@ async function validateDevtoKey(key: string): Promise<{ username: string }> {
  * Connect a channel for real publishing.
  * - dev.to: validate + store an API key in the encrypted vault.
  * - Post-Bridge channels (X, …): bind the persona's Post-Bridge account id.
- * Either path flips the channel to `active`.
+ * - blog: the site's content API, source base and key.
+ * - Medium: a person signs in through a live remote browser; the persistent
+ *   context that login lands in is the credential.
+ * - hand-posted channels (reddit, hackernoon, …): nothing to link — active
+ *   means "draft for me".
+ * Every path flips the channel to `active`.
  */
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
@@ -203,6 +216,110 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       return NextResponse.json({ connected: true, platform: "blog", channel: updated });
     }
 
+    if (channel.platform === "medium") {
+      // Step 1: open a browser a person can sign in with. The context it lands
+      // in is remembered on the channel so step 2 can only confirm THAT one.
+      if (body.start_login === true) {
+        // The proxy choice is part of the login: a session signed in from a
+        // residential IP and reused from a datacenter one reads as another
+        // device. An explicit boolean wins; otherwise the stored choice holds.
+        // Written as a boolean either way, so "off" is a value, not a missing key.
+        const proxies =
+          typeof body.proxies === "boolean" ? body.proxies : channel.channel_config.proxies === true;
+        const prevContext =
+          typeof channel.channel_config.pending_context_id === "string"
+            ? channel.channel_config.pending_context_id
+            : "";
+        const prevSession =
+          typeof channel.channel_config.pending_session_id === "string"
+            ? channel.channel_config.pending_session_id
+            : "";
+        // The previous login session is released FIRST: it may still hold a
+        // concurrent-session slot for up to its 15-minute timeout, and a
+        // release does not lose anything — it is what writes the login into
+        // its context. The context itself is deleted only after the
+        // replacement exists, so a failed create leaves the previous attempt
+        // usable.
+        if (prevSession) await releaseSession(prevSession);
+        const login = await startLoginSession(MEDIUM_SIGNIN_URL, {
+          name: `medium-${channel.persona_id.slice(0, 8)}-${Date.now()}`,
+          proxies,
+        });
+        if (prevContext && prevContext !== login.context_id) await deleteContext(prevContext);
+
+        await updateChannel(client, id, {
+          channel_config: {
+            ...channel.channel_config,
+            pending_context_id: login.context_id,
+            pending_session_id: login.session_id,
+            proxies,
+          },
+        });
+        return NextResponse.json({ login });
+      }
+
+      // Step 2: the person says they are signed in. Release the login session
+      // so the context is saved, then open it and see whether Medium agrees.
+      const pending =
+        typeof channel.channel_config.pending_context_id === "string"
+          ? channel.channel_config.pending_context_id
+          : "";
+      const contextId =
+        (typeof body.browserbase_context_id === "string" && body.browserbase_context_id.trim()) ||
+        pending;
+      if (!contextId) {
+        return NextResponse.json(
+          { error: "Start the Medium login first, sign in through the live browser, then confirm." },
+          { status: 400 },
+        );
+      }
+      const pendingSession =
+        typeof channel.channel_config.pending_session_id === "string"
+          ? channel.channel_config.pending_session_id
+          : "";
+      if (pendingSession && contextId === pending) {
+        await releaseSession(pendingSession);
+        // The context write-back is not instant; a short grace keeps the
+        // check from reading the jar before the login is in it.
+        await new Promise((r) => setTimeout(r, 4_000));
+      }
+      const proxies =
+        typeof body.proxies === "boolean" ? body.proxies : channel.channel_config.proxies === true;
+      const check = await checkMediumSession(contextId, { proxies });
+      if (!check.loggedIn) {
+        return NextResponse.json(
+          {
+            error: `That browser is not signed in to Medium (it landed on ${check.landedOn}). Open the login again, finish signing in inside the live browser, then confirm.`,
+          },
+          { status: 400 },
+        );
+      }
+      const config: Record<string, unknown> = {
+        ...channel.channel_config,
+        [MEDIUM_CONTEXT_KEY]: contextId,
+        proxies,
+      };
+      delete config.pending_context_id;
+      delete config.pending_session_id;
+      const updated = await updateChannel(client, id, {
+        status: "active",
+        publish_via: "browser",
+        credentials_ref: MEDIUM_CREDENTIAL_MARKER,
+        // Medium was draft-only before it could publish. Now a person approves
+        // each import; "auto" is still theirs to grant later.
+        ...(channel.automation_level === "draft_only" ? { automation_level: "approve_first" as const } : {}),
+        channel_config: config,
+      });
+      return NextResponse.json({ connected: true, platform: "medium", channel: updated });
+    }
+
+    if (channel.publish_via === "manual") {
+      // Nothing to link. Active is the person saying: draft for this one, I
+      // will post it and mark it published.
+      const updated = await updateChannel(client, id, { status: "active" });
+      return NextResponse.json({ connected: true, platform: channel.platform, channel: updated });
+    }
+
     return NextResponse.json(
       {
         error: `"${channel.platform}" has no direct publishing integration yet — it stays draft-only.`,
@@ -251,6 +368,23 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
         status: "pending_setup",
         credentials_ref: null,
       });
+    } else if (channel.platform === "medium") {
+      // The login lives in the Browserbase context; forgetting the channel's
+      // pointer without deleting the context would leave a signed-in browser
+      // nobody can see from the app.
+      const contextId = mediumContextId(channel);
+      if (contextId) await deleteContext(contextId);
+      const config = { ...channel.channel_config };
+      delete config[MEDIUM_CONTEXT_KEY];
+      delete config.pending_context_id;
+      delete config.pending_session_id;
+      await updateChannel(client, id, {
+        status: "pending_setup",
+        credentials_ref: null,
+        channel_config: config,
+      });
+    } else if (channel.publish_via === "manual") {
+      await updateChannel(client, id, { status: "pending_setup" });
     }
 
     return NextResponse.json({ connected: false });

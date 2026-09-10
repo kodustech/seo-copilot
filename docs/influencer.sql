@@ -34,11 +34,11 @@ create table if not exists public.persona_channels (
   id uuid primary key default gen_random_uuid(),
   persona_id uuid not null references public.personas(id) on delete cascade,
   platform text not null check (
-    platform in ('x', 'devto', 'blog', 'medium', 'reddit', 'hackernews')
+    platform in ('x', 'devto', 'blog', 'medium', 'reddit', 'hackernews', 'hackernoon')
   ),
   external_handle text,
   publish_via text not null check (
-    publish_via in ('post_bridge', 'api', 'n8n', 'manual')
+    publish_via in ('post_bridge', 'api', 'n8n', 'manual', 'browser')
   ),
   automation_level text not null default 'approve_first' check (
     automation_level in ('auto', 'approve_first', 'draft_only')

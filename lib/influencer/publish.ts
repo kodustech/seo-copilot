@@ -11,6 +11,13 @@ import { scheduleSocialPost } from "@/lib/copilot";
 import { isOwnedDomain } from "@/lib/owned-domains";
 import { parseImageIntent, resolvePostImage } from "@/lib/influencer/post-image";
 import { postReplyOnX } from "@/lib/influencer/browser";
+import {
+  importStoryOnMedium,
+  mediumContextId,
+  mediumSourceUrl,
+  requiresDisclosure,
+  sourceDiscloses,
+} from "@/lib/influencer/medium";
 import { decryptPersonaKey } from "@/lib/crypto/persona-secrets";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 
@@ -134,6 +141,17 @@ export function resolvePublishDecision({
   }
   if (channel.status !== "active") {
     return { action: "skip", reason: `Channel is ${channel.status}.` };
+  }
+  // A hand-posted channel is published by a person, who then marks it
+  // published with the link. The tool never puts it on the wire, and it must
+  // not fail it either: a draft waiting for a person is not broken. The cron
+  // leaves these channels out of its due list; this is the wall for anything
+  // that reaches it anyway.
+  if (channel.publish_via === "manual") {
+    return {
+      action: "skip",
+      reason: "Hand-posted channel: a person posts it and marks it published.",
+    };
   }
   if (channel.automation_level === "draft_only") {
     return {
@@ -645,6 +663,64 @@ async function publishToBlog(
   };
 }
 
+/**
+ * Medium has no API to call. It is published by driving the persona's
+ * logged-in browser through Medium's own "Import a story" page, which copies
+ * a page of ours into a story with the canonical set back to it. So a Medium
+ * activity is always a crosspost of a page we already published; the content
+ * field is never typed into Medium.
+ *
+ * The disclosure check runs before a browser is opened: Medium shows
+ * undisclosed AI writing to followers only, and an import nobody sees is a
+ * session spent for nothing.
+ */
+async function publishToMedium(
+  activity: PersonaActivity,
+  channel: PersonaChannel,
+  persona: Persona,
+): Promise<PublishOutcome> {
+  const contextId = mediumContextId(channel);
+  if (!contextId) {
+    throw new Error(
+      "Medium is not connected: this channel has no logged-in browser context. Connect it from the channel card.",
+    );
+  }
+  const { url, reason } = mediumSourceUrl(activity);
+  if (!url) throw new Error(reason ?? "Nothing to import.");
+  if (requiresDisclosure(channel)) {
+    const check = await sourceDiscloses(url, persona.disclosure);
+    if (!check.ok) throw new Error(check.reason ?? "Source page has no AI disclosure.");
+  }
+  const result = await importStoryOnMedium(url, {
+    contextId,
+    proxies: channel.channel_config.proxies === true,
+  });
+  if (result.stage === "signin") {
+    throw new Error(
+      "Medium session expired — reconnect the channel and sign in again through the live browser.",
+    );
+  }
+  if (!result.imported) {
+    throw new Error(
+      `Medium import did not reach the editor (stopped at: ${result.stage}${
+        result.url ? `, landed on ${result.url}` : ""
+      }). Medium may have changed its import page.`,
+    );
+  }
+  if (!result.published) {
+    throw new Error(
+      `Imported into Medium but the publish step did not complete (stopped at: ${result.stage}). The story may sit as a draft in the Medium account — check there before re-approving, or a second import would duplicate it.`,
+    );
+  }
+  return { external_id: null, external_url: result.url };
+}
+
+/** The channels a person publishes. The cron leaves their activities alone:
+ *  an approved draft there is waiting for a person, not for the publisher. */
+export function manualChannelIds(channels: PersonaChannel[]): string[] {
+  return channels.filter((c) => c.publish_via === "manual").map((c) => c.id);
+}
+
 /** dev.to (and most tag systems) reject non-alphanumeric tags like "ai-agents".
  *  Normalize to lowercase alphanumeric, drop empties/dupes, cap the count. */
 function sanitizeTags(
@@ -667,10 +743,15 @@ async function publishActivity(
   client: SupabaseClient,
   activity: PersonaActivity,
   channel: PersonaChannel,
+  persona: Persona,
 ): Promise<PublishOutcome> {
   // A blog publishes via its own content API regardless of the channel's stored
   // publish_via; which site that is comes from the channel.
   if (channel.platform === "blog") return publishToBlog(client, activity, channel);
+  // Medium likewise: there is exactly one way to publish there, and it is the
+  // browser. The stored publish_via says "browser" once connected, but a
+  // channel created before that existed still says "manual".
+  if (channel.platform === "medium") return publishToMedium(activity, channel, persona);
 
   switch (channel.publish_via) {
     case "post_bridge":
@@ -682,6 +763,8 @@ async function publishActivity(
       throw new Error(
         "Blog/microsite adapter is not wired yet (phase 2 — depends on the aicodereview.io stack).",
       );
+    case "browser":
+      throw new Error(`No browser adapter for platform "${channel.platform}" yet.`);
     case "manual":
       throw new Error("Manual channels are never published by the tool.");
   }
@@ -721,13 +804,21 @@ export async function runInfluencerPublishCron(
     console.warn(`[influencer] reset ${reset} stale publishing claim(s) to failed`);
   }
 
-  const due = await listDueForPublish(client, now.toISOString());
-  if (!due.length) return summary;
-
   const [personas, channels] = await Promise.all([
     listPersonas(client),
     listChannels(client),
   ]);
+  // Hand-posted channels never come through here: their approved drafts wait
+  // for a person, and pulling them into a 50-row due list every run would
+  // crowd out the ones the publisher can actually send.
+  const due = await listDueForPublish(
+    client,
+    now.toISOString(),
+    50,
+    manualChannelIds(channels),
+  );
+  if (!due.length) return summary;
+
   const personaById = new Map(personas.map((p) => [p.id, p]));
   const channelById = new Map(channels.map((c) => [c.id, c]));
   const fleetHandles = buildFleetHandles(personas, channels);
@@ -809,7 +900,7 @@ export async function runInfluencerPublishCron(
     }
 
     try {
-      const outcome = await publishActivity(client, claimed, channel!);
+      const outcome = await publishActivity(client, claimed, channel!, persona!);
       await updateActivity(client, activity.id, {
         status: "published",
         published_at: now.toISOString(),

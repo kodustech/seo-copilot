@@ -194,3 +194,146 @@ export async function screenshotPage(
     await browser.close().catch(() => {});
   }
 }
+
+// ---------------------------------------------------------------------------
+// Sessions that ACT, not only read
+// ---------------------------------------------------------------------------
+
+/** What every browser action needs before it can open a page. */
+export function requireBrowserConfig(): { apiKey: string; projectId: string } {
+  const apiKey = process.env.BROWSERBASE_API_KEY?.trim();
+  const projectId = process.env.BROWSERBASE_PROJECT_ID?.trim();
+  if (!apiKey || !projectId) {
+    throw new Error(
+      "Browser not configured — set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID.",
+    );
+  }
+  return { apiKey, projectId };
+}
+
+export type BrowserSessionOptions = {
+  /** A persistent Browserbase context — a logged-in account. */
+  contextId?: string;
+  /** Write the context back when the session ends. Off by default: an action
+   *  should not rewrite the persona's login state as a side effect. */
+  persist?: boolean;
+  /** Residential proxy, for platforms that block datacenter ranges. */
+  proxies?: boolean;
+  /** Seconds before Browserbase ends the session on its own. */
+  timeoutSeconds?: number;
+};
+
+/**
+ * One remote Chrome, one page, one callback, and the browser is closed
+ * whatever the callback does. The read-only helpers above predate this and
+ * still open their own sessions; anything that clicks or types goes through
+ * here so the session lifecycle is written once.
+ */
+export async function withBrowserPage<T>(
+  opts: BrowserSessionOptions,
+  fn: (page: import("playwright-core").Page) => Promise<T>,
+): Promise<T> {
+  const { apiKey, projectId } = requireBrowserConfig();
+  const { default: Browserbase } = await import("@browserbasehq/sdk");
+  const { chromium } = await import("playwright-core");
+
+  const bb = new Browserbase({ apiKey });
+  const session = await bb.sessions.create({
+    projectId,
+    ...(opts.contextId
+      ? { browserSettings: { context: { id: opts.contextId, persist: opts.persist ?? false } } }
+      : {}),
+    ...(opts.proxies ? { proxies: true } : {}),
+    ...(opts.timeoutSeconds ? { api_timeout: opts.timeoutSeconds } : {}),
+  });
+  const browser = await chromium.connectOverCDP(session.connectUrl);
+  try {
+    const context = browser.contexts()[0] ?? (await browser.newContext());
+    const page = context.pages()[0] ?? (await context.newPage());
+    return await fn(page);
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
+
+export type LoginSession = {
+  /** The persistent context the login will be saved into. */
+  context_id: string;
+  session_id: string;
+  /** Browserbase's live view: a person opens it, logs in, and closes the tab. */
+  live_url: string;
+  /** When Browserbase ends the session and saves the context. */
+  expires_at: string;
+};
+
+/**
+ * Start a session a PERSON drives: a fresh persistent context, a browser
+ * pointed at the platform's sign-in page, and the live-view URL to hand over.
+ * The context is written back when the session ends, so whatever login the
+ * person completed inside it is what later `withBrowserPage` calls reuse.
+ *
+ * This is the whole "connect" for a platform with no API: the credential is a
+ * cookie jar Browserbase holds, never a password we store.
+ */
+export async function startLoginSession(
+  startUrl: string,
+  opts?: { name?: string; proxies?: boolean; timeoutSeconds?: number },
+): Promise<LoginSession> {
+  const { apiKey, projectId } = requireBrowserConfig();
+  const { default: Browserbase } = await import("@browserbasehq/sdk");
+  const { chromium } = await import("playwright-core");
+  const bb = new Browserbase({ apiKey });
+
+  const context = await bb.contexts.create({
+    projectId,
+    ...(opts?.name ? { name: opts.name } : {}),
+  });
+  const timeoutSeconds = opts?.timeoutSeconds ?? 15 * 60;
+  const session = await bb.sessions.create({
+    projectId,
+    browserSettings: { context: { id: context.id, persist: true } },
+    ...(opts?.proxies ? { proxies: true } : {}),
+    // The person needs the tab to stay open while they type a password and
+    // maybe clear a 2FA prompt; the default project timeout is built for
+    // scripted runs, not for that.
+    api_timeout: timeoutSeconds,
+  });
+  // Land the person on the sign-in page, then let go — the live view takes over.
+  const browser = await chromium.connectOverCDP(session.connectUrl);
+  try {
+    const ctx = browser.contexts()[0] ?? (await browser.newContext());
+    const page = ctx.pages()[0] ?? (await ctx.newPage());
+    await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
+  } finally {
+    // Disconnecting the CDP client must not end the session: the person is
+    // about to use it. Browserbase keeps it alive until api_timeout.
+    await browser.close().catch(() => {});
+  }
+  const live = await bb.sessions.debug(session.id);
+  return {
+    context_id: context.id,
+    session_id: session.id,
+    live_url: live.debuggerFullscreenUrl,
+    expires_at: new Date(Date.now() + timeoutSeconds * 1000).toISOString(),
+  };
+}
+
+/**
+ * End a session now. A persistent context is written back when its session
+ * ends, so the connect step releases the login session before it checks the
+ * context — otherwise the check runs against a jar that isn't saved yet.
+ */
+export async function releaseSession(sessionId: string): Promise<void> {
+  const { apiKey, projectId } = requireBrowserConfig();
+  const { default: Browserbase } = await import("@browserbasehq/sdk");
+  const bb = new Browserbase({ apiKey });
+  await bb.sessions.update(sessionId, { projectId, status: "REQUEST_RELEASE" }).catch(() => {});
+}
+
+/** Forget a persistent context — the login it holds with it. */
+export async function deleteContext(contextId: string): Promise<void> {
+  const { apiKey } = requireBrowserConfig();
+  const { default: Browserbase } = await import("@browserbasehq/sdk");
+  const bb = new Browserbase({ apiKey });
+  await bb.contexts.delete(contextId).catch(() => {});
+}
