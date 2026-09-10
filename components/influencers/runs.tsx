@@ -50,6 +50,14 @@ function briefHeadline(goal: string): string {
   return sentence.length > 140 ? `${sentence.slice(0, 137).trimEnd()}…` : sentence;
 }
 
+/** Whether four clamped lines could hide part of this summary: long text,
+ *  or short text spread over several lines (a list, a heading, a code block).
+ *  Measuring the clamp after render would be exact; this errs on showing the
+ *  toggle, which costs one idle button and never a hidden paragraph. */
+function needsToggle(summary: string): boolean {
+  return summary.length > 280 || summary.split("\n").filter((l) => l.trim()).length > 3;
+}
+
 /**
  * Runs: a composer for a one-off task, then the sessions as a ledger. A
  * scheduled shift's brief is the same wall of instructions every time, so
@@ -188,7 +196,7 @@ export function RunsTab({ token, persona, onChanged }: { token: string; persona:
                         text={s.result_summary}
                         className={cn(!(summaryOpen[s.id] ?? false) && "line-clamp-4")}
                       />
-                      {s.result_summary.length > 280 ? (
+                      {needsToggle(s.result_summary) ? (
                         <button
                           type="button"
                           onClick={() => setSummaryOpen((m) => ({ ...m, [s.id]: !(m[s.id] ?? false) }))}
