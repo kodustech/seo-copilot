@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { MarkdownContent } from "@/components/markdown-content";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -62,6 +63,7 @@ export function RunsTab({ token, persona, onChanged }: { token: string; persona:
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [briefOpen, setBriefOpen] = useState<Record<string, boolean>>({});
+  const [summaryOpen, setSummaryOpen] = useState<Record<string, boolean>>({});
   const [steps, setSteps] = useState<Record<string, SessionStep[]>>({});
 
   const load = useCallback(async () => {
@@ -179,7 +181,23 @@ export function RunsTab({ token, persona, onChanged }: { token: string; persona:
                   ) : null}
 
                   {s.result_summary ? (
-                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-neutral-200">{s.result_summary}</p>
+                    // The persona writes its summary in markdown; shown as such,
+                    // and clipped to a few lines until asked for the whole thing.
+                    <div>
+                      <MarkdownContent
+                        text={s.result_summary}
+                        className={cn(!(summaryOpen[s.id] ?? false) && "line-clamp-4")}
+                      />
+                      {s.result_summary.length > 280 ? (
+                        <button
+                          type="button"
+                          onClick={() => setSummaryOpen((m) => ({ ...m, [s.id]: !(m[s.id] ?? false) }))}
+                          className="mt-1 text-xs text-neutral-500 hover:text-neutral-200"
+                        >
+                          {summaryOpen[s.id] ? "Less" : "More"}
+                        </button>
+                      ) : null}
+                    </div>
                   ) : null}
                   {s.error ? <p className={cls.errorText}>{s.error}</p> : null}
 
