@@ -71,7 +71,9 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "Failed to update the cadence");
-      setState(body);
+      // The POST answers with the tick state alone; the goals came with the
+      // GET and would vanish from the panel until a reload.
+      setState((s) => ({ ...body, goals: body.goals ?? s?.goals }));
     } catch (err) {
       setState(previous); // revert so the UI matches the server
       setError(err instanceof Error ? err.message : "Failed to update the cadence");
@@ -89,7 +91,7 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "The shift failed");
-      setState(body);
+      setState((s) => ({ ...body, goals: body.goals ?? s?.goals }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "The shift failed");
     } finally {

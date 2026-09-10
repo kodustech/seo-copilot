@@ -70,6 +70,16 @@ function ChannelRow({
   const [handle, setHandle] = useState(channel.external_handle ?? "");
   const handPosted = isHandPosted(channel);
 
+  // A cleared field is not a request for zero, and "2e" is not a number.
+  // Only a finite, non-negative integer reaches the server.
+  function patchCap(key: "max_posts_per_day" | "max_replies_per_day", raw: string, current: number) {
+    if (!raw.trim()) return;
+    const v = Number(raw);
+    if (!Number.isFinite(v) || v < 0) return;
+    const next = Math.round(v);
+    if (next !== current) patch({ [key]: next });
+  }
+
   async function patch(body: Record<string, unknown>) {
     setSaving(true);
     try {
@@ -179,7 +189,7 @@ function ChannelRow({
                       type="number"
                       min={0}
                       defaultValue={channel.max_posts_per_day}
-                      onBlur={(event) => patch({ max_posts_per_day: Number(event.target.value) })}
+                      onBlur={(event) => patchCap("max_posts_per_day", event.target.value, channel.max_posts_per_day)}
                       className={cls.input}
                     />
                   </label>
@@ -189,7 +199,7 @@ function ChannelRow({
                       type="number"
                       min={0}
                       defaultValue={channel.max_replies_per_day}
-                      onBlur={(event) => patch({ max_replies_per_day: Number(event.target.value) })}
+                      onBlur={(event) => patchCap("max_replies_per_day", event.target.value, channel.max_replies_per_day)}
                       className={cls.input}
                     />
                   </label>
