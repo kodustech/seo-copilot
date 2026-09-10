@@ -98,24 +98,38 @@ function Journal({ bet, headers, onChanged }: { bet: BetRow; headers: Record<str
       ) : (
         <p className="mt-1 text-xs text-neutral-500">Nothing logged yet. Write what was done, with a link when there is one: an article, a sequence, a list, a page.</p>
       )}
-      <div className="mt-2 grid gap-2 md:grid-cols-[minmax(0,1fr)_180px_110px_128px_auto]">
-        <Input value={text} onChange={(e) => setText(e.target.value)} placeholder="Published 3 articles on devtools-weekly.com" className="h-8 border-white/10 bg-neutral-950 text-xs" onKeyDown={(e) => { if (e.key === "Enter" && text.trim()) void add(); }} />
-        <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://… (optional)" className="h-8 border-white/10 bg-neutral-950 text-xs" />
-        <Select value={kind} onValueChange={(v) => setKind(v as BetEntryKind)}>
-          <SelectTrigger className="h-8 border-white/10 bg-neutral-950 text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className={menuCls}>
-            <SelectItem value="note">note</SelectItem>
-            <SelectItem value="artifact">artifact</SelectItem>
-            <SelectItem value="result">result</SelectItem>
-            <SelectItem value="decision">decision</SelectItem>
-          </SelectContent>
-        </Select>
-        <Input type="date" value={when} onChange={(e) => setWhen(e.target.value)} className="h-8 border-white/10 bg-neutral-950 text-xs" title="When it happened (default today)" />
-        <button type="button" onClick={add} disabled={busy || !text.trim()} className="h-8 rounded-md bg-white/[0.08] px-3 text-xs text-neutral-100 hover:bg-white/[0.12] disabled:opacity-40">
-          {busy ? "…" : "Log"}
-        </button>
+      <div className="mt-2 space-y-2">
+        <Textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="What was done. Example: published 3 articles on devtools-weekly.com"
+          rows={2}
+          className="min-h-0 border-white/10 bg-neutral-950 text-sm"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && text.trim()) {
+              e.preventDefault();
+              void add();
+            }
+          }}
+        />
+        <div className="flex flex-wrap items-center gap-2">
+          <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://… (optional)" className="h-8 min-w-[200px] flex-1 border-white/10 bg-neutral-950 text-xs" />
+          <Select value={kind} onValueChange={(v) => setKind(v as BetEntryKind)}>
+            <SelectTrigger className="h-8 w-[110px] border-white/10 bg-neutral-950 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className={menuCls}>
+              <SelectItem value="note">note</SelectItem>
+              <SelectItem value="artifact">artifact</SelectItem>
+              <SelectItem value="result">result</SelectItem>
+              <SelectItem value="decision">decision</SelectItem>
+            </SelectContent>
+          </Select>
+          <Input type="date" value={when} onChange={(e) => setWhen(e.target.value)} className="h-8 w-[150px] border-white/10 bg-neutral-950 text-xs" title="When it happened (default today)" />
+          <button type="button" onClick={add} disabled={busy || !text.trim()} className="h-8 rounded-md bg-white/[0.08] px-3 text-xs text-neutral-100 hover:bg-white/[0.12] disabled:opacity-40">
+            {busy ? "…" : "Log"}
+          </button>
+        </div>
       </div>
       {err ? <p className="mt-1 text-xs text-red-300">{err}</p> : null}
     </div>
@@ -141,6 +155,29 @@ const STATUS_LABEL: Record<BetStatus, { label: string; className: string }> = {
   lost: { label: "lost", className: "bg-red-500/15 text-red-300" },
   operation: { label: "became operation", className: "bg-violet-500/15 text-violet-300" },
 };
+
+/** The status chip on a bet row. Click it to move the bet: queued, active, won, lost, became operation. */
+function StatusMenu({ status, onChange }: { status: BetStatus; onChange: (next: BetStatus) => void }) {
+  return (
+    <Select value={status} onValueChange={(v) => { if (v !== status) onChange(v as BetStatus); }}>
+      <SelectTrigger
+        size="sm"
+        title="Change status"
+        aria-label="Change status"
+        className={cn("h-auto gap-1 rounded border-0 px-1.5 py-0.5 text-[11px] shadow-none hover:brightness-125 dark:bg-transparent dark:hover:bg-transparent [&_svg]:size-3 [&_svg]:opacity-60", STATUS_LABEL[status].className)}
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent className={menuCls} align="start">
+        {(Object.keys(STATUS_LABEL) as BetStatus[]).map((s) => (
+          <SelectItem key={s} value={s} className="text-xs">
+            {STATUS_LABEL[s].label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
 
 const KIND_LABEL: Record<MeasureKind, string> = {
   funnel_stage: "Funnel stage",
@@ -619,7 +656,7 @@ function BetForm({
             </Select>
           </Field>
         ) : (
-          <Field label="Status" hint="Use the decide buttons on the page to change it.">
+          <Field label="Status" hint="Click the status chip on the bet row to change it.">
             <div className="flex h-9 items-center text-sm text-neutral-300">{STATUS_LABEL[f.status].label}</div>
           </Field>
         )}
@@ -878,55 +915,32 @@ export function BetsPage() {
               return (
                 <article key={b.id} className={cn("group", isOpen && "bg-white/[0.02]")}>
                   <div className="grid gap-4 px-4 py-3 lg:grid-cols-[minmax(0,5fr)_minmax(0,4fr)_minmax(0,3fr)]">
-                    <div className="min-w-0">
-                      <button type="button" onClick={() => setOpen(isOpen ? null : b.id)} className="flex w-full items-start gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60">
-                        {isOpen ? <ChevronDown className="mt-1 size-3.5 shrink-0 text-neutral-500" /> : <ChevronRight className="mt-1 size-3.5 shrink-0 text-neutral-500" />}
-                        <span className="min-w-0">
-                          <span className="flex flex-wrap items-center gap-2">
-                            <span className={cn("rounded px-1.5 py-0.5 text-[11px]", STATUS_LABEL[b.status].className)}>{STATUS_LABEL[b.status].label}</span>
-                            <span className="font-medium text-neutral-100">{b.title}</span>
-                          </span>
-                          <span className="mt-1 line-clamp-2 block text-sm text-neutral-400">{b.hypothesis}</span>
+                    <div className="flex min-w-0 items-start gap-2">
+                      <button type="button" onClick={() => setOpen(isOpen ? null : b.id)} aria-label={isOpen ? "Collapse" : "Expand"} aria-expanded={isOpen} className="mt-1 shrink-0 rounded text-neutral-500 hover:text-neutral-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60">
+                        {isOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+                      </button>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <StatusMenu status={b.status} onChange={(next) => void decide(b, next)} />
+                          <button type="button" onClick={() => setOpen(isOpen ? null : b.id)} className="min-w-0 text-left font-medium text-neutral-100 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60">
+                            {b.title}
+                          </button>
+                        </div>
+                        <button type="button" onClick={() => setOpen(isOpen ? null : b.id)} className="mt-1 block w-full text-left focus-visible:outline-none">
+                          <span className="line-clamp-2 block text-sm text-neutral-400">{b.hypothesis}</span>
                           <span className="mt-1 block text-[11px] text-neutral-500">
                             {b.goalTitle ? <>goal: {b.goalTitle}</> : null}
                             {b.ownerEmail ? <> · {b.ownerEmail.split("@")[0]}</> : null}
                             {b.entries.length ? <> · {b.entries.length} journal entr{b.entries.length === 1 ? "y" : "ies"}</> : null}
                           </span>
-                        </span>
-                      </button>
+                        </button>
+                      </div>
                     </div>
                     <MeasureBlock bet={b} />
                     <div className="flex flex-col items-start gap-2 lg:items-end">
                       <span className={cn("text-xs tabular-nums", dl.tone)}>{dl.text}</span>
                       <Levels ev={b.evaluation} compact />
                       <div className="flex flex-wrap gap-1 opacity-70 transition-opacity group-hover:opacity-100 lg:justify-end">
-                        {b.status === "queued" ? (
-                          <button type="button" onClick={() => decide(b, "active")} className="rounded border border-emerald-500/30 px-2 py-0.5 text-[11px] text-emerald-300 hover:bg-emerald-500/10">
-                            activate
-                          </button>
-                        ) : b.status === "active" ? (
-                          <>
-                            <button type="button" onClick={() => decide(b, "won")} className="rounded border border-sky-500/30 px-2 py-0.5 text-[11px] text-sky-300 hover:bg-sky-500/10">
-                              won
-                            </button>
-                            <button type="button" onClick={() => decide(b, "lost")} className="rounded border border-red-500/30 px-2 py-0.5 text-[11px] text-red-300 hover:bg-red-500/10">
-                              lost
-                            </button>
-                            <button type="button" onClick={() => decide(b, "operation")} className="rounded border border-violet-500/30 px-2 py-0.5 text-[11px] text-violet-300 hover:bg-violet-500/10">
-                              became operation
-                            </button>
-                            {/* Not every bet that stops is a bet that failed:
-                                parking one puts it back in the queue with no
-                                verdict on its record. */}
-                            <button type="button" onClick={() => decide(b, "queued")} className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-neutral-400 hover:bg-white/5">
-                              park
-                            </button>
-                          </>
-                        ) : (
-                          <button type="button" onClick={() => decide(b, "active")} className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-neutral-400 hover:bg-white/5">
-                            reopen
-                          </button>
-                        )}
                         <button type="button" onClick={() => setDialog({ mode: "edit", bet: b })} title="Edit" aria-label="Edit" className="rounded border border-transparent p-1 text-neutral-500 hover:bg-white/5 hover:text-neutral-200">
                           <Pencil className="size-3.5" />
                         </button>
