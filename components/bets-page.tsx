@@ -665,6 +665,7 @@ export function BetsPage() {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<"open" | "decided">("open");
   const [lever, setLever] = useState<string>("all");
+  const [owner, setOwner] = useState<string>("all");
   const [open, setOpen] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{ mode: "create" | "edit"; bet?: BetRow } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -717,14 +718,26 @@ export function BetsPage() {
   };
 
   const decide = async (bet: BetRow, status: BetStatus) => {
-    let verdict = bet.verdict ?? "";
+    // The route only writes the fields the body carries, so a transition that
+    // says nothing about the verdict leaves the one on record alone. Won and
+    // lost write a new one; park clears it, because a bet back in the queue
+    // showing why it was once closed is what park exists to avoid. Reopen and
+    // became-operation touch neither — the sentence is written by a person and
+    // one stray click should not be able to erase it.
+    const body: Record<string, unknown> = { status };
     if (status === "won" || status === "lost") {
+      // What the measure says now comes first. Since reopen stopped clearing the
+      // verdict, the old one is still on the bet when won/lost is clickable —
+      // and offering "the number tanked" as the default for a win records the
+      // previous decision's sentence on this one.
       const suggested = bet.evaluation?.suggestedVerdict ?? "";
-      const v = window.prompt("One-line verdict (what the number showed):", verdict || suggested);
+      const v = window.prompt("One-line verdict (what the number showed):", suggested || bet.verdict || "");
       if (v == null) return;
-      verdict = v;
+      body.verdict = v;
+    } else if (status === "queued") {
+      body.verdict = "";
     }
-    await call(`/api/bets/${bet.id}`, { method: "PATCH", body: JSON.stringify({ status, verdict }) });
+    await call(`/api/bets/${bet.id}`, { method: "PATCH", body: JSON.stringify(body) });
   };
 
   const markActionDone = async (bet: BetRow, done: boolean) => {
@@ -739,6 +752,7 @@ export function BetsPage() {
   const visible = bets
     .filter((b) => (tab === "open" ? b.status === "active" || b.status === "queued" : b.status !== "active" && b.status !== "queued"))
     .filter((b) => (lever === "all" ? true : lever === "none" ? !b.lever : b.lever === lever))
+    .filter((b) => (owner === "all" ? true : owner === "none" ? !b.ownerEmail : b.ownerEmail === owner))
     .filter((b) => (goalFilter ? b.goalId === goalFilter : true));
   const groups = useMemo(() => {
     const m = new Map<string, BetRow[]>();
@@ -795,6 +809,20 @@ export function BetsPage() {
                 </SelectItem>
               ))}
               <SelectItem value="none">No lever</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={owner} onValueChange={setOwner}>
+            <SelectTrigger className="h-8 w-[170px] border-white/[0.08] bg-transparent text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className={menuCls}>
+              <SelectItem value="all">Anyone</SelectItem>
+              {(options?.owners ?? []).map((o) => (
+                <SelectItem key={o} value={o}>
+                  {o.split("@")[0]}
+                </SelectItem>
+              ))}
+              <SelectItem value="none">Nobody yet</SelectItem>
             </SelectContent>
           </Select>
           <button type="button" onClick={() => load()} title="Reload" aria-label="Reload" className="inline-flex size-8 items-center justify-center rounded-md border border-white/[0.08] text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-100">
@@ -886,6 +914,12 @@ export function BetsPage() {
                             </button>
                             <button type="button" onClick={() => decide(b, "operation")} className="rounded border border-violet-500/30 px-2 py-0.5 text-[11px] text-violet-300 hover:bg-violet-500/10">
                               became operation
+                            </button>
+                            {/* Not every bet that stops is a bet that failed:
+                                parking one puts it back in the queue with no
+                                verdict on its record. */}
+                            <button type="button" onClick={() => decide(b, "queued")} className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-neutral-400 hover:bg-white/5">
+                              park
                             </button>
                           </>
                         ) : (
