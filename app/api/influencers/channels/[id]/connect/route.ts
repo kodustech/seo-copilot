@@ -226,15 +226,6 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         // Written as a boolean either way, so "off" is a value, not a missing key.
         const proxies =
           typeof body.proxies === "boolean" ? body.proxies : channel.channel_config.proxies === true;
-        const login = await startLoginSession(MEDIUM_SIGNIN_URL, {
-          name: `medium-${channel.persona_id.slice(0, 8)}-${Date.now()}`,
-          proxies,
-        });
-
-        // "Open the login again" must not orphan the previous attempt: a
-        // context nobody points at any more still holds whatever login the
-        // person completed in it. Retired only now, after the replacement
-        // exists — a failed replacement must leave the previous attempt usable.
         const prevContext =
           typeof channel.channel_config.pending_context_id === "string"
             ? channel.channel_config.pending_context_id
@@ -243,7 +234,17 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
           typeof channel.channel_config.pending_session_id === "string"
             ? channel.channel_config.pending_session_id
             : "";
+        // The previous login session is released FIRST: it may still hold a
+        // concurrent-session slot for up to its 15-minute timeout, and a
+        // release does not lose anything — it is what writes the login into
+        // its context. The context itself is deleted only after the
+        // replacement exists, so a failed create leaves the previous attempt
+        // usable.
         if (prevSession) await releaseSession(prevSession);
+        const login = await startLoginSession(MEDIUM_SIGNIN_URL, {
+          name: `medium-${channel.persona_id.slice(0, 8)}-${Date.now()}`,
+          proxies,
+        });
         if (prevContext && prevContext !== login.context_id) await deleteContext(prevContext);
 
         await updateChannel(client, id, {
