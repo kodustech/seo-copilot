@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -50,12 +50,41 @@ function briefHeadline(goal: string): string {
   return sentence.length > 140 ? `${sentence.slice(0, 137).trimEnd()}…` : sentence;
 }
 
-/** Whether four clamped lines could hide part of this summary: long text,
- *  or short text spread over several lines (a list, a heading, a code block).
- *  Measuring the clamp after render would be exact; this errs on showing the
- *  toggle, which costs one idle button and never a hidden paragraph. */
-function needsToggle(summary: string): boolean {
-  return summary.length > 280 || summary.split("\n").filter((l) => l.trim()).length > 3;
+/**
+ * Markdown clipped to four rendered lines, with More/Less only when the clamp
+ * actually hides something. Measured after layout and again on resize, since
+ * whether four lines fit depends on the viewport, not on the character count.
+ */
+function ClampedMarkdown({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      if (open) return;
+      setOverflows(el.scrollHeight > el.clientHeight + 1);
+    };
+    measure();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    observer?.observe(el);
+    return () => observer?.disconnect();
+  }, [text, open]);
+
+  return (
+    <div>
+      <div ref={ref} className={cn(!open && "line-clamp-4")}>
+        <MarkdownContent text={text} />
+      </div>
+      {overflows || open ? (
+        <button type="button" onClick={() => setOpen((v) => !v)} className="mt-1 text-xs text-neutral-500 hover:text-neutral-200">
+          {open ? "Less" : "More"}
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 /**
@@ -71,7 +100,6 @@ export function RunsTab({ token, persona, onChanged }: { token: string; persona:
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [briefOpen, setBriefOpen] = useState<Record<string, boolean>>({});
-  const [summaryOpen, setSummaryOpen] = useState<Record<string, boolean>>({});
   const [steps, setSteps] = useState<Record<string, SessionStep[]>>({});
 
   const load = useCallback(async () => {
@@ -191,21 +219,7 @@ export function RunsTab({ token, persona, onChanged }: { token: string; persona:
                   {s.result_summary ? (
                     // The persona writes its summary in markdown; shown as such,
                     // and clipped to a few lines until asked for the whole thing.
-                    <div>
-                      <MarkdownContent
-                        text={s.result_summary}
-                        className={cn(!(summaryOpen[s.id] ?? false) && "line-clamp-4")}
-                      />
-                      {needsToggle(s.result_summary) ? (
-                        <button
-                          type="button"
-                          onClick={() => setSummaryOpen((m) => ({ ...m, [s.id]: !(m[s.id] ?? false) }))}
-                          className="mt-1 text-xs text-neutral-500 hover:text-neutral-200"
-                        >
-                          {summaryOpen[s.id] ? "Less" : "More"}
-                        </button>
-                      ) : null}
-                    </div>
+                    <ClampedMarkdown text={s.result_summary} />
                   ) : null}
                   {s.error ? <p className={cls.errorText}>{s.error}</p> : null}
 
