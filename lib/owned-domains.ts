@@ -26,6 +26,8 @@ export const PROPERTY_DOMAINS = [
   "aicodereview.io",
   "aicodereviews.io",
   "codereviewbench.com",
+  "agentwrotethis.dev",
+  "mergerequests.dev",
 ] as const;
 
 /** Hostnames of everything we own — what "don't treat this as someone else's

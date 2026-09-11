@@ -61,6 +61,8 @@ describe("isOwnedProperty", () => {
     expect(isOwnedProperty("https://www.aicodereviews.io/")).toBe(true);
     expect(isOwnedProperty("github.com/kodustech")).toBe(true);
     expect(isOwnedProperty("docs.kodus.io")).toBe(true);
+    expect(isOwnedProperty("agentwrotethis.dev")).toBe(true);
+    expect(isOwnedProperty("mergerequests.dev")).toBe(true);
   });
 
   it("accepts a list only when every entry is ours", () => {
