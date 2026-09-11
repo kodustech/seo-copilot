@@ -15,6 +15,15 @@ describe("isOwnedCanonical", () => {
     expect(isOwnedCanonical("  https://codereviewbench.com/  ")).toBe(true);
   });
 
+  it("accepts the newer network sites, so their crossposts can point home", () => {
+    // A persona publishes the original here and syndicates it. Leave a site out
+    // of the owned list and every dev.to crosspost and Medium import from it is
+    // refused at this guard.
+    expect(isOwnedCanonical("https://agentwrotethis.dev/blog/some-post")).toBe(true);
+    expect(isOwnedCanonical("https://mergerequests.dev/blog/some-post")).toBe(true);
+    expect(isOwnedCanonical("https://www.mergerequests.dev/platform/gitlab")).toBe(true);
+  });
+
   it("rejects a site we don't own, however close the name", () => {
     expect(isOwnedCanonical("https://aicodereview.cc/blog/post")).toBe(false);
     expect(isOwnedCanonical("https://coderabbit.ai/blog/post")).toBe(false);

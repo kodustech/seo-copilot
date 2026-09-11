@@ -18,6 +18,8 @@ describe("isOwnedDomain", () => {
     expect(isOwnedDomain("aicodereview.io")).toBe(true);
     expect(isOwnedDomain("aicodereviews.io")).toBe(true);
     expect(isOwnedDomain("codereviewbench.com")).toBe(true);
+    expect(isOwnedDomain("agentwrotethis.dev")).toBe(true);
+    expect(isOwnedDomain("mergerequests.dev")).toBe(true);
   });
 
   it("ignores www and a trailing dot, and matches subdomains", () => {
