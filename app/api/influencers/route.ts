@@ -11,6 +11,7 @@ import {
   type CreateChannelInput,
 } from "@/lib/influencer/personas";
 import {
+  channelDefaults,
   influencerTableMissingMessage,
   normalizeAutomationLevel,
   normalizeChannelPlatform,
@@ -143,28 +144,17 @@ export async function POST(req: Request) {
     for (const raw of rawChannels) {
       const platform = normalizeChannelPlatform(raw.platform);
       if (!platform) continue;
+      const defaults = channelDefaults(platform);
       const input: CreateChannelInput = {
         persona_id: created.id,
         platform,
         external_handle:
           typeof raw.external_handle === "string" ? raw.external_handle : null,
-        publish_via:
-          platform === "x"
-            ? "post_bridge"
-            : platform === "devto"
-              ? "api"
-              : platform === "blog"
-                ? "n8n"
-                : platform === "medium"
-                  ? "browser"
-                  : "manual",
-        // Hand-posted platforms are draft-only by nature. Medium is not: the
-        // tool publishes there (by import), and a person approves each one.
+        publish_via: defaults.publish_via,
         automation_level:
-          normalizeAutomationLevel(raw.automation_level) ??
-          (platform === "reddit" || platform === "hackernews" || platform === "hackernoon"
-            ? "draft_only"
-            : "approve_first"),
+          normalizeAutomationLevel(raw.automation_level) ?? defaults.automation_level,
+        max_posts_per_day: defaults.max_posts_per_day,
+        max_replies_per_day: defaults.max_replies_per_day,
       };
       channels.push(await createChannel(client, input));
     }
