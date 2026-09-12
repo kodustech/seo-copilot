@@ -34,7 +34,6 @@ import {
   listActivePersonas,
   listChannelsForPersona,
   mergeContentConfig,
-  updatePersona,
 } from "@/lib/influencer/personas";
 import type { Persona, PersonaChannel } from "@/lib/influencer/types";
 

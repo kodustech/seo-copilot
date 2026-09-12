@@ -54,8 +54,12 @@ const CHANNEL_OPTIONS = ["blog", "devto", "x", "medium", "reddit", "hackernews",
  * come back as "custom", and the server drops channel and handle for that type.
  */
 function stored(g: GoalProgress): Record<string, unknown> {
-  const { current: _c, onTrack: _o, detail: _d, ...rest } = g;
-  return rest;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(g)) {
+    if (k === "current" || k === "onTrack" || k === "detail") continue;
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
 }
 
 /** The stored goal opened in the editor. Here a type is required, because the
