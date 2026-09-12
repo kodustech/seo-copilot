@@ -107,6 +107,71 @@ export async function computeProgress(
   return out;
 }
 
+/**
+ * Coerce whatever the client sent into goals we are willing to store. Goals are
+ * injected into every shift, so a malformed one is not a rendering bug, it is a
+ * persona steering toward nonsense for a week before anyone notices. Anything
+ * that does not survive this is dropped rather than repaired.
+ */
+export function normalizeGoals(raw: unknown): Goal[] {
+  if (!Array.isArray(raw)) return [];
+  const out: Goal[] = [];
+  for (const item of raw.slice(0, 12)) {
+    if (!item || typeof item !== "object") continue;
+    const g = item as Record<string, unknown>;
+    const label = typeof g.label === "string" ? g.label.trim().slice(0, 200) : "";
+    if (!label) continue;
+
+    const type =
+      g.type === "posts_per_week" || g.type === "followers" ? g.type : "custom";
+    const goal: Goal = { type, label };
+
+    // A target below 1 is not a goal, and the progress reading divides by it.
+    const target = Number(g.target);
+    if (Number.isFinite(target) && target >= 1) goal.target = Math.floor(target);
+
+    if (type === "posts_per_week") {
+      const channel = typeof g.channel === "string" ? g.channel.trim() : "";
+      if (!channel || !goal.target) continue; // unmeasurable: it would read as "ongoing" forever
+      goal.channel = channel;
+    }
+    if (type === "followers") {
+      const handle = typeof g.handle === "string" ? g.handle.trim().replace(/^@/, "") : "";
+      if (!handle || !goal.target) continue;
+      goal.handle = handle;
+    }
+    out.push(goal);
+  }
+  return out;
+}
+
+/** Replace the persona's goals. content_config is a single jsonb column, so the
+ *  rest of it has to be carried over or a save here wipes cadence and language. */
+export async function setGoals(
+  client: SupabaseClient,
+  personaId: string,
+  goals: Goal[],
+): Promise<Goal[]> {
+  const { data, error } = await client
+    .from("personas")
+    .select("content_config")
+    .eq("id", personaId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+
+  const config =
+    data?.content_config && typeof data.content_config === "object"
+      ? (data.content_config as Record<string, unknown>)
+      : {};
+
+  const { error: writeError } = await client
+    .from("personas")
+    .update({ content_config: { ...config, goals } })
+    .eq("id", personaId);
+  if (writeError) throw new Error(writeError.message);
+  return goals;
+}
+
 /** Text block injected into a shift so the persona works toward its goals. */
 export function buildGoalsBrief(progress: GoalProgress[]): string {
   if (!progress.length) return "";

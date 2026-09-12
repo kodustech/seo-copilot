@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 
-import { computeProgress } from "@/lib/influencer/goals";
+import { computeProgress, normalizeGoals, setGoals } from "@/lib/influencer/goals";
 import { getPersona, updatePersona } from "@/lib/influencer/personas";
 import { cadenceOf, nextActionAt, runPersonaTick } from "@/lib/influencer/tick";
 import { influencerTableMissingMessage, type Persona } from "@/lib/influencer/types";
@@ -71,7 +71,7 @@ export async function GET(
   }
 }
 
-/** Set the autonomy cadence, or run a shift right now. */
+/** Set the autonomy cadence or the goals, or run a shift right now. */
 export async function POST(
   req: Request,
   ctx: { params: Promise<{ id: string }> },
@@ -101,6 +101,17 @@ export async function POST(
       return NextResponse.json(tickState(updated ?? persona, new Date()));
     }
 
+    if (body.action === "set_goals") {
+      // Validate before writing: a goal reaches the persona's brief on every
+      // shift, so a malformed one steers it for a week before anyone looks.
+      const goals = normalizeGoals(body.goals);
+      await setGoals(client, id, goals);
+      const refreshed = await getPersona(client, id);
+      const now = new Date();
+      const progress = await computeProgress(client, refreshed ?? persona, now);
+      return NextResponse.json({ ...tickState(refreshed ?? persona, now), goals: progress });
+    }
+
     if (body.action === "act_now") {
       const result = await runPersonaTick({ client, persona, now: new Date() });
       const refreshed = await getPersona(client, id);
@@ -111,7 +122,7 @@ export async function POST(
     }
 
     return NextResponse.json(
-      { error: "action must be 'set_cadence' or 'act_now'." },
+      { error: "action must be 'set_cadence', 'set_goals' or 'act_now'." },
       { status: 400 },
     );
   } catch (error) {

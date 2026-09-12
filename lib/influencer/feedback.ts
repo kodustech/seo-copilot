@@ -110,6 +110,42 @@ export async function listSkills(
     .filter(Boolean);
 }
 
+/** The same skills, with ids, for anything that needs to remove one. The agent
+ *  path keeps using listSkills: it reads rules, it does not manage them. */
+export async function listSkillNotes(
+  client: SupabaseClient,
+  personaId: string,
+  limit = 30,
+): Promise<{ id: string; content: string }[]> {
+  const { data, error } = await client
+    .from("persona_memory")
+    .select("id,content,created_at")
+    .eq("persona_id", personaId)
+    .contains("tags", [SKILL_TAG])
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(error.message);
+  return (data ?? [])
+    .filter((r) => typeof r.content === "string" && r.content.trim())
+    .map((r) => ({ id: String(r.id), content: String(r.content) }));
+}
+
+/** Remove one skill. Scoped by persona as well as id, so a stale id from another
+ *  persona's list cannot delete across personas. */
+export async function removeSkill(
+  client: SupabaseClient,
+  personaId: string,
+  skillId: string,
+): Promise<void> {
+  const { error } = await client
+    .from("persona_memory")
+    .delete()
+    .eq("id", skillId)
+    .eq("persona_id", personaId)
+    .contains("tags", [SKILL_TAG]);
+  if (error) throw new Error(error.message);
+}
+
 export async function addSkill(
   client: SupabaseClient,
   personaId: string,
