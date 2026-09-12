@@ -27,6 +27,38 @@ describe("normalizeGoals", () => {
     expect(normalizeGoals([{ type: "followers", target: 10, label: "no handle" }])).toEqual([]);
   });
 
+  it("infers a missing type instead of flattening the goal to custom", () => {
+    // Goals predate the validator: hand-written ones have no type. Defaulting
+    // them to custom and keeping only custom's fields strips the channel off a
+    // goal nobody touched, on the first save from anywhere.
+    const [posts] = normalizeGoals([{ label: "Two a week", channel: "blog", target: 2 }]);
+    expect(posts.type).toBe("posts_per_week");
+    expect(posts.channel).toBe("blog");
+
+    const [followers] = normalizeGoals([{ label: "100 followers", handle: "tessainsley", target: 100 }]);
+    expect(followers.type).toBe("followers");
+    expect(followers.handle).toBe("tessainsley");
+  });
+
+  it("leaves an incomplete typeless goal alone rather than inferring it into deletion", () => {
+    // No target, so it cannot be a posts_per_week goal. Before the validator
+    // existed it read as qualitative, and it still should: inferring a
+    // measurable type here would drop it on the next unrelated save.
+    const [g] = normalizeGoals([{ label: "Write more", channel: "blog" }]);
+    expect(g.type).toBe("custom");
+    expect(g.channel).toBe("blog");
+  });
+
+  it("carries channel and handle through whatever the type is", () => {
+    // computeProgress reads each field only for its own type, so keeping them
+    // costs nothing. Losing them is permanent.
+    const [g] = normalizeGoals([
+      { type: "custom", label: "Open-ended", channel: "blog", handle: "someone" },
+    ]);
+    expect(g.channel).toBe("blog");
+    expect(g.handle).toBe("someone");
+  });
+
   it("drops a goal with no label, because the label IS what the persona reads", () => {
     expect(normalizeGoals([{ type: "custom", label: "   " }])).toEqual([]);
     expect(normalizeGoals([{ type: "custom" }])).toEqual([]);

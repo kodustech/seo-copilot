@@ -126,24 +126,41 @@ export function normalizeGoals(raw: unknown): Goal[] {
     const label = typeof g.label === "string" ? g.label.trim().slice(0, 200) : "";
     if (!label) continue;
 
-    const type =
-      g.type === "posts_per_week" || g.type === "followers" ? g.type : "custom";
-    const goal: Goal = { type, label };
+    const channel = typeof g.channel === "string" ? g.channel.trim() : "";
+    const handle =
+      typeof g.handle === "string" ? g.handle.trim().replace(/^@/, "") : "";
 
     // A target below 1 is not a goal, and the progress reading divides by it.
-    const target = Number(g.target);
-    if (Number.isFinite(target) && target >= 1) goal.target = Math.floor(target);
+    const rawTarget = Number(g.target);
+    const target =
+      Number.isFinite(rawTarget) && rawTarget >= 1 ? Math.floor(rawTarget) : undefined;
 
-    if (type === "posts_per_week") {
-      const channel = typeof g.channel === "string" ? g.channel.trim() : "";
-      if (!channel || !goal.target) continue; // unmeasurable: it would read as "ongoing" forever
-      goal.channel = channel;
-    }
-    if (type === "followers") {
-      const handle = typeof g.handle === "string" ? g.handle.trim().replace(/^@/, "") : "";
-      if (!handle || !goal.target) continue;
-      goal.handle = handle;
-    }
+    // Goals predate this validator: some were written by hand with no type at
+    // all, and computeProgress reads them as qualitative. Defaulting those to
+    // "custom" and then keeping only the fields "custom" uses would strip the
+    // channel off a goal nobody touched, on the first save from anywhere. So
+    // infer, and only infer a measurable type when the goal is actually
+    // measurable — otherwise an incomplete one would be dropped rather than
+    // left alone as it is today.
+    const declared =
+      g.type === "posts_per_week" || g.type === "followers" || g.type === "custom"
+        ? g.type
+        : undefined;
+    const type: Goal["type"] =
+      declared ??
+      (handle && target ? "followers" : channel && target ? "posts_per_week" : "custom");
+
+    const goal: Goal = { type, label };
+    if (target) goal.target = target;
+
+    if (type === "posts_per_week" && (!channel || !target)) continue; // would read "ongoing" forever while claiming a number
+    if (type === "followers" && (!handle || !target)) continue;
+
+    // Carried whatever the type is. computeProgress only reads each field for
+    // its own type, so keeping them costs nothing and losing them is permanent.
+    if (channel) goal.channel = channel;
+    if (handle) goal.handle = handle;
+
     out.push(goal);
   }
   return out;

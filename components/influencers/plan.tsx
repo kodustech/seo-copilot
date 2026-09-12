@@ -48,10 +48,12 @@ const CHANNEL_OPTIONS = ["blog", "devto", "x", "medium", "reddit", "hackernews",
 /**
  * The stored goal, with only the computed fields removed.
  *
- * Saving posts the whole list, so an untouched row has to survive the round
- * trip byte for byte. Rebuilding one from what the row renders is how an edit
- * to goal 3 quietly rewrites goal 1: a stored goal with no explicit type would
- * come back as "custom", and the server drops channel and handle for that type.
+ * Saving posts the whole list, so an untouched row has to come back unchanged.
+ * Rebuilding one from what the row renders is how an edit to goal 3 quietly
+ * rewrites goal 1. This half sends the row as it was stored; the other half is
+ * normalizeGoals, which infers a missing type rather than defaulting it and
+ * carries channel and handle through whatever the type is. Both halves are
+ * needed: sending the row intact does nothing if the server rebuilds it.
  */
 function stored(g: GoalProgress): Record<string, unknown> {
   const out: Record<string, unknown> = {};
