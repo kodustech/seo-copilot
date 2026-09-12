@@ -49,6 +49,31 @@ describe("normalizeGoals", () => {
     expect(g.channel).toBe("blog");
   });
 
+  it("refuses to guess when the shape says two things at once", () => {
+    // Both a channel and a handle, and no declared type. Reading it as
+    // followers would compute a follower count against a posting target and
+    // mark it behind every week; reading it as posts would ignore the handle.
+    // A typeless goal has always read as qualitative, so staying qualitative
+    // loses nothing, and both fields survive for whoever declares the type.
+    const [g] = normalizeGoals([
+      { label: "Two a week on x", channel: "x", handle: "tessainsley", target: 2 },
+    ]);
+    expect(g.type).toBe("custom");
+    expect(g.channel).toBe("x");
+    expect(g.handle).toBe("tessainsley");
+    expect(g.target).toBe(2);
+  });
+
+  it("still honours a declared type when both fields are present", () => {
+    // Ambiguity only blocks inference. Someone who said what they meant is
+    // taken at their word, and the other field rides along.
+    const [g] = normalizeGoals([
+      { type: "followers", label: "100 followers", channel: "x", handle: "tessainsley", target: 100 },
+    ]);
+    expect(g.type).toBe("followers");
+    expect(g.channel).toBe("x");
+  });
+
   it("carries channel and handle through whatever the type is", () => {
     // computeProgress reads each field only for its own type, so keeping them
     // costs nothing. Losing them is permanent.

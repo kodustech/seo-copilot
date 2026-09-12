@@ -146,9 +146,21 @@ export function normalizeGoals(raw: unknown): Goal[] {
       g.type === "posts_per_week" || g.type === "followers" || g.type === "custom"
         ? g.type
         : undefined;
+    // Infer only when the shape says one thing. A goal carrying BOTH a channel
+    // and a handle is genuinely ambiguous, and picking either reading invents a
+    // measurement that was never there: a typeless goal has always read as
+    // qualitative, so leaving it that way loses nothing, while guessing wrong
+    // marks it behind every week and steers the persona at the wrong number.
+    const ambiguous = Boolean(channel && handle);
     const type: Goal["type"] =
       declared ??
-      (handle && target ? "followers" : channel && target ? "posts_per_week" : "custom");
+      (ambiguous
+        ? "custom"
+        : channel && target
+          ? "posts_per_week"
+          : handle && target
+            ? "followers"
+            : "custom");
 
     const goal: Goal = { type, label };
     if (target) goal.target = target;
