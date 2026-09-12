@@ -49,6 +49,19 @@ describe("normalizeGoals", () => {
     expect(normalizeGoals(many)).toHaveLength(12);
   });
 
+  it("caps what it keeps, not what it reads, so junk cannot starve the batch", () => {
+    // Three malformed entries up front used to eat three of the twelve slots
+    // and drop valid goals sitting past index 12.
+    const input = [
+      ...Array.from({ length: 3 }, () => ({ type: "custom" })),
+      ...Array.from({ length: 20 }, (_, i) => ({ type: "custom", label: `g${i}` })),
+    ];
+    const out = normalizeGoals(input);
+    expect(out).toHaveLength(12);
+    expect(out[0].label).toBe("g0");
+    expect(out[11].label).toBe("g11");
+  });
+
   it("survives whatever the client actually sends", () => {
     expect(normalizeGoals(null)).toEqual([]);
     expect(normalizeGoals("goals")).toEqual([]);

@@ -8,6 +8,7 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { mergeContentConfig } from "@/lib/influencer/personas";
 import type { Persona } from "@/lib/influencer/types";
 import { getXFollowers } from "@/lib/influencer/x-metrics";
 
@@ -116,7 +117,10 @@ export async function computeProgress(
 export function normalizeGoals(raw: unknown): Goal[] {
   if (!Array.isArray(raw)) return [];
   const out: Goal[] = [];
-  for (const item of raw.slice(0, 12)) {
+  for (const item of raw) {
+    // Cap on what is KEPT, not on what is examined: slicing first lets a few
+    // malformed entries near the front starve valid goals further down.
+    if (out.length >= 12) break;
     if (!item || typeof item !== "object") continue;
     const g = item as Record<string, unknown>;
     const label = typeof g.label === "string" ? g.label.trim().slice(0, 200) : "";
@@ -145,30 +149,15 @@ export function normalizeGoals(raw: unknown): Goal[] {
   return out;
 }
 
-/** Replace the persona's goals. content_config is a single jsonb column, so the
- *  rest of it has to be carried over or a save here wipes cadence and language. */
+/** Replace the persona's goals. content_config is one jsonb column shared with
+ *  cadence, language and the persona's own notes, so this merges rather than
+ *  overwrites; mergeContentConfig re-reads immediately before writing. */
 export async function setGoals(
   client: SupabaseClient,
   personaId: string,
   goals: Goal[],
 ): Promise<Goal[]> {
-  const { data, error } = await client
-    .from("personas")
-    .select("content_config")
-    .eq("id", personaId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-
-  const config =
-    data?.content_config && typeof data.content_config === "object"
-      ? (data.content_config as Record<string, unknown>)
-      : {};
-
-  const { error: writeError } = await client
-    .from("personas")
-    .update({ content_config: { ...config, goals } })
-    .eq("id", personaId);
-  if (writeError) throw new Error(writeError.message);
+  await mergeContentConfig(client, personaId, { goals });
   return goals;
 }
 

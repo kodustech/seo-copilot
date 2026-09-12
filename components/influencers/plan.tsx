@@ -45,6 +45,21 @@ type GoalDraft = {
 
 const CHANNEL_OPTIONS = ["blog", "devto", "x", "medium", "reddit", "hackernews", "hackernoon"];
 
+/**
+ * The stored goal, with only the computed fields removed.
+ *
+ * Saving posts the whole list, so an untouched row has to survive the round
+ * trip byte for byte. Rebuilding one from what the row renders is how an edit
+ * to goal 3 quietly rewrites goal 1: a stored goal with no explicit type would
+ * come back as "custom", and the server drops channel and handle for that type.
+ */
+function stored(g: GoalProgress): Record<string, unknown> {
+  const { current: _c, onTrack: _o, detail: _d, ...rest } = g;
+  return rest;
+}
+
+/** The stored goal opened in the editor. Here a type is required, because the
+ *  editor has to show one; that inference applies to the edited row only. */
 function toDraft(g: GoalProgress): GoalDraft {
   return {
     type: g.type ?? "custom",
@@ -192,12 +207,17 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
           ) : null}
         </section>
 
-        {!loading ? (
+        {/* Only when the load succeeded. With state null the list would render
+            empty while real goals exist, and saving would post that empty list
+            back over them. The error above is the recovery path. */}
+        {!loading && state ? (
           <GoalsPanel
             token={token}
             persona={persona}
-            goals={state?.goals ?? []}
-            onSaved={(goals) => setState((st) => (st ? { ...st, goals } : st))}
+            goals={state.goals ?? []}
+            // The route answers with the whole tick state, so a save also
+            // refreshes cadence and next-shift time rather than just the list.
+            onSaved={(next) => setState((st) => ({ ...(st as TickState), ...next }))}
           />
         ) : null}
       </div>
@@ -226,14 +246,14 @@ function GoalsPanel({
   token: string;
   persona: Persona;
   goals: GoalProgress[];
-  onSaved: (goals: GoalProgress[]) => void;
+  onSaved: (state: Partial<TickState>) => void;
 }) {
   const [editing, setEditing] = useState<number | null>(null);
   const [draft, setDraft] = useState<GoalDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function persist(next: GoalDraft[]) {
+  async function persist(next: Record<string, unknown>[]) {
     setSaving(true);
     setError(null);
     try {
@@ -246,7 +266,7 @@ function GoalsPanel({
       if (!res.ok) throw new Error(body.error || "Could not save");
       // Silent success: the row simply returns to its read state with the new
       // value in it. A toast for a save you can already see is noise.
-      onSaved(body.goals ?? []);
+      onSaved(body as Partial<TickState>);
       setEditing(null);
       setDraft(null);
     } catch (err) {
@@ -258,14 +278,15 @@ function GoalsPanel({
 
   function commit() {
     if (!draft?.label.trim()) return;
-    const next = goals.map(toDraft);
+    // Untouched rows go back as stored. Only the edited index carries the draft.
+    const next: Record<string, unknown>[] = goals.map(stored);
     if (editing === -1) next.push(draft);
     else if (editing != null) next[editing] = draft;
     void persist(next);
   }
 
   function remove(index: number) {
-    void persist(goals.map(toDraft).filter((_, i) => i !== index));
+    void persist(goals.map(stored).filter((_, i) => i !== index));
   }
 
   const adding = editing === -1;
