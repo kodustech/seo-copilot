@@ -238,6 +238,46 @@ export type PersonaPatch = Partial<{
   status: PersonaStatus;
 }>;
 
+/**
+ * Merge keys into content_config, re-reading the column immediately before the
+ * write.
+ *
+ * content_config is one jsonb column shared by several writers: the shift tick
+ * (next_action_at, last_note, last_tick_at, last_session_id), the cadence
+ * control, and the goals editor. Every one of them is a read-modify-write, so
+ * whoever writes last with a stale copy silently reverts the others.
+ *
+ * The dangerous version of that was the tick: it read the persona at the start
+ * of a shift and wrote at the end, minutes later, so anything saved during the
+ * shift was reverted with no error. Re-reading here closes that window to the
+ * gap between these two adjacent queries.
+ *
+ * It is not a transaction and does not pretend to be. Two writes landing in the
+ * same few milliseconds can still interleave; making that impossible needs a
+ * jsonb_set RPC and a migration, which is not worth it for a column written a
+ * handful of times a day. What it removes is the minutes-wide window that made
+ * the loss likely rather than theoretical.
+ */
+export async function mergeContentConfig(
+  client: SupabaseClient,
+  personaId: string,
+  patch: Record<string, unknown>,
+): Promise<Persona | null> {
+  const { data, error } = await client
+    .from("personas")
+    .select("content_config")
+    .eq("id", personaId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+
+  const current =
+    data?.content_config && typeof data.content_config === "object"
+      ? (data.content_config as Record<string, unknown>)
+      : {};
+
+  return updatePersona(client, personaId, { content_config: { ...current, ...patch } });
+}
+
 export async function updatePersona(
   client: SupabaseClient,
   id: string,

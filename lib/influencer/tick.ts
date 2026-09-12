@@ -33,7 +33,7 @@ import { getModelForPersona } from "@/lib/influencer/model";
 import {
   listActivePersonas,
   listChannelsForPersona,
-  updatePersona,
+  mergeContentConfig,
 } from "@/lib/influencer/personas";
 import type { Persona, PersonaChannel } from "@/lib/influencer/types";
 
@@ -154,9 +154,10 @@ async function setTickState(
     last_session_id?: string | null;
   },
 ): Promise<void> {
-  await updatePersona(client, persona.id, {
-    content_config: { ...persona.content_config, ...patch },
-  });
+  // Not `{ ...persona.content_config, ...patch }`: that snapshot was taken when
+  // the shift started, minutes ago, and anything saved in the meantime (goals,
+  // cadence) would be reverted by this write.
+  await mergeContentConfig(client, persona.id, patch);
 }
 
 const ReflectionSchema = z.object({

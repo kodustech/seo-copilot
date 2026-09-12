@@ -8,6 +8,7 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { mergeContentConfig } from "@/lib/influencer/personas";
 import type { Persona } from "@/lib/influencer/types";
 import { getXFollowers } from "@/lib/influencer/x-metrics";
 
@@ -105,6 +106,88 @@ export async function computeProgress(
   }
 
   return out;
+}
+
+/**
+ * Coerce whatever the client sent into goals we are willing to store. Goals are
+ * injected into every shift, so a malformed one is not a rendering bug, it is a
+ * persona steering toward nonsense for a week before anyone notices. Anything
+ * that does not survive this is dropped rather than repaired.
+ */
+export function normalizeGoals(raw: unknown): Goal[] {
+  if (!Array.isArray(raw)) return [];
+  const out: Goal[] = [];
+  for (const item of raw) {
+    // Cap on what is KEPT, not on what is examined: slicing first lets a few
+    // malformed entries near the front starve valid goals further down.
+    if (out.length >= 12) break;
+    if (!item || typeof item !== "object") continue;
+    const g = item as Record<string, unknown>;
+    const label = typeof g.label === "string" ? g.label.trim().slice(0, 200) : "";
+    if (!label) continue;
+
+    const channel = typeof g.channel === "string" ? g.channel.trim() : "";
+    const handle =
+      typeof g.handle === "string" ? g.handle.trim().replace(/^@/, "") : "";
+
+    // A target below 1 is not a goal, and the progress reading divides by it.
+    const rawTarget = Number(g.target);
+    const target =
+      Number.isFinite(rawTarget) && rawTarget >= 1 ? Math.floor(rawTarget) : undefined;
+
+    // Goals predate this validator: some were written by hand with no type at
+    // all, and computeProgress reads them as qualitative. Defaulting those to
+    // "custom" and then keeping only the fields "custom" uses would strip the
+    // channel off a goal nobody touched, on the first save from anywhere. So
+    // infer, and only infer a measurable type when the goal is actually
+    // measurable — otherwise an incomplete one would be dropped rather than
+    // left alone as it is today.
+    const declared =
+      g.type === "posts_per_week" || g.type === "followers" || g.type === "custom"
+        ? g.type
+        : undefined;
+    // Infer only when the shape says one thing. A goal carrying BOTH a channel
+    // and a handle is genuinely ambiguous, and picking either reading invents a
+    // measurement that was never there: a typeless goal has always read as
+    // qualitative, so leaving it that way loses nothing, while guessing wrong
+    // marks it behind every week and steers the persona at the wrong number.
+    const ambiguous = Boolean(channel && handle);
+    const type: Goal["type"] =
+      declared ??
+      (ambiguous
+        ? "custom"
+        : channel && target
+          ? "posts_per_week"
+          : handle && target
+            ? "followers"
+            : "custom");
+
+    const goal: Goal = { type, label };
+    if (target) goal.target = target;
+
+    if (type === "posts_per_week" && (!channel || !target)) continue; // would read "ongoing" forever while claiming a number
+    if (type === "followers" && (!handle || !target)) continue;
+
+    // Carried whatever the type is. computeProgress only reads each field for
+    // its own type, so keeping them costs nothing and losing them is permanent.
+    if (channel) goal.channel = channel;
+    if (handle) goal.handle = handle;
+
+    out.push(goal);
+  }
+  return out;
+}
+
+/** Replace the persona's goals. content_config is one jsonb column shared with
+ *  cadence, language and the persona's own notes, so this merges rather than
+ *  overwrites; mergeContentConfig re-reads immediately before writing. */
+export async function setGoals(
+  client: SupabaseClient,
+  personaId: string,
+  goals: Goal[],
+): Promise<Goal[]> {
+  await mergeContentConfig(client, personaId, { goals });
+  return goals;
 }
 
 /** Text block injected into a shift so the persona works toward its goals. */
