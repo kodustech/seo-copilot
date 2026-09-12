@@ -22,6 +22,42 @@ export type ChannelPlatform =
 // and "Import a story" is the one automated path it still has.
 export type PublishVia = "post_bridge" | "api" | "n8n" | "manual" | "browser";
 
+/**
+ * How a channel is born, per platform. It lives here because the creation route
+ * and its tests both need it, and because a channel nobody creates is invisible
+ * until a persona cannot publish to the site it exists for. That is exactly what
+ * happened: the wizard seeded six channels and left out the blog, so a persona
+ * built to write a farm site had nowhere to write.
+ *
+ * `publish_via` on a blog is metadata rather than a switch. publishActivity
+ * dispatches on `platform === "blog"` before it ever reads publish_via, so the
+ * value only has to be honest about what happens, which is the site's own
+ * content API. One long-form page a day is already more than a site this size
+ * needs, and a blog has no replies to write.
+ */
+export function channelDefaults(platform: ChannelPlatform): {
+  publish_via: PublishVia;
+  automation_level: AutomationLevel;
+  max_posts_per_day: number;
+  max_replies_per_day: number;
+} {
+  switch (platform) {
+    case "x":
+      return { publish_via: "post_bridge", automation_level: "approve_first", max_posts_per_day: 2, max_replies_per_day: 5 };
+    case "devto":
+      return { publish_via: "api", automation_level: "approve_first", max_posts_per_day: 2, max_replies_per_day: 5 };
+    case "blog":
+      return { publish_via: "api", automation_level: "approve_first", max_posts_per_day: 1, max_replies_per_day: 0 };
+    case "medium":
+      return { publish_via: "browser", automation_level: "approve_first", max_posts_per_day: 2, max_replies_per_day: 5 };
+    // Hand-posted: the tool writes, a person posts from their own account.
+    case "reddit":
+    case "hackernews":
+    case "hackernoon":
+      return { publish_via: "manual", automation_level: "draft_only", max_posts_per_day: 2, max_replies_per_day: 5 };
+  }
+}
+
 export type AutomationLevel = "auto" | "approve_first" | "draft_only";
 
 export type ChannelStatus = "pending_setup" | "active" | "paused";
@@ -138,7 +174,7 @@ export type PersonaLearning = {
 };
 
 const PERSONA_STATUSES: PersonaStatus[] = ["active", "paused"];
-const CHANNEL_PLATFORMS: ChannelPlatform[] = [
+export const CHANNEL_PLATFORMS: ChannelPlatform[] = [
   "x",
   "devto",
   "blog",

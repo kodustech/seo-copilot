@@ -79,9 +79,14 @@ export function WizardDialog({
         body: JSON.stringify({
           ...proposal,
           content_config: { language },
+          // Every platform the fleet can publish to. A channel left out here is
+          // not just unconfigured, it does not exist, and the persona detail
+          // page offers no way to add one later. The blog was missing, which is
+          // the one a farm-site persona is built for.
           channels: [
             { platform: "x" },
             { platform: "devto" },
+            { platform: "blog" },
             { platform: "medium" },
             { platform: "reddit" },
             { platform: "hackernews" },
