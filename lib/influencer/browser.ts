@@ -275,6 +275,39 @@ export type LoginSession = {
  * This is the whole "connect" for a platform with no API: the credential is a
  * cookie jar Browserbase holds, never a password we store.
  */
+/**
+ * The session payload for a login a PERSON drives.
+ *
+ * Two fields carry the whole behaviour, and both were wrong:
+ *
+ * `keepAlive` is what lets us hand the session to someone. Browserbase ends a
+ * session when its last client disconnects, and this flow deliberately
+ * disconnects: it opens the sign-in page over CDP, then lets go so the live
+ * view can take over. Without keepAlive the session is already gone by the time
+ * the person clicks, and the live URL answers "410 Session stopped".
+ *
+ * `timeout` is the field name Browserbase reads. The code sent `api_timeout`,
+ * which is not a field, so it was dropped and the project default applied. That
+ * default is sized for scripted runs, not for someone typing a password and
+ * clearing a 2FA prompt.
+ *
+ * Split out from startLoginSession so both can be asserted without standing up
+ * a browser, since a wrong key here fails silently rather than throwing.
+ */
+export function loginSessionOptions(
+  projectId: string,
+  contextId: string,
+  opts?: { proxies?: boolean; timeoutSeconds?: number },
+): Record<string, unknown> {
+  return {
+    projectId,
+    browserSettings: { context: { id: contextId, persist: true } },
+    ...(opts?.proxies ? { proxies: true } : {}),
+    keepAlive: true,
+    timeout: opts?.timeoutSeconds ?? 15 * 60,
+  };
+}
+
 export async function startLoginSession(
   startUrl: string,
   opts?: { name?: string; proxies?: boolean; timeoutSeconds?: number },
@@ -289,15 +322,9 @@ export async function startLoginSession(
     ...(opts?.name ? { name: opts.name } : {}),
   });
   const timeoutSeconds = opts?.timeoutSeconds ?? 15 * 60;
-  const session = await bb.sessions.create({
-    projectId,
-    browserSettings: { context: { id: context.id, persist: true } },
-    ...(opts?.proxies ? { proxies: true } : {}),
-    // The person needs the tab to stay open while they type a password and
-    // maybe clear a 2FA prompt; the default project timeout is built for
-    // scripted runs, not for that.
-    api_timeout: timeoutSeconds,
-  });
+  const session = await bb.sessions.create(
+    loginSessionOptions(projectId, context.id, { proxies: opts?.proxies, timeoutSeconds }),
+  );
   // Land the person on the sign-in page, then let go — the live view takes over.
   const browser = await chromium.connectOverCDP(session.connectUrl);
   try {
@@ -305,8 +332,9 @@ export async function startLoginSession(
     const page = ctx.pages()[0] ?? (await ctx.newPage());
     await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
   } finally {
-    // Disconnecting the CDP client must not end the session: the person is
-    // about to use it. Browserbase keeps it alive until api_timeout.
+    // Safe to disconnect only because the session was created with keepAlive.
+    // Without it Browserbase ends the session the moment the last client goes,
+    // and the live URL handed to the person answers "410 Session stopped".
     await browser.close().catch(() => {});
   }
   const live = await bb.sessions.debug(session.id);
