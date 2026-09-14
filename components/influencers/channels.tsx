@@ -434,8 +434,16 @@ function BlogConnect({
   const cfg = (channel.channel_config ?? {}) as Record<string, unknown>;
   const [apiUrl, setApiUrl] = useState(typeof cfg.blog_api_url === "string" ? cfg.blog_api_url : "");
   const [sourceBase, setSourceBase] = useState(typeof cfg.blog_source_base === "string" ? cfg.blog_source_base : "");
+  // A farm site's taxonomy is its own. Blank means the template's default
+  // categories and no second axis — right for most sites, wrong for the one
+  // that files posts by forge, which then refuses every post it is sent.
+  const [categories, setCategories] = useState(asList(cfg.blog_categories));
+  const [platforms, setPlatforms] = useState(asList(cfg.blog_platforms));
   const [key, setKey] = useState("");
   const connected = channel.credentials_ref?.startsWith("env:") || channel.credentials_ref?.startsWith("vault:") || channel.status === "active";
+  const taxonomyChanged =
+    categories.trim() !== asList(cfg.blog_categories).trim() ||
+    platforms.trim() !== asList(cfg.blog_platforms).trim();
 
   const site = (() => {
     const raw = typeof cfg.blog_api_url === "string" ? cfg.blog_api_url : "";
@@ -456,10 +464,41 @@ function BlogConnect({
         {!cfg.blog_source_base ? (
           <p className="text-xs text-amber-300">No source base set: the persona can publish here but cannot revise a page. Reconnect with the raw URL of the site&apos;s content folder.</p>
         ) : null}
+        {/* Editable while connected, because this is where it is needed. A site
+            whose taxonomy is wrong is connected and failing every post, and the
+            only other way to fix it was to disconnect — which drops the key. */}
+        {!cfg.blog_platforms ? (
+          <p className="text-xs text-neutral-500">
+            No platform axis set. Leave it empty unless this site files posts under one; a site
+            that does refuses every post that names none.
+          </p>
+        ) : null}
+        <Input
+          value={categories}
+          onChange={(e) => setCategories(e.target.value)}
+          placeholder="Categories it accepts (blank = the default set)"
+          className={cls.input}
+        />
+        <Input
+          value={platforms}
+          onChange={(e) => setPlatforms(e.target.value)}
+          placeholder="Platforms it files posts under, if any (e.g. gitlab, azure-devops, bitbucket, multi)"
+          className={cls.input}
+        />
         {error ? <p className={cls.errorText}>{error}</p> : null}
-        <button type="button" disabled={busy} onClick={onDisconnect} className={cls.outline}>
-          Disconnect
-        </button>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={busy || !taxonomyChanged}
+            onClick={() => onConnect({ categories: categories.trim(), platforms: platforms.trim() })}
+            className={cls.primary}
+          >
+            {busy ? <Loader2 className="size-3.5 animate-spin" /> : "Save taxonomy"}
+          </button>
+          <button type="button" disabled={busy} onClick={onDisconnect} className={cls.outline}>
+            Disconnect
+          </button>
+        </div>
       </div>
     );
   }
@@ -474,6 +513,18 @@ function BlogConnect({
         placeholder="https://raw.githubusercontent.com/org/repo/main/src/content/blog"
         className={cls.input}
       />
+      <Input
+        value={categories}
+        onChange={(e) => setCategories(e.target.value)}
+        placeholder="Categories it accepts (optional, default: best-of, alternatives, comparison, guide, explainer, review)"
+        className={cls.input}
+      />
+      <Input
+        value={platforms}
+        onChange={(e) => setPlatforms(e.target.value)}
+        placeholder="Platforms it files posts under, if any (e.g. gitlab, azure-devops, bitbucket, multi)"
+        className={cls.input}
+      />
       <Input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="Content API key for this site (optional)" className={cls.input} />
       <button
         type="button"
@@ -482,6 +533,8 @@ function BlogConnect({
           onConnect({
             ...(apiUrl.trim() ? { api_url: apiUrl.trim() } : {}),
             ...(sourceBase.trim() ? { source_base: sourceBase.trim() } : {}),
+            ...(categories.trim() ? { categories: categories.trim() } : {}),
+            ...(platforms.trim() ? { platforms: platforms.trim() } : {}),
             ...(key.trim() ? { key: key.trim() } : {}),
           })
         }
@@ -492,6 +545,12 @@ function BlogConnect({
       {error ? <p className={cls.errorText}>{error}</p> : null}
     </div>
   );
+}
+
+/** A stored vocabulary, shown back in the form the way it is typed in. */
+function asList(raw: unknown): string {
+  if (Array.isArray(raw)) return raw.filter((v) => typeof v === "string").join(", ");
+  return typeof raw === "string" ? raw : "";
 }
 
 function ManualConnect({

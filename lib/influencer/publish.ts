@@ -18,6 +18,7 @@ import {
   requiresDisclosure,
   sourceDiscloses,
 } from "@/lib/influencer/medium";
+import { blogSchemaFor, resolveBlogCategory } from "@/lib/influencer/blog-schema";
 import { decryptPersonaKey } from "@/lib/crypto/persona-secrets";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 
@@ -525,6 +526,38 @@ export function sameBlogSite(a: string, b: string): boolean {
 }
 
 /**
+ * Whether a connect request must carry a key, or may rely on the one the
+ * channel already keeps. This endpoint is also how an operator edits a
+ * connected channel's taxonomy, and asking for the key back to change a word
+ * would teach people to disconnect first — which drops the key for real.
+ *
+ * Two conditions, and the second is the load-bearing one. The channel must
+ * hold a key of its OWN: the vault marker, or a per-site env name, never the
+ * sentinel, which is the shared key and belongs to the default site. And the
+ * destination must not be moving, because resolveBlogApiKey finds that key by
+ * the marker rather than by host — so a request that repointed the channel and
+ * skipped this check would send one site's writer credential to whatever host
+ * it named. Changing site costs a key, exactly as it always did.
+ */
+export function blogConnectNeedsKey(
+  channel: Pick<PersonaChannel, "credentials_ref" | "channel_config">,
+  destination: string,
+): boolean {
+  const ref = channel.credentials_ref?.trim() ?? "";
+  // Its own key: the vault marker, or a per-site env name. Never one that means
+  // the shared key — that one belongs to the default site, and contentEnvNameFor
+  // hands it to nothing else. Both read refMeansSharedKey so they cannot drift.
+  const holdsOwnKey =
+    ref === CONTENT_KEY_VAULT || (!refMeansSharedKey(ref) && isAllowedContentEnvName(ref));
+  if (!holdsOwnKey) return true;
+  const stored =
+    typeof channel.channel_config.blog_api_url === "string"
+      ? channel.channel_config.blog_api_url
+      : "";
+  return !sameBlogSite(destination, stored);
+}
+
+/**
  * Which env var holds this blog channel's key, or null when we have no key we
  * are willing to send it. Both the publisher and the shift's actionability
  * check go through here: a gate that answers differently from the resolver
@@ -536,15 +569,24 @@ export function sameBlogSite(a: string, b: string): boolean {
  * CONTENT_API_KEY_<SITE> or it gets no key, because the alternative is sending
  * one site's writer credential to another host and finding out from the 401.
  */
+/**
+ * Whether a credentials_ref means the SHARED key rather than one of the
+ * channel's own. Naming the shared key outright is the same request as the
+ * sentinel, and so is naming nothing. Asked in one place because the gate and
+ * the resolver disagreeing about this ref is precisely how a channel gets
+ * reported connected and then publishes nowhere.
+ */
+export function refMeansSharedKey(ref: string | null | undefined): boolean {
+  const clean = ref?.trim();
+  return !clean || clean === CONTENT_KEY_SENTINEL || clean === "CONTENT_API_KEY";
+}
+
 export function contentEnvNameFor(channel: PersonaChannel): string | null {
   const ref = channel.credentials_ref?.trim();
-  // Naming the shared key outright is the same request as the sentinel, so it
-  // meets the same condition. Anything else is a per-site key, which is only
-  // ever deployed for the site it belongs to.
-  if (!ref || ref === CONTENT_KEY_SENTINEL || ref === "CONTENT_API_KEY") {
+  if (refMeansSharedKey(ref)) {
     return isDefaultSite(channel) ? "CONTENT_API_KEY" : null;
   }
-  return isAllowedContentEnvName(ref) ? ref : null;
+  return isAllowedContentEnvName(ref!) ? ref! : null;
 }
 
 /**
@@ -596,13 +638,17 @@ function resolveBlogApiKeyFromEnv(channel: PersonaChannel): string {
   return key;
 }
 
-async function publishToBlog(
-  client: SupabaseClient,
+/**
+ * The body of a content-API call, built from a draft and the site it is going
+ * to. Exported because the payload's shape is the whole contract with a farm
+ * site, and the one thing worth testing against that site's own validator —
+ * 33 posts died on a field this function forgot, and none of it was visible
+ * from inside publishToBlog.
+ */
+export function buildBlogPayload(
   activity: PersonaActivity,
   channel: PersonaChannel,
-): Promise<PublishOutcome> {
-  const blogApiUrl = resolveBlogApiUrl(channel);
-  const key = await resolveBlogApiKey(client, channel);
+): Record<string, unknown> {
   const meta = activity.content_meta ?? {};
   const asString = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
   const tags = sanitizeTags(meta.tags);
@@ -615,30 +661,48 @@ async function publishToBlog(
       )
     : undefined;
 
-  // Categories the aicodereview.io API accepts; anything else 422s.
-  const BLOG_CATEGORIES = new Set([
-    "best-of",
-    "alternatives",
-    "comparison",
-    "guide",
-    "explainer",
-    "review",
-  ]);
-  const category = asString(meta.category);
+  // What THIS site accepts — the farm's sites do not share a taxonomy.
+  const schema = blogSchemaFor(channel);
+  // A site with a second axis requires it: mergerequests.dev files every post
+  // under a forge, and a post that names none has nowhere to appear. Refused
+  // here, in our own words, rather than shipped to collect the site's 422 —
+  // the draft is fixable, and "must be one of …" is the only useful half of it.
+  const blogPlatform = asString(meta.blog_platform)?.toLowerCase();
+  if (schema.platforms && !(blogPlatform && schema.platforms.includes(blogPlatform))) {
+    throw new Error(
+      `${resolveBlogApiUrl(channel)} files every post under a platform, and this draft names ${
+        blogPlatform ? `"${blogPlatform}"` : "none"
+      }. Requeue it with blog_platform set to one of: ${schema.platforms.join(", ")}.`,
+    );
+  }
   // A revision is the same call with the slug it replaces: the content API
   // refuses an existing slug unless overwrite says so, and the site is
   // git-backed, so a rewrite lands as a commit over the old file rather than
   // as a second page competing with the first.
   const replaces = asString(meta.replaces_slug);
-  const payload = {
+  return {
     title: activity.title || activity.content.slice(0, 80),
     description: asString(meta.description),
-    category: category && BLOG_CATEGORIES.has(category) ? category : "explainer",
+    category: resolveBlogCategory(schema, asString(meta.category)),
     tags: tags?.length ? tags : undefined,
     content: activity.content, // markdown, no H1 (layout renders the title)
     faq: faq?.length ? faq : undefined,
+    // Only where the site declares the axis. A site without one has no such
+    // frontmatter field, so sending it is at best ignored and at worst a 422
+    // from a stricter validator than the two we have.
+    ...(schema.platforms && blogPlatform ? { platform: blogPlatform } : {}),
     ...(replaces ? { slug: replaces, overwrite: true } : {}),
   };
+}
+
+async function publishToBlog(
+  client: SupabaseClient,
+  activity: PersonaActivity,
+  channel: PersonaChannel,
+): Promise<PublishOutcome> {
+  const blogApiUrl = resolveBlogApiUrl(channel);
+  const key = await resolveBlogApiKey(client, channel);
+  const payload = buildBlogPayload(activity, channel);
 
   const response = await fetch(`${blogApiUrl}/api/posts`, {
     method: "POST",
