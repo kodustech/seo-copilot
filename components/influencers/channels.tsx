@@ -441,6 +441,9 @@ function BlogConnect({
   const [platforms, setPlatforms] = useState(asList(cfg.blog_platforms));
   const [key, setKey] = useState("");
   const connected = channel.credentials_ref?.startsWith("env:") || channel.credentials_ref?.startsWith("vault:") || channel.status === "active";
+  const taxonomyChanged =
+    categories.trim() !== asList(cfg.blog_categories).trim() ||
+    platforms.trim() !== asList(cfg.blog_platforms).trim();
 
   const site = (() => {
     const raw = typeof cfg.blog_api_url === "string" ? cfg.blog_api_url : "";
@@ -461,10 +464,41 @@ function BlogConnect({
         {!cfg.blog_source_base ? (
           <p className="text-xs text-amber-300">No source base set: the persona can publish here but cannot revise a page. Reconnect with the raw URL of the site&apos;s content folder.</p>
         ) : null}
+        {/* Editable while connected, because this is where it is needed. A site
+            whose taxonomy is wrong is connected and failing every post, and the
+            only other way to fix it was to disconnect — which drops the key. */}
+        {!cfg.blog_platforms ? (
+          <p className="text-xs text-neutral-500">
+            No platform axis set. Leave it empty unless this site files posts under one; a site
+            that does refuses every post that names none.
+          </p>
+        ) : null}
+        <Input
+          value={categories}
+          onChange={(e) => setCategories(e.target.value)}
+          placeholder="Categories it accepts (blank = the default set)"
+          className={cls.input}
+        />
+        <Input
+          value={platforms}
+          onChange={(e) => setPlatforms(e.target.value)}
+          placeholder="Platforms it files posts under, if any (e.g. gitlab, azure-devops, bitbucket, multi)"
+          className={cls.input}
+        />
         {error ? <p className={cls.errorText}>{error}</p> : null}
-        <button type="button" disabled={busy} onClick={onDisconnect} className={cls.outline}>
-          Disconnect
-        </button>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={busy || !taxonomyChanged}
+            onClick={() => onConnect({ categories: categories.trim(), platforms: platforms.trim() })}
+            className={cls.primary}
+          >
+            {busy ? <Loader2 className="size-3.5 animate-spin" /> : "Save taxonomy"}
+          </button>
+          <button type="button" disabled={busy} onClick={onDisconnect} className={cls.outline}>
+            Disconnect
+          </button>
+        </div>
       </div>
     );
   }

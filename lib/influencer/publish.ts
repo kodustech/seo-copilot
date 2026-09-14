@@ -646,7 +646,10 @@ export function buildBlogPayload(
     tags: tags?.length ? tags : undefined,
     content: activity.content, // markdown, no H1 (layout renders the title)
     faq: faq?.length ? faq : undefined,
-    ...(blogPlatform ? { platform: blogPlatform } : {}),
+    // Only where the site declares the axis. A site without one has no such
+    // frontmatter field, so sending it is at best ignored and at worst a 422
+    // from a stricter validator than the two we have.
+    ...(schema.platforms && blogPlatform ? { platform: blogPlatform } : {}),
     ...(replaces ? { slug: replaces, overwrite: true } : {}),
   };
 }

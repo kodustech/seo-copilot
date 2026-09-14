@@ -141,9 +141,11 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       const key = typeof body.key === "string" ? body.key.trim() : "";
       // What this site's content API accepts. Stored as typed and parsed by
       // blogSchemaFor, so the form, the agent and the publisher all read one
-      // answer. Blank keeps whatever the channel already had.
+      // answer. A field left out keeps what the channel had; one sent empty
+      // clears it — emptying the box has to mean something, or a site that
+      // grew a platform axis could never lose it again.
       const vocab = (value: unknown) =>
-        typeof value === "string" && value.trim() ? value.trim() : "";
+        typeof value === "string" ? { set: value.trim() } : null;
       const categories = vocab(body.categories);
       const platforms = vocab(body.platforms);
 
@@ -169,7 +171,12 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       // below judge this, never the request on its own.
       const destination = blogDestination(channel, apiUrl);
 
-      if (!key) {
+      // A channel that already keeps its own key needs no new one: this same
+      // endpoint is how an operator edits a connected channel's taxonomy, and
+      // demanding the key back to change a word would either block the edit or
+      // teach people to disconnect first — which drops the key for real.
+      const holdsOwnKey = channel.credentials_ref?.trim() === CONTENT_KEY_VAULT;
+      if (!key && !holdsOwnKey) {
         if (!isDefaultBlogSite(destination)) {
           return NextResponse.json(
             {
@@ -211,16 +218,29 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
           created_by: userEmail,
         });
       }
+      const nextConfig: Record<string, unknown> = {
+        ...channel.channel_config,
+        ...(apiUrl ? { blog_api_url: apiUrl } : {}),
+        ...(sourceBase ? { blog_source_base: sourceBase } : {}),
+      };
+      if (categories) {
+        if (categories.set) nextConfig.blog_categories = categories.set;
+        else delete nextConfig.blog_categories;
+      }
+      if (platforms) {
+        if (platforms.set) nextConfig.blog_platforms = platforms.set;
+        else delete nextConfig.blog_platforms;
+      }
       const updated = await updateChannel(client, id, {
         status: "active",
-        credentials_ref: key ? CONTENT_KEY_VAULT : CONTENT_KEY_SENTINEL,
-        channel_config: {
-          ...channel.channel_config,
-          ...(apiUrl ? { blog_api_url: apiUrl } : {}),
-          ...(sourceBase ? { blog_source_base: sourceBase } : {}),
-          ...(categories ? { blog_categories: categories } : {}),
-          ...(platforms ? { blog_platforms: platforms } : {}),
-        },
+        // No new key means the stored one stands. Overwriting it with the
+        // sentinel would hand a farm channel back the shared key, which
+        // contentEnvNameFor refuses to send anywhere but the default site —
+        // so the channel would publish nowhere at all.
+        credentials_ref: key
+          ? CONTENT_KEY_VAULT
+          : (channel.credentials_ref?.trim() || CONTENT_KEY_SENTINEL),
+        channel_config: nextConfig,
       });
       return NextResponse.json({ connected: true, platform: "blog", channel: updated });
     }

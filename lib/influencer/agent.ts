@@ -950,9 +950,10 @@ export async function runInfluencerAgentSession({
                 session_id: session.id,
                 ...(description ? { description } : {}),
                 ...(category ? { category } : {}),
-                ...(normalizedPlatform === "blog" && blogPlatform
-                  ? { blog_platform: blogPlatform }
-                  : {}),
+                // Kept only when the destination site has the axis: on a site
+                // without one it is a field nothing reads, riding along to the
+                // publisher to be dropped there anyway.
+                ...(platformAxis && blogPlatform ? { blog_platform: blogPlatform } : {}),
                 ...(tags?.length ? { tags } : {}),
                 ...(faq?.length ? { faq } : {}),
                 ...(image?.url ? { image } : {}),
