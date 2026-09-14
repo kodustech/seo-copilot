@@ -544,8 +544,11 @@ export function blogConnectNeedsKey(
   destination: string,
 ): boolean {
   const ref = channel.credentials_ref?.trim() ?? "";
+  // Its own key: the vault marker, or a per-site env name. Never one that means
+  // the shared key — that one belongs to the default site, and contentEnvNameFor
+  // hands it to nothing else. Both read refMeansSharedKey so they cannot drift.
   const holdsOwnKey =
-    ref === CONTENT_KEY_VAULT || (ref !== CONTENT_KEY_SENTINEL && isAllowedContentEnvName(ref));
+    ref === CONTENT_KEY_VAULT || (!refMeansSharedKey(ref) && isAllowedContentEnvName(ref));
   if (!holdsOwnKey) return true;
   const stored =
     typeof channel.channel_config.blog_api_url === "string"
@@ -566,15 +569,24 @@ export function blogConnectNeedsKey(
  * CONTENT_API_KEY_<SITE> or it gets no key, because the alternative is sending
  * one site's writer credential to another host and finding out from the 401.
  */
+/**
+ * Whether a credentials_ref means the SHARED key rather than one of the
+ * channel's own. Naming the shared key outright is the same request as the
+ * sentinel, and so is naming nothing. Asked in one place because the gate and
+ * the resolver disagreeing about this ref is precisely how a channel gets
+ * reported connected and then publishes nowhere.
+ */
+export function refMeansSharedKey(ref: string | null | undefined): boolean {
+  const clean = ref?.trim();
+  return !clean || clean === CONTENT_KEY_SENTINEL || clean === "CONTENT_API_KEY";
+}
+
 export function contentEnvNameFor(channel: PersonaChannel): string | null {
   const ref = channel.credentials_ref?.trim();
-  // Naming the shared key outright is the same request as the sentinel, so it
-  // meets the same condition. Anything else is a per-site key, which is only
-  // ever deployed for the site it belongs to.
-  if (!ref || ref === CONTENT_KEY_SENTINEL || ref === "CONTENT_API_KEY") {
+  if (refMeansSharedKey(ref)) {
     return isDefaultSite(channel) ? "CONTENT_API_KEY" : null;
   }
-  return isAllowedContentEnvName(ref) ? ref : null;
+  return isAllowedContentEnvName(ref!) ? ref! : null;
 }
 
 /**

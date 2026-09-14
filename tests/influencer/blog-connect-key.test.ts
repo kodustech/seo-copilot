@@ -60,6 +60,17 @@ describe("blogConnectNeedsKey", () => {
     expect(blogConnectNeedsKey(ch, destinationFor(ch))).toBe(true);
   });
 
+  it("does not mistake the shared key, named outright, for one of its own", () => {
+    // contentEnvNameFor groups a bare CONTENT_API_KEY with the sentinel: it is
+    // the shared key by another name, and it publishes to the default site
+    // alone. A gate that read it as a per-site key would report a farm channel
+    // connected and leave it publishing nowhere.
+    const farm = channel("CONTENT_API_KEY", FARM);
+    expect(blogConnectNeedsKey(farm, destinationFor(farm))).toBe(true);
+    const home = channel("CONTENT_API_KEY", DEFAULT_BLOG_API_URL);
+    expect(blogConnectNeedsKey(home, destinationFor(home))).toBe(true);
+  });
+
   it("still demands one from a channel that holds nothing", () => {
     const ch = channel(null, FARM);
     expect(blogConnectNeedsKey(ch, destinationFor(ch))).toBe(true);
