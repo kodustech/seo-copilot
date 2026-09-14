@@ -2291,6 +2291,7 @@ function OverviewTab({
   onPatch: (p: Record<string, unknown>) => void;
   authFetch: (url: string, init?: RequestInit) => Promise<Response>;
 }) {
+  const [name, setName] = useState(company.name);
   const [orgId, setOrgId] = useState(company.orgId ?? "");
   const [domain, setDomain] = useState(company.domain ?? "");
   const [industry, setIndustry] = useState(company.industry ?? "");
@@ -2302,6 +2303,7 @@ function OverviewTab({
 
   // Keep local fields in sync when the drawer company changes.
   useEffect(() => {
+    setName(company.name);
     setOrgId(company.orgId ?? "");
     setDomain(company.domain ?? "");
     setIndustry(company.industry ?? "");
@@ -2310,6 +2312,7 @@ function OverviewTab({
     setNotes(company.notes ?? "");
   }, [
     company.id,
+    company.name,
     company.orgId,
     company.domain,
     company.industry,
@@ -2364,6 +2367,34 @@ function OverviewTab({
           </div>
         </Field>
       </div>
+
+      {/* Accounts the product-signals sweep created are named after the signup
+          default ("Marcus-bazB50vSREnKSuGV", "Sonal's Org"), so the list is
+          full of rows nobody recognises. This renames the CRM record only: the
+          product org keeps its own name, which is still shown on the Product
+          tab, and org_id is never touched by this field. */}
+      <Field label="Name">
+        <Input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onBlur={() => {
+            const next = name.trim();
+            // An account with no name is not a state the CRM can show, so an
+            // empty box is a slip, not a request. Put the current name back.
+            if (!next) {
+              setName(company.name);
+              return;
+            }
+            if (next !== company.name) onPatch({ name: next });
+          }}
+          placeholder="Company name"
+          className="border-white/10 bg-neutral-900"
+        />
+        <p className="mt-1 text-[11px] text-neutral-500">
+          How this account reads everywhere in the CRM. Renaming does not change
+          the linked product org or its usage signals.
+        </p>
+      </Field>
 
       <Field label="Domain">
         <Input
