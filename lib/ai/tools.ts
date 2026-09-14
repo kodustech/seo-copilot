@@ -4223,9 +4223,15 @@ export const createCrmCompany = tool({
 
 export const updateCrmCompany = tool({
   description:
-    "Update a CRM company — status, priority, owner, dev_count, arr (contract value per year, BRL), org link, industry, notes, or custom properties (key → value; null clears a key). List field defs with listCrmFields.",
+    "Update a CRM company — display name, status, priority, owner, dev_count, arr (contract value per year, BRL), org link, industry, notes, or custom properties (key → value; null clears a key). List field defs with listCrmFields.",
   inputSchema: z.object({
     id: z.string().describe("Company id"),
+    name: z
+      .string()
+      .optional()
+      .describe(
+        "Display name. Accounts created by the product-signals sweep inherit the signup default (e.g. 'Marcus-bazB50vSREnKSuGV'), which is why nobody recognises them in the list; this is how you correct one to the real company. Renaming touches the name column only — it never changes org_id, so the product link and every usage signal that hangs off it survive. Cannot be blank.",
+      ),
     status: z.enum(COMPANY_STATUSES as unknown as [string, ...string[]]).optional(),
     priority: z.enum(COMPANY_PRIORITIES as unknown as [string, ...string[]]).optional(),
     prep_status: z
@@ -4262,6 +4268,7 @@ export const updateCrmCompany = tool({
   }),
   execute: async ({
     id,
+    name,
     status,
     priority,
     prep_status,
@@ -4281,6 +4288,11 @@ export const updateCrmCompany = tool({
         client,
         id,
         {
+          // Same rule as createCrmCompany: the name is validated in
+          // updateCompany, which trims it and refuses an empty result. Present
+          // here only when the agent actually sent it, so a patch that fixes
+          // the notes does not carry a name key at all.
+          ...(name !== undefined ? { name } : {}),
           status: status as CompanyStatus | undefined,
           priority: priority as CompanyPriority | undefined,
           ...(prep_status !== undefined

@@ -240,6 +240,10 @@ export type UpdateCompanyInput = Partial<
   /** false restores an excluded account. Prefer archiveCompany() to exclude
    *  one — this exists so the same PATCH that edits an account can undo it. */
   archived?: boolean;
+  /** Set by the automated upsert paths in this module. A machine-supplied name
+   *  may still fill in one nobody has corrected, but it never overwrites a
+   *  human's rename and never claims the lock itself. */
+  nameFromAutomation?: boolean;
 };
 
 export type CompanyFilters = {
@@ -787,6 +791,20 @@ export async function createCompany(
   return company;
 }
 
+/**
+ * Reserved property key marking a name a human chose. Every automated writer
+ * re-announces whatever name its source carries — research re-discovery, the
+ * social monitor, the legacy pipeline import (all via upsertAccountByDomain)
+ * and the enrichment webhook, whose route always derives *some* name — so
+ * without this a corrected account silently reverts to
+ * "Marcus-bazB50vSREnKSuGV" the next time any of them runs.
+ *
+ * It lives in `properties` rather than its own column so this needs no
+ * migration, and the drawer renders only keys that have a field def
+ * (crm-page.tsx), so it never shows up as a custom property.
+ */
+export const MANUAL_NAME_PROPERTY = "__name_set_manually";
+
 export async function updateCompany(
   client: SupabaseClient,
   id: string,
@@ -797,10 +815,20 @@ export async function updateCompany(
   if (!prev) throw new Error("Company not found");
 
   const patch: Record<string, unknown> = {};
+  const nameLocked = prev.properties?.[MANUAL_NAME_PROPERTY] === true;
+  let claimNameLock = false;
   if ("name" in updates && updates.name !== undefined) {
     const name = trimOrNull(updates.name);
     if (!name) throw new Error("name cannot be empty");
-    patch.name = name;
+    if (updates.nameFromAutomation) {
+      // A machine may still name an account nobody has corrected — that is how
+      // a domain-derived placeholder becomes the real company. It just cannot
+      // undo a human's rename.
+      if (!nameLocked) patch.name = name;
+    } else {
+      patch.name = name;
+      claimNameLock = !nameLocked;
+    }
   }
   if ("domain" in updates) patch.domain = normalizeDomain(updates.domain);
   if ("orgId" in updates) patch.org_id = trimOrNull(updates.orgId);
@@ -865,6 +893,20 @@ export async function updateCompany(
       if (from !== to) propertyDiff.push({ key, from, to });
     }
   }
+
+  if (claimNameLock) {
+    // After the properties block above, so a patch that edits both a custom
+    // field and the name keeps the merged object rather than replacing it.
+    patch.properties = {
+      ...((patch.properties as Record<string, unknown> | undefined) ??
+        prev.properties),
+      [MANUAL_NAME_PROPERTY]: true,
+    };
+  }
+
+  // An automated name dropped by the lock can leave nothing at all to write,
+  // and PostgREST rejects an empty patch. Nothing changed, so say so.
+  if (Object.keys(patch).length === 0) return prev;
 
   const { data, error } = await client
     .from("crm_companies")
@@ -1016,7 +1058,10 @@ export async function upsertAccountByDomain(
   if (existing) {
     const patch: UpdateCompanyInput = {};
     if (existing.archivedAt) patch.archived = false;
-    if (input.name) patch.name = input.name;
+    if (input.name) {
+      patch.name = input.name;
+      patch.nameFromAutomation = true;
+    }
     if (input.website != null) patch.website = input.website;
     if (input.notes != null && !existing.notes) patch.notes = input.notes;
     if (input.priority != null) patch.priority = input.priority;
@@ -1529,7 +1574,10 @@ export async function upsertCompanyFromWebhook(
     // Merge: only fill fields that arrived in the payload; deep-merge enrichment.
     const merged: UpdateCompanyInput & { enrichment?: Record<string, unknown> } =
       {};
-    if (input.name) merged.name = input.name;
+    if (input.name) {
+      merged.name = input.name;
+      merged.nameFromAutomation = true;
+    }
     if (domain) merged.domain = domain;
     if (orgId) merged.orgId = orgId;
     if (input.industry != null) merged.industry = input.industry;
