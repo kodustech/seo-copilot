@@ -139,6 +139,13 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       const sourceBase =
         typeof body.source_base === "string" ? body.source_base.trim().replace(/\/+$/, "") : "";
       const key = typeof body.key === "string" ? body.key.trim() : "";
+      // What this site's content API accepts. Stored as typed and parsed by
+      // blogSchemaFor, so the form, the agent and the publisher all read one
+      // answer. Blank keeps whatever the channel already had.
+      const vocab = (value: unknown) =>
+        typeof value === "string" && value.trim() ? value.trim() : "";
+      const categories = vocab(body.categories);
+      const platforms = vocab(body.platforms);
 
       const httpsOnly = (value: string, field: string) => {
         if (!value) return null;
@@ -211,6 +218,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
           ...channel.channel_config,
           ...(apiUrl ? { blog_api_url: apiUrl } : {}),
           ...(sourceBase ? { blog_source_base: sourceBase } : {}),
+          ...(categories ? { blog_categories: categories } : {}),
+          ...(platforms ? { blog_platforms: platforms } : {}),
         },
       });
       return NextResponse.json({ connected: true, platform: "blog", channel: updated });

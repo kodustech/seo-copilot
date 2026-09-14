@@ -25,6 +25,7 @@ import {
   isOwnedCanonical,
   matchesOwnOriginal,
 } from "@/lib/influencer/url-guard";
+import { blogSchemaFor } from "@/lib/influencer/blog-schema";
 import { resolveBlogSourceBase } from "@/lib/influencer/publish";
 import { getChannelCredentialCipher } from "@/lib/influencer/credentials";
 import { addSkill, listSkills } from "@/lib/influencer/feedback";
@@ -194,6 +195,11 @@ export async function runInfluencerAgentSession({
   const model = await getModelForPersona(client, persona);
   const channels = await listChannelsForPersona(client, persona.id);
   const platformsWithChannel = new Set(channels.map((c) => c.platform));
+  // The farm's sites don't share a taxonomy, so queue_draft has to offer THIS
+  // persona's site's words. A static enum was one site's answer handed to all
+  // of them, and the site that disagreed 422'd every post it was ever sent.
+  const blogChannel = channels.find((c) => c.platform === "blog" && c.status !== "paused");
+  const blogSchema = blogSchemaFor(blogChannel ?? { channel_config: {} });
   const executor = getExecutor();
 
   const session = await createSession(client, {
@@ -382,8 +388,7 @@ export async function runInfluencerAgentSession({
       }),
       execute: async ({ slug }) => {
         await step({ kind: "tool_call", tool: "read_post", payload: { slug } });
-        const channel = channels.find((c) => c.platform === "blog" && c.status !== "paused");
-        const base = channel ? resolveBlogSourceBase(channel) : null;
+        const base = blogChannel ? resolveBlogSourceBase(blogChannel) : null;
         if (!base) {
           const msg =
             "This blog channel has no blog_source_base configured, so I can't read a post's source. Ask the operator to set it on the channel.";
@@ -707,7 +712,11 @@ export async function runInfluencerAgentSession({
 
     queue_draft: tool({
       description:
-        "Queue a finished piece of content. This is how your work reaches people. Call once per finished piece. For a blog post (platform 'blog', aicodereview.io): title 5-90 chars (aim ≤60 for SEO), description ≥20 chars, content ≥100 chars of markdown (NO H1 — the layout renders the title), and a category from best-of/alternatives/comparison/guide/explainer/review.",
+        "Queue a finished piece of content. This is how your work reaches people. Call once per finished piece. For a blog post (platform 'blog'): title 5-90 chars (aim ≤60 for SEO), description ≥20 chars, content ≥100 chars of markdown (NO H1 — the layout renders the title), and a category from " +
+        blogSchema.categories.join("/") +
+        (blogSchema.platforms
+          ? `. That blog is organised by platform: every post must also set blog_platform to one of ${blogSchema.platforms.join("/")} ("multi" when it genuinely covers several). A post without one has nowhere to appear and cannot publish.`
+          : "."),
       inputSchema: z.object({
         kind: z
           .enum(["post", "reply", "quote", "article", "crosspost"])
@@ -725,15 +734,24 @@ export async function runInfluencerAgentSession({
           .optional()
           .describe("Short SEO description (blog/article posts)"),
         category: z
-          .enum(["best-of", "alternatives", "comparison", "guide", "explainer", "review"])
+          .enum(blogSchema.categories as [string, ...string[]])
           .nullable()
           .optional()
-          .describe("Category for a blog post (aicodereview.io)"),
+          .describe("Category for a blog post, from the set this blog files posts under"),
+        blog_platform: z
+          .string()
+          .nullable()
+          .optional()
+          .describe(
+            blogSchema.platforms
+              ? `Blog posts only, and REQUIRED for this blog: which platform the post belongs to — one of ${blogSchema.platforms.join(", ")}. Use "multi" only when the piece really covers several, not as a default.`
+              : "Not used by this blog — leave it out.",
+          ),
         tags: z.array(z.string()).optional().describe("Tags for a blog/article post"),
         faq: z
           .array(z.object({ q: z.string(), a: z.string() }))
           .optional()
-          .describe("Optional FAQ entries for a blog post (aicodereview.io)"),
+          .describe("Optional FAQ entries for a blog post"),
         replaces_slug: z
           .string()
           .nullable()
@@ -777,7 +795,7 @@ export async function runInfluencerAgentSession({
             "Optionally attach an image to a social post. 'screenshot' captures a REAL page (a benchmark chart, a tool's UI, a tweet, a GitHub diff) — real evidence, on-brand. 'image_url' attaches a public image URL (e.g. an article's own image). Use it when a visual genuinely strengthens the post.",
           ),
       }),
-      execute: async ({ kind, platform, title, content, description, category, tags, faq, image, reply_to, canonical_url, replaces_slug, target_url }) => {
+      execute: async ({ kind, platform, title, content, description, category, blog_platform, tags, faq, image, reply_to, canonical_url, replaces_slug, target_url }) => {
         await step({ kind: "tool_call", tool: "queue_draft", payload: { kind, platform } });
         // Hard backpressure, enforced live against the running draft counter (not
         // a stale snapshot): 0 = queue is full, don't post; 1 = one post/shift.
@@ -843,6 +861,26 @@ export async function runInfluencerAgentSession({
         if (replaces && normalizedPlatform !== "blog") {
           await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "replaces_not_blog" } });
           return `replaces_slug only works on the blog — "${platform}" has no post to rewrite. Drop it, or queue this for the blog.`;
+        }
+        // A site organised by platform refuses a post that names none. Caught
+        // here so the model can fix it in the same breath: the publisher runs
+        // hours later, and a draft that fails there is just a dead row.
+        const blogPlatform =
+          typeof blog_platform === "string" ? blog_platform.trim().toLowerCase() : "";
+        // Judged against the channel this draft actually lands on. The tool's
+        // description had to be built from one site before the draft existed;
+        // the guard doesn't, and the publisher will judge this same channel.
+        const platformAxis =
+          normalizedPlatform === "blog" ? blogSchemaFor(channel).platforms : null;
+        if (platformAxis && !platformAxis.includes(blogPlatform)) {
+          await step({
+            kind: "tool_result",
+            tool: "queue_draft",
+            payload: { error: "blog_platform_missing", blog_platform },
+          });
+          return `This blog files every post under a platform, and ${
+            blogPlatform ? `"${blogPlatform}"` : "this draft names none"
+          } isn't one of them. Queue it again with blog_platform set to one of: ${platformAxis.join(", ")}.`;
         }
         const canonical = typeof canonical_url === "string" ? canonical_url.trim() : "";
         // Medium has no API and nothing is typed into it: it imports one of our
@@ -912,6 +950,9 @@ export async function runInfluencerAgentSession({
                 session_id: session.id,
                 ...(description ? { description } : {}),
                 ...(category ? { category } : {}),
+                ...(normalizedPlatform === "blog" && blogPlatform
+                  ? { blog_platform: blogPlatform }
+                  : {}),
                 ...(tags?.length ? { tags } : {}),
                 ...(faq?.length ? { faq } : {}),
                 ...(image?.url ? { image } : {}),

@@ -18,6 +18,7 @@ import {
   requiresDisclosure,
   sourceDiscloses,
 } from "@/lib/influencer/medium";
+import { blogSchemaFor, resolveBlogCategory } from "@/lib/influencer/blog-schema";
 import { decryptPersonaKey } from "@/lib/crypto/persona-secrets";
 import { getSupabaseServiceClient } from "@/lib/supabase-server";
 
@@ -596,13 +597,17 @@ function resolveBlogApiKeyFromEnv(channel: PersonaChannel): string {
   return key;
 }
 
-async function publishToBlog(
-  client: SupabaseClient,
+/**
+ * The body of a content-API call, built from a draft and the site it is going
+ * to. Exported because the payload's shape is the whole contract with a farm
+ * site, and the one thing worth testing against that site's own validator —
+ * 33 posts died on a field this function forgot, and none of it was visible
+ * from inside publishToBlog.
+ */
+export function buildBlogPayload(
   activity: PersonaActivity,
   channel: PersonaChannel,
-): Promise<PublishOutcome> {
-  const blogApiUrl = resolveBlogApiUrl(channel);
-  const key = await resolveBlogApiKey(client, channel);
+): Record<string, unknown> {
   const meta = activity.content_meta ?? {};
   const asString = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
   const tags = sanitizeTags(meta.tags);
@@ -615,30 +620,45 @@ async function publishToBlog(
       )
     : undefined;
 
-  // Categories the aicodereview.io API accepts; anything else 422s.
-  const BLOG_CATEGORIES = new Set([
-    "best-of",
-    "alternatives",
-    "comparison",
-    "guide",
-    "explainer",
-    "review",
-  ]);
-  const category = asString(meta.category);
+  // What THIS site accepts — the farm's sites do not share a taxonomy.
+  const schema = blogSchemaFor(channel);
+  // A site with a second axis requires it: mergerequests.dev files every post
+  // under a forge, and a post that names none has nowhere to appear. Refused
+  // here, in our own words, rather than shipped to collect the site's 422 —
+  // the draft is fixable, and "must be one of …" is the only useful half of it.
+  const blogPlatform = asString(meta.blog_platform)?.toLowerCase();
+  if (schema.platforms && !(blogPlatform && schema.platforms.includes(blogPlatform))) {
+    throw new Error(
+      `${resolveBlogApiUrl(channel)} files every post under a platform, and this draft names ${
+        blogPlatform ? `"${blogPlatform}"` : "none"
+      }. Requeue it with blog_platform set to one of: ${schema.platforms.join(", ")}.`,
+    );
+  }
   // A revision is the same call with the slug it replaces: the content API
   // refuses an existing slug unless overwrite says so, and the site is
   // git-backed, so a rewrite lands as a commit over the old file rather than
   // as a second page competing with the first.
   const replaces = asString(meta.replaces_slug);
-  const payload = {
+  return {
     title: activity.title || activity.content.slice(0, 80),
     description: asString(meta.description),
-    category: category && BLOG_CATEGORIES.has(category) ? category : "explainer",
+    category: resolveBlogCategory(schema, asString(meta.category)),
     tags: tags?.length ? tags : undefined,
     content: activity.content, // markdown, no H1 (layout renders the title)
     faq: faq?.length ? faq : undefined,
+    ...(blogPlatform ? { platform: blogPlatform } : {}),
     ...(replaces ? { slug: replaces, overwrite: true } : {}),
   };
+}
+
+async function publishToBlog(
+  client: SupabaseClient,
+  activity: PersonaActivity,
+  channel: PersonaChannel,
+): Promise<PublishOutcome> {
+  const blogApiUrl = resolveBlogApiUrl(channel);
+  const key = await resolveBlogApiKey(client, channel);
+  const payload = buildBlogPayload(activity, channel);
 
   const response = await fetch(`${blogApiUrl}/api/posts`, {
     method: "POST",
