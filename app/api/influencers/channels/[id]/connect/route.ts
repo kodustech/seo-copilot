@@ -19,6 +19,7 @@ import {
   CONTENT_KEY_SENTINEL,
   CONTENT_KEY_VAULT,
   DEFAULT_BLOG_API_URL,
+  blogConnectNeedsKey,
   blogDestination,
   findBlogKeyClash,
   isDefaultBlogSite,
@@ -175,8 +176,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       // endpoint is how an operator edits a connected channel's taxonomy, and
       // demanding the key back to change a word would either block the edit or
       // teach people to disconnect first — which drops the key for real.
-      const holdsOwnKey = channel.credentials_ref?.trim() === CONTENT_KEY_VAULT;
-      if (!key && !holdsOwnKey) {
+      // Which it may skip only by already holding its own, for this same site —
+      // see blogConnectNeedsKey, where both halves of that are decided.
+      if (!key && blogConnectNeedsKey(channel, destination)) {
         if (!isDefaultBlogSite(destination)) {
           return NextResponse.json(
             {

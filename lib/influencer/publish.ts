@@ -526,6 +526,35 @@ export function sameBlogSite(a: string, b: string): boolean {
 }
 
 /**
+ * Whether a connect request must carry a key, or may rely on the one the
+ * channel already keeps. This endpoint is also how an operator edits a
+ * connected channel's taxonomy, and asking for the key back to change a word
+ * would teach people to disconnect first — which drops the key for real.
+ *
+ * Two conditions, and the second is the load-bearing one. The channel must
+ * hold a key of its OWN: the vault marker, or a per-site env name, never the
+ * sentinel, which is the shared key and belongs to the default site. And the
+ * destination must not be moving, because resolveBlogApiKey finds that key by
+ * the marker rather than by host — so a request that repointed the channel and
+ * skipped this check would send one site's writer credential to whatever host
+ * it named. Changing site costs a key, exactly as it always did.
+ */
+export function blogConnectNeedsKey(
+  channel: Pick<PersonaChannel, "credentials_ref" | "channel_config">,
+  destination: string,
+): boolean {
+  const ref = channel.credentials_ref?.trim() ?? "";
+  const holdsOwnKey =
+    ref === CONTENT_KEY_VAULT || (ref !== CONTENT_KEY_SENTINEL && isAllowedContentEnvName(ref));
+  if (!holdsOwnKey) return true;
+  const stored =
+    typeof channel.channel_config.blog_api_url === "string"
+      ? channel.channel_config.blog_api_url
+      : "";
+  return !sameBlogSite(destination, stored);
+}
+
+/**
  * Which env var holds this blog channel's key, or null when we have no key we
  * are willing to send it. Both the publisher and the shift's actionability
  * check go through here: a gate that answers differently from the resolver
