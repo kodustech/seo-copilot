@@ -546,16 +546,6 @@ function isVerified(props: Record<string, unknown> | null): boolean {
   return ["primary", "yes", "sim", "true"].includes(v.trim().toLowerCase());
 }
 
-async function hasVerifiedField(client: SupabaseClient): Promise<boolean> {
-  const { data, error } = await client
-    .from("crm_field_defs")
-    .select("key")
-    .eq("key", ICP_VERIFIED_FIELD)
-    .limit(1);
-  if (error) return false;
-  return (data ?? []).length > 0;
-}
-
 async function coldOutbound(
   client: SupabaseClient,
   periodStart: string,
@@ -901,14 +891,13 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     }
   };
 
-  const [search, llm, signups, companies, changes, verifiedField, cold, sh, paid] =
+  const [search, llm, signups, companies, changes, cold, sh, paid] =
     await Promise.all([
       settle("search", searchNodes(periodStart, periodEnd)),
       settle("llm", llmReferralNode(periodStart, periodEnd)),
       settle("signups", signupRows(periodStart, nextStart)),
       settle("crm", loadCompanies(client)),
       settle("crm_activities", loadActivities(client, periodStart, nextStart)),
-      settle("crm_field", hasVerifiedField(client)),
       settle("outbound", coldOutbound(client, periodStart, nextStart)),
       settle("telemetry", selfHostedInstances(periodStart, nextStart)),
       settle("billing", selfServePaid(periodStart, nextStart)),
@@ -1016,8 +1005,8 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   // Reuse the CRM scan already loaded above. A legacy field definition alone
   // is not enough to switch away from the product proxy; at least one account
   // must contain a recognized verified value.
-  const verifiedMeasured = Boolean(
-    verifiedField || crm.some((company) => isVerified(company.properties)),
+  const verifiedMeasured = crm.some((company) =>
+    isVerified(company.properties),
   );
   nodes.icp = node(
     "icp",
