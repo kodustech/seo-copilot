@@ -534,7 +534,7 @@ async function loadActivities(
 
 function isVerified(props: Record<string, unknown> | null): boolean {
   const v = props?.[ICP_VERIFIED_FIELD];
-  return v === true || v === "true" || v === "yes" || v === "sim";
+  return v === "primary";
 }
 
 async function hasVerifiedField(client: SupabaseClient): Promise<boolean> {

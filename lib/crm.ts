@@ -61,6 +61,17 @@ export const COMPANY_STATUSES: CompanyStatus[] = [
   "lost",
 ];
 
+/** Relationship states that can still create work. Product tiers are kept as
+ * history on closed records, so they must never decide this set. */
+export const COMPANY_WORKING_STATUSES: CompanyStatus[] = [
+  "lead",
+  "engaged",
+  "meeting",
+  "qualified",
+  "poc",
+  "negotiation",
+];
+
 export const COMPANY_PRIORITIES: CompanyPriority[] = ["high", "medium", "low"];
 
 /** How the account runs Kodus. Cloud is set by the product-signals sweep;
@@ -261,6 +272,9 @@ export type CompanyFilters = {
   source?: CompanySource;
   /** The review queue is a filter on this: prepStatus: ["not_started", "enriched"]. */
   prepStatus?: CompanyPrep | CompanyPrep[];
+  /** The operational queue, not CRM history. Closed accounts, customers and
+   *  parked accounts are excluded even when a machine-owned tier remains. */
+  workingSet?: boolean;
   search?: string;
   staleOnly?: boolean;
   /** Archived accounts are excluded everywhere by default — they are the ones
@@ -669,6 +683,11 @@ export async function listCompanies(
     .order("last_activity_at", { ascending: false, nullsFirst: false });
 
   if (!filters.includeArchived) query = query.is("archived_at", null);
+  if (filters.workingSet) {
+    query = query
+      .in("status", COMPANY_WORKING_STATUSES)
+      .neq("prep_status", "parked");
+  }
   if (filters.status) {
     if (Array.isArray(filters.status)) query = query.in("status", filters.status);
     else query = query.eq("status", filters.status);
@@ -863,7 +882,7 @@ export async function updateCompany(
     patch.archived_at = updates.archived ? new Date().toISOString() : null;
   }
 
-  let propertyDiff: {
+  const propertyDiff: {
     key: string;
     from: unknown;
     to: unknown;
@@ -1896,13 +1915,7 @@ export async function getCompanyStats(
   });
   const byStatus: Record<string, number> = {};
   const byPrep: Record<string, number> = {};
-  const openStatuses = new Set<CompanyStatus>([
-    "lead",
-    "engaged",
-    "qualified",
-    "poc",
-    "negotiation",
-  ]);
+  const openStatuses = new Set<CompanyStatus>(COMPANY_WORKING_STATUSES);
   let open = 0;
   let stale = 0;
   for (const c of companies) {

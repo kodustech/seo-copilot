@@ -3920,8 +3920,12 @@ const listSocialMentions = tool({
 
 export const listCrmCompanies = tool({
   description:
-    "List/filter companies in the Company CRM. Filter by status, owner, outbound tier (t0=open decision window, t1=connected git recently, t2=signed up never connected, t3=older base, customer=paying), prep gate (only 'ready' accounts may be enrolled), search text, or only accounts that are idle past their status SLA (stale_only). Every row carries its trigger — the reason behind the tier, which is what decides the message — and in_sequences, the cadences the account is in right now (empty = free to enrol; non-empty is why an enroll call would skip it).",
+    "List/filter companies in the Company CRM. Defaults to the working set: open commercial statuses with parked, customer, lost and churned accounts excluded. Pass scope='all' only for historical coverage or data-quality audits. Filter by status, owner, outbound tier (a timing signal, not ICP proof), prep gate, search text, or only accounts idle past their status SLA. Every row carries ICP fit, reopen trigger and active sequence state.",
   inputSchema: z.object({
+    scope: z
+      .enum(["working", "all"])
+      .optional()
+      .describe("working (default) excludes parked/customer/lost/churned; all returns CRM history"),
     status: z
       .enum(COMPANY_STATUSES as unknown as [string, ...string[]])
       .optional()
@@ -3962,6 +3966,7 @@ export const listCrmCompanies = tool({
     limit: z.number().optional().describe("Max rows (default 50)"),
   }),
   execute: async ({
+    scope,
     status,
     tier,
     trigger,
@@ -3976,6 +3981,7 @@ export const listCrmCompanies = tool({
     try {
       const client = getSupabaseServiceClient();
       const companies = await listCompanies(client, {
+        workingSet: scope !== "all",
         status: status as CompanyStatus | undefined,
         tier,
         trigger,
@@ -4003,6 +4009,8 @@ export const listCrmCompanies = tool({
           // no idea which message belongs to it.
           trigger: c.trigger,
           prep_status: c.prepStatus,
+          icp_fit: c.properties.icp_fit ?? "unknown",
+          reopen_trigger: c.properties.reopen_trigger ?? null,
           // Which cadences the account is in right now (active or paused).
           // Empty means free to enrol; a non-empty list is why an enroll call
           // would report this account as skipped. Without it a caller routing
