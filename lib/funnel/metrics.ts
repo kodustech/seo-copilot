@@ -15,6 +15,7 @@ import {
   ICP_MIN_AUTHORS,
   ICP_MIN_MEMBERS,
   ICP_VERIFIED_FIELD,
+  LEGACY_ICP_VERIFIED_FIELD,
   LLM_ALLOWED_MEDIUMS,
   LLM_SOURCE_REGEX,
   MAX_BOTTLENECKS,
@@ -533,15 +534,18 @@ async function loadActivities(
 }
 
 function isVerified(props: Record<string, unknown> | null): boolean {
-  const v = props?.[ICP_VERIFIED_FIELD];
-  return v === "primary";
+  const v =
+    props?.[ICP_VERIFIED_FIELD] ?? props?.[LEGACY_ICP_VERIFIED_FIELD];
+  if (v === true) return true;
+  if (typeof v !== "string") return false;
+  return ["primary", "yes", "sim", "true"].includes(v.trim().toLowerCase());
 }
 
 async function hasVerifiedField(client: SupabaseClient): Promise<boolean> {
   const { data, error } = await client
     .from("crm_field_defs")
     .select("key")
-    .eq("key", ICP_VERIFIED_FIELD)
+    .in("key", [ICP_VERIFIED_FIELD, LEGACY_ICP_VERIFIED_FIELD])
     .limit(1);
   if (error) return false;
   return (data ?? []).length > 0;
@@ -1017,8 +1021,8 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
         ? `Produto (proxy) + CRM campo ${ICP_VERIFIED_FIELD}`
         : "Produto (proxy: membros da org no git ou autores de PR)",
       definition: verifiedMeasured
-        ? `Proxy: ≥ ${ICP_MIN_MEMBERS} members in the git org or ≥ ${ICP_MIN_AUTHORS} PR authors. Verified: someone checked LinkedIn and set ${ICP_VERIFIED_FIELD} = yes in the CRM.`
-        : `Proxy: ≥ ${ICP_MIN_MEMBERS} membros na org do git ou ≥ ${ICP_MIN_AUTHORS} autores de PR. Pra contar verificado, crie o campo ${ICP_VERIFIED_FIELD} (yes/no) no CRM e marque depois de conferir no LinkedIn.`,
+        ? `Proxy: ≥ ${ICP_MIN_MEMBERS} members in the git org or ≥ ${ICP_MIN_AUTHORS} PR authors. Verified: someone checked LinkedIn and set ${ICP_VERIFIED_FIELD} = primary in the CRM. Legacy values in ${LEGACY_ICP_VERIFIED_FIELD} remain supported.`
+        : `Proxy: ≥ ${ICP_MIN_MEMBERS} membros na org do git ou ≥ ${ICP_MIN_AUTHORS} autores de PR. Para contar como verificado, crie o campo ${ICP_VERIFIED_FIELD} com a opção primary e marque depois de conferir no LinkedIn.`,
       columns: [...signupCols, "crm_status", "verified"],
       rows: icpProxy.map((s) => ({
         ...toRow(s),
