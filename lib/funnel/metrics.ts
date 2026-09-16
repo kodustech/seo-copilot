@@ -553,13 +553,7 @@ async function hasVerifiedField(client: SupabaseClient): Promise<boolean> {
     .eq("key", ICP_VERIFIED_FIELD)
     .limit(1);
   if (error) return false;
-  if ((data ?? []).length > 0) return true;
-
-  // An old field definition alone does not prove that its vocabulary was ever
-  // used. Only switch away from the product proxy when a recognized legacy
-  // value exists on an account.
-  const companies = await loadCompanies(client);
-  return companies.some((company) => isVerified(company.properties));
+  return (data ?? []).length > 0;
 }
 
 async function coldOutbound(
@@ -1019,7 +1013,12 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   const crm = companies ?? [];
   const byOrg = new Map(crm.filter((c) => c.org_id).map((c) => [c.org_id as string, c]));
   const verifiedRows = icpProxy.filter((s) => isVerified(byOrg.get(s.org_id)?.properties ?? null));
-  const verifiedMeasured = Boolean(verifiedField);
+  // Reuse the CRM scan already loaded above. A legacy field definition alone
+  // is not enough to switch away from the product proxy; at least one account
+  // must contain a recognized verified value.
+  const verifiedMeasured = Boolean(
+    verifiedField || crm.some((company) => isVerified(company.properties)),
+  );
   nodes.icp = node(
     "icp",
     `ICP (${ICP_MIN_MEMBERS}+ devs)`,
