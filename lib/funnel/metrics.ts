@@ -534,8 +534,13 @@ async function loadActivities(
 }
 
 function isVerified(props: Record<string, unknown> | null): boolean {
+  const primary = props?.[ICP_VERIFIED_FIELD];
+  const primaryIsBlank =
+    typeof primary === "string" && primary.trim() === "";
   const v =
-    props?.[ICP_VERIFIED_FIELD] ?? props?.[LEGACY_ICP_VERIFIED_FIELD];
+    primary === null || primary === undefined || primaryIsBlank
+      ? props?.[LEGACY_ICP_VERIFIED_FIELD]
+      : primary;
   if (v === true) return true;
   if (typeof v !== "string") return false;
   return ["primary", "yes", "sim", "true"].includes(v.trim().toLowerCase());
@@ -545,10 +550,16 @@ async function hasVerifiedField(client: SupabaseClient): Promise<boolean> {
   const { data, error } = await client
     .from("crm_field_defs")
     .select("key")
-    .in("key", [ICP_VERIFIED_FIELD, LEGACY_ICP_VERIFIED_FIELD])
+    .eq("key", ICP_VERIFIED_FIELD)
     .limit(1);
   if (error) return false;
-  return (data ?? []).length > 0;
+  if ((data ?? []).length > 0) return true;
+
+  // An old field definition alone does not prove that its vocabulary was ever
+  // used. Only switch away from the product proxy when a recognized legacy
+  // value exists on an account.
+  const companies = await loadCompanies(client);
+  return companies.some((company) => isVerified(company.properties));
 }
 
 async function coldOutbound(
