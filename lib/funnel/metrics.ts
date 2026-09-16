@@ -15,6 +15,7 @@ import {
   ICP_MIN_AUTHORS,
   ICP_MIN_MEMBERS,
   ICP_VERIFIED_FIELD,
+  LEGACY_ICP_VERIFIED_FIELD,
   LLM_ALLOWED_MEDIUMS,
   LLM_SOURCE_REGEX,
   MAX_BOTTLENECKS,
@@ -533,18 +534,16 @@ async function loadActivities(
 }
 
 function isVerified(props: Record<string, unknown> | null): boolean {
-  const v = props?.[ICP_VERIFIED_FIELD];
-  return v === true || v === "true" || v === "yes" || v === "sim";
-}
-
-async function hasVerifiedField(client: SupabaseClient): Promise<boolean> {
-  const { data, error } = await client
-    .from("crm_field_defs")
-    .select("key")
-    .eq("key", ICP_VERIFIED_FIELD)
-    .limit(1);
-  if (error) return false;
-  return (data ?? []).length > 0;
+  const primary = props?.[ICP_VERIFIED_FIELD];
+  const primaryIsBlank =
+    typeof primary === "string" && primary.trim() === "";
+  const v =
+    primary === null || primary === undefined || primaryIsBlank
+      ? props?.[LEGACY_ICP_VERIFIED_FIELD]
+      : primary;
+  if (v === true) return true;
+  if (typeof v !== "string") return false;
+  return ["primary", "yes", "sim", "true"].includes(v.trim().toLowerCase());
 }
 
 async function coldOutbound(
@@ -892,14 +891,13 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     }
   };
 
-  const [search, llm, signups, companies, changes, verifiedField, cold, sh, paid] =
+  const [search, llm, signups, companies, changes, cold, sh, paid] =
     await Promise.all([
       settle("search", searchNodes(periodStart, periodEnd)),
       settle("llm", llmReferralNode(periodStart, periodEnd)),
       settle("signups", signupRows(periodStart, nextStart)),
       settle("crm", loadCompanies(client)),
       settle("crm_activities", loadActivities(client, periodStart, nextStart)),
-      settle("crm_field", hasVerifiedField(client)),
       settle("outbound", coldOutbound(client, periodStart, nextStart)),
       settle("telemetry", selfHostedInstances(periodStart, nextStart)),
       settle("billing", selfServePaid(periodStart, nextStart)),
@@ -1004,7 +1002,12 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   const crm = companies ?? [];
   const byOrg = new Map(crm.filter((c) => c.org_id).map((c) => [c.org_id as string, c]));
   const verifiedRows = icpProxy.filter((s) => isVerified(byOrg.get(s.org_id)?.properties ?? null));
-  const verifiedMeasured = Boolean(verifiedField);
+  // Reuse the CRM scan already loaded above. A legacy field definition alone
+  // is not enough to switch away from the product proxy; at least one account
+  // must contain a recognized verified value.
+  const verifiedMeasured = crm.some((company) =>
+    isVerified(company.properties),
+  );
   nodes.icp = node(
     "icp",
     `ICP (${ICP_MIN_MEMBERS}+ devs)`,
@@ -1017,8 +1020,8 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
         ? `Produto (proxy) + CRM campo ${ICP_VERIFIED_FIELD}`
         : "Produto (proxy: membros da org no git ou autores de PR)",
       definition: verifiedMeasured
-        ? `Proxy: ≥ ${ICP_MIN_MEMBERS} members in the git org or ≥ ${ICP_MIN_AUTHORS} PR authors. Verified: someone checked LinkedIn and set ${ICP_VERIFIED_FIELD} = yes in the CRM.`
-        : `Proxy: ≥ ${ICP_MIN_MEMBERS} membros na org do git ou ≥ ${ICP_MIN_AUTHORS} autores de PR. Pra contar verificado, crie o campo ${ICP_VERIFIED_FIELD} (yes/no) no CRM e marque depois de conferir no LinkedIn.`,
+        ? `Proxy: ≥ ${ICP_MIN_MEMBERS} members in the git org or ≥ ${ICP_MIN_AUTHORS} PR authors. Verified: someone checked LinkedIn and set ${ICP_VERIFIED_FIELD} = primary in the CRM. Legacy values in ${LEGACY_ICP_VERIFIED_FIELD} remain supported.`
+        : `Proxy: ≥ ${ICP_MIN_MEMBERS} membros na org do git ou ≥ ${ICP_MIN_AUTHORS} autores de PR. Para contar como verificado, crie o campo ${ICP_VERIFIED_FIELD} com a opção primary e marque depois de conferir no LinkedIn.`,
       columns: [...signupCols, "crm_status", "verified"],
       rows: icpProxy.map((s) => ({
         ...toRow(s),

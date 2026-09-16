@@ -716,6 +716,7 @@ export function CrmPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [statusFilter, setStatusFilter] = useState<CompanyStatus | "all">("all");
+  const [recordScope, setRecordScope] = useState<"working" | "all">("working");
   const [tierFilter, setTierFilter] = useState<string>("all");
   // Parked accounts remain searchable, but they are not work. Keep them out of
   // the default page so the first screen answers "what can I act on?".
@@ -788,6 +789,7 @@ export function CrmPage() {
     setError(null);
     try {
       const params = new URLSearchParams();
+      if (recordScope === "working") params.set("workingSet", "true");
       if (statusFilter !== "all") params.set("status", statusFilter);
       if (tierFilter !== "all") params.set("tier", tierFilter);
       // "todo" is the review queue: the two states nobody has judged yet.
@@ -819,7 +821,7 @@ export function CrmPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, statusFilter, tierFilter, prepFilter, channelFilter, deploymentFilter, ownerFilter, staleOnly, search, authFetch]);
+  }, [token, recordScope, statusFilter, tierFilter, prepFilter, channelFilter, deploymentFilter, ownerFilter, staleOnly, search, authFetch]);
 
   useEffect(() => {
     void load();
@@ -919,10 +921,10 @@ export function CrmPage() {
 
       {/* Stat tiles */}
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatTile label="Accounts" value={stats.total} />
+        <StatTile label="Retained records" value={stats.total} />
         <StatTile label="Customers" value={stats.byStatus.customer ?? 0} accent="emerald" />
         <StatTile
-          label="Active pipeline"
+          label="Working set"
           value={stats.open}
           accent="sky"
         />
@@ -947,6 +949,18 @@ export function CrmPage() {
             className="h-8 w-64 border-white/10 bg-neutral-900 pl-8 text-sm"
           />
         </div>
+        <Select
+          value={recordScope}
+          onValueChange={(v) => setRecordScope(v as "working" | "all")}
+        >
+          <SelectTrigger className="h-8 w-36 border-white/10 bg-neutral-900 text-sm">
+            <SelectValue placeholder="Record scope" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="working">Working set</SelectItem>
+            <SelectItem value="all">All records</SelectItem>
+          </SelectContent>
+        </Select>
         <Select
           value={statusFilter}
           onValueChange={(v) => setStatusFilter(v as CompanyStatus | "all")}

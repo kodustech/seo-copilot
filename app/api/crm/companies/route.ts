@@ -54,9 +54,10 @@ export async function GET(req: Request) {
     // Comma-separated so the review queue ("raw,enriched") is one request.
     const prepStatus = url.searchParams.get("prepStatus");
     const staleOnly = url.searchParams.get("staleOnly") === "true";
+    const workingSet = url.searchParams.get("workingSet") === "true";
     const limit = Number(url.searchParams.get("limit")) || 300;
 
-    const filters: CompanyFilters = { limit, staleOnly };
+    const filters: CompanyFilters = { limit, staleOnly, workingSet };
     if (status && STATUS_SET.has(status)) filters.status = status as CompanyStatus;
     if (priority && PRIORITY_SET.has(priority))
       filters.priority = priority as CompanyPriority;

@@ -82,7 +82,8 @@ export const ICP_MIN_MEMBERS = 20;
 export const ICP_MIN_AUTHORS = 10;
 
 /** CRM custom field a human sets after checking the company on LinkedIn. */
-export const ICP_VERIFIED_FIELD = "icp_verified";
+export const ICP_VERIFIED_FIELD = "icp_fit";
+export const LEGACY_ICP_VERIFIED_FIELD = "icp_verified";
 
 /** CRM statuses that mean "opportunity". */
 export const OPPORTUNITY_STATUSES = ["qualified", "poc", "negotiation"] as const;
