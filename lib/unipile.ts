@@ -1043,9 +1043,21 @@ async function cachedLinkedInAccounts(): Promise<UnipileAccount[]> {
   return accounts;
 }
 
+/**
+ * Our own profile slug, per account, once.
+ *
+ * Only consulted when the account payload arrives without
+ * `connection_params.im.publicIdentifier`. Memoised because identity is
+ * resolved once per post in a harvest and once per search: without this, the
+ * fallback would spend an account call every time to fetch a value that does
+ * not change.
+ */
+let selfSlugCache = new Map<string, string | null>();
+
 /** Forget the cached account list. For trusted callers only — see below. */
 export function resetUnipileAccountsCache(): void {
   accountsCache = null;
+  selfSlugCache = new Map();
 }
 
 // Two throttles, deliberately not one. Sharing a counter would let the public
@@ -1157,17 +1169,41 @@ export async function linkedInAccountIdentity(
   }
 
   // The slug comes from `connection_params.im.publicIdentifier`, documented on
-  // the LinkedIn account object. There is deliberately no fallback: `username`
-  // holds the login identifier on credential-linked accounts, so treating it
-  // as a vanity would compare us against somebody else's slug, and asking the
-  // users endpoint would spend an account call on every search to recover a
-  // field this payload already carries. When the slug is absent,
-  // self-exclusion still runs on the member id, which is the field the search
-  // response usually has.
+  // the LinkedIn account object. It is optional there, so when it is missing
+  // the users endpoint is asked once per account and the answer memoised.
+  // `username` is deliberately not used as a fallback: it holds the login
+  // identifier on credential-linked accounts, and promoting that to a vanity
+  // would compare us against whoever really owns that slug.
+  const resolvedAccountId = wanted || match?.id || null;
+  let publicIdentifier = match?.publicIdentifier ?? null;
+  if (!publicIdentifier && resolvedAccountId && match?.providerUserId) {
+    if (selfSlugCache.has(resolvedAccountId)) {
+      publicIdentifier = selfSlugCache.get(resolvedAccountId) ?? null;
+    } else {
+      try {
+        const self = await getUnipileUserProfile({
+          accountId: resolvedAccountId,
+          identifier: match.providerUserId,
+        });
+        publicIdentifier = self?.publicIdentifier ?? null;
+      } catch (err) {
+        // Same contract as the account list above: not recognising ourselves
+        // is worth less than not harvesting at all.
+        console.warn(
+          `[unipile] could not resolve our own profile slug (${err instanceof Error ? err.message : String(err)}); self-exclusion falls back to the member id.`,
+        );
+        publicIdentifier = null;
+      }
+      // Cached either way, including the null: a failed lookup that repeats on
+      // every post is the cost this cache exists to avoid.
+      selfSlugCache.set(resolvedAccountId, publicIdentifier);
+    }
+  }
+
   return {
-    accountId: wanted || match?.id || null,
+    accountId: resolvedAccountId,
     providerUserId: match?.providerUserId ?? null,
-    publicIdentifier: match?.publicIdentifier ?? null,
+    publicIdentifier,
   };
 }
 

@@ -324,6 +324,42 @@ describe("linkedInAccountIdentity", () => {
     expect(identity.publicIdentifier).toBe("gabrielmalinosqui");
   });
 
+  it("asks the users endpoint once when the account has no slug", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes("/api/v1/users/")) {
+        return jsonResponse({
+          provider_id: "ACoAAself",
+          public_identifier: "gabrielmalinosqui",
+        });
+      }
+      return jsonResponse({
+        items: [
+          {
+            id: "acc-li",
+            type: "LINKEDIN",
+            connection_params: {
+              im: { id: "ACoAAself", username: "gabriel@kodus.io" },
+            },
+          },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = await linkedInAccountIdentity();
+    const second = await linkedInAccountIdentity();
+
+    expect(first.publicIdentifier).toBe("gabrielmalinosqui");
+    expect(second.publicIdentifier).toBe("gabrielmalinosqui");
+    // The profile lookup is memoised: identity is resolved once per post in a
+    // harvest, and repeating this call would spend the account budget the
+    // rate limiter exists to protect.
+    const profileCalls = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).includes("/api/v1/users/"),
+    );
+    expect(profileCalls).toHaveLength(1);
+  });
+
   it("never treats the login identifier as our slug", async () => {
     // `username` is the login on credential-linked accounts. Promoting it to a
     // slug would compare us against a stranger who happens to own that vanity,
