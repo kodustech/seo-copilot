@@ -330,6 +330,12 @@ async function publishToDevto(
   activity: PersonaActivity,
   channel: PersonaChannel,
 ): Promise<PublishOutcome> {
+  // If a previous attempt already recorded the remote id, a retry must never
+  // POST another article. This also makes the adapter safe for callers that
+  // re-run a claimed activity after a transient failure.
+  if (activity.external_id) {
+    return { external_id: activity.external_id, external_url: activity.external_url };
+  }
   const apiKey = await resolveDevtoApiKey(client, channel);
 
   const canonicalUrl =
@@ -691,7 +697,17 @@ export function buildBlogPayload(
     // frontmatter field, so sending it is at best ignored and at worst a 422
     // from a stricter validator than the two we have.
     ...(schema.platforms && blogPlatform ? { platform: blogPlatform } : {}),
-    ...(replaces ? { slug: replaces, overwrite: true } : {}),
+    ...(replaces
+      ? {
+          slug: replaces,
+          overwrite: true,
+          // The content API uses this to render "Last updated" and to produce
+          // dateModified in the article schema. It is deliberately generated
+          // at publish time so a delayed draft does not claim a stale revision
+          // date, and the agent cannot forget it.
+          updated_at: new Date().toISOString(),
+        }
+      : {}),
   };
 }
 
