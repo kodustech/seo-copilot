@@ -81,6 +81,6 @@ describe("validateLongFormContent", () => {
     });
 
     expect(issues.map((issue) => issue.code)).toContain("long_form_sources_missing");
-    expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
   });
 });

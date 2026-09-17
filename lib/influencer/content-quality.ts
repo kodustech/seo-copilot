@@ -5,6 +5,7 @@ export type ContentQualityIssue = {
 
 const LONG_FORM_PLATFORMS = new Set(["blog", "devto", "hackernoon"]);
 const MARKDOWN_LINK = /(?<!!)\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi;
+const MARKDOWN_IMAGE = /!\[[^\]]*\]\([^)]*\)/g;
 const RAW_URL = /https?:\/\/[^\s)]+/gi;
 const WEAK_ANCHORS = new Set(["here", "source", "link", "click here"]);
 
@@ -76,7 +77,8 @@ export function validateLongFormContent(input: {
   }
 
   const linkedUrls = new Set(links.map(({ url }) => url));
-  const unlinkedUrls = (content.match(RAW_URL) ?? []).filter((url) => !linkedUrls.has(url));
+  const scannableContent = content.replace(MARKDOWN_IMAGE, "");
+  const unlinkedUrls = (scannableContent.match(RAW_URL) ?? []).filter((url) => !linkedUrls.has(url));
   if (unlinkedUrls.length) {
     issues.push({
       code: "long_form_raw_url",
