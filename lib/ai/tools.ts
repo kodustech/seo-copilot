@@ -7502,6 +7502,86 @@ export const sequenceCompleteTask = tool({
 // LinkedIn comment harvesting
 // ---------------------------------------------------------------------------
 
+export const linkedinSearchPosts = tool({
+  description:
+    "Search LinkedIn posts by keyword through the connected account, and get each post's author, headline, profile URL, date and text back in one call. Free: it spends LinkedIn account calls instead of paid Exa searches, which is what linkedinFindPosts does. Use it to build a queue of people describing a problem in their own words. Read-only, writes nothing. Every result carries voice.ownTeam (the author wrote about their own team) and voice.vendorish (reads like selling), so a queue can drop marketing without opening profiles. One search is one account call plus one per extra page, and it runs inside the same paced budget as the commenter harvest.",
+  inputSchema: z.object({
+    keywords: z
+      .string()
+      .min(2)
+      .describe(
+        "LinkedIn post search query, e.g. 'code review bottleneck' or 'revisão de código IA'. Quote a phrase to require it.",
+      ),
+    datePosted: z
+      .enum(["past_day", "past_week", "past_month"])
+      .optional()
+      .describe("Recency filter. Omit for no limit."),
+    sortBy: z
+      .enum(["relevance", "date"])
+      .optional()
+      .describe("LinkedIn's ordering. Defaults to relevance on their side."),
+    authorKeywords: z
+      .string()
+      .optional()
+      .describe(
+        "Restrict to authors matching these words, e.g. 'engineering manager'. Applied by LinkedIn, not by us.",
+      ),
+    maxResults: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .default(25)
+      .describe("Max posts to return (default 25). Each page is an account call."),
+    accountId: z
+      .string()
+      .optional()
+      .describe("Unipile account id. Defaults to the connected LinkedIn account."),
+  }),
+  execute: async ({
+    keywords,
+    datePosted,
+    sortBy,
+    authorKeywords,
+    maxResults,
+    accountId,
+  }: {
+    keywords: string;
+    datePosted?: "past_day" | "past_week" | "past_month";
+    sortBy?: "relevance" | "date";
+    authorKeywords?: string;
+    maxResults?: number;
+    accountId?: string;
+  }) => {
+    try {
+      const { searchLinkedInPosts } = await import("@/lib/linkedin-harvest");
+      const res = await searchLinkedInPosts({
+        keywords,
+        datePosted,
+        sortBy,
+        authorKeywords,
+        maxResults,
+        accountId,
+      });
+      return {
+        success: true as const,
+        count: res.posts.length,
+        ownTeam: res.posts.filter((p) => p.voice.ownTeam).length,
+        vendorish: res.posts.filter((p) => p.voice.vendorish).length,
+        budget: res.budget,
+        posts: res.posts,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        message:
+          error instanceof Error ? error.message : "LinkedIn post search failed",
+      };
+    }
+  },
+});
+
 export const linkedinFindPosts = tool({
   description:
     "Find LinkedIn posts about a topic via Exa and return their activity ids. Discovery only — makes no call against the connected LinkedIn account, so it is cheap and safe to run while exploring topics. Use it to see what conversations exist before spending account calls on linkedinListPostCommenters or linkedinHarvestCommenters. Posts whose URL carries no activity id come back with activityId=null and cannot be harvested.",
@@ -7918,6 +7998,7 @@ export function createAgentTools(userEmail?: string) {
     sequenceCompleteTask,
     outreachSendQueuedTask,
     outreachSendLinkedInMessage,
+    linkedinSearchPosts,
     linkedinFindPosts,
     linkedinListPostCommenters,
     linkedinHarvestCommenters,

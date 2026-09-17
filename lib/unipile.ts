@@ -495,7 +495,16 @@ export function unipileHarvestBudget(): {
   };
 }
 
-async function harvestFetch<T>(path: string): Promise<T> {
+/**
+ * `init` exists for the one harvest endpoint that is a POST: LinkedIn search
+ * takes its filters in a body. It stays inside the same gate as every other
+ * harvest call, because a search hits the connected account exactly like a
+ * profile read does and the account is what the pacing protects.
+ */
+async function harvestFetch<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
   const now = Date.now();
   pruneHarvestCalls(now);
   const max = harvestMaxCalls();
@@ -522,6 +531,7 @@ async function harvestFetch<T>(path: string): Promise<T> {
     // it — the queue that protects the account would become the thing that
     // stops it working.
     return await unipileFetch<T>(path, {
+      ...init,
       signal: AbortSignal.timeout(harvestTimeoutMs()),
     });
   } catch (err) {
@@ -601,6 +611,175 @@ function isTruthyFlag(v: unknown): boolean {
 function num(v: unknown): number | null {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+export type UnipileSearchedPost = {
+  /** Unipile's own object id. */
+  id: string | null;
+  /** The LinkedIn-side id the comments endpoint requires. */
+  socialId: string | null;
+  activityId: string | null;
+  shareUrl: string | null;
+  authorName: string | null;
+  authorHeadline: string | null;
+  authorProfileUrl: string | null;
+  authorPublicIdentifier: string | null;
+  /** A company page posted, not a person. */
+  authorIsCompany: boolean;
+  text: string | null;
+  /**
+   * ISO when the response carries one. Search often returns LinkedIn's
+   * relative string ("2w"), which is useless as a trigger date, so the raw
+   * value is kept next to it rather than coerced into a timestamp.
+   */
+  postedAt: string | null;
+  postedAtRelative: string | null;
+  reactionCount: number | null;
+  commentCount: number | null;
+};
+
+/**
+ * One search result, mapped defensively.
+ *
+ * Search is a different endpoint from `/posts/{id}` and does not promise the
+ * same shape: the author arrives as an object here and as a plain name string
+ * on comments, and the date is ISO on some responses and relative on others.
+ * Every field therefore has a fallback chain instead of one property read,
+ * which is what kept the commenter harvest from silently producing rows with
+ * null identities.
+ */
+function mapSearchedPost(
+  r: Record<string, unknown>,
+): UnipileSearchedPost | null {
+  const authorObj =
+    r.author && typeof r.author === "object"
+      ? (r.author as Record<string, unknown>)
+      : {};
+  const shareUrl = str(r.share_url) ?? str(r.post_url) ?? str(r.url);
+  const socialId = str(r.social_id) ?? str(r.share_urn) ?? null;
+  const activityId = extractLinkedInActivityId(
+    socialId ?? shareUrl ?? str(r.id) ?? undefined,
+  );
+  const profileUrl =
+    str(authorObj.public_profile_url) ??
+    str(authorObj.profile_url) ??
+    str(r.author_profile_url);
+  const publicIdentifier =
+    str(authorObj.public_identifier) ??
+    (profileUrl
+      ? (profileUrl.match(/linkedin\.com\/in\/([^/?#]+)/i)?.[1] ?? null)
+      : null);
+  const text = str(r.text) ?? str(r.commentary) ?? str(r.content);
+  // On some responses `author` is the display name itself rather than an
+  // object, which is how the comments endpoint behaves.
+  const name =
+    str(authorObj.name) ?? str(r.author_name) ?? str(r.author);
+  // A result with neither text nor an author is not a post we can act on, and
+  // returning it would only pad the count.
+  if (!text && !name) return null;
+
+  const isoDate = str(r.parsed_datetime) ?? str(r.posted_at);
+  const rawDate = str(r.date);
+  return {
+    id: str(r.id),
+    socialId,
+    activityId,
+    shareUrl:
+      shareUrl ??
+      (activityId
+        ? `https://www.linkedin.com/feed/update/urn:li:activity:${activityId}/`
+        : null),
+    authorName: name,
+    authorHeadline: str(authorObj.headline) ?? str(r.author_headline),
+    authorProfileUrl:
+      profileUrl ??
+      (publicIdentifier
+        ? `https://www.linkedin.com/in/${publicIdentifier}`
+        : null),
+    authorPublicIdentifier: publicIdentifier,
+    authorIsCompany:
+      isTruthyFlag(authorObj.is_company) ||
+      str(authorObj.type)?.toLowerCase() === "company",
+    text,
+    postedAt: isoDate ?? (rawDate && /^\d{4}-\d{2}/.test(rawDate) ? rawDate : null),
+    postedAtRelative: isoDate ? rawDate : (rawDate ?? null),
+    reactionCount: num(r.reaction_counter ?? r.reaction_count),
+    commentCount: num(r.comment_counter ?? r.comment_count),
+  };
+}
+
+/** What LinkedIn accepts as a recency filter on a post search. */
+export type UnipilePostDatePosted = "past_day" | "past_week" | "past_month";
+
+/**
+ * Search LinkedIn posts by keyword through the connected account.
+ *
+ * This is the free counterpart to `findLinkedInPosts`, which pays Exa per
+ * query. It costs account calls instead of money, so it runs through the
+ * harvest gate and stops at `maxResults`. Only the classic API supports the
+ * posts category; Sales Navigator and Recruiter do not.
+ */
+export async function searchUnipilePosts(opts: {
+  keywords: string;
+  accountId: string;
+  datePosted?: UnipilePostDatePosted;
+  sortBy?: "relevance" | "date";
+  /** Restrict to authors whose headline or profile matches these words. */
+  authorKeywords?: string;
+  maxResults?: number;
+}): Promise<UnipileSearchedPost[]> {
+  const keywords = opts.keywords.trim();
+  if (!keywords) throw new Error("searchUnipilePosts: keywords is required");
+  const max = Math.max(1, Math.min(100, opts.maxResults ?? 25));
+  const out: UnipileSearchedPost[] = [];
+  const seen = new Set<string>();
+  let cursor: string | null = null;
+
+  do {
+    const params = new URLSearchParams({ account_id: opts.accountId });
+    // LinkedIn rejects a post search asking for fewer than 3 or more than 49.
+    params.set("limit", String(Math.min(49, Math.max(3, max - out.length))));
+    if (cursor) params.set("cursor", cursor);
+    const body: Record<string, unknown> = {
+      api: "classic",
+      category: "posts",
+      keywords,
+    };
+    if (opts.datePosted) body.date_posted = opts.datePosted;
+    if (opts.sortBy) body.sort_by = opts.sortBy;
+    if (opts.authorKeywords?.trim()) {
+      body.author = { keywords: opts.authorKeywords.trim() };
+    }
+
+    const data = await harvestFetch<{
+      items?: Record<string, unknown>[];
+      cursor?: string | null;
+      paging?: { cursor?: string | null } | null;
+    }>(`/api/v1/linkedin/search?${params.toString()}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+
+    let fresh = 0;
+    for (const raw of data.items ?? []) {
+      const post = mapSearchedPost(raw);
+      if (!post) continue;
+      const key =
+        post.socialId ?? post.activityId ?? post.id ?? post.shareUrl ?? "";
+      if (key && seen.has(key)) continue;
+      if (key) seen.add(key);
+      fresh += 1;
+      out.push(post);
+      if (out.length >= max) break;
+    }
+    // A cursor that keeps paying account calls for nothing new is where this
+    // stops, same rule as the comment walk.
+    if (fresh === 0) break;
+    const next = data.cursor ?? data.paging?.cursor ?? null;
+    cursor = typeof next === "string" && next ? next : null;
+  } while (cursor && out.length < max);
+
+  return out.slice(0, max);
 }
 
 export async function getUnipilePost(opts: {
