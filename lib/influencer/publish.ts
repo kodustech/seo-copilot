@@ -330,6 +330,12 @@ async function publishToDevto(
   activity: PersonaActivity,
   channel: PersonaChannel,
 ): Promise<PublishOutcome> {
+  // If a previous attempt already recorded the remote id, a retry must never
+  // POST another article. This also makes the adapter safe for callers that
+  // re-run a claimed activity after a transient failure.
+  if (activity.external_id) {
+    return { external_id: activity.external_id, external_url: activity.external_url };
+  }
   const apiKey = await resolveDevtoApiKey(client, channel);
 
   const canonicalUrl =
@@ -367,6 +373,24 @@ async function publishToDevto(
     external_id: body.id ? String(body.id) : null,
     external_url: body.url ?? null,
   };
+}
+
+async function findPublishedDuplicate(
+  client: SupabaseClient,
+  activity: PersonaActivity,
+): Promise<PersonaActivity | null> {
+  const { data, error } = await client
+    .from("persona_activities")
+    .select("*")
+    .eq("channel_id", activity.channel_id)
+    .eq("status", "published")
+    .neq("id", activity.id)
+    .eq("title", activity.title)
+    .eq("content", activity.content)
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ? (data as PersonaActivity) : null;
 }
 
 // `||` (not `??`) so an empty AICODEREVIEW_API_URL falls back instead of
@@ -691,7 +715,17 @@ export function buildBlogPayload(
     // frontmatter field, so sending it is at best ignored and at worst a 422
     // from a stricter validator than the two we have.
     ...(schema.platforms && blogPlatform ? { platform: blogPlatform } : {}),
-    ...(replaces ? { slug: replaces, overwrite: true } : {}),
+    ...(replaces
+      ? {
+          slug: replaces,
+          overwrite: true,
+          // The content API uses this to render "Last updated" and to produce
+          // dateModified in the article schema. It is deliberately generated
+          // at publish time so a delayed draft does not claim a stale revision
+          // date, and the agent cannot forget it.
+          updated_at: new Date().toISOString(),
+        }
+      : {}),
   };
 }
 
@@ -919,6 +953,18 @@ export async function runInfluencerPublishCron(
       publishedToday: todayCount.get(key) ?? 0,
       now,
     });
+
+    if (decision.action === "publish" && channel?.platform === "devto") {
+      const duplicate = await findPublishedDuplicate(client, activity);
+      if (duplicate) {
+        await updateActivity(client, activity.id, {
+          status: "discarded",
+          error: `Duplicate of published activity ${duplicate.id}${duplicate.external_url ? ` (${duplicate.external_url})` : "."}`,
+        });
+        summary.rejected += 1;
+        continue;
+      }
+    }
 
     if (decision.action === "skip") {
       summary.skipped += 1;

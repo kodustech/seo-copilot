@@ -241,9 +241,11 @@ function buildShiftGoal(
     "1) Analytics are for OCCASIONAL calibration, not every shift. If you already checked your stats in a recent shift, SKIP it — the numbers barely move hour to hour, and re-pulling the same search_performance / site_traffic is wasted motion. Only look when you have a real reason (a post has had time to land, or you're deciding what to double down on).",
     "2) Call browse_signals ONCE ('hackernews' is usually enough) and pick the SINGLE most interesting item for your beat.",
     "3b) A page of ours that is already cited is worth more updated than a new one is worth written. If a post of yours has gone stale — a price that moved, a tool that shipped something, a year in the title — read_post it and queue the rewrite with replaces_slug instead of publishing a second page that competes with the first.",
-    "3) search_memory first (build on past notes), then read AT MOST two REAL sources with fetch_url — use the exact URLs the tools give you, never invent/guess a URL, never re-fetch one you already read. save_memory the concrete study.",
+    open.some((platform) => ["blog", "devto", "hackernoon"].includes(platform))
+      ? "3) For long-form work (blog, dev.to, or Hacker Noon), search_memory first, then read at least three REAL sources with fetch_url or browse. Use the exact URLs the tools give you, never invent/guess a URL, never re-fetch one you already read, and put the sources into the article as natural markdown links. save_memory the concrete study."
+      : "3) search_memory first (build on past notes), then read AT MOST two REAL sources with fetch_url — use the exact URLs the tools give you, never invent/guess a URL, never re-fetch one you already read. save_memory the concrete study.",
     postBeat,
-    "IMPORTANT — be a person, not a stats account. A big chunk of your posts (roughly half) should be MUNDANE, day-in-the-life stuff, not data-takes: what you're poking at right now, a quick reaction to something you saw, a small win or a frustration, what you're reading, coffee-and-code energy. These are SHORT and spontaneous — skip the deep research, just say the thing if you feel like it. Post them freely; they don't need to clear a high bar.",
+    "IMPORTANT — be a person, not a stats account. For X and replies, a big chunk of posts can be MUNDANE, day-in-the-life stuff: a quick reaction, a small win or frustration, or what you're reading. Keep those SHORT and spontaneous. This exception does NOT apply to blog, dev.to, or Hacker Noon articles, which must meet the long-form research and structure policy.",
     "Do several real things this shift — advance a goal, learn from your analytics, post if allowed — then stop.",
   ]
     .filter(Boolean)

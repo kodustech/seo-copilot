@@ -138,4 +138,17 @@ describe("buildBlogPayload", () => {
     const payload = buildBlogPayload(draft({ blog_platform: "gitlab" }), channel({}));
     expect(payload).not.toHaveProperty("platform");
   });
+
+  it("adds an update date when replacing an existing article", () => {
+    const payload = buildBlogPayload(
+      draft({ replaces_slug: "existing-article" }),
+      channel({}),
+    );
+
+    expect(payload).toMatchObject({
+      slug: "existing-article",
+      overwrite: true,
+    });
+    expect(payload.updated_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
 });

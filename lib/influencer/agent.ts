@@ -43,10 +43,25 @@ import {
   type PersonaChannel,
 } from "@/lib/influencer/types";
 import { buildPersonaVoicePolicy } from "@/lib/influencer/voice";
+import { formatContentQualityIssues, validateLongFormContent } from "@/lib/influencer/content-quality";
 
 const MAX_STEPS = 16;
 const FETCH_TIMEOUT_MS = 15_000;
 const MAX_FETCH_CHARS = 8_000;
+
+const LONG_FORM_CONTENT_POLICY = [
+  "LONG-FORM ARTICLE POLICY — applies only to blog, dev.to, and Hacker Noon:",
+  "- Answer a real reader question and understand the search intent before writing.",
+  "- Research at least three relevant sources; prefer official documentation, product pages, repositories, studies, benchmarks, and other primary evidence.",
+  "- Link the research you actually use inside natural sentences with descriptive markdown anchors, never as a URL dump at the end. Use exact URLs returned by tools.",
+  "- The page title is the H1. Start the body with clear H2 sections and use H3 for real subsections; do not write an article as a long social post.",
+  "- Develop the argument with concrete examples, comparisons, limitations, and practical implications. Do not stop after summarizing one or two sources.",
+  "- Cover relevant tools, competitors, platforms, and entities when they help answer the question. Treat Kodus and other tools with the same editorial criteria.",
+  "- Kodus is optional: mention it only when it is genuinely relevant. If important alternatives exist, include them fairly; never add competitors artificially.",
+  "- Add internal links only when they help the reader, such as a relevant tool page or related article. Do not force an internal link when no useful destination exists.",
+  "- Do not repeat an existing article's topic and angle. Update an existing page when that is more useful than publishing a competing copy.",
+  "- When revising a blog article, call read_post first and queue the complete replacement with replaces_slug. The publisher adds the revision date automatically.",
+].join("\n");
 
 async function fetchText(url: string): Promise<string> {
   const parsed = await assertPublicUrl(url);
@@ -118,6 +133,9 @@ function buildAgentSystem(
     "",
     "PLATFORM FORMAT — match the channel exactly:",
     platformRules(configs),
+    ...(configs.some(({ platform }) => ["blog", "devto", "hackernoon"].includes(platform))
+      ? ["", LONG_FORM_CONTENT_POLICY]
+      : []),
     "For X specifically: write ONE standalone tweet — a single, self-contained idea in ≤280 characters that makes complete sense on its own. Do NOT write threads or thread pieces: this account posts through a scheduler with no thread support, so every tweet must stand alone. One shift produces one tweet, not a series.",
     "IMAGES: a post with a real visual lands far harder than a wall of text — and it fits your empirical beat. When a visual genuinely helps, attach one via queue_draft's `image` field: strongly prefer a `screenshot` of the REAL thing (the benchmark chart on its page, the tool's UI, a tweet, a GitHub diff) — real evidence, not an AI illustration. Use `image_url` only for a specific public image (like an article's own figure). Only pass a URL a tool actually returned; never invent one. No fitting visual? Post text — don't force it.",
     "GROWING FOLLOWERS: when you're small, posting into your own feed barely reaches anyone. The lever is ENGAGING where the audience already is. Use x_read to find recent, lively tweets from bigger accounts in your beat (their profiles, or x.com/search?q=<topic>&f=live), then queue a `reply` (kind 'reply', reply_to = that tweet's exact URL from x_read). A good reply under a big account puts you in front of THEIR audience. NEVER reply to, quote, or @-mention another persona in your own fleet.",
@@ -712,7 +730,7 @@ export async function runInfluencerAgentSession({
 
     queue_draft: tool({
       description:
-        "Queue a finished piece of content. This is how your work reaches people. Call once per finished piece. For a blog post (platform 'blog'): title 5-90 chars (aim ≤60 for SEO), description ≥20 chars, content ≥100 chars of markdown (NO H1 — the layout renders the title), and a category from " +
+        "Queue a finished piece of content. This is how your work reaches people. Call once per finished piece. For a blog post (platform 'blog'): title 5-90 chars (aim ≤60 for SEO), description ≥20 chars, content ≥1,000 words of markdown (NO H1 — the layout renders the title), at least 3 H2 sections, and a category from " +
         blogSchema.categories.join("/") +
         (blogSchema.platforms
           ? `. That blog is organised by platform: every post must also set blog_platform to one of ${blogSchema.platforms.join("/")} ("multi" when it genuinely covers several). A post without one has nowhere to appear and cannot publish.`
@@ -844,6 +862,21 @@ export async function runInfluencerAgentSession({
             return msg;
           }
         }
+        const qualityIssues = validateLongFormContent({
+          platform: normalizedPlatform ?? platform,
+          title,
+          description,
+          content,
+        });
+        if (qualityIssues.length) {
+          const message = `This long-form draft is not ready:\n${formatContentQualityIssues(qualityIssues)}\nResearch and revise it, then call queue_draft again.`;
+          await step({
+            kind: "tool_result",
+            tool: "queue_draft",
+            payload: { error: "content_quality", issues: qualityIssues.map((issue) => issue.code) },
+          });
+          return message;
+        }
         // A reply must target a specific tweet — the URL from x_read.
         if (normalizedKind === "reply") {
           const rt = typeof reply_to === "string" ? reply_to.trim() : "";
@@ -883,6 +916,14 @@ export async function runInfluencerAgentSession({
           } isn't one of them. Queue it again with blog_platform set to one of: ${platformAxis.join(", ")}.`;
         }
         const canonical = typeof canonical_url === "string" ? canonical_url.trim() : "";
+        if (normalizedPlatform === "devto" && normalizedKind === "crosspost" && !canonical) {
+          await step({
+            kind: "tool_result",
+            tool: "queue_draft",
+            payload: { error: "devto_crosspost_missing_canonical" },
+          });
+          return "A dev.to crosspost needs canonical_url set to the exact URL of the original article. Do not publish a second uncited copy.";
+        }
         // Medium has no API and nothing is typed into it: it imports one of our
         // pages. A Medium draft that isn't a crosspost of a live original is a
         // draft the publisher can only reject, so refuse it here with the fix.
