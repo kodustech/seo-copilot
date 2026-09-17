@@ -117,4 +117,57 @@ describe("validateLongFormContent", () => {
 
     expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
   });
+
+  it("does not hide a raw URL after an image on the same line", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Figure [1]](https://cdn.example.com/chart.png https://example.com/report)",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+  });
+
+  it("keeps an unclosed image visible to the raw URL check", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Dashboard](https://cdn.example.com/dashboard.png",
+        "Read https://example.com/report for the details.",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+  });
+
+  it("accepts an image whose alt text spans multiple lines", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![latency",
+        "by region](https://cdn.example.com/latency.png)",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
+  });
 });
