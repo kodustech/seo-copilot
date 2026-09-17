@@ -391,8 +391,12 @@ async function loadPublishedDevtoDuplicates(
   if (!channelIds.length) return duplicates;
 
   const pageSize = 1000;
+  // Bound the scan: duplicate risk is highest among recent activity, while
+  // loading unbounded historical content would make each cron run grow forever.
+  const maxPages = 5;
   let from = 0;
-  while (true) {
+  let page = 0;
+  while (page < maxPages) {
     const { data, error } = await client
       .from("persona_activities")
       .select("id, channel_id, title, content, external_url")
@@ -414,6 +418,7 @@ async function loadPublishedDevtoDuplicates(
       });
     }
 
+    page += 1;
     if (!data || data.length < pageSize) break;
     from += pageSize;
   }
