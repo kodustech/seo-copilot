@@ -5,7 +5,8 @@ export type ContentQualityIssue = {
 
 const LONG_FORM_PLATFORMS = new Set(["blog", "devto", "hackernoon"]);
 const MARKDOWN_LINK = /(?<!!)\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi;
-const MARKDOWN_IMAGE = /!\[([^\[\]]*(?:\[[^\]]*\][^\[\]]*)*?)\]\(([^\s)]*(?:\s+"[^"\n]*")?)\)/g;
+const MARKDOWN_IMAGE =
+  /!\[([^\[\]]*(?:\[[^\]]*\][^\[\]]*)*?)\]\([ \t]*(<[^\n>]*>|[^\s)]*)(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*\)/g;
 const RAW_URL = /https?:\/\/[^\s)]+/gi;
 const WEAK_ANCHORS = new Set(["here", "source", "link", "click here"]);
 

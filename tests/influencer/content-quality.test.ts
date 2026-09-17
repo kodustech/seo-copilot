@@ -170,4 +170,24 @@ describe("validateLongFormContent", () => {
 
     expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
   });
+
+  it("accepts valid image destinations and title delimiters", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Single quoted title](https://cdn.example.com/chart.png 'caption')",
+        "![Parenthesized title](https://cdn.example.com/chart.png (caption))",
+        "![Trailing whitespace](https://cdn.example.com/chart.png )",
+        "![Angle bracket destination](<https://cdn.example.com/chart image.png>)",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
+  });
 });
