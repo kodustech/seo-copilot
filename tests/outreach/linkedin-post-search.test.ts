@@ -8,7 +8,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { classifyPostVoice, isSelfAuthored } from "../../lib/linkedin-harvest";
-import { searchUnipilePosts } from "../../lib/unipile";
+import {
+  linkedInAccountIdentity,
+  resetUnipileAccountsCache,
+  searchUnipilePosts,
+} from "../../lib/unipile";
 
 type Call = { url: string; init: RequestInit };
 
@@ -264,6 +268,74 @@ describe("classifyPostVoice", () => {
       ownTeam: false,
       vendorish: false,
     });
+  });
+});
+
+/**
+ * `isSelfAuthored` tested alone proves the comparison, not the wiring. These
+ * drive the resolver against an accounts payload, because self-exclusion fails
+ * silently: the slug arrives null, nothing matches, and our own posts come
+ * back in the queue looking like prospects.
+ */
+describe("linkedInAccountIdentity", () => {
+  beforeEach(() => {
+    process.env.UNIPILE_API_KEY = "vitest-key";
+    process.env.UNIPILE_DSN = "api-test.unipile.com:443";
+    delete process.env.UNIPILE_LINKEDIN_ACCOUNT_ID;
+    resetUnipileAccountsCache();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetUnipileAccountsCache();
+  });
+
+  function stubAccounts(im: Record<string, unknown>): void {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          items: [
+            {
+              id: "acc-li",
+              type: "LINKEDIN",
+              name: "Gabriel",
+              connection_params: { im },
+            },
+          ],
+        }),
+      ),
+    );
+  }
+
+  it("reads the slug and the member id off the LinkedIn account", async () => {
+    stubAccounts({
+      id: "ACoAAself",
+      username: "gabrielmalinosqui",
+      publicIdentifier: "gabrielmalinosqui",
+    });
+
+    const identity = await linkedInAccountIdentity();
+
+    expect(identity.accountId).toBe("acc-li");
+    expect(identity.providerUserId).toBe("ACoAAself");
+    expect(identity.publicIdentifier).toBe("gabrielmalinosqui");
+  });
+
+  it("falls back to the username when the account carries no publicIdentifier", async () => {
+    stubAccounts({ id: "ACoAAself", username: "gabrielmalinosqui" });
+
+    const identity = await linkedInAccountIdentity();
+
+    expect(identity.publicIdentifier).toBe("gabrielmalinosqui");
+  });
+
+  it("ignores a username that is an email rather than a slug", async () => {
+    stubAccounts({ id: "ACoAAself", username: "gabriel@kodus.io" });
+
+    const identity = await linkedInAccountIdentity();
+
+    expect(identity.publicIdentifier).toBeNull();
   });
 });
 

@@ -1156,10 +1156,20 @@ export async function linkedInAccountIdentity(
     );
   }
 
+  // `connection_params.im.publicIdentifier` is documented on the LinkedIn
+  // account object and is where this comes from. The username fallback is for
+  // the account that comes back without it: on LinkedIn that field carries the
+  // vanity, so it is the same slug by another name. Anything with an @ or a
+  // space is not a slug and is ignored rather than compared.
+  const slugFromUsername =
+    match?.username && /^[A-Za-z0-9-_%]+$/.test(match.username)
+      ? match.username
+      : null;
+
   return {
     accountId: wanted || match?.id || null,
     providerUserId: match?.providerUserId ?? null,
-    publicIdentifier: match?.publicIdentifier ?? null,
+    publicIdentifier: match?.publicIdentifier ?? slugFromUsername,
   };
 }
 
