@@ -1156,20 +1156,18 @@ export async function linkedInAccountIdentity(
     );
   }
 
-  // `connection_params.im.publicIdentifier` is documented on the LinkedIn
-  // account object and is where this comes from. The username fallback is for
-  // the account that comes back without it: on LinkedIn that field carries the
-  // vanity, so it is the same slug by another name. Anything with an @ or a
-  // space is not a slug and is ignored rather than compared.
-  const slugFromUsername =
-    match?.username && /^[A-Za-z0-9-_%]+$/.test(match.username)
-      ? match.username
-      : null;
-
+  // The slug comes from `connection_params.im.publicIdentifier`, documented on
+  // the LinkedIn account object. There is deliberately no fallback: `username`
+  // holds the login identifier on credential-linked accounts, so treating it
+  // as a vanity would compare us against somebody else's slug, and asking the
+  // users endpoint would spend an account call on every search to recover a
+  // field this payload already carries. When the slug is absent,
+  // self-exclusion still runs on the member id, which is the field the search
+  // response usually has.
   return {
     accountId: wanted || match?.id || null,
     providerUserId: match?.providerUserId ?? null,
-    publicIdentifier: match?.publicIdentifier ?? slugFromUsername,
+    publicIdentifier: match?.publicIdentifier ?? null,
   };
 }
 

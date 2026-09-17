@@ -309,9 +309,11 @@ describe("linkedInAccountIdentity", () => {
   }
 
   it("reads the slug and the member id off the LinkedIn account", async () => {
+    // The documented shape for a credential-linked account: the login
+    // identifier in `username`, the vanity in `publicIdentifier`.
     stubAccounts({
       id: "ACoAAself",
-      username: "gabrielmalinosqui",
+      username: "gabriel@kodus.io",
       publicIdentifier: "gabrielmalinosqui",
     });
 
@@ -322,19 +324,16 @@ describe("linkedInAccountIdentity", () => {
     expect(identity.publicIdentifier).toBe("gabrielmalinosqui");
   });
 
-  it("falls back to the username when the account carries no publicIdentifier", async () => {
-    stubAccounts({ id: "ACoAAself", username: "gabrielmalinosqui" });
-
-    const identity = await linkedInAccountIdentity();
-
-    expect(identity.publicIdentifier).toBe("gabrielmalinosqui");
-  });
-
-  it("ignores a username that is an email rather than a slug", async () => {
+  it("never treats the login identifier as our slug", async () => {
+    // `username` is the login on credential-linked accounts. Promoting it to a
+    // slug would compare us against a stranger who happens to own that vanity,
+    // and excluding their post is worse than missing one of ours: the member id
+    // still carries self-exclusion on the path the search response uses.
     stubAccounts({ id: "ACoAAself", username: "gabriel@kodus.io" });
 
     const identity = await linkedInAccountIdentity();
 
+    expect(identity.providerUserId).toBe("ACoAAself");
     expect(identity.publicIdentifier).toBeNull();
   });
 });
