@@ -743,12 +743,19 @@ export async function searchUnipilePosts(opts: {
   /** Restrict to authors whose headline or profile matches these words. */
   authorKeywords?: string;
   maxResults?: number;
-}): Promise<UnipileSearchedPost[]> {
+  /**
+   * Drop a result before it counts towards `maxResults`, so paging continues
+   * to fill the gap. Filtering after the fact would silently return fewer
+   * posts than asked for whenever the excluded ones land on the last page.
+   */
+  exclude?: (post: UnipileSearchedPost) => boolean;
+}): Promise<{ posts: UnipileSearchedPost[]; excluded: number }> {
   const keywords = opts.keywords.trim();
   if (!keywords) throw new Error("searchUnipilePosts: keywords is required");
   const max = Math.max(1, Math.min(100, opts.maxResults ?? 25));
   const out: UnipileSearchedPost[] = [];
   const seen = new Set<string>();
+  let excluded = 0;
   let cursor: string | null = null;
 
   do {
@@ -784,7 +791,14 @@ export async function searchUnipilePosts(opts: {
         post.socialId ?? post.activityId ?? post.id ?? post.shareUrl ?? "";
       if (key && seen.has(key)) continue;
       if (key) seen.add(key);
+      // A page that is entirely excluded is still progress, so `fresh` counts
+      // it: otherwise the walk would stop on the page where every post was
+      // ours and never reach the ones that were not.
       fresh += 1;
+      if (opts.exclude?.(post)) {
+        excluded += 1;
+        continue;
+      }
       out.push(post);
       if (out.length >= max) break;
     }
@@ -795,7 +809,7 @@ export async function searchUnipilePosts(opts: {
     cursor = typeof next === "string" && next ? next : null;
   } while (cursor && out.length < max);
 
-  return out.slice(0, max);
+  return { posts: out.slice(0, max), excluded };
 }
 
 export async function getUnipilePost(opts: {
@@ -1086,7 +1100,17 @@ function requestUnipileIdentityRetry(): boolean {
  */
 export async function linkedInAccountIdentity(
   accountId?: string | null,
-): Promise<{ accountId: string | null; providerUserId: string | null }> {
+): Promise<{
+  accountId: string | null;
+  providerUserId: string | null;
+  /**
+   * Our own profile slug. Self-exclusion needs it: some endpoints identify an
+   * author by member id and others only by profile URL, and recognising
+   * ourselves in just one of those shapes is the same as not recognising
+   * ourselves at all.
+   */
+  publicIdentifier: string | null;
+}> {
   const wanted = accountId?.trim() || process.env.UNIPILE_LINKEDIN_ACCOUNT_ID?.trim() || null;
 
   let accounts: UnipileAccount[] = [];
@@ -1099,7 +1123,7 @@ export async function linkedInAccountIdentity(
       console.warn(
         `[unipile] could not list accounts to resolve self-identity (${err instanceof Error ? err.message : String(err)}); self-exclusion is off for this run.`,
       );
-      return { accountId: wanted, providerUserId: null };
+      return { accountId: wanted, providerUserId: null, publicIdentifier: null };
     }
     throw err;
   }
@@ -1123,7 +1147,7 @@ export async function linkedInAccountIdentity(
       console.warn(
         `[unipile] could not refresh accounts to resolve self-identity (${err instanceof Error ? err.message : String(err)}); self-exclusion is off for this run.`,
       );
-      return { accountId: wanted, providerUserId: null };
+      return { accountId: wanted, providerUserId: null, publicIdentifier: null };
     }
   }
   if (wanted && !match) {
@@ -1135,6 +1159,7 @@ export async function linkedInAccountIdentity(
   return {
     accountId: wanted || match?.id || null,
     providerUserId: match?.providerUserId ?? null,
+    publicIdentifier: match?.publicIdentifier ?? null,
   };
 }
 

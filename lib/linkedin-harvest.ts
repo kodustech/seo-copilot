@@ -174,28 +174,31 @@ export async function searchLinkedInPosts(opts: {
   }
 
   const callsBefore = unipileHarvestBudget().used;
-  const posts = await searchUnipilePosts({
+  // Self-exclusion belongs inside the walk: a page where every post is ours
+  // would otherwise eat the result and return fewer posts than asked for.
+  const { posts, excluded } = await searchUnipilePosts({
     keywords,
     accountId,
     datePosted: opts.datePosted,
     sortBy: opts.sortBy,
     authorKeywords: opts.authorKeywords,
     maxResults: opts.maxResults,
+    exclude: (post) =>
+      isSelfAuthored(post, {
+        providerUserId: identity.providerUserId,
+        publicIdentifier: identity.publicIdentifier,
+      }),
   });
   const budget = unipileHarvestBudget();
 
-  const kept = posts.filter(
-    (p) => !isSelfAuthored(p, { providerUserId: identity.providerUserId }),
-  );
-
   return {
-    posts: kept.map((p) => ({ ...p, voice: classifyPostVoice(p.text) })),
+    posts: posts.map((p) => ({ ...p, voice: classifyPostVoice(p.text) })),
     budget: {
       usedByThisCall: Math.max(0, budget.used - callsBefore),
       used: budget.used,
       max: budget.max,
     },
-    excludedSelf: posts.length - kept.length,
+    excludedSelf: excluded,
   };
 }
 

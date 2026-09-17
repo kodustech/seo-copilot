@@ -69,7 +69,7 @@ describe("searchUnipilePosts", () => {
   it("posts the classic posts category and maps a result", async () => {
     stubFetch([{ items: [postItem], cursor: null }]);
 
-    const posts = await searchUnipilePosts({
+    const { posts } = await searchUnipilePosts({
       keywords: "code review bottleneck",
       accountId: "acc-1",
       datePosted: "past_month",
@@ -128,7 +128,7 @@ describe("searchUnipilePosts", () => {
       { items: [postItem], cursor: "next-2" },
     ]);
 
-    const posts = await searchUnipilePosts({
+    const { posts } = await searchUnipilePosts({
       keywords: "code review",
       accountId: "acc-1",
       maxResults: 50,
@@ -154,7 +154,7 @@ describe("searchUnipilePosts", () => {
       },
     ]);
 
-    const posts = await searchUnipilePosts({
+    const { posts } = await searchUnipilePosts({
       keywords: "code review",
       accountId: "acc-1",
     });
@@ -175,12 +175,38 @@ describe("searchUnipilePosts", () => {
       },
     ]);
 
-    const posts = await searchUnipilePosts({
+    const { posts } = await searchUnipilePosts({
       keywords: "code review",
       accountId: "acc-1",
     });
 
     expect(posts[0].authorProviderId).toBe("ACoAAAwjjB0B");
+  });
+
+  it("keeps paging when an excluded post would otherwise eat the result", async () => {
+    const ours = {
+      ...postItem,
+      id: "post-ours",
+      social_id: "urn:li:activity:7000000000000000001",
+      author: { name: "Us", public_identifier: "kodus-founder" },
+      text: "we shipped a thing",
+    };
+    stubFetch([
+      { items: [ours], cursor: "next-1" },
+      { items: [postItem], cursor: null },
+    ]);
+
+    const { posts, excluded } = await searchUnipilePosts({
+      keywords: "code review",
+      accountId: "acc-1",
+      maxResults: 1,
+      exclude: (p) => p.authorPublicIdentifier === "kodus-founder",
+    });
+
+    expect(excluded).toBe(1);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].authorName).toBe("Test Author");
+    expect(calls).toHaveLength(2);
   });
 
   it("keeps a result that has text but no author object", async () => {
@@ -197,7 +223,7 @@ describe("searchUnipilePosts", () => {
       },
     ]);
 
-    const posts = await searchUnipilePosts({
+    const { posts } = await searchUnipilePosts({
       keywords: "revisão de código",
       accountId: "acc-1",
     });
