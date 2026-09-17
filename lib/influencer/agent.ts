@@ -937,13 +937,18 @@ export async function runInfluencerAgentSession({
           return "target_url must be a full http(s) URL — the thread or page the person should post this in. Drop it if you don't have one from a tool result.";
         }
         if (canonical) {
+          const devtoCrosspost = normalizedPlatform === "devto" && normalizedKind === "crosspost";
           if (!isOwnedCanonical(canonical)) {
             await step({
               kind: "tool_result",
               tool: "queue_draft",
-              payload: { error: "canonical_not_owned" },
+              payload: {
+                error: devtoCrosspost ? "devto_crosspost_unverified_canonical" : "canonical_not_owned",
+              },
             });
-            return `canonical_url must be an http(s) URL on a site we own (${OWNED_DOMAINS.join(", ")}). Drop it, or use the exact URL of your own original.`;
+            return devtoCrosspost
+              ? "A dev.to crosspost needs canonical_url set to the exact URL of an article this persona has published. Do not publish a second uncited copy."
+              : `canonical_url must be an http(s) URL on a site we own (${OWNED_DOMAINS.join(", ")}). Drop it, or use the exact URL of your own original.`;
           }
           // Owning the domain only closes the competitor case. A canonical
           // pointing at a page that was never written hands the ranking to a
@@ -968,11 +973,15 @@ export async function runInfluencerAgentSession({
             await step({
               kind: "tool_result",
               tool: "queue_draft",
-              payload: { error: "canonical_not_published" },
+              payload: {
+                error: devtoCrosspost ? "devto_crosspost_unverified_canonical" : "canonical_not_published",
+              },
             });
             return originalsError
               ? "Couldn't verify that canonical_url is one of your own published pieces. Queue it again without canonical_url, or retry next shift."
-              : "canonical_url has to be a piece you actually published — copy the exact URL from your recent posts, don't write one from memory. Queue it without canonical_url if the original isn't live yet.";
+              : devtoCrosspost
+                ? "A dev.to crosspost needs canonical_url set to the exact URL of an article this persona has published. Do not publish a second uncited copy."
+                : "canonical_url has to be a piece you actually published — copy the exact URL from your recent posts, don't write one from memory. Queue it without canonical_url if the original isn't live yet.";
           }
         }
         // Honor the channel's automation level: an `auto` channel publishes

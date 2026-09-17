@@ -375,22 +375,41 @@ async function publishToDevto(
   };
 }
 
-async function findPublishedDuplicate(
+type PublishedDuplicate = Pick<PersonaActivity, "id" | "external_url">;
+
+function duplicateActivityKey(
+  activity: Pick<PersonaActivity, "channel_id" | "title" | "content">,
+): string {
+  return JSON.stringify([activity.channel_id, activity.title, activity.content]);
+}
+
+async function loadPublishedDevtoDuplicates(
   client: SupabaseClient,
-  activity: PersonaActivity,
-): Promise<PersonaActivity | null> {
+  channelIds: string[],
+): Promise<Map<string, PublishedDuplicate>> {
+  const duplicates = new Map<string, PublishedDuplicate>();
+  if (!channelIds.length) return duplicates;
+
   const { data, error } = await client
     .from("persona_activities")
-    .select("*")
-    .eq("channel_id", activity.channel_id)
+    .select("id, channel_id, title, content, external_url")
     .eq("status", "published")
-    .neq("id", activity.id)
-    .eq("title", activity.title)
-    .eq("content", activity.content)
-    .limit(1)
-    .maybeSingle();
+    .in("channel_id", channelIds)
+    .limit(5000);
   if (error) throw new Error(error.message);
-  return data ? (data as PersonaActivity) : null;
+
+  for (const row of data ?? []) {
+    if (typeof row.channel_id !== "string" || typeof row.content !== "string") continue;
+    duplicates.set(duplicateActivityKey({
+      channel_id: row.channel_id,
+      title: typeof row.title === "string" ? row.title : null,
+      content: row.content,
+    }), {
+      id: String(row.id),
+      external_url: typeof row.external_url === "string" ? row.external_url : null,
+    });
+  }
+  return duplicates;
 }
 
 // `||` (not `??`) so an empty AICODEREVIEW_API_URL falls back instead of
@@ -920,6 +939,15 @@ export async function runInfluencerPublishCron(
   const personaById = new Map(personas.map((p) => [p.id, p]));
   const channelById = new Map(channels.map((c) => [c.id, c]));
   const fleetHandles = buildFleetHandles(personas, channels);
+  const publishedDevtoDuplicates = await loadPublishedDevtoDuplicates(
+    client,
+    Array.from(new Set(
+      due
+        .map((activity) => channelById.get(activity.channel_id))
+        .filter((channel): channel is PersonaChannel => channel?.platform === "devto")
+        .map((channel) => channel.id),
+    )),
+  );
   const dayStart = dayStartUtcIso(now);
 
   // Per-channel counts for this run: DB count + what we publish in this loop.
@@ -955,7 +983,7 @@ export async function runInfluencerPublishCron(
     });
 
     if (decision.action === "publish" && channel?.platform === "devto") {
-      const duplicate = await findPublishedDuplicate(client, activity);
+      const duplicate = publishedDevtoDuplicates.get(duplicateActivityKey(activity));
       if (duplicate) {
         await updateActivity(client, activity.id, {
           status: "discarded",
