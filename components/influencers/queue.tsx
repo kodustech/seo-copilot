@@ -24,7 +24,7 @@ import {
   type Persona,
 } from "./shared";
 
-type ReviewAction = "approve" | "discard" | "published";
+type ReviewAction = "approve" | "discard" | "published" | "save_draft";
 
 /**
  * The review queue across the fleet. A draft reads as text first; the
@@ -81,7 +81,11 @@ export function ReviewQueue({
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error || `Failed to ${action} (${res.status})`);
     }
-    setActivities((prev) => prev.filter((a) => a.id !== id));
+    if (action === "save_draft") {
+      setActivities((prev) => prev.map((a) => (a.id === id ? { ...a, content: content ?? a.content, status: "draft", scheduled_at: null, error: null } : a)));
+    } else {
+      setActivities((prev) => prev.filter((a) => a.id !== id));
+    }
     onChanged();
   }
 
@@ -248,6 +252,12 @@ function QueueItem({
       ) : null}
 
       <div className="flex flex-wrap items-center gap-2">
+        {editing ? (
+          <button type="button" disabled={busy !== null || !content.trim()} onClick={() => act("save_draft")} className={cls.outline}>
+            {busy === "save_draft" ? <Loader2 className="size-3.5 animate-spin" /> : null}
+            Save draft
+          </button>
+        ) : null}
         {handPosted ? (
           <button type="button" disabled={busy !== null || !content.trim()} onClick={() => act("published")} className={cls.primary}>
             {busy === "published" ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
