@@ -402,7 +402,10 @@ async function loadPublishedDevtoDuplicates(
       .select("id, channel_id, title, content, external_url")
       .eq("status", "published")
       .in("channel_id", channelIds)
-      .order("published_at", { ascending: false, nullsFirst: false })
+      // Use the existing created_at index rather than adding a new index just
+      // for this bounded duplicate scan. Queue activities are created close
+      // to publication, so this keeps the newest candidates near the front.
+      .order("created_at", { ascending: false })
       .order("id", { ascending: true })
       .range(from, from + pageSize - 1);
     if (error) throw new Error(error.message);
