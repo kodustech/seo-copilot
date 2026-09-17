@@ -520,7 +520,10 @@ export function AiVisibilityPage() {
         setLastRun({ ...total });
         if (s.remaining <= 0 || stalled) break;
       }
-      setRunOn(null);
+      // Keep the date that was actually just executed selected. Otherwise a
+      // partial run falls back to the latest full run and makes its old
+      // mention counts look like the fresh result.
+      setRunOn(total.runOn || null);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falhou");
@@ -604,7 +607,7 @@ export function AiVisibilityPage() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {dates.length > 1 ? (
-            <Select value={runOn ?? dates[0]} onValueChange={(v) => setRunOn(v === dates[0] ? null : v)}>
+            <Select value={runOn ?? summary?.runOn ?? dates[0]} onValueChange={(v) => setRunOn(v)}>
               <SelectTrigger className="h-8 w-[140px] border-white/[0.08] bg-transparent text-xs">
                 <SelectValue />
               </SelectTrigger>
