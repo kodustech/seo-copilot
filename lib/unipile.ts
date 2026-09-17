@@ -495,7 +495,16 @@ export function unipileHarvestBudget(): {
   };
 }
 
-async function harvestFetch<T>(path: string): Promise<T> {
+/**
+ * `init` exists for the one harvest endpoint that is a POST: LinkedIn search
+ * takes its filters in a body. It stays inside the same gate as every other
+ * harvest call, because a search hits the connected account exactly like a
+ * profile read does and the account is what the pacing protects.
+ */
+async function harvestFetch<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
   const now = Date.now();
   pruneHarvestCalls(now);
   const max = harvestMaxCalls();
@@ -522,6 +531,7 @@ async function harvestFetch<T>(path: string): Promise<T> {
     // it — the queue that protects the account would become the thing that
     // stops it working.
     return await unipileFetch<T>(path, {
+      ...init,
       signal: AbortSignal.timeout(harvestTimeoutMs()),
     });
   } catch (err) {
@@ -601,6 +611,205 @@ function isTruthyFlag(v: unknown): boolean {
 function num(v: unknown): number | null {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+export type UnipileSearchedPost = {
+  /** Unipile's own object id. */
+  id: string | null;
+  /** The LinkedIn-side id the comments endpoint requires. */
+  socialId: string | null;
+  activityId: string | null;
+  shareUrl: string | null;
+  authorName: string | null;
+  authorHeadline: string | null;
+  authorProfileUrl: string | null;
+  authorPublicIdentifier: string | null;
+  /** Author's LinkedIn member id (ACoAA…), when the response carries one. */
+  authorProviderId: string | null;
+  /** A company page posted, not a person. */
+  authorIsCompany: boolean;
+  text: string | null;
+  /**
+   * ISO when the response carries one. Search often returns LinkedIn's
+   * relative string ("2w"), which is useless as a trigger date, so the raw
+   * value is kept next to it rather than coerced into a timestamp.
+   */
+  postedAt: string | null;
+  postedAtRelative: string | null;
+  reactionCount: number | null;
+  commentCount: number | null;
+};
+
+/**
+ * One search result, mapped defensively.
+ *
+ * Search is a different endpoint from `/posts/{id}` and does not promise the
+ * same shape: the author arrives as an object here and as a plain name string
+ * on comments, and the date is ISO on some responses and relative on others.
+ * Every field therefore has a fallback chain instead of one property read,
+ * which is what kept the commenter harvest from silently producing rows with
+ * null identities.
+ */
+function mapSearchedPost(
+  r: Record<string, unknown>,
+): UnipileSearchedPost | null {
+  const authorObj =
+    r.author && typeof r.author === "object"
+      ? (r.author as Record<string, unknown>)
+      : {};
+  const shareUrl = str(r.share_url) ?? str(r.post_url) ?? str(r.url);
+  const socialId = str(r.social_id) ?? str(r.share_urn) ?? null;
+  // Try every candidate, not just the first non-null one. `social_id` is
+  // usually a urn that parses, but when it carries some other id the post
+  // still has a perfectly good activity id in its share URL, and coalescing
+  // on null alone would drop the post out of the harvest.
+  const activityId = [socialId, shareUrl, str(r.id)].reduce<string | null>(
+    (found, candidate) =>
+      found ?? (candidate ? extractLinkedInActivityId(candidate) : null),
+    null,
+  );
+  const profileUrl =
+    str(authorObj.public_profile_url) ??
+    str(authorObj.profile_url) ??
+    str(r.author_profile_url);
+  const publicIdentifier =
+    str(authorObj.public_identifier) ??
+    (profileUrl
+      ? (profileUrl.match(/linkedin\.com\/in\/([^/?#]+)/i)?.[1] ?? null)
+      : null);
+  const text = str(r.text) ?? str(r.commentary) ?? str(r.content);
+  // On some responses `author` is the display name itself rather than an
+  // object, which is how the comments endpoint behaves.
+  const name =
+    str(authorObj.name) ?? str(r.author_name) ?? str(r.author);
+  // A result with neither text nor an author is not a post we can act on, and
+  // returning it would only pad the count.
+  if (!text && !name) return null;
+
+  const isoDate = str(r.parsed_datetime) ?? str(r.posted_at);
+  const rawDate = str(r.date);
+  return {
+    id: str(r.id),
+    socialId,
+    activityId,
+    shareUrl:
+      shareUrl ??
+      (activityId
+        ? `https://www.linkedin.com/feed/update/urn:li:activity:${activityId}/`
+        : null),
+    authorName: name,
+    authorHeadline: str(authorObj.headline) ?? str(r.author_headline),
+    authorProfileUrl:
+      profileUrl ??
+      (publicIdentifier
+        ? `https://www.linkedin.com/in/${publicIdentifier}`
+        : null),
+    authorPublicIdentifier: publicIdentifier,
+    // The member id is what self-exclusion compares against, so it is read
+    // from every shape the field turns up in, including inside a urn.
+    authorProviderId:
+      str(authorObj.id) ??
+      str(authorObj.member_id) ??
+      str(authorObj.provider_id) ??
+      str(r.author_id) ??
+      (str(authorObj.urn)?.match(/([A-Za-z0-9_-]{10,})$/)?.[1] ?? null),
+    authorIsCompany:
+      isTruthyFlag(authorObj.is_company) ||
+      str(authorObj.type)?.toLowerCase() === "company",
+    text,
+    postedAt: isoDate ?? (rawDate && /^\d{4}-\d{2}/.test(rawDate) ? rawDate : null),
+    postedAtRelative: isoDate ? rawDate : (rawDate ?? null),
+    reactionCount: num(r.reaction_counter ?? r.reaction_count),
+    commentCount: num(r.comment_counter ?? r.comment_count),
+  };
+}
+
+/** What LinkedIn accepts as a recency filter on a post search. */
+export type UnipilePostDatePosted = "past_day" | "past_week" | "past_month";
+
+/**
+ * Search LinkedIn posts by keyword through the connected account.
+ *
+ * This is the free counterpart to `findLinkedInPosts`, which pays Exa per
+ * query. It costs account calls instead of money, so it runs through the
+ * harvest gate and stops at `maxResults`. Only the classic API supports the
+ * posts category; Sales Navigator and Recruiter do not.
+ */
+export async function searchUnipilePosts(opts: {
+  keywords: string;
+  accountId: string;
+  datePosted?: UnipilePostDatePosted;
+  sortBy?: "relevance" | "date";
+  /** Restrict to authors whose headline or profile matches these words. */
+  authorKeywords?: string;
+  maxResults?: number;
+  /**
+   * Drop a result before it counts towards `maxResults`, so paging continues
+   * to fill the gap. Filtering after the fact would silently return fewer
+   * posts than asked for whenever the excluded ones land on the last page.
+   */
+  exclude?: (post: UnipileSearchedPost) => boolean;
+}): Promise<{ posts: UnipileSearchedPost[]; excluded: number }> {
+  const keywords = opts.keywords.trim();
+  if (!keywords) throw new Error("searchUnipilePosts: keywords is required");
+  const max = Math.max(1, Math.min(100, opts.maxResults ?? 25));
+  const out: UnipileSearchedPost[] = [];
+  const seen = new Set<string>();
+  let excluded = 0;
+  let cursor: string | null = null;
+
+  do {
+    const params = new URLSearchParams({ account_id: opts.accountId });
+    // LinkedIn rejects a post search asking for fewer than 3 or more than 49.
+    params.set("limit", String(Math.min(49, Math.max(3, max - out.length))));
+    if (cursor) params.set("cursor", cursor);
+    const body: Record<string, unknown> = {
+      api: "classic",
+      category: "posts",
+      keywords,
+    };
+    if (opts.datePosted) body.date_posted = opts.datePosted;
+    if (opts.sortBy) body.sort_by = opts.sortBy;
+    if (opts.authorKeywords?.trim()) {
+      body.author = { keywords: opts.authorKeywords.trim() };
+    }
+
+    const data = await harvestFetch<{
+      items?: Record<string, unknown>[];
+      cursor?: string | null;
+      paging?: { cursor?: string | null } | null;
+    }>(`/api/v1/linkedin/search?${params.toString()}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+
+    let fresh = 0;
+    for (const raw of data.items ?? []) {
+      const post = mapSearchedPost(raw);
+      if (!post) continue;
+      const key =
+        post.socialId ?? post.activityId ?? post.id ?? post.shareUrl ?? "";
+      if (key && seen.has(key)) continue;
+      if (key) seen.add(key);
+      // A page that is entirely excluded is still progress, so `fresh` counts
+      // it: otherwise the walk would stop on the page where every post was
+      // ours and never reach the ones that were not.
+      fresh += 1;
+      if (opts.exclude?.(post)) {
+        excluded += 1;
+        continue;
+      }
+      out.push(post);
+      if (out.length >= max) break;
+    }
+    // A cursor that keeps paying account calls for nothing new is where this
+    // stops, same rule as the comment walk.
+    if (fresh === 0) break;
+    const next = data.cursor ?? data.paging?.cursor ?? null;
+    cursor = typeof next === "string" && next ? next : null;
+  } while (cursor && out.length < max);
+
+  return { posts: out.slice(0, max), excluded };
 }
 
 export async function getUnipilePost(opts: {
@@ -834,9 +1043,34 @@ async function cachedLinkedInAccounts(): Promise<UnipileAccount[]> {
   return accounts;
 }
 
+/**
+ * Our own profile slug, per account, once.
+ *
+ * Only consulted when the account payload arrives without
+ * `connection_params.im.publicIdentifier`. Memoised because identity is
+ * resolved once per post in a harvest and once per search: without this, the
+ * fallback would spend an account call every time to fetch a value that does
+ * not change.
+ *
+ * A miss is cached too, but only for the account TTL: `getUnipileUserProfile`
+ * returns null for a 429, a timeout and a real "no slug" alike, so keeping a
+ * failure forever would turn one bad minute into self-exclusion off for the
+ * life of the process. A hit is kept, because a vanity does not change on its
+ * own and a reconnect clears this along with the account list.
+ */
+let selfSlugCache = new Map<string, { slug: string | null; at: number }>();
+
+function cachedSelfSlug(accountId: string): { slug: string | null } | null {
+  const entry = selfSlugCache.get(accountId);
+  if (!entry) return null;
+  if (entry.slug) return entry;
+  return Date.now() - entry.at < ACCOUNTS_TTL_MS ? entry : null;
+}
+
 /** Forget the cached account list. For trusted callers only — see below. */
 export function resetUnipileAccountsCache(): void {
   accountsCache = null;
+  selfSlugCache = new Map();
 }
 
 // Two throttles, deliberately not one. Sharing a counter would let the public
@@ -860,6 +1094,10 @@ export function requestUnipileAccountsRefresh(): boolean {
   if (now - lastPublicRefreshAt < ACCOUNTS_TTL_MS) return false;
   lastPublicRefreshAt = now;
   accountsCache = null;
+  // The slug is cached per account id, and a reconnect can hand the same id a
+  // different member: dropping it here keeps self-exclusion from comparing
+  // against whoever was connected before.
+  selfSlugCache = new Map();
   return true;
 }
 
@@ -874,6 +1112,7 @@ function requestUnipileIdentityRetry(): boolean {
   if (now - lastIdentityRetryAt < ACCOUNTS_TTL_MS) return false;
   lastIdentityRetryAt = now;
   accountsCache = null;
+  selfSlugCache = new Map();
   return true;
 }
 
@@ -891,7 +1130,17 @@ function requestUnipileIdentityRetry(): boolean {
  */
 export async function linkedInAccountIdentity(
   accountId?: string | null,
-): Promise<{ accountId: string | null; providerUserId: string | null }> {
+): Promise<{
+  accountId: string | null;
+  providerUserId: string | null;
+  /**
+   * Our own profile slug. Self-exclusion needs it: some endpoints identify an
+   * author by member id and others only by profile URL, and recognising
+   * ourselves in just one of those shapes is the same as not recognising
+   * ourselves at all.
+   */
+  publicIdentifier: string | null;
+}> {
   const wanted = accountId?.trim() || process.env.UNIPILE_LINKEDIN_ACCOUNT_ID?.trim() || null;
 
   let accounts: UnipileAccount[] = [];
@@ -904,7 +1153,7 @@ export async function linkedInAccountIdentity(
       console.warn(
         `[unipile] could not list accounts to resolve self-identity (${err instanceof Error ? err.message : String(err)}); self-exclusion is off for this run.`,
       );
-      return { accountId: wanted, providerUserId: null };
+      return { accountId: wanted, providerUserId: null, publicIdentifier: null };
     }
     throw err;
   }
@@ -928,7 +1177,7 @@ export async function linkedInAccountIdentity(
       console.warn(
         `[unipile] could not refresh accounts to resolve self-identity (${err instanceof Error ? err.message : String(err)}); self-exclusion is off for this run.`,
       );
-      return { accountId: wanted, providerUserId: null };
+      return { accountId: wanted, providerUserId: null, publicIdentifier: null };
     }
   }
   if (wanted && !match) {
@@ -937,9 +1186,46 @@ export async function linkedInAccountIdentity(
     );
   }
 
+  // The slug comes from `connection_params.im.publicIdentifier`, documented on
+  // the LinkedIn account object. It is optional there, so when it is missing
+  // the users endpoint is asked once per account and the answer memoised.
+  // `username` is deliberately not used as a fallback: it holds the login
+  // identifier on credential-linked accounts, and promoting that to a vanity
+  // would compare us against whoever really owns that slug.
+  const resolvedAccountId = wanted || match?.id || null;
+  let publicIdentifier = match?.publicIdentifier ?? null;
+  if (!publicIdentifier && resolvedAccountId && match?.providerUserId) {
+    const cached = cachedSelfSlug(resolvedAccountId);
+    if (cached) {
+      publicIdentifier = cached.slug;
+    } else {
+      try {
+        const self = await getUnipileUserProfile({
+          accountId: resolvedAccountId,
+          identifier: match.providerUserId,
+        });
+        publicIdentifier = self?.publicIdentifier ?? null;
+      } catch (err) {
+        // Same contract as the account list above: not recognising ourselves
+        // is worth less than not harvesting at all.
+        console.warn(
+          `[unipile] could not resolve our own profile slug (${err instanceof Error ? err.message : String(err)}); self-exclusion falls back to the member id.`,
+        );
+        publicIdentifier = null;
+      }
+      // Cached either way. A null carries its timestamp, so it stops the
+      // per-post retry storm without becoming permanent.
+      selfSlugCache.set(resolvedAccountId, {
+        slug: publicIdentifier,
+        at: Date.now(),
+      });
+    }
+  }
+
   return {
-    accountId: wanted || match?.id || null,
+    accountId: resolvedAccountId,
     providerUserId: match?.providerUserId ?? null,
+    publicIdentifier,
   };
 }
 
