@@ -1051,8 +1051,21 @@ async function cachedLinkedInAccounts(): Promise<UnipileAccount[]> {
  * resolved once per post in a harvest and once per search: without this, the
  * fallback would spend an account call every time to fetch a value that does
  * not change.
+ *
+ * A miss is cached too, but only for the account TTL: `getUnipileUserProfile`
+ * returns null for a 429, a timeout and a real "no slug" alike, so keeping a
+ * failure forever would turn one bad minute into self-exclusion off for the
+ * life of the process. A hit is kept, because a vanity does not change on its
+ * own and a reconnect clears this along with the account list.
  */
-let selfSlugCache = new Map<string, string | null>();
+let selfSlugCache = new Map<string, { slug: string | null; at: number }>();
+
+function cachedSelfSlug(accountId: string): { slug: string | null } | null {
+  const entry = selfSlugCache.get(accountId);
+  if (!entry) return null;
+  if (entry.slug) return entry;
+  return Date.now() - entry.at < ACCOUNTS_TTL_MS ? entry : null;
+}
 
 /** Forget the cached account list. For trusted callers only — see below. */
 export function resetUnipileAccountsCache(): void {
@@ -1081,6 +1094,10 @@ export function requestUnipileAccountsRefresh(): boolean {
   if (now - lastPublicRefreshAt < ACCOUNTS_TTL_MS) return false;
   lastPublicRefreshAt = now;
   accountsCache = null;
+  // The slug is cached per account id, and a reconnect can hand the same id a
+  // different member: dropping it here keeps self-exclusion from comparing
+  // against whoever was connected before.
+  selfSlugCache = new Map();
   return true;
 }
 
@@ -1095,6 +1112,7 @@ function requestUnipileIdentityRetry(): boolean {
   if (now - lastIdentityRetryAt < ACCOUNTS_TTL_MS) return false;
   lastIdentityRetryAt = now;
   accountsCache = null;
+  selfSlugCache = new Map();
   return true;
 }
 
@@ -1177,8 +1195,9 @@ export async function linkedInAccountIdentity(
   const resolvedAccountId = wanted || match?.id || null;
   let publicIdentifier = match?.publicIdentifier ?? null;
   if (!publicIdentifier && resolvedAccountId && match?.providerUserId) {
-    if (selfSlugCache.has(resolvedAccountId)) {
-      publicIdentifier = selfSlugCache.get(resolvedAccountId) ?? null;
+    const cached = cachedSelfSlug(resolvedAccountId);
+    if (cached) {
+      publicIdentifier = cached.slug;
     } else {
       try {
         const self = await getUnipileUserProfile({
@@ -1194,9 +1213,12 @@ export async function linkedInAccountIdentity(
         );
         publicIdentifier = null;
       }
-      // Cached either way, including the null: a failed lookup that repeats on
-      // every post is the cost this cache exists to avoid.
-      selfSlugCache.set(resolvedAccountId, publicIdentifier);
+      // Cached either way. A null carries its timestamp, so it stops the
+      // per-post retry storm without becoming permanent.
+      selfSlugCache.set(resolvedAccountId, {
+        slug: publicIdentifier,
+        at: Date.now(),
+      });
     }
   }
 

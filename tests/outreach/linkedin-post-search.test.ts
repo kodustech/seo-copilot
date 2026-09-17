@@ -360,6 +360,48 @@ describe("linkedInAccountIdentity", () => {
     expect(profileCalls).toHaveLength(1);
   });
 
+  it("retries the profile lookup after a failure instead of caching the miss forever", async () => {
+    let profileCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (String(url).includes("/api/v1/users/")) {
+          profileCalls += 1;
+          // First attempt fails the way a 429 or a timeout does: null, with no
+          // way to tell it apart from a real "no slug".
+          if (profileCalls === 1) {
+            return new Response("nope", { status: 429 });
+          }
+          return jsonResponse({
+            provider_id: "ACoAAself",
+            public_identifier: "gabrielmalinosqui",
+          });
+        }
+        return jsonResponse({
+          items: [
+            {
+              id: "acc-li",
+              type: "LINKEDIN",
+              connection_params: { im: { id: "ACoAAself" } },
+            },
+          ],
+        });
+      }),
+    );
+
+    const failed = await linkedInAccountIdentity();
+    expect(failed.publicIdentifier).toBeNull();
+
+    // A negative entry holds only for the account TTL. Expiring it here proves
+    // the lookup is retried rather than written off for the whole process.
+    vi.setSystemTime(new Date(Date.now() + 6 * 60_000));
+    const recovered = await linkedInAccountIdentity();
+
+    expect(recovered.publicIdentifier).toBe("gabrielmalinosqui");
+    expect(profileCalls).toBe(2);
+    vi.useRealTimers();
+  });
+
   it("never treats the login identifier as our slug", async () => {
     // `username` is the login on credential-linked accounts. Promoting it to a
     // slug would compare us against a stranger who happens to own that vanity,
