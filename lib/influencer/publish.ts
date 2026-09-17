@@ -402,6 +402,7 @@ async function loadPublishedDevtoDuplicates(
       .select("id, channel_id, title, content, external_url")
       .eq("status", "published")
       .in("channel_id", channelIds)
+      .order("published_at", { ascending: false, nullsFirst: false })
       .order("id", { ascending: true })
       .range(from, from + pageSize - 1);
     if (error) throw new Error(error.message);
