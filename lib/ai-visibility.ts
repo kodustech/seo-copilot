@@ -529,6 +529,26 @@ function termRegex(term: string): RegExp {
   return new RegExp(`(^|[^a-z0-9])${escapeRegex(term)}(?=$|[^a-z0-9])`, "i");
 }
 
+/**
+ * DataForSEO can include a cited URL in the flattened answer text as well as
+ * in `citations`. A URL is evidence of a cited source, not a brand mention.
+ * Keep normal link labels (for example `[Kodus](https://kodus.io)`) because
+ * the visible label is part of the answer, but remove labels that are only a
+ * domain (for example `[kodus.io](https://kodus.io)`).
+ */
+function answerTextWithoutCitationUrls(text: string): string {
+  const domainOnly = /^(?:https?:\/\/)?(?:www\.)?(?:[a-z0-9-]+\.)+[a-z]{2,24}(?:\/[^\s]*)?$/i;
+  const withMarkdownLinks = text.replace(/\[([^\]]+)\]\(\s*https?:\/\/[^)]+\)/gi, (_match, label: string) =>
+    domainOnly.test(label.trim()) ? "" : label,
+  );
+
+  // Covers both full URLs and bare domains such as the `(kodus.io)` shown by
+  // some assistants next to a cited recommendation.
+  return withMarkdownLinks
+    .replace(/\bhttps?:\/\/[^\s<>()]+|\bwww\.[^\s<>()]+/gi, "")
+    .replace(/\b(?:[a-z0-9-]+\.)+[a-z]{2,24}(?:\/[^\s<>()]*)?/gi, "");
+}
+
 export function domainOf(url: string): string | null {
   try {
     return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
@@ -548,14 +568,15 @@ const OWN_DOMAINS: readonly string[] = BRAND_DOMAINS;
 export function analyzeAnswer(text: string, citations: Citation[], brandTerms: string[], competitorTerms: string[]): Analysis {
   const brand = brandTerms.filter(Boolean);
   const brandRe = brand.map(termRegex);
-  const mentioned = brandRe.some((re) => re.test(text));
+  const answerText = answerTextWithoutCitationUrls(text);
+  const mentioned = brandRe.some((re) => re.test(answerText));
 
   // Where the brand sits in the answer's ranking. Assistants rank in four
   // shapes: numbered items ("1. ", "1) ", "### 2. Name"), top-level bullets,
   // markdown table rows, and a sentence that enumerates bold names
   // ("include **A**, **B**, **C**"). Numbered items win when present, since
   // bullets under them are usually pros and cons, not entries.
-  const lines = text.split(/\r?\n/);
+  const lines = answerText.split(/\r?\n/);
   const numberedRe = /^\s{0,3}(?:#{1,4}\s+)?(?:\*\*)?(\d{1,2})[.)]\s+/;
   const bulletRe = /^(?:[-*•]|\d{1,2}[.)])\s+/;
   const tableRowRe = /^\s*\|/;
@@ -636,7 +657,7 @@ export function analyzeAnswer(text: string, citations: Citation[], brandTerms: s
   const brandLower = new Set(brand.map((b) => b.toLowerCase()));
   for (const term of competitorTerms) {
     if (!term || brandLower.has(term.toLowerCase())) continue;
-    if (termRegex(term).test(text) && !competitors.includes(term)) competitors.push(term);
+    if (termRegex(term).test(answerText) && !competitors.includes(term)) competitors.push(term);
   }
 
   const citedDomains: string[] = [];
