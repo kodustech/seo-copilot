@@ -978,7 +978,9 @@ export async function runInfluencerAgentSession({
               },
             });
             return originalsError
-              ? "Couldn't verify that canonical_url is one of your own published pieces. Queue it again without canonical_url, or retry next shift."
+              ? devtoCrosspost
+                ? "Couldn't verify that canonical_url is one of this persona's published pieces. Retry next shift -- a dev.to crosspost cannot be queued without one."
+                : "Couldn't verify that canonical_url is one of your own published pieces. Queue it again without canonical_url, or retry next shift."
               : devtoCrosspost
                 ? "A dev.to crosspost needs canonical_url set to the exact URL of an article this persona has published. Do not publish a second uncited copy."
                 : "canonical_url has to be a piece you actually published — copy the exact URL from your recent posts, don't write one from memory. Queue it without canonical_url if the original isn't live yet.";

@@ -390,24 +390,32 @@ async function loadPublishedDevtoDuplicates(
   const duplicates = new Map<string, PublishedDuplicate>();
   if (!channelIds.length) return duplicates;
 
-  const { data, error } = await client
-    .from("persona_activities")
-    .select("id, channel_id, title, content, external_url")
-    .eq("status", "published")
-    .in("channel_id", channelIds)
-    .limit(5000);
-  if (error) throw new Error(error.message);
+  const pageSize = 1000;
+  let from = 0;
+  while (true) {
+    const { data, error } = await client
+      .from("persona_activities")
+      .select("id, channel_id, title, content, external_url")
+      .eq("status", "published")
+      .in("channel_id", channelIds)
+      .order("id", { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) throw new Error(error.message);
 
-  for (const row of data ?? []) {
-    if (typeof row.channel_id !== "string" || typeof row.content !== "string") continue;
-    duplicates.set(duplicateActivityKey({
-      channel_id: row.channel_id,
-      title: typeof row.title === "string" ? row.title : null,
-      content: row.content,
-    }), {
-      id: String(row.id),
-      external_url: typeof row.external_url === "string" ? row.external_url : null,
-    });
+    for (const row of data ?? []) {
+      if (typeof row.channel_id !== "string" || typeof row.content !== "string") continue;
+      duplicates.set(duplicateActivityKey({
+        channel_id: row.channel_id,
+        title: typeof row.title === "string" ? row.title : null,
+        content: row.content,
+      }), {
+        id: String(row.id),
+        external_url: typeof row.external_url === "string" ? row.external_url : null,
+      });
+    }
+
+    if (!data || data.length < pageSize) break;
+    from += pageSize;
   }
   return duplicates;
 }
@@ -1046,6 +1054,12 @@ export async function runInfluencerPublishCron(
         external_url: outcome.external_url,
         error: null,
       });
+      if (channel?.platform === "devto") {
+        publishedDevtoDuplicates.set(duplicateActivityKey(activity), {
+          id: activity.id,
+          external_url: outcome.external_url,
+        });
+      }
       todayCount.set(key, (todayCount.get(key) ?? 0) + 1);
       summary.published += 1;
     } catch (error) {
