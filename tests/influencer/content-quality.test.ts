@@ -83,4 +83,38 @@ describe("validateLongFormContent", () => {
     expect(issues.map((issue) => issue.code)).toContain("long_form_sources_missing");
     expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
   });
+
+  it("handles nested brackets in image alt text without treating the image URL as raw", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Figure [1]](https://example.com/chart.png)",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
+  });
+
+  it("keeps URLs in image alt text visible to the raw URL check", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![See https://example.com/page](https://cdn.example.com/chart.png)",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+  });
 });
