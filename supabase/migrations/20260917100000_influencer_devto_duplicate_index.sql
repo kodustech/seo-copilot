@@ -1,4 +1,5 @@
--- The index is created concurrently by the db-migrate workflow after
--- `supabase db push` completes. CREATE INDEX CONCURRENTLY cannot run inside
--- the transaction used by Supabase migrations, so this migration is the
--- versioned marker while the operational DDL lives in supabase/operations/.
+-- Keep the bounded Dev.to duplicate scan on the published timeline.
+-- The partial predicate avoids indexing drafts and other non-published queue rows.
+create index if not exists persona_activities_published_at_idx
+  on public.persona_activities (published_at desc nulls last, id)
+  where status = 'published';
