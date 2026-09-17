@@ -624,6 +624,8 @@ export type UnipileSearchedPost = {
   authorHeadline: string | null;
   authorProfileUrl: string | null;
   authorPublicIdentifier: string | null;
+  /** Author's LinkedIn member id (ACoAA…), when the response carries one. */
+  authorProviderId: string | null;
   /** A company page posted, not a person. */
   authorIsCompany: boolean;
   text: string | null;
@@ -657,8 +659,14 @@ function mapSearchedPost(
       : {};
   const shareUrl = str(r.share_url) ?? str(r.post_url) ?? str(r.url);
   const socialId = str(r.social_id) ?? str(r.share_urn) ?? null;
-  const activityId = extractLinkedInActivityId(
-    socialId ?? shareUrl ?? str(r.id) ?? undefined,
+  // Try every candidate, not just the first non-null one. `social_id` is
+  // usually a urn that parses, but when it carries some other id the post
+  // still has a perfectly good activity id in its share URL, and coalescing
+  // on null alone would drop the post out of the harvest.
+  const activityId = [socialId, shareUrl, str(r.id)].reduce<string | null>(
+    (found, candidate) =>
+      found ?? (candidate ? extractLinkedInActivityId(candidate) : null),
+    null,
   );
   const profileUrl =
     str(authorObj.public_profile_url) ??
@@ -697,6 +705,14 @@ function mapSearchedPost(
         ? `https://www.linkedin.com/in/${publicIdentifier}`
         : null),
     authorPublicIdentifier: publicIdentifier,
+    // The member id is what self-exclusion compares against, so it is read
+    // from every shape the field turns up in, including inside a urn.
+    authorProviderId:
+      str(authorObj.id) ??
+      str(authorObj.member_id) ??
+      str(authorObj.provider_id) ??
+      str(r.author_id) ??
+      (str(authorObj.urn)?.match(/([A-Za-z0-9_-]{10,})$/)?.[1] ?? null),
     authorIsCompany:
       isTruthyFlag(authorObj.is_company) ||
       str(authorObj.type)?.toLowerCase() === "company",

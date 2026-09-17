@@ -7504,7 +7504,7 @@ export const sequenceCompleteTask = tool({
 
 export const linkedinSearchPosts = tool({
   description:
-    "Search LinkedIn posts by keyword through the connected account, and get each post's author, headline, profile URL, date and text back in one call. Free: it spends LinkedIn account calls instead of paid Exa searches, which is what linkedinFindPosts does. Use it to build a queue of people describing a problem in their own words. Read-only, writes nothing. Every result carries voice.ownTeam (the author wrote about their own team) and voice.vendorish (reads like selling), so a queue can drop marketing without opening profiles. One search is one account call plus one per extra page, and it runs inside the same paced budget as the commenter harvest.",
+    "Search LinkedIn posts by keyword through the connected account, and get each post's author, headline, profile URL, date and text back in one call. Free: it spends LinkedIn account calls instead of paid Exa searches, which is what linkedinFindPosts does. Use it to build a queue of people describing a problem in their own words. Read-only, writes nothing. Every result carries voice.ownTeam (the author wrote about their own team) and voice.vendorish (reads like selling), so a queue can drop marketing without opening profiles. Posts written by the connected account are excluded and counted in excludedSelf. One search is one account call plus one per extra page, and it runs inside the same paced budget as the commenter harvest.",
   inputSchema: z.object({
     keywords: z
       .string()
@@ -7569,6 +7569,7 @@ export const linkedinSearchPosts = tool({
         count: res.posts.length,
         ownTeam: res.posts.filter((p) => p.voice.ownTeam).length,
         vendorish: res.posts.filter((p) => p.voice.vendorish).length,
+        excludedSelf: res.excludedSelf,
         budget: res.budget,
         posts: res.posts,
       };

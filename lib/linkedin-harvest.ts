@@ -114,7 +114,32 @@ export type SearchPostsResult = {
   posts: SearchedPost[];
   /** Account calls this search spent, and what is left in the window. */
   budget: { usedByThisCall: number; used: number; max: number };
+  /** Posts dropped because we wrote them. */
+  excludedSelf: number;
 };
+
+/**
+ * Is this post ours?
+ *
+ * Keyword search has no "not me" filter, so a search for the exact topic we
+ * post about returns our own posts, and a queue built from it would hand the
+ * founder his own writing as a prospect. The commenter harvest already
+ * excludes self by member id; this is the same rule on the search path.
+ *
+ * Compared by member id first, then by profile slug, because the search
+ * response does not always carry the id.
+ */
+export function isSelfAuthored(
+  post: Pick<UnipileSearchedPost, "authorProviderId" | "authorPublicIdentifier">,
+  self: { providerUserId?: string | null; publicIdentifier?: string | null },
+): boolean {
+  const selfId = self.providerUserId?.trim().toLowerCase();
+  const postId = post.authorProviderId?.trim().toLowerCase();
+  if (selfId && postId && selfId === postId) return true;
+  const selfSlug = self.publicIdentifier?.trim().toLowerCase();
+  const postSlug = post.authorPublicIdentifier?.trim().toLowerCase();
+  return Boolean(selfSlug && postSlug && selfSlug === postSlug);
+}
 
 /**
  * Keyword search for LinkedIn posts, through the connected account.
@@ -159,13 +184,18 @@ export async function searchLinkedInPosts(opts: {
   });
   const budget = unipileHarvestBudget();
 
+  const kept = posts.filter(
+    (p) => !isSelfAuthored(p, { providerUserId: identity.providerUserId }),
+  );
+
   return {
-    posts: posts.map((p) => ({ ...p, voice: classifyPostVoice(p.text) })),
+    posts: kept.map((p) => ({ ...p, voice: classifyPostVoice(p.text) })),
     budget: {
       usedByThisCall: Math.max(0, budget.used - callsBefore),
       used: budget.used,
       max: budget.max,
     },
+    excludedSelf: posts.length - kept.length,
   };
 }
 

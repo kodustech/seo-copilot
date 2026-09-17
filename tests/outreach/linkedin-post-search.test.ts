@@ -7,7 +7,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { classifyPostVoice } from "../../lib/linkedin-harvest";
+import { classifyPostVoice, isSelfAuthored } from "../../lib/linkedin-harvest";
 import { searchUnipilePosts } from "../../lib/unipile";
 
 type Call = { url: string; init: RequestInit };
@@ -139,6 +139,50 @@ describe("searchUnipilePosts", () => {
     expect(calls[1].url).toContain("cursor=next-1");
   });
 
+  it("falls through to the share URL when social_id carries no activity id", async () => {
+    stubFetch([
+      {
+        items: [
+          {
+            ...postItem,
+            // A real id, just not an activity one. Coalescing on null alone
+            // would stop here and leave the post unharvestable.
+            social_id: "urn:li:fsd_update:12345",
+          },
+        ],
+        cursor: null,
+      },
+    ]);
+
+    const posts = await searchUnipilePosts({
+      keywords: "code review",
+      accountId: "acc-1",
+    });
+
+    expect(posts[0].activityId).toBe("7500157386603720705");
+  });
+
+  it("reads the author member id from a urn when there is no id field", async () => {
+    stubFetch([
+      {
+        items: [
+          {
+            ...postItem,
+            author: { name: "Urn Only", urn: "urn:li:fsd_profile:ACoAAAwjjB0B" },
+          },
+        ],
+        cursor: null,
+      },
+    ]);
+
+    const posts = await searchUnipilePosts({
+      keywords: "code review",
+      accountId: "acc-1",
+    });
+
+    expect(posts[0].authorProviderId).toBe("ACoAAAwjjB0B");
+  });
+
   it("keeps a result that has text but no author object", async () => {
     stubFetch([
       {
@@ -194,5 +238,41 @@ describe("classifyPostVoice", () => {
       ownTeam: false,
       vendorish: false,
     });
+  });
+});
+
+describe("isSelfAuthored", () => {
+  it("matches on the member id", () => {
+    expect(
+      isSelfAuthored(
+        { authorProviderId: "ACoAAself", authorPublicIdentifier: "someone" },
+        { providerUserId: "acoaaself" },
+      ),
+    ).toBe(true);
+  });
+
+  it("matches on the profile slug when the response has no member id", () => {
+    expect(
+      isSelfAuthored(
+        { authorProviderId: null, authorPublicIdentifier: "GabrielMalinosqui" },
+        { publicIdentifier: "gabrielmalinosqui" },
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps other people, and does not treat two unknowns as a match", () => {
+    expect(
+      isSelfAuthored(
+        { authorProviderId: "ACoAAother", authorPublicIdentifier: "other" },
+        { providerUserId: "ACoAAself", publicIdentifier: "self" },
+      ),
+    ).toBe(false);
+    // Self-exclusion off (no identity resolved) must not drop every post.
+    expect(
+      isSelfAuthored(
+        { authorProviderId: null, authorPublicIdentifier: null },
+        { providerUserId: null, publicIdentifier: null },
+      ),
+    ).toBe(false);
   });
 });
