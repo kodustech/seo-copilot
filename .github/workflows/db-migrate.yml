@@ -7,12 +7,14 @@ on:
     branches: [main]
     paths:
       - "supabase/migrations/**"
+      - "supabase/operations/**"
       - ".github/workflows/db-migrate.yml"
   # Same check on PRs, so a colliding version is caught before it is merged —
   # on main it is already too late to rename without rewriting history.
   pull_request:
     paths:
       - "supabase/migrations/**"
+      - "supabase/operations/**"
       - ".github/workflows/db-migrate.yml"
   workflow_dispatch:
 
@@ -119,3 +121,18 @@ jobs:
         run: |
           set -euo pipefail
           supabase db push --yes
+
+      - name: Build non-blocking operational indexes
+        env:
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          set -euo pipefail
+          PGPASSWORD="$SUPABASE_DB_PASSWORD" psql \
+            --host "db.${SUPABASE_PROJECT_REF}.supabase.co" \
+            --port 5432 \
+            --username postgres \
+            --dbname postgres \
+            --sslmode require \
+            --set ON_ERROR_STOP=1 \
+            --file supabase/operations/20260917100000_influencer_devto_duplicate_index.sql
