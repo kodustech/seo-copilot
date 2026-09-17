@@ -375,60 +375,6 @@ async function publishToDevto(
   };
 }
 
-type PublishedDuplicate = Pick<PersonaActivity, "id" | "external_url">;
-
-function duplicateActivityKey(
-  activity: Pick<PersonaActivity, "channel_id" | "title" | "content">,
-): string {
-  return JSON.stringify([activity.channel_id, activity.title, activity.content]);
-}
-
-async function loadPublishedDevtoDuplicates(
-  client: SupabaseClient,
-  channelIds: string[],
-): Promise<Map<string, PublishedDuplicate>> {
-  const duplicates = new Map<string, PublishedDuplicate>();
-  if (!channelIds.length) return duplicates;
-
-  const pageSize = 1000;
-  // Bound the scan: duplicate risk is highest among recent activity, while
-  // loading unbounded historical content would make each cron run grow forever.
-  const maxPages = 5;
-  let from = 0;
-  let page = 0;
-  while (page < maxPages) {
-    const { data, error } = await client
-      .from("persona_activities")
-      .select("id, channel_id, title, content, external_url")
-      .eq("status", "published")
-      .in("channel_id", channelIds)
-      // Use the existing created_at index rather than adding a new index just
-      // for this bounded duplicate scan. Queue activities are created close
-      // to publication, so this keeps the newest candidates near the front.
-      .order("created_at", { ascending: false })
-      .order("id", { ascending: true })
-      .range(from, from + pageSize - 1);
-    if (error) throw new Error(error.message);
-
-    for (const row of data ?? []) {
-      if (typeof row.channel_id !== "string" || typeof row.content !== "string") continue;
-      duplicates.set(duplicateActivityKey({
-        channel_id: row.channel_id,
-        title: typeof row.title === "string" ? row.title : null,
-        content: row.content,
-      }), {
-        id: String(row.id),
-        external_url: typeof row.external_url === "string" ? row.external_url : null,
-      });
-    }
-
-    page += 1;
-    if (!data || data.length < pageSize) break;
-    from += pageSize;
-  }
-  return duplicates;
-}
-
 // `||` (not `??`) so an empty AICODEREVIEW_API_URL falls back instead of
 // producing a broken relative URL.
 export const DEFAULT_BLOG_API_URL = (
@@ -956,15 +902,6 @@ export async function runInfluencerPublishCron(
   const personaById = new Map(personas.map((p) => [p.id, p]));
   const channelById = new Map(channels.map((c) => [c.id, c]));
   const fleetHandles = buildFleetHandles(personas, channels);
-  const publishedDevtoDuplicates = await loadPublishedDevtoDuplicates(
-    client,
-    Array.from(new Set(
-      due
-        .map((activity) => channelById.get(activity.channel_id))
-        .filter((channel): channel is PersonaChannel => channel?.platform === "devto")
-        .map((channel) => channel.id),
-    )),
-  );
   const dayStart = dayStartUtcIso(now);
 
   // Per-channel counts for this run: DB count + what we publish in this loop.
@@ -998,18 +935,6 @@ export async function runInfluencerPublishCron(
       publishedToday: todayCount.get(key) ?? 0,
       now,
     });
-
-    if (decision.action === "publish" && channel?.platform === "devto") {
-      const duplicate = publishedDevtoDuplicates.get(duplicateActivityKey(activity));
-      if (duplicate) {
-        await updateActivity(client, activity.id, {
-          status: "discarded",
-          error: `Duplicate of published activity ${duplicate.id}${duplicate.external_url ? ` (${duplicate.external_url})` : "."}`,
-        });
-        summary.rejected += 1;
-        continue;
-      }
-    }
 
     if (decision.action === "skip") {
       summary.skipped += 1;
@@ -1063,12 +988,6 @@ export async function runInfluencerPublishCron(
         external_url: outcome.external_url,
         error: null,
       });
-      if (channel?.platform === "devto") {
-        publishedDevtoDuplicates.set(duplicateActivityKey(activity), {
-          id: activity.id,
-          external_url: outcome.external_url,
-        });
-      }
       todayCount.set(key, (todayCount.get(key) ?? 0) + 1);
       summary.published += 1;
     } catch (error) {
