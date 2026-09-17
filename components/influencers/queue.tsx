@@ -7,7 +7,6 @@ import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { MarkdownContent } from "@/components/markdown-content";
 
 import {
   Counter,
@@ -81,8 +80,10 @@ export function ReviewQueue({
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error || `Failed to ${action} (${res.status})`);
     }
+    const body = await res.json().catch(() => ({}));
     if (action === "save_draft") {
-      setActivities((prev) => prev.map((a) => (a.id === id ? { ...a, content: content ?? a.content, status: "draft", scheduled_at: null, error: null } : a)));
+      const updated = body.activity as Partial<Activity> | undefined;
+      setActivities((prev) => prev.map((a) => (a.id === id ? { ...a, ...(updated ?? {}) } : a)));
     } else {
       setActivities((prev) => prev.filter((a) => a.id !== id));
     }
@@ -233,10 +234,9 @@ function QueueItem({
           autoFocus
         />
       ) : (
-        <MarkdownContent
-          text={content}
-          className="max-h-72 overflow-y-auto rounded-md border border-white/[0.06] bg-neutral-950/40 p-3 text-sm leading-relaxed"
-        />
+        <p className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-md border border-white/[0.06] bg-neutral-950/40 p-3 text-sm leading-relaxed text-neutral-200">
+          {content}
+        </p>
       )}
 
       {activity.error ? <p className={cls.errorText}>{activity.error}</p> : null}

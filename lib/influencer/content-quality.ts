@@ -4,7 +4,7 @@ export type ContentQualityIssue = {
 };
 
 const LONG_FORM_PLATFORMS = new Set(["blog", "devto", "hackernoon"]);
-const MARKDOWN_LINK = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi;
+const MARKDOWN_LINK = /(?<!!)\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi;
 const RAW_URL = /https?:\/\/[^\s)]+/gi;
 const WEAK_ANCHORS = new Set(["here", "source", "link", "click here"]);
 
@@ -55,7 +55,8 @@ export function validateLongFormContent(input: {
       message: "Long-form articles need at least 3 H2 sections (the title is the page H1).",
     });
   }
-  if (subheadings.some((match) => !headings.some((heading) => heading.index! < match.index!))) {
+  const firstH2Index = headings[0]?.index ?? Infinity;
+  if (subheadings.some((match) => firstH2Index > match.index!)) {
     issues.push({
       code: "long_form_heading_order",
       message: "H3 sections must follow an H2 section; do not start with H3 headings.",

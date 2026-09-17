@@ -126,7 +126,8 @@ export async function PATCH(
 
     // Guarded update: only applies while the row is still reviewable, so a
     // concurrent reviewer (or the publisher claiming it) wins cleanly.
-    const activity = await updateActivityIfStatus(client, id, patch, REVIEWABLE);
+    const allowedFrom: ActivityStatus[] = action === "cancel_schedule" ? ["scheduled"] : REVIEWABLE;
+    const activity = await updateActivityIfStatus(client, id, patch, allowedFrom);
     if (!activity) {
       return NextResponse.json(
         {

@@ -65,4 +65,22 @@ describe("validateLongFormContent", () => {
 
     expect(issues.map((issue) => issue.code)).toContain("long_form_weak_anchor");
   });
+
+  it("does not count images as research links", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Benchmark chart](https://example.com/chart.png)",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_sources_missing");
+    expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+  });
 });
