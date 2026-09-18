@@ -36,13 +36,15 @@ export async function PATCH(
       body.action === "approve" ||
       body.action === "discard" ||
       body.action === "edit" ||
-      body.action === "published"
+      body.action === "published" ||
+      body.action === "save_draft" ||
+      body.action === "cancel_schedule"
         ? body.action
         : null;
 
     if (!action) {
       return NextResponse.json(
-        { error: "action must be approve, discard, edit or published." },
+        { error: "action must be approve, discard, edit, published, save_draft or cancel_schedule." },
         { status: 400 },
       );
     }
@@ -66,6 +68,12 @@ export async function PATCH(
     if (action === "published" && !handPosted) {
       return NextResponse.json(
         { error: "Only hand-posted channels are marked published by a person; this one publishes on its own." },
+        { status: 400 },
+      );
+    }
+    if (action === "cancel_schedule" && current.status !== "scheduled") {
+      return NextResponse.json(
+        { error: "Only scheduled activities can have their schedule cancelled." },
         { status: 400 },
       );
     }
@@ -101,6 +109,16 @@ export async function PATCH(
       patch.error = null;
     } else if (action === "discard") {
       patch.status = "discarded";
+    } else if (action === "save_draft") {
+      patch.status = "draft";
+      patch.scheduled_at = null;
+      patch.approved_by = null;
+      patch.error = null;
+    } else if (action === "cancel_schedule") {
+      patch.status = "draft";
+      patch.scheduled_at = null;
+      patch.approved_by = null;
+      patch.error = null;
     } else if (!Object.keys(patch).length) {
       // Plain edit with nothing to change: return as-is.
       return NextResponse.json({ activity: current });
@@ -108,7 +126,8 @@ export async function PATCH(
 
     // Guarded update: only applies while the row is still reviewable, so a
     // concurrent reviewer (or the publisher claiming it) wins cleanly.
-    const activity = await updateActivityIfStatus(client, id, patch, REVIEWABLE);
+    const allowedFrom: ActivityStatus[] = action === "cancel_schedule" ? ["scheduled"] : REVIEWABLE;
+    const activity = await updateActivityIfStatus(client, id, patch, allowedFrom);
     if (!activity) {
       return NextResponse.json(
         {

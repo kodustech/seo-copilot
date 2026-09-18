@@ -7,7 +7,6 @@ import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { MarkdownContent } from "@/components/markdown-content";
 
 import {
   Counter,
@@ -24,7 +23,7 @@ import {
   type Persona,
 } from "./shared";
 
-type ReviewAction = "approve" | "discard" | "published";
+type ReviewAction = "approve" | "discard" | "published" | "save_draft";
 
 /**
  * The review queue across the fleet. A draft reads as text first; the
@@ -81,7 +80,13 @@ export function ReviewQueue({
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error || `Failed to ${action} (${res.status})`);
     }
-    setActivities((prev) => prev.filter((a) => a.id !== id));
+    const body = await res.json().catch(() => ({}));
+    if (action === "save_draft") {
+      const updated = body.activity as Partial<Activity> | undefined;
+      setActivities((prev) => prev.map((a) => (a.id === id ? { ...a, ...(updated ?? {}) } : a)));
+    } else {
+      setActivities((prev) => prev.filter((a) => a.id !== id));
+    }
     onChanged();
   }
 
@@ -229,10 +234,9 @@ function QueueItem({
           autoFocus
         />
       ) : (
-        <MarkdownContent
-          text={content}
-          className="max-h-72 overflow-y-auto rounded-md border border-white/[0.06] bg-neutral-950/40 p-3 text-sm leading-relaxed"
-        />
+        <p className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-md border border-white/[0.06] bg-neutral-950/40 p-3 text-sm leading-relaxed text-neutral-200">
+          {content}
+        </p>
       )}
 
       {activity.error ? <p className={cls.errorText}>{activity.error}</p> : null}
@@ -248,6 +252,12 @@ function QueueItem({
       ) : null}
 
       <div className="flex flex-wrap items-center gap-2">
+        {editing ? (
+          <button type="button" disabled={busy !== null || !content.trim()} onClick={() => act("save_draft")} className={cls.outline}>
+            {busy === "save_draft" ? <Loader2 className="size-3.5 animate-spin" /> : null}
+            Save draft
+          </button>
+        ) : null}
         {handPosted ? (
           <button type="button" disabled={busy !== null || !content.trim()} onClick={() => act("published")} className={cls.primary}>
             {busy === "published" ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}

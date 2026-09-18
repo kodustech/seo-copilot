@@ -1,10 +1,14 @@
+import remarkGfm from "remark-gfm";
+import remarkParse from "remark-parse";
+import { unified } from "unified";
+
 export type ContentQualityIssue = {
   code: string;
   message: string;
 };
 
 const LONG_FORM_PLATFORMS = new Set(["blog", "devto", "hackernoon"]);
-const MARKDOWN_LINK = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi;
+const MARKDOWN_LINK = /(?<!!)\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi;
 const RAW_URL = /https?:\/\/[^\s)]+/gi;
 const WEAK_ANCHORS = new Set(["here", "source", "link", "click here"]);
 
@@ -23,6 +27,37 @@ function externalLinks(content: string): Array<{ anchor: string; url: string }> 
   }));
 }
 
+/** Remove only images recognized by the CommonMark parser used by remark.
+ * Keep their alt text so a visible bare URL there is still checked.
+ * Invalid constructs remain untouched, including interrupted image titles.
+ */
+function withoutImageDestinations(content: string): string {
+  const tree = unified().use(remarkParse).use(remarkGfm).parse(content);
+  const pending: Array<typeof tree | (typeof tree.children)[number]> = [tree];
+  const images: Array<{ start: number; end: number; alt: string }> = [];
+  while (pending.length) {
+    const node = pending.pop()!;
+    if (node.type === "image") {
+      const start = node.position?.start.offset;
+      const end = node.position?.end.offset;
+      if (start !== undefined && end !== undefined) {
+        images.push({ start, end, alt: node.alt ?? "" });
+      }
+    } else if ("children" in node) {
+      pending.push(...node.children);
+    }
+  }
+  images.sort((a, b) => a.start - b.start);
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const image of images) {
+    parts.push(content.slice(cursor, image.start), image.alt);
+    cursor = image.end;
+  }
+  parts.push(content.slice(cursor));
+  return parts.join("");
+}
+
 /**
  * Long-form content has a different contract from social content. This is a
  * deliberately small, deterministic gate: it catches objective failures
@@ -38,7 +73,7 @@ export function validateLongFormContent(input: {
   if (!LONG_FORM_PLATFORMS.has(input.platform)) return [];
 
   const issues: ContentQualityIssue[] = [];
-  const content = input.content.trim();
+  const content = input.content.replace(/\r\n?/g, "\n").trim();
   const headings = Array.from(content.matchAll(/^##\s+(.+)$/gm));
   const subheadings = Array.from(content.matchAll(/^###\s+(.+)$/gm));
   const links = externalLinks(content);
@@ -55,7 +90,8 @@ export function validateLongFormContent(input: {
       message: "Long-form articles need at least 3 H2 sections (the title is the page H1).",
     });
   }
-  if (subheadings.some((match) => !headings.some((heading) => heading.index! < match.index!))) {
+  const firstH2Index = headings[0]?.index ?? Infinity;
+  if (subheadings.some((match) => firstH2Index > match.index!)) {
     issues.push({
       code: "long_form_heading_order",
       message: "H3 sections must follow an H2 section; do not start with H3 headings.",
@@ -75,7 +111,8 @@ export function validateLongFormContent(input: {
   }
 
   const linkedUrls = new Set(links.map(({ url }) => url));
-  const unlinkedUrls = (content.match(RAW_URL) ?? []).filter((url) => !linkedUrls.has(url));
+  const scannableContent = withoutImageDestinations(content);
+  const unlinkedUrls = (scannableContent.match(RAW_URL) ?? []).filter((url) => !linkedUrls.has(url));
   if (unlinkedUrls.length) {
     issues.push({
       code: "long_form_raw_url",

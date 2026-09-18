@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, ExternalLink, Loader2, Pause, Play } from "lucide-react";
+import { ArrowLeft, Check, ExternalLink, Loader2, Pause, Pencil, Play, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -102,6 +102,20 @@ export function PersonaDetail({
     }
   }
 
+  async function updateActivity(id: string, action: "save_draft" | "cancel_schedule", content?: string) {
+    const res = await fetch(`/api/influencers/activities/${id}`, {
+      method: "PATCH",
+      headers: authHeaders(token),
+      body: JSON.stringify({ action, ...(content ? { content } : {}) }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `Failed to ${action}`);
+    }
+    await loadActivities();
+    onChanged();
+  }
+
   const weekAgo = useMemo(() => Date.now() - 7 * 24 * 60 * 60 * 1000, []);
   const publishedThisWeek = activities.filter((a) => a.status === "published" && new Date(a.published_at ?? a.created_at).getTime() >= weekAgo).length;
   const failed = activities.filter((a) => a.status === "failed").length;
@@ -171,7 +185,7 @@ export function PersonaDetail({
             <PlanTab token={token} persona={persona} />
           </TabsContent>
           <TabsContent value="timeline">
-            <Timeline persona={persona} activities={activities} loading={loadingActivities} />
+            <Timeline persona={persona} activities={activities} loading={loadingActivities} onAction={updateActivity} />
           </TabsContent>
           <TabsContent value="runs">
             <RunsTab token={token} persona={persona} onChanged={onChanged} />
@@ -205,8 +219,22 @@ function Stat({ label, value, tone }: { label: string; value: React.ReactNode; t
  * text; a row expands on click. The feed lane the draft came from stays off
  * the row: it read as a channel and was not one.
  */
-function Timeline({ persona, activities, loading }: { persona: Persona; activities: Activity[]; loading: boolean }) {
+function Timeline({
+  persona,
+  activities,
+  loading,
+  onAction,
+}: {
+  persona: Persona;
+  activities: Activity[];
+  loading: boolean;
+  onAction: (id: string, action: "save_draft" | "cancel_schedule", content?: string) => Promise<void>;
+}) {
   const [openId, setOpenId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState("");
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const channelById = useMemo(() => new Map(persona.channels.map((c) => [c.id, c])), [persona.channels]);
 
   const groups = useMemo(() => {
@@ -235,6 +263,7 @@ function Timeline({ persona, activities, loading }: { persona: Persona; activiti
               {items.map((a) => {
                 const channel = channelById.get(a.channel_id);
                 const open = openId === a.id;
+                const editing = editingId === a.id;
                 const when = a.published_at ?? a.created_at;
                 return (
                   <li key={a.id}>
@@ -265,6 +294,77 @@ function Timeline({ persona, activities, loading }: { persona: Persona; activiti
                         ) : null}
                         {a.scheduled_at && a.status === "scheduled" ? <span>Scheduled for {fmtDayFull(a.scheduled_at)} {fmtTime(a.scheduled_at)}</span> : null}
                         {a.error ? <span className="text-red-300">{a.error}</span> : null}
+                        {a.status === "scheduled" ? (
+                          <>
+                            {editing ? (
+                              <>
+                                <textarea
+                                  value={editContent}
+                                  onChange={(event) => setEditContent(event.target.value)}
+                                  rows={Math.min(14, Math.max(4, editContent.split("\n").length + 1))}
+                                  className={cn(cls.textarea, "order-first basis-full")}
+                                  autoFocus
+                                />
+                                <button
+                                  type="button"
+                                  disabled={busyAction !== null || !editContent.trim()}
+                                  onClick={async () => {
+                                    setBusyAction(a.id);
+                                    setActionError(null);
+                                    try {
+                                      await onAction(a.id, "save_draft", editContent.trim());
+                                      setEditingId(null);
+                                    } catch (err) {
+                                      setActionError(err instanceof Error ? err.message : "Failed to save draft");
+                                    } finally {
+                                      setBusyAction(null);
+                                    }
+                                  }}
+                                  className={cls.primary}
+                                >
+                                  {busyAction === a.id ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
+                                  Save draft
+                                </button>
+                                <button type="button" disabled={busyAction !== null} onClick={() => setEditingId(null)} className={cls.ghost}>
+                                  <X className="size-3.5" /> Cancel edit
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingId(a.id);
+                                  setEditContent(a.content);
+                                  setActionError(null);
+                                }}
+                                className={cls.ghost}
+                              >
+                                <Pencil className="size-3.5" /> Edit
+                              </button>
+                            )}
+                            {!editing ? (
+                              <button
+                                type="button"
+                                disabled={busyAction !== null}
+                                onClick={async () => {
+                                  setBusyAction(a.id);
+                                  setActionError(null);
+                                  try {
+                                    await onAction(a.id, "cancel_schedule");
+                                  } catch (err) {
+                                    setActionError(err instanceof Error ? err.message : "Failed to cancel schedule");
+                                  } finally {
+                                    setBusyAction(null);
+                                  }
+                                }}
+                                className={cn(cls.ghost, "hover:text-amber-300")}
+                              >
+                                Cancel schedule
+                              </button>
+                            ) : null}
+                          </>
+                        ) : null}
+                        {actionError && openId === a.id ? <span className={cls.errorText}>{actionError}</span> : null}
                       </div>
                     ) : null}
                   </li>

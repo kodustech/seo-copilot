@@ -65,4 +65,296 @@ describe("validateLongFormContent", () => {
 
     expect(issues.map((issue) => issue.code)).toContain("long_form_weak_anchor");
   });
+  it("does not count images as research links", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Benchmark chart](https://example.com/chart.png)",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_sources_missing");
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
+  });
+
+  it("handles nested brackets in image alt text without treating the image URL as raw", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Figure [1]](https://example.com/chart.png)",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
+  });
+
+  it("keeps URLs in image alt text visible to the raw URL check", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![See https://example.com/page](https://cdn.example.com/chart.png)",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+  });
+
+  it("does not hide a raw URL after an image on the same line", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Figure [1]](https://cdn.example.com/chart.png https://example.com/report)",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+  });
+
+  it("keeps an unclosed image visible to the raw URL check", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Dashboard](https://cdn.example.com/dashboard.png",
+        "Read https://example.com/report for the details.",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+  });
+
+  it("accepts an image whose alt text spans multiple lines", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![latency\nby region](https://cdn.example.com/latency.png)",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
+  });
+
+  it("accepts valid image destinations and title delimiters", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Single quoted title](https://cdn.example.com/chart.png 'caption')",
+        "![Parenthesized title](https://cdn.example.com/chart.png (caption))",
+        "![Trailing whitespace](https://cdn.example.com/chart.png )",
+        "![Angle bracket destination](<https://cdn.example.com/chart image.png>)",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
+  });
+
+  it("accepts a non-blank multiline image title", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Chart](https://cdn.example.com/chart.png \"Figure\nfrom Q3\")",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
+  });
+
+  it("does not hide URLs in invalid image title or angle-destination syntax", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Blank line](https://cdn.example.com/chart.png\n\n\"caption\")",
+        "![Invalid angle](<https://cdn.example.com/chart.png <https://example.com/report>)",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+  });
+
+  it("accepts a title after a CRLF without accepting a blank line", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Chart](https://cdn.example.com/chart.png\r\n\"Figure 1\")",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
+  });
+
+  it("accepts a title after a lone CR line ending", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Chart](https://cdn.example.com/chart.png\r\"Figure 1\")",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
+  });
+
+  it("does not accept a blank title line made from CR characters", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Chart](https://cdn.example.com/chart.png\r\"Figure\r\r1\")",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+  });
+
+  it("does not hide URLs after a block-level continuation in an image title", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Chart](https://cdn.example.com/chart.png \"Figure\n> quoted https://example.com/report\")",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+  });
+
+  it("does not hide URLs after HTML or thematic-break continuations in an image title", () => {
+    for (const continuation of [
+      "<div>https://example.com/html</div>",
+      "***\nplain text",
+    ]) {
+      const issues = validateLongFormContent({
+        platform: "blog",
+        content: [
+          "## Context",
+          body(270),
+          "## Evidence",
+          body(270),
+          "## Decision",
+          body(270),
+          `![Chart](https://cdn.example.com/chart.png \"Figure\n${continuation}\")`,
+        ].join("\n\n"),
+      });
+
+      expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+    }
+  });
+
+  it.each([
+    "<div>ok</div>",
+    "<script>ok</script>",
+    "<pre>ok</pre>",
+    "<!-- comment -->",
+    "<?instruction?>",
+    "<![CDATA[text]]>",
+    "</div>",
+    "***\nplain text",
+    "___\nplain text",
+    "* * *\nplain text",
+  ])("keeps the destination visible when a title crosses a real block start: %s", (continuation) => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: `![Chart](https://cdn.example.com/chart.png "Figure\n${continuation}")`,
+    });
+    expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+  });
+
+  it.each([
+    "*** source https://example.com/report",
+    "___ source https://example.com/report",
+    "#tag",
+    "14. item",
+    "<span>caption</span>",
+  ])("accepts an image title with a normal continuation: %s", (continuation) => {
+    for (const [open, close] of [["\"", "\""], ["'", "'"], ["(", ")"]]) {
+      const issues = validateLongFormContent({
+        platform: "blog",
+        content: `![Chart](https://cdn.example.com/chart.png ${open}Figure\n${continuation}${close})`,
+      });
+      expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
+    }
+  });
+
+  it("keeps URLs visible when a GFM table interrupts an image title", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: "![Chart](https://cdn.example.com/chart.png \"Figure 1\n| a | b |\n| - | - |\n\")",
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+  });
 });
