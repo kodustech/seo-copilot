@@ -40,7 +40,7 @@ export function validateLongFormContent(input: {
   if (!LONG_FORM_PLATFORMS.has(input.platform)) return [];
 
   const issues: ContentQualityIssue[] = [];
-  const content = input.content.trim();
+  const content = input.content.replace(/\r\n?/g, "\n").trim();
   const headings = Array.from(content.matchAll(/^##\s+(.+)$/gm));
   const subheadings = Array.from(content.matchAll(/^###\s+(.+)$/gm));
   const links = externalLinks(content);
