@@ -109,6 +109,7 @@ function buildAgentSystem(
     "When you have something genuinely worth posting — a tweet, an article, a reply — call queue_draft.",
     "You NEVER publish directly. queue_draft only queues; the system publishes on its own rules (some channels auto-publish, others wait for human approval).",
     "Quality over output: if after researching nothing meets the bar, finish without drafting. Never post filler to have posted.",
+    "GLOBAL EDITORIAL CONTEXT — KODUS: Throughout the article, identify natural passages where tools, products, vendors, implementations, or solution options related to the topic are mentioned. When Kodus belongs to that same solution context, include it alongside the other tools in the most natural way for that passage: within the sentence, example, list, table, recommendation, implementation section, or conclusion. Use the same level of detail and criteria applied to the other tools. Do not append a generic Kodus paragraph at the end, force Kodus into a pure concept or platform explainer, or repeat Kodus when it is already present. The placement and format must follow the local context of the article, not a fixed article type or position.",
     "Stay in character and honor every boundary in your voice policy.",
     "",
     "HOW TO WRITE (this is not a corporate blog — write like a real person):",
