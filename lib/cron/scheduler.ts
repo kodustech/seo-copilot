@@ -250,18 +250,41 @@ async function runAutoEnrollCron(): Promise<void> {
   );
 }
 
-async function runOutreachInboxCron(): Promise<void> {
+export async function runOutreachInboxCron(): Promise<void> {
   const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
   const { syncAllMailboxesInbox } = await import("@/lib/outreach/inbox");
-  const results = await syncAllMailboxesInbox(getSupabaseServiceClient());
+  const { syncUnipileLinkedInInbox } = await import("@/lib/unipile-replies");
+  const client = getSupabaseServiceClient();
+  const results = await syncAllMailboxesInbox(client);
   const ok = results.filter((r) => r.ok).length;
   const replied = results.reduce(
     (n, r) => n + r.enrollmentsMarkedReplied,
     0,
   );
   const touched = results.reduce((n, r) => n + r.threadsTouched, 0);
+  // LinkedIn replies have no other automatic trigger: the HTTP cron route only
+  // runs when something calls it, and webhooks cover live messages only. Pull
+  // here, every 10 min, or inbound DMs sit unread while sequences keep sending
+  // into replied threads.
+  let linkedin: Awaited<ReturnType<typeof syncUnipileLinkedInInbox>>;
+  try {
+    linkedin = await syncUnipileLinkedInInbox(client);
+  } catch (err) {
+    linkedin = {
+      ok: false,
+      mode: "unipile_pull",
+      accounts: 0,
+      chatsScanned: 0,
+      threadsTouched: 0,
+      messagesUpserted: 0,
+      enrollmentsMarkedReplied: 0,
+      error: err instanceof Error ? err.message : "LinkedIn sync failed",
+    };
+  }
   console.log(
-    `[cron] outreach-inbox: ${ok}/${results.length} mailboxes, ${touched} threads, ${replied} marked replied`,
+    `[cron] outreach-inbox: ${ok}/${results.length} mailboxes, ${touched} threads, ${replied} marked replied` +
+      `; linkedin: ${linkedin.accounts} account(s), ${linkedin.chatsScanned} chats, ${linkedin.threadsTouched} threads, ${linkedin.messagesUpserted} messages, ${linkedin.enrollmentsMarkedReplied} marked replied` +
+      (linkedin.error ? `, linkedin error: ${linkedin.error}` : ""),
   );
 }
 
