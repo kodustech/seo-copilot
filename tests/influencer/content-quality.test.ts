@@ -225,4 +225,21 @@ describe("validateLongFormContent", () => {
 
     expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
   });
+
+  it("accepts a title after a lone CR line ending", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Chart](https://cdn.example.com/chart.png\r\"Figure 1\")",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
+  });
 });
