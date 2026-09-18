@@ -12,9 +12,15 @@ const MARKDOWN_LINK = /(?<!!)\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi;
 const RAW_URL = /https?:\/\/[^\s)]+/gi;
 const WEAK_ANCHORS = new Set(["here", "source", "link", "click here"]);
 const RESEARCH_PROCESS_NOTE =
-  /\b(?:checked|accessed|retrieved|reviewed|read|consulted|looked at)\s+(?:from\s+|in\s+)?(?:the\s+)?(?:vendor|project|official|product)?\s*(?:page|documentation|docs?|source|site|repository|repo|material(?:s)?)\b[^\n.]{0,20}\b(?:on|as of)\s+(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})|\b(?:verificad[oa]|consultad[oa]|acessad[oa]|lida|le[iu]da|revisad[oa])\s+(?:n[oa]\s+)?(?:documentação|página|fonte|site|repositório|material)\b[^\n.]{0,20}\b(?:em|no dia)\s+(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i;
-const RESEARCH_ACCESS_STAMP =
-  /(?:^|[\n(]\s*)(?:accessed|retrieved|consulted)\s+(?:on|as of)\s+(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})|(?:^|[\n(]\s*)(?:consultad[oa]|acessad[oa])\s+(?:em|no dia)\s+(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})|(?:^|[\n(]\s*)(?:consultad[oa]|acessad[oa])\s+n[oa]\s+(?:site|documentação|página|fonte|repositório|material)\s+(?:em|no dia)\s+(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/im;
+  /\b(?:checked|accessed|retrieved|reviewed|read|consulted|looked at)\s+(?:from\s+|in\s+)?(?:the\s+)?(?:vendor|project|official|product)?\s*(?:page|documentation|docs?|source|site|repository|repo|material(?:s)?)\b[^\n.]{0,40}\b(?:on|as of)\s+(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})|\b(?:verificad[oa]|consultad[oa]|acessad[oa]|lida|le[iu]da|revisad[oa])\s+(?:n[oa]\s+)?(?:documentação|página|fonte|site|repositório|material)\b[^\n.]{0,40}\b(?:em|no dia)\s+(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i;
+// Access stamps can be formatted as lists, quotes, emphasis or source notes.
+// Keep this anchored so ordinary event dates inside prose remain valid.
+const STAMP_START = String.raw`(?:^|\()[ \t]*(?:(?:[-*+>]|\d+[.)])[ \t]+)*[*_]{0,2}[ \t]*(?:(?:sources?|fontes?)[ \t]*:[ \t]*[*_]{0,2}[ \t]*)?`;
+const STAMP_DATE = String.raw`(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})`;
+const RESEARCH_ACCESS_STAMP = new RegExp(
+  String.raw`${STAMP_START}(?:(?:accessed|retrieved|consulted)\s+(?:on|as of)|(?:consultad[oa]|acessad[oa])\s+(?:em|no dia))\s+${STAMP_DATE}`,
+  "im",
+);
 const RESEARCH_DATE_PROVENANCE =
   /\b(?:everything here|this article|these findings|o artigo|este texto)\b[^\n.]{0,160}\b(?:read|based|lido|baseado)\b[^\n.]{0,100}\b(?:on|from|em|de)\b[^\n.]{0,100}\b(?:vendor|project|documentation|documentação|fornecedor|projeto)\b[^\n.]{0,100}\b(?:20\d{2}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i;
 

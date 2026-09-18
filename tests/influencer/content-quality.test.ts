@@ -125,6 +125,15 @@ describe("validateLongFormContent", () => {
     "Consultado em 21/09/2026.",
     "Acessado no dia 21/09/2026.",
     "consultado no site em 21/09/2026.",
+    "- Accessed on 2026-03-01",
+    "* Retrieved on 2026-05-01",
+    "1. Consultado em 21/09/2026",
+    "> Acessado no dia 21/09/2026",
+    "**Accessed on 2026-03-01**",
+    "Sources: accessed on 2026-03-01",
+    "> - **Retrieved on 2026-05-01**",
+    "  __Consultado em 21/09/2026__",
+    "Fonte: consultado em 21/09/2026",
   ])("rejects a bare access-date stamp: %s", (stamp) => {
     const issues = validateLongFormContent({
       platform: "blog",
@@ -138,6 +147,8 @@ describe("validateLongFormContent", () => {
     "We accessed the official documentation on 2026-03-01.",
     "I retrieved the repository snapshot on 2026-01-15.",
     "Acessado no site oficial do projeto em 21/09/2026.",
+    "Acessado no site oficial do projeto Kodus em 21/09/2026.",
+    "We accessed the documentation for the official Kodus project on 2026-03-01.",
   ])("rejects a noun-based research access note: %s", (note) => {
     const issues = validateLongFormContent({
       platform: "blog",
@@ -151,6 +162,9 @@ describe("validateLongFormContent", () => {
     "The report was consulted on 2026-02-10.",
     "Files retrieved on 2026-05-01 were audited.",
     "O arquivo acessado em 21/09/2026 foi removido.",
+    "- Files retrieved on 2026-05-01 were audited.",
+    "> O arquivo acessado em 21/09/2026 foi removido.",
+    "**The report was consulted on 2026-02-10.**",
   ])("allows subject dates in ordinary prose: %s", (sentence) => {
     const issues = validateLongFormContent({
       platform: "blog",
