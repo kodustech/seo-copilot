@@ -93,4 +93,46 @@ describe("runOutreachInboxCron", () => {
       log.mockRestore();
     }
   });
+
+  it("still pulls LinkedIn when the Gmail sync throws (one broken mailbox must not gate replies)", async () => {
+    vi.mocked(syncAllMailboxesInbox).mockRejectedValue(new Error("Mailbox has no Google connection"));
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await expect(runOutreachInboxCron()).resolves.toBeUndefined();
+      expect(syncUnipileLinkedInInbox).toHaveBeenCalledTimes(1);
+      expect(err).toHaveBeenCalledWith(
+        expect.stringContaining("gmail sync failed"),
+        expect.anything(),
+      );
+      const line = log.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(line).toMatch(/0\/0 mailboxes/);
+      expect(line).toMatch(/linkedin: 1 account\(s\)/);
+    } finally {
+      err.mockRestore();
+      log.mockRestore();
+    }
+  });
+
+  it("skips an overlapping run while the previous one is still active", async () => {
+    let resolveGmail!: (v: never) => void;
+    vi.mocked(syncAllMailboxesInbox).mockReturnValue(
+      new Promise((res) => {
+        resolveGmail = res;
+      }),
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const first = runOutreachInboxCron();
+      await runOutreachInboxCron();
+      resolveGmail(gmailResult as never);
+      await first;
+      expect(syncAllMailboxesInbox).toHaveBeenCalledTimes(1);
+      expect(syncUnipileLinkedInInbox).toHaveBeenCalledTimes(1);
+      const line = log.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(line).toMatch(/previous run still active, skipping overlap/);
+    } finally {
+      log.mockRestore();
+    }
+  });
 });

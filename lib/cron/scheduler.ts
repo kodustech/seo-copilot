@@ -250,12 +250,39 @@ async function runAutoEnrollCron(): Promise<void> {
   );
 }
 
+// The inbox run pulls Gmail and LinkedIn back to back; a degraded Unipile can
+// stretch it past its 10-minute interval. node-cron overlaps ticks by default
+// (the installed v4 has no noOverlap option), so a second tick would start a
+// second concurrent pull against the same rate-limited account. Skip instead.
+let inboxRunActive = false;
+
 export async function runOutreachInboxCron(): Promise<void> {
+  if (inboxRunActive) {
+    console.log("[cron] outreach-inbox: previous run still active, skipping overlap");
+    return;
+  }
+  inboxRunActive = true;
+  try {
+    await runOutreachInboxCronInner();
+  } finally {
+    inboxRunActive = false;
+  }
+}
+
+async function runOutreachInboxCronInner(): Promise<void> {
   const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
   const { syncAllMailboxesInbox } = await import("@/lib/outreach/inbox");
   const { syncUnipileLinkedInInbox } = await import("@/lib/unipile-replies");
   const client = getSupabaseServiceClient();
-  const results = await syncAllMailboxesInbox(client);
+  // A single broken mailbox (revoked OAuth, undecryptable secret) rejects the
+  // whole Gmail sync from before syncMailboxInbox's own try/catch — it must
+  // not take the LinkedIn pull down with it.
+  let results: Awaited<ReturnType<typeof syncAllMailboxesInbox>> = [];
+  try {
+    results = await syncAllMailboxesInbox(client);
+  } catch (err) {
+    console.error("[cron] outreach-inbox: gmail sync failed, still pulling LinkedIn:", err);
+  }
   const ok = results.filter((r) => r.ok).length;
   const replied = results.reduce(
     (n, r) => n + r.enrollmentsMarkedReplied,
