@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
   betOwnerInitials,
   betOwnerLabel,
+  canonicalOwnerEmail,
   compareBetsByHypothesis,
   parseHypothesisNumber,
 } from "../../lib/bets";
@@ -59,5 +60,12 @@ describe("bet owner display", () => {
     expect(betOwnerInitials("gabriel@kodus.io", members)).toBe("GA");
     expect(betOwnerInitials("edvaldo.freitas@kodus.io", members)).toBe("EF");
     expect(betOwnerInitials(null, members)).toBe("–");
+  });
+
+  it("canonicalizes legacy mixed-case emails to the member case", () => {
+    expect(canonicalOwnerEmail("Junior.Sartori@kodus.io", members)).toBe("junior.sartori@kodus.io");
+    expect(canonicalOwnerEmail("gabriel@kodus.io", members)).toBe("gabriel@kodus.io");
+    expect(canonicalOwnerEmail("someone@kodus.io", members)).toBe("someone@kodus.io");
+    expect(canonicalOwnerEmail(null, members)).toBeNull();
   });
 });

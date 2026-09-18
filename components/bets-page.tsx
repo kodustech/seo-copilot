@@ -8,7 +8,7 @@ import { CheckCircle2, ChevronDown, ChevronRight, CircleDashed, FlaskConical, Li
 
 import type { BetEvaluation, EvaluationLevel } from "@/lib/bet-evaluation";
 import type { Bet, BetEntry, BetEntryKind, BetMeasure, BetStatus, MeasureKind } from "@/lib/bets";
-import { betOwnerInitials, betOwnerLabel, compareBetsByHypothesis, type TeamMemberRef } from "@/lib/bets";
+import { betOwnerInitials, betOwnerLabel, canonicalOwnerEmail, compareBetsByHypothesis, type TeamMemberRef } from "@/lib/bets";
 import { OWNED_PROPERTIES } from "@/lib/owned-domains";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
@@ -458,6 +458,25 @@ function BetForm({
   const set = (patch: Partial<FormState>) => setF((s) => ({ ...s, ...patch }));
   const rate = f.measureKind === "funnel_rate" || f.measureKind === "ai_share" || (f.measureKind === "outbound_tag" && f.submetric === "reply_rate");
   const valid = f.goalId && f.title.trim().length > 1 && f.hypothesis.trim() && f.action.trim() && f.metric.trim() && /^\d{4}-\d{2}-\d{2}$/.test(f.decisionAt);
+  // The Select needs an item whose value matches exactly, or Radix renders a
+  // blank trigger. Members first (canonical case), then legacy owner emails,
+  // then the current value itself as a last resort — a stored or prefilled
+  // email never shows as blank, even when the member list failed to load.
+  const responsibleOptions: TeamMemberRef[] = useMemo(() => {
+    const base: TeamMemberRef[] = [...(options?.members ?? [])];
+    const seen = new Set(base.map((m) => m.email.toLowerCase()));
+    for (const o of options?.owners ?? []) {
+      if (!seen.has(o.toLowerCase())) {
+        base.push({ email: o, label: o.split("@")[0] });
+        seen.add(o.toLowerCase());
+      }
+    }
+    if (f.ownerEmail && !seen.has(f.ownerEmail.toLowerCase())) {
+      base.push({ email: f.ownerEmail, label: f.ownerEmail.split("@")[0] });
+    }
+    return base;
+  }, [options, f.ownerEmail]);
+  const responsibleValue = !f.ownerEmail ? "__none__" : (canonicalOwnerEmail(f.ownerEmail, responsibleOptions) ?? f.ownerEmail);
 
   const idOptions: { id: string; label: string }[] =
     f.measureKind === "funnel_stage"
@@ -509,24 +528,17 @@ function BetForm({
           <datalist id="bet-levers">{(options?.levers ?? []).map((l) => <option key={l} value={l} />)}</datalist>
         </Field>
         <Field label="Responsible" hint="A seocopilot user. Shown on the bet row.">
-          <Select value={f.ownerEmail || "__none__"} onValueChange={(v) => set({ ownerEmail: v === "__none__" ? "" : v })}>
+          <Select value={responsibleValue} onValueChange={(v) => set({ ownerEmail: v === "__none__" ? "" : v })}>
             <SelectTrigger className={selectCls}>
               <SelectValue placeholder="Nobody yet" />
             </SelectTrigger>
             <SelectContent className={menuCls}>
               <SelectItem value="__none__">Nobody yet</SelectItem>
-              {(options?.members ?? []).map((m) => (
+              {responsibleOptions.map((m) => (
                 <SelectItem key={m.email} value={m.email}>
                   {m.label} · {m.email}
                 </SelectItem>
               ))}
-              {(options?.owners ?? [])
-                .filter((o) => !(options?.members ?? []).some((m) => m.email.toLowerCase() === o.toLowerCase()))
-                .map((o) => (
-                  <SelectItem key={o} value={o}>
-                    {o}
-                  </SelectItem>
-                ))}
             </SelectContent>
           </Select>
         </Field>
@@ -813,7 +825,7 @@ export function BetsPage() {
   const visible = bets
     .filter((b) => (tab === "open" ? b.status === "active" || b.status === "queued" : b.status !== "active" && b.status !== "queued"))
     .filter((b) => (lever === "all" ? true : lever === "none" ? !b.lever : b.lever === lever))
-    .filter((b) => (owner === "all" ? true : owner === "none" ? !b.ownerEmail : b.ownerEmail === owner))
+    .filter((b) => (owner === "all" ? true : owner === "none" ? !b.ownerEmail : (b.ownerEmail ?? "").toLowerCase() === owner.toLowerCase()))
     .filter((b) => (goalFilter ? b.goalId === goalFilter : true));
   // Responsible display resolves against seocopilot users; bets pointing at an
   // email outside the member list (ex-teammate, typo) fall back to the prefix.
@@ -1107,6 +1119,11 @@ export function BetsPage() {
         title={dialog?.mode === "edit" ? "Edit bet" : "New bet"}
         mode={dialog?.mode === "edit" ? "edit" : "create"}
         onSubmit={async (payload) => {
+          // Heal legacy case: a bet saved with "Junior.Sartori@kodus.io" from
+          // the old free-text input is stored with the member's canonical case.
+          if (typeof payload.ownerEmail === "string" && payload.ownerEmail) {
+            payload.ownerEmail = canonicalOwnerEmail(payload.ownerEmail, members) ?? payload.ownerEmail;
+          }
           if (dialog?.mode === "edit" && dialog.bet) return call(`/api/bets/${dialog.bet.id}`, { method: "PATCH", body: JSON.stringify(payload) });
           return call("/api/bets", { method: "POST", body: JSON.stringify(payload) });
         }}

@@ -292,6 +292,18 @@ export function betOwnerInitials(ownerEmail: string | null, members: TeamMemberR
 }
 
 /**
+ * Canonical seocopilot user email for a stored owner (case-insensitive), so a
+ * bet saved with "Junior.Sartori@kodus.io" from the old free-text input still
+ * matches the "junior.sartori@kodus.io" member everywhere. Unknown emails
+ * come back unchanged.
+ */
+export function canonicalOwnerEmail(ownerEmail: string | null, members: TeamMemberRef[]): string | null {
+  if (!ownerEmail) return null;
+  const found = members.find((x) => x.email.toLowerCase() === ownerEmail.toLowerCase());
+  return found ? found.email : ownerEmail;
+}
+
+/**
  * Order bets by hypothesis number: numbered first in numeric order (H1 <
  * H1.2 < H1.10 < H2), unnumbered after, alphabetical as the tiebreak so the
  * order is stable regardless of the query behind it.
