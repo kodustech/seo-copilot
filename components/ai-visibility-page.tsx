@@ -22,7 +22,7 @@ import {
 } from "@/lib/ai-visibility";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
-import { BRAND_DOMAINS, urlMatchesProperty } from "@/lib/owned-domains";
+import { BRAND_DOMAINS, isOwnedUrl, urlMatchesProperty } from "@/lib/owned-domains";
 import { MarkdownContent } from "@/components/markdown-content";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -604,6 +604,31 @@ export function AiVisibilityPage() {
   const maxComp = summary?.competitors[0]?.runs ?? 1;
   const searches = summary?.searches ?? [];
   const shownSearches = allSearches ? searches : searches.slice(0, 10);
+  const ownedLinks = useMemo(() => {
+    const links = new Map<string, { url: string; answers: number; citations: number }>();
+    for (const { runs } of summary?.prompts ?? []) {
+      for (const result of Object.values(runs)) {
+        if (!result) continue;
+        for (const run of result.runs) {
+          if (run.error) continue;
+          const seenInAnswer = new Set<string>();
+          for (const citation of run.citations) {
+            if (!isOwnedUrl(citation.url)) continue;
+            const link = links.get(citation.url) ?? { url: citation.url, answers: 0, citations: 0 };
+            link.citations += 1;
+            links.set(citation.url, link);
+            seenInAnswer.add(citation.url);
+          }
+          for (const url of seenInAnswer) {
+            const link = links.get(url);
+            if (link) link.answers += 1;
+          }
+        }
+      }
+    }
+    return [...links.values()].sort((a, b) => b.answers - a.answers || b.citations - a.citations).slice(0, 12);
+  }, [summary]);
+  const maxOwnedLinkAnswers = ownedLinks[0]?.answers ?? 1;
   const openResult = open ? summary?.prompts.find((p) => p.prompt.id === open.promptId)?.runs[open.engine] : undefined;
 
   return (
@@ -928,9 +953,32 @@ export function AiVisibilityPage() {
       ) : null}
 
       {/* Where to act */}
-      {summary && (absentSources.length > 0 || summary.competitors.length > 0 || searches.length > 0) ? (
+      {summary && (ownedLinks.length > 0 || absentSources.length > 0 || summary.competitors.length > 0 || searches.length > 0) ? (
         <section>
-          <SectionHeader label="Where to act" hint="What the assistants read where they do not find us, who they name, and what they search before answering." />
+          <SectionHeader label="Where to act" hint="What the assistants read, who they name, and what they search before answering." />
+          {ownedLinks.length > 0 ? (
+            <div className="mb-4 rounded-lg border border-white/[0.06] bg-neutral-900/40">
+              <div className="border-b border-white/[0.06] px-4 py-2.5">
+                <p className="text-sm font-medium text-neutral-100">Our links used as sources</p>
+                <p className="text-[11px] text-neutral-500">Pages from our sites that appeared in assistant answers, ranked by the number of answers using each link.</p>
+              </div>
+              <ol className="divide-y divide-white/[0.06]">
+                {ownedLinks.map((link) => (
+                  <li key={link.url} className="grid grid-cols-[minmax(0,1fr)_120px_auto] items-center gap-3 px-4 py-2 text-sm">
+                    <a href={link.url} target="_blank" rel="noreferrer" className="min-w-0 truncate text-neutral-200 hover:text-neutral-100 hover:underline" title={link.url}>
+                      {link.url.replace(/^https?:\/\/(www\.)?/, "")}
+                    </a>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.06]" aria-hidden="true">
+                      <div className="h-full rounded-full bg-neutral-400/70" style={{ width: `${Math.max(3, Math.round((link.answers / maxOwnedLinkAnswers) * 100))}%` }} />
+                    </div>
+                    <p className="w-28 text-right text-xs tabular-nums text-neutral-400">
+                      <span className="text-neutral-100">{link.answers}</span> answers · {link.citations}×
+                    </p>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          ) : null}
           <div className="grid gap-4 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
             <div className="rounded-lg border border-white/[0.06] bg-neutral-900/40">
               <div className="border-b border-white/[0.06] px-4 py-2.5">
