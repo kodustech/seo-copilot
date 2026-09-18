@@ -191,6 +191,23 @@ describe("validateLongFormContent", () => {
     expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
   });
 
+  it("accepts a non-blank multiline image title", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Chart](https://cdn.example.com/chart.png \"Figure\nfrom Q3\")",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
+  });
+
   it("does not hide URLs in invalid image title or angle-destination syntax", () => {
     const issues = validateLongFormContent({
       platform: "blog",

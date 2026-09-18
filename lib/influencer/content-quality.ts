@@ -6,7 +6,7 @@ export type ContentQualityIssue = {
 const LONG_FORM_PLATFORMS = new Set(["blog", "devto", "hackernoon"]);
 const MARKDOWN_LINK = /(?<!!)\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi;
 const MARKDOWN_IMAGE =
-  /!\[([^\[\]]*(?:\[[^\]]*\][^\[\]]*)*?)\]\([ \t]*(<[^\n<>]*>|[^\s)]*)(?:(?:[ \t]+|[ \t]*(?:\r\n|\r|\n)[ \t]*)(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*\)/g;
+  /!\[([^\[\]]*(?:\[[^\]]*\][^\[\]]*)*?)\]\([ \t]*(<[^\n<>]*>|[^\s)]*)(?:(?:[ \t]+|[ \t]*(?:\r\n|\r|\n)[ \t]*)(?:"(?:(?!\n[ \t]*\n)[^"])*"|'(?:(?!\n[ \t]*\n)[^'])*'|\((?:(?!\n[ \t]*\n)[^)])*\)))?[ \t]*\)/g;
 const RAW_URL = /https?:\/\/[^\s)]+/gi;
 const WEAK_ANCHORS = new Set(["here", "source", "link", "click here"]);
 
