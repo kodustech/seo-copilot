@@ -907,6 +907,8 @@ export type EngineSummary = {
   rollingShare: number | null;
   rollingRuns: number;
   avgPosition: number | null;
+  /** Samples citing any owned URL, including unbranded editorial properties. */
+  ownedCited: number;
   brandCited: number;
   costUsd: number;
   failed: number;
@@ -1172,6 +1174,7 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
         rollingShare: null,
         rollingRuns: 0,
         avgPosition: null,
+        ownedCited: 0,
         brandCited: 0,
         costUsd: 0,
         failed: 0,
@@ -1193,6 +1196,7 @@ export async function getVisibilitySummary(client: SupabaseClient, opts: { runOn
         if (r.position != null) e.positions.push(r.position);
       }
       if (r.brandCited) e.brandCited += 1;
+      if (r.citations.some((c) => isOwnedUrl(c.url))) e.ownedCited += 1;
       for (const c of r.citations) {
         const d = domainOf(c.url);
         if (!d) continue;
