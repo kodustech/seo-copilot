@@ -258,6 +258,69 @@ export async function deleteBet(client: SupabaseClient, id: string): Promise<voi
 }
 
 // ---------------------------------------------------------------------------
+// Hypothesis number: bets are titled "H1.1 · ...". The number is the order.
+// ---------------------------------------------------------------------------
+
+export type TeamMemberRef = { email: string; label: string };
+
+/**
+ * Pull the leading hypothesis number out of a bet title ("H1.1 · ..." ->
+ * [1, 1]). Returns null when the title does not start with one, so callers
+ * can rank numbered bets before unnumbered ones.
+ */
+export function parseHypothesisNumber(title: string): number[] | null {
+  const m = title.trim().match(/^H\s*(\d+(?:\.\d+)*)/i);
+  if (!m) return null;
+  return m[1].split(".").map((p) => Number(p));
+}
+
+/** Short label for who owns a bet: the team member's first name when known. */
+export function betOwnerLabel(ownerEmail: string | null, members: TeamMemberRef[]): string | null {
+  if (!ownerEmail) return null;
+  const found = members.find((x) => x.email.toLowerCase() === ownerEmail.toLowerCase());
+  if (found) return found.label;
+  return ownerEmail.split("@")[0];
+}
+
+/** Two-letter initials for the owner avatar, from the member label when known. */
+export function betOwnerInitials(ownerEmail: string | null, members: TeamMemberRef[]): string {
+  if (!ownerEmail) return "–";
+  const label = betOwnerLabel(ownerEmail, members) ?? ownerEmail;
+  const parts = label.split(/[\s._-]+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return label.slice(0, 2).toUpperCase();
+}
+
+/**
+ * Order bets by hypothesis number: numbered first in numeric order (H1 <
+ * H1.2 < H1.10 < H2), unnumbered after, alphabetical as the tiebreak so the
+ * order is stable regardless of the query behind it.
+ */
+export function compareBetsByHypothesis(
+  a: Pick<Bet, "title" | "decisionAt">,
+  b: Pick<Bet, "title" | "decisionAt">,
+): number {
+  const na = parseHypothesisNumber(a.title);
+  const nb = parseHypothesisNumber(b.title);
+  if (na && nb) {
+    const n = Math.max(na.length, nb.length);
+    for (let i = 0; i < n; i += 1) {
+      const pa = na[i] ?? -1;
+      const pb = nb[i] ?? -1;
+      if (pa !== pb) return pa - pb;
+    }
+    const t = a.title.localeCompare(b.title);
+    if (t !== 0) return t;
+    return a.decisionAt.localeCompare(b.decisionAt);
+  }
+  if (na) return -1;
+  if (nb) return 1;
+  const t = a.title.localeCompare(b.title);
+  if (t !== 0) return t;
+  return a.decisionAt.localeCompare(b.decisionAt);
+}
+
+// ---------------------------------------------------------------------------
 // Journal: what was actually done, entry by entry
 // ---------------------------------------------------------------------------
 
