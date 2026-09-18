@@ -174,6 +174,8 @@ describe("validateLongFormContent", () => {
     "- Files retrieved on 2026-05-01 were audited.",
     "> O arquivo acessado em 21/09/2026 foi removido.",
     "**The report was consulted on 2026-02-10.**",
+    "We read the vendor docs\n\nThe rewrite landed on 2026-05-01.",
+    "We read the vendor docs\n\n- The rewrite landed on 2026-05-01.",
   ])("allows subject dates in ordinary prose: %s", (sentence) => {
     const issues = validateLongFormContent({
       platform: "blog",
