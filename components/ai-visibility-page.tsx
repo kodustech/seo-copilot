@@ -190,7 +190,8 @@ function MatrixCell({ result, active, onOpen }: { result: PromptEngineResult | u
 
 function SamplePanel({ run, total }: { run: AiPromptRun; total: number }) {
   const [showAll, setShowAll] = useState(false);
-  const ownUrls = new Set(run.citations.filter((citation) => isOwnedUrl(citation.url)).map((citation) => citation.url));
+  const ownUrl = (url: string) => !run.error && isOwnedUrl(url);
+  const ownUrls = new Set(run.citations.filter((citation) => ownUrl(citation.url)).map((citation) => citation.url));
   const text = stripCitationMarks(run.answer ?? "");
   const long = text.length > 1400;
   return (
@@ -230,12 +231,12 @@ function SamplePanel({ run, total }: { run: AiPromptRun; total: number }) {
                 {ownUrls.size > 0 ? <span className="ml-2 text-sky-400">{ownUrls.size} {ownUrls.size === 1 ? "page of ours" : "pages of ours"}</span> : null}
               </p>
               <ol className="space-y-0.5">
-                {[...run.citations].sort((a, b) => Number(isOwnedUrl(b.url)) - Number(isOwnedUrl(a.url))).slice(0, 12).map((c) => {
+                {[...run.citations].sort((a, b) => Number(ownUrl(b.url)) - Number(ownUrl(a.url))).slice(0, 12).map((c) => {
                   const host = c.url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
                   return (
                     <li key={c.url} className="flex min-w-0 items-baseline gap-2">
-                      {isOwnedUrl(c.url) ? <Link2 className="size-3 shrink-0 self-center text-sky-400" /> : null}
-                      <a href={c.url} target="_blank" rel="noreferrer" className={cn("min-w-0 truncate hover:underline", isOwnedUrl(c.url) ? "text-sky-400" : "text-neutral-200")}>
+                      {ownUrl(c.url) ? <Link2 className="size-3 shrink-0 self-center text-sky-400" /> : null}
+                      <a href={c.url} target="_blank" rel="noreferrer" className={cn("min-w-0 truncate hover:underline", ownUrl(c.url) ? "text-sky-400" : "text-neutral-200")}>
                         {c.title || c.url}
                       </a>
                       <span className="shrink-0 text-neutral-600">{host}</span>
