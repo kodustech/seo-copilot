@@ -114,7 +114,14 @@ describe("runOutreachInboxCron", () => {
     }
   });
 
-  it("skips an overlapping run while the previous one is still active", async () => {
+  // NOTE: both overlap tests stagger the second run until the first has
+  // reached its pending phase. Two overlapping runs also overlap their
+  // dynamic imports, and this Vitest version resolves the second concurrent
+  // duplicate dynamic import of a mocked module to the REAL module — a test
+  // runner quirk, not production behavior (real modules dedup to one
+  // instance). Waiting for the first run's phase entry proves its imports
+  // settled, so the second run imports alone and sees the mocks.
+  it("still pulls LinkedIn while a previous run is stuck in the Gmail phase", async () => {
     let resolveGmail!: (v: never) => void;
     vi.mocked(syncAllMailboxesInbox).mockReturnValue(
       new Promise((res) => {
@@ -124,13 +131,44 @@ describe("runOutreachInboxCron", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
       const first = runOutreachInboxCron();
+      await vi.waitFor(() => {
+        expect(syncAllMailboxesInbox).toHaveBeenCalledTimes(1);
+      });
       await runOutreachInboxCron();
-      resolveGmail(gmailResult as never);
-      await first;
+      // Second run skipped Gmail but still pulled LinkedIn exactly once.
       expect(syncAllMailboxesInbox).toHaveBeenCalledTimes(1);
       expect(syncUnipileLinkedInInbox).toHaveBeenCalledTimes(1);
       const line = log.mock.calls.map((c) => String(c[0])).join("\n");
-      expect(line).toMatch(/previous run still active, skipping overlap/);
+      expect(line).toMatch(/gmail phase still active, skipping overlap/);
+      expect(line).toMatch(/linkedin: 1 account\(s\)/);
+      resolveGmail(gmailResult as never);
+      await first;
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("still syncs Gmail while a previous run is stuck in the LinkedIn phase", async () => {
+    let resolveLinkedin!: (v: never) => void;
+    vi.mocked(syncUnipileLinkedInInbox).mockReturnValue(
+      new Promise((res) => {
+        resolveLinkedin = res;
+      }),
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const first = runOutreachInboxCron();
+      // Let the first run reach the LinkedIn phase before overlapping it.
+      await vi.waitFor(() => {
+        expect(syncUnipileLinkedInInbox).toHaveBeenCalledTimes(1);
+      });
+      await runOutreachInboxCron();
+      expect(syncAllMailboxesInbox).toHaveBeenCalledTimes(2);
+      expect(syncUnipileLinkedInInbox).toHaveBeenCalledTimes(1);
+      const line = log.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(line).toMatch(/linkedin phase still active, skipping overlap/);
+      resolveLinkedin(linkedinResult as never);
+      await first;
     } finally {
       log.mockRestore();
     }

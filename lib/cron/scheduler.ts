@@ -250,39 +250,52 @@ async function runAutoEnrollCron(): Promise<void> {
   );
 }
 
-// The inbox run pulls Gmail and LinkedIn back to back; a degraded Unipile can
-// stretch it past its 10-minute interval. node-cron overlaps ticks by default
-// (the installed v4 has no noOverlap option), so a second tick would start a
-// second concurrent pull against the same rate-limited account. Skip instead.
-let inboxRunActive = false;
+// The inbox run pulls Gmail and LinkedIn back to back; a degraded backend can
+// stretch either phase past the 10-minute interval. node-cron overlaps ticks
+// by default (the installed v4 has no noOverlap option), so a second tick
+// would start a second concurrent pull against the same rate-limited account.
+// Guards are per phase, not per run: a stuck Gmail sync must not starve the
+// LinkedIn pull (or vice versa) — each phase skips only itself.
+const activeInboxPhases = new Set<"gmail" | "linkedin">();
 
-export async function runOutreachInboxCron(): Promise<void> {
-  if (inboxRunActive) {
-    console.log("[cron] outreach-inbox: previous run still active, skipping overlap");
-    return;
+async function runInboxPhase<T>(
+  phase: "gmail" | "linkedin",
+  fn: () => Promise<T>,
+): Promise<{ result: T | null; skipped: boolean }> {
+  if (activeInboxPhases.has(phase)) {
+    console.log(`[cron] outreach-inbox: ${phase} phase still active, skipping overlap`);
+    return { result: null, skipped: true };
   }
-  inboxRunActive = true;
+  activeInboxPhases.add(phase);
   try {
-    await runOutreachInboxCronInner();
+    return { result: await fn(), skipped: false };
   } finally {
-    inboxRunActive = false;
+    activeInboxPhases.delete(phase);
   }
 }
 
-async function runOutreachInboxCronInner(): Promise<void> {
+export async function runOutreachInboxCron(): Promise<void> {
   const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
   const { syncAllMailboxesInbox } = await import("@/lib/outreach/inbox");
   const { syncUnipileLinkedInInbox } = await import("@/lib/unipile-replies");
   const client = getSupabaseServiceClient();
+
   // A single broken mailbox (revoked OAuth, undecryptable secret) rejects the
   // whole Gmail sync from before syncMailboxInbox's own try/catch — it must
-  // not take the LinkedIn pull down with it.
-  let results: Awaited<ReturnType<typeof syncAllMailboxesInbox>> = [];
-  try {
-    results = await syncAllMailboxesInbox(client);
-  } catch (err) {
-    console.error("[cron] outreach-inbox: gmail sync failed, still pulling LinkedIn:", err);
-  }
+  // not take the LinkedIn pull down with it. Log the message only: client
+  // errors can carry request headers.
+  const gmail = await runInboxPhase("gmail", async () => {
+    try {
+      return await syncAllMailboxesInbox(client);
+    } catch (err) {
+      console.error(
+        "[cron] outreach-inbox: gmail sync failed, still pulling LinkedIn:",
+        err instanceof Error ? err.message : String(err),
+      );
+      return [] as Awaited<ReturnType<typeof syncAllMailboxesInbox>>;
+    }
+  });
+  const results = gmail.result ?? [];
   const ok = results.filter((r) => r.ok).length;
   const replied = results.reduce(
     (n, r) => n + r.enrollmentsMarkedReplied,
@@ -292,26 +305,39 @@ async function runOutreachInboxCronInner(): Promise<void> {
   // LinkedIn replies have no other automatic trigger: the HTTP cron route only
   // runs when something calls it, and webhooks cover live messages only. Pull
   // here, every 10 min, or inbound DMs sit unread while sequences keep sending
-  // into replied threads.
-  let linkedin: Awaited<ReturnType<typeof syncUnipileLinkedInInbox>>;
-  try {
-    linkedin = await syncUnipileLinkedInInbox(client);
-  } catch (err) {
-    linkedin = {
-      ok: false,
-      mode: "unipile_pull",
-      accounts: 0,
-      chatsScanned: 0,
-      threadsTouched: 0,
-      messagesUpserted: 0,
-      enrollmentsMarkedReplied: 0,
-      error: err instanceof Error ? err.message : "LinkedIn sync failed",
-    };
-  }
+  // into replied threads. Never throws: losing the summary line would hide the
+  // Gmail numbers too.
+  const linkedin = await runInboxPhase("linkedin", async () => {
+    try {
+      return await syncUnipileLinkedInInbox(client);
+    } catch (err) {
+      return {
+        ok: false as const,
+        mode: "unipile_pull" as const,
+        accounts: 0,
+        chatsScanned: 0,
+        threadsTouched: 0,
+        messagesUpserted: 0,
+        enrollmentsMarkedReplied: 0,
+        error: err instanceof Error ? err.message : "LinkedIn sync failed",
+      };
+    }
+  });
+  const li = linkedin.result ?? {
+    ok: false,
+    mode: "unipile_pull",
+    accounts: 0,
+    chatsScanned: 0,
+    threadsTouched: 0,
+    messagesUpserted: 0,
+    enrollmentsMarkedReplied: 0,
+  };
   console.log(
     `[cron] outreach-inbox: ${ok}/${results.length} mailboxes, ${touched} threads, ${replied} marked replied` +
-      `; linkedin: ${linkedin.accounts} account(s), ${linkedin.chatsScanned} chats, ${linkedin.threadsTouched} threads, ${linkedin.messagesUpserted} messages, ${linkedin.enrollmentsMarkedReplied} marked replied` +
-      (linkedin.error ? `, linkedin error: ${linkedin.error}` : ""),
+      `; linkedin: ${li.accounts} account(s), ${li.chatsScanned} chats, ${li.threadsTouched} threads, ${li.messagesUpserted} messages, ${li.enrollmentsMarkedReplied} marked replied` +
+      (gmail.skipped ? "; gmail skipped (overlap)" : "") +
+      (linkedin.skipped ? "; linkedin skipped (overlap)" : "") +
+      (li.error ? `, linkedin error: ${li.error}` : ""),
   );
 }
 
