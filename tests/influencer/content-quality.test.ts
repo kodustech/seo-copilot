@@ -162,8 +162,7 @@ describe("validateLongFormContent", () => {
         body(270),
         "## Decision",
         body(270),
-        "![latency",
-        "by region](https://cdn.example.com/latency.png)",
+        "![latency\nby region](https://cdn.example.com/latency.png)",
       ].join("\n\n"),
     });
 
@@ -296,7 +295,7 @@ describe("validateLongFormContent", () => {
   it("does not hide URLs after HTML or thematic-break continuations in an image title", () => {
     for (const continuation of [
       "<div>https://example.com/html</div>",
-      "*** https://example.com/thematic",
+      "***\nplain text",
     ]) {
       const issues = validateLongFormContent({
         platform: "blog",
@@ -312,6 +311,41 @@ describe("validateLongFormContent", () => {
       });
 
       expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+    }
+  });
+
+  it.each([
+    "<div>ok</div>",
+    "<script>ok</script>",
+    "<pre>ok</pre>",
+    "<!-- comment -->",
+    "<?instruction?>",
+    "<![CDATA[text]]>",
+    "</div>",
+    "***\nplain text",
+    "___\nplain text",
+    "* * *\nplain text",
+  ])("keeps the destination visible when a title crosses a real block start: %s", (continuation) => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: `![Chart](https://cdn.example.com/chart.png "Figure\n${continuation}")`,
+    });
+    expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+  });
+
+  it.each([
+    "*** source https://example.com/report",
+    "___ source https://example.com/report",
+    "#tag",
+    "14. item",
+    "<span>caption</span>",
+  ])("accepts an image title with a normal continuation: %s", (continuation) => {
+    for (const [open, close] of [["\"", "\""], ["'", "'"], ["(", ")"]]) {
+      const issues = validateLongFormContent({
+        platform: "blog",
+        content: `![Chart](https://cdn.example.com/chart.png ${open}Figure\n${continuation}${close})`,
+      });
+      expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
     }
   });
 });
