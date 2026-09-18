@@ -12,7 +12,7 @@ const MARKDOWN_LINK = /(?<!!)\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi;
 const RAW_URL = /https?:\/\/[^\s)]+/gi;
 const WEAK_ANCHORS = new Set(["here", "source", "link", "click here"]);
 const RESEARCH_PROCESS_NOTE =
-  /\b(?:checked|accessed|retrieved|reviewed|read|consulted|looked at|verificad[oa]|consultad[oa]|lida|le[iu]da)\b[^\n.]{0,100}\b(?:on|em|no dia|as of)\s+(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i;
+  /\b(?:checked|accessed|retrieved|reviewed|read|consulted|looked at)\s+(?:from\s+|in\s+)?(?:the\s+)?(?:vendor|project|official|product)?\s*(?:page|documentation|docs?|source|site|repository|repo|material(?:s)?)\b[^\n.]{0,20}\b(?:on|as of)\s+(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})|\b(?:verificad[oa]|consultad[oa]|lida|le[iu]da|revisad[oa]|acessad[oa])\s+(?:na?\s+)?(?:documentação|página|fonte|site|repositório|material)\b[^\n.]{0,20}\b(?:em|no dia)\s+(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i;
 const RESEARCH_DATE_PROVENANCE =
   /\b(?:everything here|this article|these findings|o artigo|este texto)\b[^\n.]{0,160}\b(?:read|based|lido|baseado)\b[^\n.]{0,100}\b(?:on|from|em|de)\b[^\n.]{0,100}\b(?:vendor|project|documentation|documentação|fornecedor|projeto)\b[^\n.]{0,100}\b(?:20\d{2}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i;
 

@@ -99,6 +99,24 @@ describe("validateLongFormContent", () => {
 
     expect(issues.map((issue) => issue.code)).not.toContain("long_form_research_process_note");
   });
+
+  it("does not flag ordinary subject sentences that contain review verbs and dates", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "The release was reviewed in the changelog and shipped on 2026-03-01.",
+        "The read-only replica was enabled on 2026-01-01.",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_research_process_note");
+  });
   it("does not count images as research links", () => {
     const issues = validateLongFormContent({
       platform: "blog",
