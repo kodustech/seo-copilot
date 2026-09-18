@@ -64,7 +64,7 @@ import {
   updateWorkItem,
   deleteWorkItem,
 } from "@/lib/kanban";
-import { addBetEntry, createBet, deleteBet, listBetEntries, listBets, updateBet, BET_ENTRY_KINDS, MEASURE_KINDS, type BetEntryKind, type BetMeasure, type BetStatus } from "@/lib/bets";
+import { addBetEntry, compareBetsByHypothesis, createBet, deleteBet, listBetEntries, listBets, updateBet, BET_ENTRY_KINDS, MEASURE_KINDS, type BetEntryKind, type BetMeasure, type BetStatus } from "@/lib/bets";
 import { evaluateBet, evaluateBets } from "@/lib/bet-evaluation";
 import { fetchFunnel } from "@/lib/funnel/metrics";
 import { FUNNEL_METRICS } from "@/lib/funnel/goals";
@@ -3430,7 +3430,7 @@ const listBetsTool = tool({
         if (!ref.ok) return { success: false as const, ...ref };
         gid = ref.goal.id;
       }
-      const bets = await listBets(client, { goalId: gid, status });
+      const bets = (await listBets(client, { goalId: gid, status })).sort(compareBetsByHypothesis);
       if (!evaluate) return { success: true as const, count: bets.length, bets };
       const evaluations = await evaluateBets(client, bets);
       return { success: true as const, count: bets.length, bets: bets.map((b) => ({ ...b, evaluation: evaluations[b.id] ?? null })) };

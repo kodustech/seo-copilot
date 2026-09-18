@@ -5,7 +5,7 @@ import { evaluateBets, type BetEvaluation } from "@/lib/bet-evaluation";
 import { BET_STATUSES, createBet, listBetEntries, listBets, type BetStatus } from "@/lib/bets";
 import { FUNNEL_METRICS } from "@/lib/funnel/goals";
 import { listGoals } from "@/lib/goals";
-import { getSupabaseUserClient } from "@/lib/supabase-server";
+import { getSupabaseServiceClient, getSupabaseUserClient } from "@/lib/supabase-server";
 
 /** Funnel rates a bet can measure, with the label the page shows. */
 export const FUNNEL_RATE_OPTIONS: { id: string; label: string }[] = [
@@ -48,6 +48,30 @@ export async function GET(req: Request) {
     ]);
     const goalById = new Map(goals.map((g) => [g.id, g]));
     const tags = [...new Set((seqRows ?? []).flatMap((r) => (Array.isArray(r.tags) ? (r.tags as string[]) : [])))].sort();
+    // Responsible picker source of truth: Supabase Auth users, same list the
+    // Kanban and Goals pickers use. Best effort — a missing service key must
+    // not break the page; the UI falls back to owners seen on bets.
+    let members: { email: string; label: string }[] = [];
+    try {
+      const service = getSupabaseServiceClient();
+      const { data } = await service.auth.admin.listUsers({ page: 1, perPage: 200 });
+      members = (data?.users ?? [])
+        .filter((u) => u.email)
+        .map((u) => {
+          const email = u.email as string;
+          const fullName =
+            (u.user_metadata?.full_name as string | undefined) ||
+            (u.user_metadata?.name as string | undefined) ||
+            null;
+          return {
+            email,
+            label: (fullName && fullName.split(/\s+/)[0]) || email.split("@")[0].split(".")[0],
+          };
+        })
+        .sort((a, b) => a.label.localeCompare(b.label));
+    } catch {
+      members = [];
+    }
     // Only open bets with a measure are worth a funnel read; decided ones
     // keep their verdict, and a bet without a measure has nothing to read.
     // Shared windows are computed once (funnel cache inside evaluateBets).
@@ -78,6 +102,7 @@ export async function GET(req: Request) {
         workItems: (itemRows ?? []).map((r) => ({ id: String(r.id), title: String(r.title), stage: (r.stage as string | null) ?? null })),
         levers: [...new Set(bets.map((b) => b.lever).filter((v): v is string => Boolean(v)))].sort(),
         owners: [...new Set(bets.map((b) => b.ownerEmail).filter((v): v is string => Boolean(v)))].sort(),
+        members,
       },
     });
   } catch (err) {

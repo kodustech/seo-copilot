@@ -8,6 +8,7 @@ import { CheckCircle2, ChevronDown, ChevronRight, CircleDashed, FlaskConical, Li
 
 import type { BetEvaluation, EvaluationLevel } from "@/lib/bet-evaluation";
 import type { Bet, BetEntry, BetEntryKind, BetMeasure, BetStatus, MeasureKind } from "@/lib/bets";
+import { betOwnerInitials, betOwnerLabel, canonicalOwnerEmail, compareBetsByHypothesis, type TeamMemberRef } from "@/lib/bets";
 import { OWNED_PROPERTIES } from "@/lib/owned-domains";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
@@ -146,6 +147,7 @@ type Options = {
   workItems: { id: string; title: string; stage: string | null }[];
   levers: string[];
   owners: string[];
+  members: TeamMemberRef[];
 };
 
 const STATUS_LABEL: Record<BetStatus, { label: string; className: string }> = {
@@ -427,7 +429,7 @@ function BetDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[92vh] max-w-2xl overflow-y-auto border-white/10 bg-neutral-950 text-neutral-100">
-        <BetForm key={`${open}:${initial.goalId}:${initial.title}`} initial={initial} goals={goals} options={options} onSubmit={onSubmit} saving={saving} title={title} mode={mode} onClose={() => onOpenChange(false)} />
+        <BetForm key={`${open}:${initial.goalId}:${initial.title}:${initial.ownerEmail}`} initial={initial} goals={goals} options={options} onSubmit={onSubmit} saving={saving} title={title} mode={mode} onClose={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>
   );
@@ -456,6 +458,25 @@ function BetForm({
   const set = (patch: Partial<FormState>) => setF((s) => ({ ...s, ...patch }));
   const rate = f.measureKind === "funnel_rate" || f.measureKind === "ai_share" || (f.measureKind === "outbound_tag" && f.submetric === "reply_rate");
   const valid = f.goalId && f.title.trim().length > 1 && f.hypothesis.trim() && f.action.trim() && f.metric.trim() && /^\d{4}-\d{2}-\d{2}$/.test(f.decisionAt);
+  // The Select needs an item whose value matches exactly, or Radix renders a
+  // blank trigger. Members first (canonical case), then legacy owner emails,
+  // then the current value itself as a last resort — a stored or prefilled
+  // email never shows as blank, even when the member list failed to load.
+  const responsibleOptions: TeamMemberRef[] = useMemo(() => {
+    const base: TeamMemberRef[] = [...(options?.members ?? [])];
+    const seen = new Set(base.map((m) => m.email.toLowerCase()));
+    for (const o of options?.owners ?? []) {
+      if (!seen.has(o.toLowerCase())) {
+        base.push({ email: o, label: o.split("@")[0] });
+        seen.add(o.toLowerCase());
+      }
+    }
+    if (f.ownerEmail && !seen.has(f.ownerEmail.toLowerCase())) {
+      base.push({ email: f.ownerEmail, label: f.ownerEmail.split("@")[0] });
+    }
+    return base;
+  }, [options, f.ownerEmail]);
+  const responsibleValue = !f.ownerEmail ? "__none__" : (canonicalOwnerEmail(f.ownerEmail, responsibleOptions) ?? f.ownerEmail);
 
   const idOptions: { id: string; label: string }[] =
     f.measureKind === "funnel_stage"
@@ -506,9 +527,20 @@ function BetForm({
           <Input value={f.lever} onChange={(e) => set({ lever: e.target.value })} list="bet-levers" placeholder="Outbound messages" className={inputCls} />
           <datalist id="bet-levers">{(options?.levers ?? []).map((l) => <option key={l} value={l} />)}</datalist>
         </Field>
-        <Field label="Owner">
-          <Input value={f.ownerEmail} onChange={(e) => set({ ownerEmail: e.target.value })} list="bet-owners" placeholder="name@kodus.io" className={inputCls} />
-          <datalist id="bet-owners">{(options?.owners ?? []).map((o) => <option key={o} value={o} />)}</datalist>
+        <Field label="Responsible" hint="A seocopilot user. Shown on the bet row.">
+          <Select value={responsibleValue} onValueChange={(v) => set({ ownerEmail: v === "__none__" ? "" : v })}>
+            <SelectTrigger className={selectCls}>
+              <SelectValue placeholder="Nobody yet" />
+            </SelectTrigger>
+            <SelectContent className={menuCls}>
+              <SelectItem value="__none__">Nobody yet</SelectItem>
+              {responsibleOptions.map((m) => (
+                <SelectItem key={m.email} value={m.email}>
+                  {m.label} · {m.email}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </Field>
         <Field label="Decision date">
           <Input type="date" value={f.decisionAt} onChange={(e) => set({ decisionAt: e.target.value })} className={inputCls} />
@@ -706,10 +738,14 @@ export function BetsPage() {
   const [open, setOpen] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{ mode: "create" | "edit"; bet?: BetRow } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [currentUserEmail, setCurrentUserEmail] = useState<string>("");
 
   useEffect(() => {
     if (!supabase) return;
-    supabase.auth.getSession().then(({ data: s }) => setToken(s.session?.access_token ?? null));
+    supabase.auth.getSession().then(({ data: s }) => {
+      setToken(s.session?.access_token ?? null);
+      setCurrentUserEmail(s.session?.user?.email ?? "");
+    });
   }, [supabase]);
 
   const headers = useMemo(() => ({ Authorization: `Bearer ${token ?? ""}`, "Content-Type": "application/json" }), [token]);
@@ -789,14 +825,27 @@ export function BetsPage() {
   const visible = bets
     .filter((b) => (tab === "open" ? b.status === "active" || b.status === "queued" : b.status !== "active" && b.status !== "queued"))
     .filter((b) => (lever === "all" ? true : lever === "none" ? !b.lever : b.lever === lever))
-    .filter((b) => (owner === "all" ? true : owner === "none" ? !b.ownerEmail : b.ownerEmail === owner))
+    .filter((b) => (owner === "all" ? true : owner === "none" ? !b.ownerEmail : (b.ownerEmail ?? "").toLowerCase() === owner.toLowerCase()))
     .filter((b) => (goalFilter ? b.goalId === goalFilter : true));
+  // Responsible display resolves against seocopilot users; bets pointing at an
+  // email outside the member list (ex-teammate, typo) fall back to the prefix.
+  const members: TeamMemberRef[] = useMemo(() => options?.members ?? [], [options]);
+  const ownerOptions: TeamMemberRef[] = useMemo(() => {
+    const seen = new Set(members.map((m) => m.email.toLowerCase()));
+    const legacy = (options?.owners ?? [])
+      .filter((o) => !seen.has(o.toLowerCase()))
+      .map((o) => ({ email: o, label: o.split("@")[0] }));
+    return [...members, ...legacy];
+  }, [options, members]);
   const groups = useMemo(() => {
     const m = new Map<string, BetRow[]>();
     for (const b of visible) {
       const k = b.lever ?? "";
       m.set(k, [...(m.get(k) ?? []), b]);
     }
+    // Within a lever, bets run in hypothesis-number order (H1 < H1.2 <
+    // H1.10 < H2); unnumbered titles sort alphabetically at the end.
+    for (const [k, list] of m) m.set(k, [...list].sort(compareBetsByHypothesis));
     return [...m.entries()].sort((a, b) => (a[0] === "" ? 1 : b[0] === "" ? -1 : a[0].localeCompare(b[0])));
   }, [visible]);
 
@@ -854,9 +903,9 @@ export function BetsPage() {
             </SelectTrigger>
             <SelectContent className={menuCls}>
               <SelectItem value="all">Anyone</SelectItem>
-              {(options?.owners ?? []).map((o) => (
-                <SelectItem key={o} value={o}>
-                  {o.split("@")[0]}
+              {ownerOptions.map((o) => (
+                <SelectItem key={o.email} value={o.email}>
+                  {o.label}
                 </SelectItem>
               ))}
               <SelectItem value="none">Nobody yet</SelectItem>
@@ -928,10 +977,18 @@ export function BetsPage() {
                         </div>
                         <button type="button" onClick={() => setOpen(isOpen ? null : b.id)} className="mt-1 block w-full text-left focus-visible:outline-none">
                           <span className="line-clamp-2 block text-sm text-neutral-400">{b.hypothesis}</span>
-                          <span className="mt-1 block text-[11px] text-neutral-500">
-                            {b.goalTitle ? <>goal: {b.goalTitle}</> : null}
-                            {b.ownerEmail ? <> · {b.ownerEmail.split("@")[0]}</> : null}
-                            {b.entries.length ? <> · {b.entries.length} journal entr{b.entries.length === 1 ? "y" : "ies"}</> : null}
+                          <span className="mt-1 flex flex-wrap items-center gap-x-1 text-[11px] text-neutral-500">
+                            {b.goalTitle ? <span>goal: {b.goalTitle}</span> : null}
+                            {b.ownerEmail ? (
+                              <span className="inline-flex items-center gap-1" title={`Responsible: ${b.ownerEmail}`}>
+                                <span aria-hidden="true">·</span>
+                                <span className="inline-flex size-4 items-center justify-center rounded-full bg-sky-500/20 text-[8px] font-semibold text-sky-200 ring-1 ring-sky-500/40">
+                                  {betOwnerInitials(b.ownerEmail, members)}
+                                </span>
+                                {betOwnerLabel(b.ownerEmail, members)}
+                              </span>
+                            ) : null}
+                            {b.entries.length ? <span>· {b.entries.length} journal entr{b.entries.length === 1 ? "y" : "ies"}</span> : null}
                           </span>
                         </button>
                       </div>
@@ -982,6 +1039,20 @@ export function BetsPage() {
                         <div>
                           <p className="text-[11px] uppercase tracking-wider text-neutral-500">Metric that proves it</p>
                           <p className="text-neutral-300">{b.metric}</p>
+                        </div>
+                        <div>
+                          <p className="text-[11px] uppercase tracking-wider text-neutral-500">Responsible</p>
+                          {b.ownerEmail ? (
+                            <p className="flex items-center gap-2 text-neutral-300" title={b.ownerEmail}>
+                              <span className="inline-flex size-5 items-center justify-center rounded-full bg-sky-500/20 text-[9px] font-semibold text-sky-200 ring-1 ring-sky-500/40">
+                                {betOwnerInitials(b.ownerEmail, members)}
+                              </span>
+                              {betOwnerLabel(b.ownerEmail, members)}
+                              <span className="text-[11px] text-neutral-500">{b.ownerEmail}</span>
+                            </p>
+                          ) : (
+                            <p className="text-neutral-500">Nobody yet</p>
+                          )}
                         </div>
                         {b.verdict ? (
                           <div>
@@ -1041,13 +1112,18 @@ export function BetsPage() {
       <BetDialog
         open={dialog != null}
         onOpenChange={(v) => !v && setDialog(null)}
-        initial={dialog?.mode === "edit" && dialog.bet ? fromBet(dialog.bet) : { ...EMPTY, goalId: goalFilter ?? goals[0]?.id ?? "" }}
+        initial={dialog?.mode === "edit" && dialog.bet ? fromBet(dialog.bet) : { ...EMPTY, goalId: goalFilter ?? goals[0]?.id ?? "", ownerEmail: currentUserEmail }}
         goals={goals}
         options={options}
         saving={saving}
         title={dialog?.mode === "edit" ? "Edit bet" : "New bet"}
         mode={dialog?.mode === "edit" ? "edit" : "create"}
         onSubmit={async (payload) => {
+          // Heal legacy case: a bet saved with "Junior.Sartori@kodus.io" from
+          // the old free-text input is stored with the member's canonical case.
+          if (typeof payload.ownerEmail === "string" && payload.ownerEmail) {
+            payload.ownerEmail = canonicalOwnerEmail(payload.ownerEmail, members) ?? payload.ownerEmail;
+          }
           if (dialog?.mode === "edit" && dialog.bet) return call(`/api/bets/${dialog.bet.id}`, { method: "PATCH", body: JSON.stringify(payload) });
           return call("/api/bets", { method: "POST", body: JSON.stringify(payload) });
         }}
