@@ -276,4 +276,21 @@ describe("validateLongFormContent", () => {
 
     expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
   });
+
+  it("does not hide URLs after a block-level continuation in an image title", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "![Chart](https://cdn.example.com/chart.png \"Figure\n> quoted https://example.com/report\")",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+  });
 });
