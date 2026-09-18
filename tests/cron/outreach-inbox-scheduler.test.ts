@@ -204,6 +204,55 @@ describe("runOutreachInboxCron", () => {
     }
   });
 
+  it("a retried run completing does not free the still-hung run's guard", async () => {
+    const now = vi.spyOn(Date, "now");
+    const gmailGate: Array<(v: never) => void> = [];
+    vi.mocked(syncAllMailboxesInbox).mockImplementation(
+      () =>
+        new Promise((res) => {
+          gmailGate.push(res);
+        }),
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const t0 = Date.now();
+      const runA = runOutreachInboxCron();
+      await vi.waitFor(() => {
+        expect(syncAllMailboxesInbox).toHaveBeenCalledTimes(1);
+      });
+      // Past the lease: run B retries Gmail while A is still hung.
+      now.mockReturnValue(t0 + 21 * 60_000);
+      const runB = runOutreachInboxCron();
+      await vi.waitFor(() => {
+        expect(syncAllMailboxesInbox).toHaveBeenCalledTimes(2);
+      });
+      gmailGate[1](gmailResult as never);
+      await runB;
+      // B completed, but A is still in flight: the next tick must skip Gmail
+      // rather than start a third concurrent run.
+      await runOutreachInboxCron();
+      expect(syncAllMailboxesInbox).toHaveBeenCalledTimes(2);
+      const line = log.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(line).toMatch(/gmail phase still active, skipping overlap/);
+      // Once the hung run settles, the guard is fully released.
+      now.mockRestore();
+      gmailGate[0](gmailResult as never);
+      await runA;
+      const runD = runOutreachInboxCron();
+      await vi.waitFor(() => {
+        expect(syncAllMailboxesInbox).toHaveBeenCalledTimes(3);
+      });
+      gmailGate[2](gmailResult as never);
+      await runD;
+      expect(syncAllMailboxesInbox).toHaveBeenCalledTimes(3);
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+      now.mockRestore();
+    }
+  });
+
   it("still syncs Gmail while a previous run is stuck in the LinkedIn phase", async () => {
     let resolveLinkedin!: (v: never) => void;
     vi.mocked(syncUnipileLinkedInInbox).mockReturnValue(

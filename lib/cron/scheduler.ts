@@ -256,28 +256,35 @@ async function runAutoEnrollCron(): Promise<void> {
 // phase is retried instead of skipped forever; concurrent runs inside the
 // lease are still skipped to protect the rate-limited account.
 const PHASE_LEASE_MS = 20 * 60_000;
-const activeInboxPhases = new Map<"gmail" | "linkedin", number>();
+const activeInboxPhases = new Map<"gmail" | "linkedin", { stamp: number; inFlight: number }>();
 
 async function runInboxPhase<T>(
   phase: "gmail" | "linkedin",
   fn: () => Promise<T>,
 ): Promise<{ result: T | null; skipped: boolean }> {
-  const previous = activeInboxPhases.get(phase);
-  if (previous != null && Date.now() - previous < PHASE_LEASE_MS) {
+  const entry = activeInboxPhases.get(phase);
+  if (entry != null && Date.now() - entry.stamp < PHASE_LEASE_MS) {
     console.log(`[cron] outreach-inbox: ${phase} phase still active, skipping overlap`);
     return { result: null, skipped: true };
   }
-  if (previous != null) {
+  if (entry != null) {
     console.warn(`[cron] outreach-inbox: ${phase} phase lease expired, retrying despite previous run still active`);
   }
   const stamp = Date.now();
-  activeInboxPhases.set(phase, stamp);
+  // Count every run that entered: a retry re-stamps the lease without
+  // forgetting the hung run, so the slot is only freed once no entered run
+  // is still in flight — otherwise the retry completing would leave the slot
+  // empty while the hung run is still going, and the next tick would start a
+  // third concurrent run.
+  activeInboxPhases.set(phase, { stamp, inFlight: (entry?.inFlight ?? 0) + 1 });
   try {
     return { result: await fn(), skipped: false };
   } finally {
-    // A newer run may have re-stamped the lease while this one was stuck;
-    // only release our own stamp so we never free a live run's guard.
-    if (activeInboxPhases.get(phase) === stamp) activeInboxPhases.delete(phase);
+    const current = activeInboxPhases.get(phase);
+    if (current != null) {
+      current.inFlight -= 1;
+      if (current.inFlight <= 0) activeInboxPhases.delete(phase);
+    }
   }
 }
 
