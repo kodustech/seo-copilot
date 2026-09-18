@@ -139,7 +139,7 @@ const SWATCH: Record<CellState, string> = {
  */
 function MatrixCell({ result, active, onOpen }: { result: PromptEngineResult | undefined; active: boolean; onOpen: () => void }) {
   const state = cellState(result);
-  const citedAnswers = result?.runs.filter((run) => !run.error && run.brandCited).length ?? 0;
+  const citedAnswers = result?.runs.filter((run) => !run.error && run.citations.some((citation) => isOwnedUrl(citation.url))).length ?? 0;
   let main = "–";
   let aside: string | null = null;
   if (result && state !== "empty") {
@@ -592,7 +592,7 @@ export function AiVisibilityPage() {
   const configLabel = summary ? `${WEEKDAY_LABELS[summary.settings.weekday]} · ${engines.length} assistant${engines.length === 1 ? "" : "s"}` : "";
   const totalSamples = summary?.engines.reduce((s, e) => s + e.samples, 0) ?? 0;
   const totalMentioned = summary?.engines.reduce((s, e) => s + e.mentioned, 0) ?? 0;
-  const totalCited = summary?.engines.reduce((s, e) => s + e.brandCited, 0) ?? 0;
+  const totalCited = summary?.engines.reduce((s, e) => s + e.ownedCited, 0) ?? 0;
   const rollingAll = (() => {
     if (!summary) return null;
     const withRolling = summary.engines.filter((e) => e.rollingShare != null && e.rollingRuns > 1);
@@ -759,8 +759,8 @@ export function AiVisibilityPage() {
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-neutral-300">{e.avgPosition != null ? `#${e.avgPosition}` : "–"}</td>
                       <td className="hidden whitespace-nowrap px-5 py-2.5 text-right tabular-nums sm:table-cell" title="Answers with at least one of our links listed as a source; each answer counts once">
-                        <p className="text-neutral-100">{pct(e.samples ? e.brandCited / e.samples : null)}</p>
-                        <p className="mt-0.5 text-[11px] text-neutral-500">{e.brandCited} of {e.samples} answers</p>
+                        <p className="text-neutral-100">{pct(e.samples ? e.ownedCited / e.samples : null)}</p>
+                        <p className="mt-0.5 text-[11px] text-neutral-500">{e.ownedCited} of {e.samples} answers</p>
                       </td>
                     </tr>
                   ))}
