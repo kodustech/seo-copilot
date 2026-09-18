@@ -65,6 +65,40 @@ describe("validateLongFormContent", () => {
 
     expect(issues.map((issue) => issue.code)).toContain("long_form_weak_anchor");
   });
+
+  it("rejects research access dates and process narration", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "Everything here was read from a vendor page on 2026-09-21.",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_research_process_note");
+  });
+
+  it("allows dates that are part of the subject", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "The project released this capability on 2026-09-21.",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_research_process_note");
+  });
   it("does not count images as research links", () => {
     const issues = validateLongFormContent({
       platform: "blog",

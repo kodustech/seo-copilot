@@ -11,6 +11,10 @@ const LONG_FORM_PLATFORMS = new Set(["blog", "devto", "hackernoon"]);
 const MARKDOWN_LINK = /(?<!!)\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi;
 const RAW_URL = /https?:\/\/[^\s)]+/gi;
 const WEAK_ANCHORS = new Set(["here", "source", "link", "click here"]);
+const RESEARCH_PROCESS_NOTE =
+  /\b(?:checked|accessed|retrieved|reviewed|read|consulted|looked at|verificad[oa]|consultad[oa]|lida|le[iu]da)\b[^\n.]{0,100}\b(?:on|em|no dia|as of)\s+(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i;
+const RESEARCH_DATE_PROVENANCE =
+  /\b(?:everything here|this article|these findings|o artigo|este texto)\b[^\n.]{0,160}\b(?:read|based|lido|baseado)\b[^\n.]{0,100}\b(?:on|from|em|de)\b[^\n.]{0,100}\b(?:vendor|project|documentation|documentação|fornecedor|projeto)\b[^\n.]{0,100}\b(?:20\d{2}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i;
 
 function wordCount(text: string): number {
   return text
@@ -107,6 +111,12 @@ export function validateLongFormContent(input: {
     issues.push({
       code: "long_form_weak_anchor",
       message: "Research links need descriptive, contextual anchor text—not 'source', 'here', or 'click here'.",
+    });
+  }
+  if (RESEARCH_PROCESS_NOTE.test(content) || RESEARCH_DATE_PROVENANCE.test(content)) {
+    issues.push({
+      code: "long_form_research_process_note",
+      message: "Remove research-process notes and access dates from the article; cite the source naturally instead.",
     });
   }
 
