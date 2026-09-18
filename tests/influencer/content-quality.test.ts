@@ -138,6 +138,8 @@ describe("validateLongFormContent", () => {
     "***Accessed on 2026-03-01***",
     "Sources consulted on 2026-03-01",
     "Reference: accessed on 2026-03-01",
+    "> ### Accessed on 2026-05-01",
+    "**Sources**: consulted on 2026-03-01",
   ])("rejects a bare access-date stamp: %s", (stamp) => {
     const issues = validateLongFormContent({
       platform: "blog",
@@ -154,6 +156,8 @@ describe("validateLongFormContent", () => {
     "Acessado no site oficial do projeto Kodus em 21/09/2026.",
     "We accessed the documentation for the official Kodus project on 2026-03-01.",
     "Acessado no site oficial\nem 21/09/2026.",
+    "Accessed the documentation\non 2026-03-01.",
+    "Acessado no site oficial do\nprojeto Kodus em 21/09/2026.",
   ])("rejects a noun-based research access note: %s", (note) => {
     const issues = validateLongFormContent({
       platform: "blog",
