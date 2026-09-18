@@ -154,6 +154,8 @@ describe("validateLongFormContent", () => {
     "I retrieved the repository snapshot on 2026-01-15.",
     "Acessado no site oficial do projeto em 21/09/2026.",
     "Acessado no site oficial do projeto Kodus em 21/09/2026.",
+    "> We accessed the vendor documentation\n> on 2026-03-01.",
+    "Accessed the documentation\n**on 2026-03-01**.",
     "We accessed the documentation for the official Kodus project on 2026-03-01.",
     "Acessado no site oficial\nem 21/09/2026.",
     "Accessed the documentation\non 2026-03-01.",
@@ -180,6 +182,8 @@ describe("validateLongFormContent", () => {
     "We read the vendor docs\n- The rewrite landed on 2026-05-01.",
     "Acessado no site oficial do projeto\nO redesign foi lançado em 21/09/2026.",
     "Acessado no site oficial do projeto\n- O redesign foi lançado em 21/09/2026.",
+    "Acessado no site oficial do projeto\n  - O redesign foi lançado em 21/09/2026.",
+    "We read the vendor docs\n  1) The rewrite landed on 2026-05-01.",
   ])("allows subject dates in ordinary prose: %s", (sentence) => {
     const issues = validateLongFormContent({
       platform: "blog",
