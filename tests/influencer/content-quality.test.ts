@@ -117,6 +117,22 @@ describe("validateLongFormContent", () => {
 
     expect(issues.map((issue) => issue.code)).not.toContain("long_form_research_process_note");
   });
+
+  it.each([
+    "Accessed on 2026-09-21.",
+    "Retrieved on 2026-09-21.",
+    "(accessed on 2026-09-21)",
+    "Consultado em 21/09/2026.",
+    "Acessado no dia 21/09/2026.",
+    "consultado no site em 21/09/2026.",
+  ])("rejects a bare access-date stamp: %s", (stamp) => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: ["## Context", body(270), "## Evidence", body(270), "## Decision", body(270), stamp].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_research_process_note");
+  });
   it("does not count images as research links", () => {
     const issues = validateLongFormContent({
       platform: "blog",
