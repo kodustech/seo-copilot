@@ -133,6 +133,32 @@ describe("validateLongFormContent", () => {
 
     expect(issues.map((issue) => issue.code)).toContain("long_form_research_process_note");
   });
+
+  it.each([
+    "We accessed the official documentation on 2026-03-01.",
+    "I retrieved the repository snapshot on 2026-01-15.",
+    "Acessado no site oficial do projeto em 21/09/2026.",
+  ])("rejects a noun-based research access note: %s", (note) => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: ["## Context", body(270), "## Evidence", body(270), "## Decision", body(270), note].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_research_process_note");
+  });
+
+  it.each([
+    "The report was consulted on 2026-02-10.",
+    "Files retrieved on 2026-05-01 were audited.",
+    "O arquivo acessado em 21/09/2026 foi removido.",
+  ])("allows subject dates in ordinary prose: %s", (sentence) => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: ["## Context", body(270), "## Evidence", body(270), "## Decision", body(270), sentence].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_research_process_note");
+  });
   it("does not count images as research links", () => {
     const issues = validateLongFormContent({
       platform: "blog",
