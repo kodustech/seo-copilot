@@ -22,6 +22,7 @@ import {
 } from "@/lib/ai-visibility";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
+import { BRAND_DOMAINS, urlMatchesProperty } from "@/lib/owned-domains";
 import { MarkdownContent } from "@/components/markdown-content";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -138,6 +139,7 @@ const SWATCH: Record<CellState, string> = {
  */
 function MatrixCell({ result, active, onOpen }: { result: PromptEngineResult | undefined; active: boolean; onOpen: () => void }) {
   const state = cellState(result);
+  const citedAnswers = result?.runs.filter((run) => !run.error && run.brandCited).length ?? 0;
   let main = "–";
   let aside: string | null = null;
   if (result && state !== "empty") {
@@ -169,7 +171,15 @@ function MatrixCell({ result, active, onOpen }: { result: PromptEngineResult | u
       <span className={cn("inline-block size-2.5 shrink-0 rounded-[3px]", SWATCH[state])} />
       <span className={cn("whitespace-nowrap", state === "all" || state === "some" ? "text-neutral-100" : state === "error" ? "text-amber-300" : "text-neutral-500")}>{main}</span>
       {aside ? <span className="whitespace-nowrap text-neutral-500">{aside}</span> : null}
-      {result?.brandCited ? <Link2 className="ml-auto size-3 shrink-0 text-neutral-600" aria-label="Cited one of our pages" /> : null}
+      {result && result.samples > 0 ? (
+        <span
+          className={cn("ml-auto inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5", citedAnswers ? "bg-sky-400/10 text-sky-400" : "text-neutral-600")}
+          title={`${citedAnswers} of ${result.samples} answers cited at least one of our pages`}
+          aria-label={`${citedAnswers} of ${result.samples} answers cited our pages`}
+        >
+          <Link2 className="size-3" />{citedAnswers}/{result.samples}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -180,6 +190,8 @@ function MatrixCell({ result, active, onOpen }: { result: PromptEngineResult | u
 
 function SamplePanel({ run, total }: { run: AiPromptRun; total: number }) {
   const [showAll, setShowAll] = useState(false);
+  const isBrandUrl = (url: string) => BRAND_DOMAINS.some((domain) => urlMatchesProperty(url, domain));
+  const ownUrls = new Set(run.citations.filter((citation) => isBrandUrl(citation.url)).map((citation) => citation.url));
   const text = stripCitationMarks(run.answer ?? "");
   const long = text.length > 1400;
   return (
@@ -215,13 +227,16 @@ function SamplePanel({ run, total }: { run: AiPromptRun; total: number }) {
         <footer className="grid gap-4 border-t border-white/[0.06] px-4 py-3 text-xs md:grid-cols-2">
           {run.citations.length ? (
             <div className="min-w-0">
-              <p className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">Sources cited</p>
+              <p className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">Sources cited
+                {ownUrls.size > 0 ? <span className="ml-2 text-sky-400">{ownUrls.size} {ownUrls.size === 1 ? "page of ours" : "pages of ours"}</span> : null}
+              </p>
               <ol className="space-y-0.5">
-                {run.citations.slice(0, 12).map((c) => {
+                {[...run.citations].sort((a, b) => Number(isBrandUrl(b.url)) - Number(isBrandUrl(a.url))).slice(0, 12).map((c) => {
                   const host = c.url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0];
                   return (
                     <li key={c.url} className="flex min-w-0 items-baseline gap-2">
-                      <a href={c.url} target="_blank" rel="noreferrer" className="min-w-0 truncate text-neutral-200 hover:underline">
+                      {isBrandUrl(c.url) ? <Link2 className="size-3 shrink-0 self-center text-sky-400" /> : null}
+                      <a href={c.url} target="_blank" rel="noreferrer" className={cn("min-w-0 truncate hover:underline", isBrandUrl(c.url) ? "text-sky-400" : "text-neutral-200")}>
                         {c.title || c.url}
                       </a>
                       <span className="shrink-0 text-neutral-600">{host}</span>
@@ -577,6 +592,7 @@ export function AiVisibilityPage() {
   const configLabel = summary ? `${WEEKDAY_LABELS[summary.settings.weekday]} · ${engines.length} assistant${engines.length === 1 ? "" : "s"}` : "";
   const totalSamples = summary?.engines.reduce((s, e) => s + e.samples, 0) ?? 0;
   const totalMentioned = summary?.engines.reduce((s, e) => s + e.mentioned, 0) ?? 0;
+  const totalCited = summary?.engines.reduce((s, e) => s + e.brandCited, 0) ?? 0;
   const rollingAll = (() => {
     if (!summary) return null;
     const withRolling = summary.engines.filter((e) => e.rollingShare != null && e.rollingRuns > 1);
@@ -665,7 +681,7 @@ export function AiVisibilityPage() {
       {summary && engineCount > 0 ? (
         <section>
           <SectionHeader label={`Reading of run ${summary.runOn}`} hint={`${usd(summary.totalCostUsd)} this run`} />
-          <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+          <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
             <div className="rounded-lg border border-white/[0.06] bg-neutral-900/40 p-5">
               <p className="text-[11px] font-medium uppercase tracking-wider text-neutral-500">Kodus named</p>
               <p className="mt-2 text-5xl font-semibold tabular-nums tracking-tight text-neutral-100">{pct(summary.overallShare)}</p>
@@ -675,8 +691,14 @@ export function AiVisibilityPage() {
               <p className="mt-1 text-xs text-neutral-500">
                 {rollingAll ? `Average of the last ${rollingAll.runs} runs: ${pct(rollingAll.share)}.` : "First run; the rolling average appears from the second one."}
               </p>
+              <div className="mt-5 border-t border-white/[0.06] pt-4">
+                <p className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-neutral-500"><Link2 className="size-3.5" /> Our links used</p>
+                <p className="mt-2 text-4xl font-semibold tabular-nums tracking-tight text-neutral-100">{pct(totalSamples ? totalCited / totalSamples : null)}</p>
+                <p className="mt-2 text-sm text-neutral-400">{totalCited} of {totalSamples} answers included a link to our pages as a source.</p>
+                <p className="mt-1 text-xs text-neutral-500">Counted independently of whether Kodus was named.</p>
+              </div>
             </div>
-            <div className="rounded-lg border border-white/[0.06] bg-neutral-900/40">
+            <div className="min-w-0 overflow-x-auto rounded-lg border border-white/[0.06] bg-neutral-900/40">
               <table className="w-full text-sm">
                 <thead className="text-[11px] uppercase tracking-wider text-neutral-500">
                   <tr className="border-b border-white/[0.06]">
@@ -684,7 +706,7 @@ export function AiVisibilityPage() {
                     <th className="px-3 py-2 text-left font-medium">Named</th>
                     <th className="hidden px-3 py-2 text-right font-medium md:table-cell">Prompts</th>
                     <th className="px-3 py-2 text-right font-medium">Position</th>
-                    <th className="hidden px-3 py-2 text-right font-medium sm:table-cell">Our page cited</th>
+                    <th className="hidden min-w-[140px] px-5 py-2 text-right font-medium sm:table-cell">Our links used</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/[0.06]">
@@ -711,7 +733,10 @@ export function AiVisibilityPage() {
                         {e.promptsMentioned}/{e.prompts}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-neutral-300">{e.avgPosition != null ? `#${e.avgPosition}` : "–"}</td>
-                      <td className="hidden px-3 py-2.5 text-right tabular-nums text-neutral-300 sm:table-cell">{e.brandCited ? `${e.brandCited}×` : "–"}</td>
+                      <td className="hidden whitespace-nowrap px-5 py-2.5 text-right tabular-nums sm:table-cell" title="Answers with at least one of our links listed as a source; each answer counts once">
+                        <p className="text-neutral-100">{pct(e.samples ? e.brandCited / e.samples : null)}</p>
+                        <p className="mt-0.5 text-[11px] text-neutral-500">{e.brandCited} of {e.samples} answers</p>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -726,13 +751,13 @@ export function AiVisibilityPage() {
         <section>
           <SectionHeader
             label={`Prompts · ${activeCount} active`}
-            hint="Each cell: how many samples named Kodus, and the average list position. Click to read the answer."
+            hint="Each cell: mentions, position, and how often our links were used as sources. Click to see the answer and links."
             right={
               <span className="flex items-center gap-3 text-[11px] text-neutral-500">
                 <span className="inline-flex items-center gap-1.5"><span className="inline-block size-2.5 rounded-[3px] bg-emerald-400" /> all</span>
                 <span className="inline-flex items-center gap-1.5"><span className="inline-block size-2.5 rounded-[3px] bg-amber-400" /> some</span>
                 <span className="inline-flex items-center gap-1.5"><span className="inline-block size-2.5 rounded-[3px] ring-1 ring-inset ring-white/20" /> none</span>
-                <span className="inline-flex items-center gap-1.5"><Link2 className="size-3" /> our page cited</span>
+                <span className="inline-flex items-center gap-1.5 text-sky-400"><Link2 className="size-3" /> our links used</span>
               </span>
             }
           />
