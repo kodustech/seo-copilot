@@ -184,6 +184,9 @@ describe("validateLongFormContent", () => {
     "Acessado no site oficial do projeto\n- O redesign foi lançado em 21/09/2026.",
     "Acessado no site oficial do projeto\n  - O redesign foi lançado em 21/09/2026.",
     "We read the vendor docs\n  1) The rewrite landed on 2026-05-01.",
+    "We read the vendor docs\n* As of 2026-05-01, the API is read-only.",
+    "Acessado no site oficial do projeto\n* Em 21/09/2026, o redesign foi lançado.",
+    "We read the vendor docs\n  - The rewrite landed on 2026-05-01.",
   ])("allows subject dates in ordinary prose: %s", (sentence) => {
     const issues = validateLongFormContent({
       platform: "blog",
