@@ -65,7 +65,6 @@ describe("validateLongFormContent", () => {
 
     expect(issues.map((issue) => issue.code)).toContain("long_form_weak_anchor");
   });
-
   it("does not count images as research links", () => {
     const issues = validateLongFormContent({
       platform: "blog",

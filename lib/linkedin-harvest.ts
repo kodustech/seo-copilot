@@ -27,11 +27,14 @@ import {
   linkedInAccountIdentity,
   listUnipilePostComments,
   normalizeLinkedInIdentity,
+  searchUnipilePosts,
   unipileHarvestBudget,
   UnipileHarvestLimitError,
   UnipileHttpError,
   UnipileTimeoutError,
   type UnipilePostComment,
+  type UnipilePostDatePosted,
+  type UnipileSearchedPost,
 } from "@/lib/unipile";
 
 // ---------------------------------------------------------------------------
@@ -55,6 +58,149 @@ export type DiscoveredPost = {
  * or future code — can turn one invocation into hundreds of billed searches.
  */
 export const MAX_QUERIES = 10;
+
+// ---------------------------------------------------------------------------
+// Keyword search through the connected account
+// ---------------------------------------------------------------------------
+
+/**
+ * What the author is doing in the post, as far as the text can tell.
+ *
+ * The queue this feeds wants one thing: a person describing a problem on
+ * their own team. A keyword search returns that mixed in with vendor
+ * marketing and reshared opinion pieces, and reading every profile to find
+ * out which is which is what costs account calls. These two flags are a
+ * filter on free text, not a verdict: `ownTeam` false does not mean the post
+ * is useless, it means nobody said "us" in it.
+ */
+export type PostVoice = {
+  /** The author wrote about their own team, org or PRs. */
+  ownTeam: boolean;
+  /** Reads like a vendor or agency selling something. */
+  vendorish: boolean;
+};
+
+const OWN_TEAM_PATTERNS = [
+  /\b(our|my)\s+(team|teams|engineers|engineering|devs|developers|org|codebase|repos?|PRs?|pull requests?|review queue)\b/i,
+  /\bwe\s+(built|shipped|rolled out|started|measured|switched|moved|use|are using|tried|run)\b/i,
+  /\b(nosso|nossa)\s+(time|times|equipe|squad|engenharia|c[oó]digo|PRs?)\b/i,
+  /\bn[oó]s\s+(criamos|constru[ií]mos|medimos|migramos|come[cç]amos)\b/i,
+];
+
+const VENDOR_PATTERNS = [
+  /\b(book a demo|try it free|start(ing)? (your )?free trial|sign up (now|today)|get early access|join the waitlist)\b/i,
+  /\b(we help (teams|companies|engineering)|our (platform|product|tool|solution|agency) (helps|lets|gives))\b/i,
+  /\b(agende uma demo|teste gr[aá]tis|fale com (a gente|nosso time)|nossa (plataforma|solu[cç][aã]o))\b/i,
+  /#(ad|sponsored|patrocinado)\b/i,
+];
+
+/**
+ * Classify one post's text. Pure, so it is the part worth a test: the regexes
+ * decide what reaches a human, and a silent change to them changes the queue.
+ */
+export function classifyPostVoice(text: string | null | undefined): PostVoice {
+  const t = (text ?? "").slice(0, 4000);
+  if (!t.trim()) return { ownTeam: false, vendorish: false };
+  return {
+    ownTeam: OWN_TEAM_PATTERNS.some((re) => re.test(t)),
+    vendorish: VENDOR_PATTERNS.some((re) => re.test(t)),
+  };
+}
+
+export type SearchedPost = UnipileSearchedPost & { voice: PostVoice };
+
+export type SearchPostsResult = {
+  /** Posts in the order LinkedIn returned them, each carrying its flags. */
+  posts: SearchedPost[];
+  /** Account calls this search spent, and what is left in the window. */
+  budget: { usedByThisCall: number; used: number; max: number };
+  /** Posts dropped because we wrote them. */
+  excludedSelf: number;
+};
+
+/**
+ * Is this post ours?
+ *
+ * Keyword search has no "not me" filter, so a search for the exact topic we
+ * post about returns our own posts, and a queue built from it would hand the
+ * founder his own writing as a prospect. The commenter harvest already
+ * excludes self by member id; this is the same rule on the search path.
+ *
+ * Compared by member id first, then by profile slug, because the search
+ * response does not always carry the id.
+ */
+export function isSelfAuthored(
+  post: Pick<UnipileSearchedPost, "authorProviderId" | "authorPublicIdentifier">,
+  self: { providerUserId?: string | null; publicIdentifier?: string | null },
+): boolean {
+  const selfId = self.providerUserId?.trim().toLowerCase();
+  const postId = post.authorProviderId?.trim().toLowerCase();
+  if (selfId && postId && selfId === postId) return true;
+  const selfSlug = self.publicIdentifier?.trim().toLowerCase();
+  const postSlug = post.authorPublicIdentifier?.trim().toLowerCase();
+  return Boolean(selfSlug && postSlug && selfSlug === postSlug);
+}
+
+/**
+ * Keyword search for LinkedIn posts, through the connected account.
+ *
+ * The sibling of `findLinkedInPosts`: same purpose, different bill. That one
+ * pays Exa per query and never touches LinkedIn; this one spends account
+ * calls and returns the author's headline and profile with each post, which
+ * is what makes a result usable without a second lookup per person.
+ */
+export async function searchLinkedInPosts(opts: {
+  keywords: string;
+  datePosted?: UnipilePostDatePosted;
+  sortBy?: "relevance" | "date";
+  authorKeywords?: string;
+  maxResults?: number;
+  accountId?: string | null;
+}): Promise<SearchPostsResult> {
+  if (!isUnipileConfigured()) {
+    throw new Error(
+      "Unipile is not configured. Set UNIPILE_API_KEY and UNIPILE_DSN to search LinkedIn posts.",
+    );
+  }
+  const keywords = opts.keywords?.trim();
+  if (!keywords) throw new Error("keywords is required");
+
+  const identity = await linkedInAccountIdentity(opts.accountId);
+  const accountId = opts.accountId?.trim() || identity.accountId;
+  if (!accountId) {
+    throw new Error(
+      "No LinkedIn account is connected in Unipile. Connect one in settings first.",
+    );
+  }
+
+  const callsBefore = unipileHarvestBudget().used;
+  // Self-exclusion belongs inside the walk: a page where every post is ours
+  // would otherwise eat the result and return fewer posts than asked for.
+  const { posts, excluded } = await searchUnipilePosts({
+    keywords,
+    accountId,
+    datePosted: opts.datePosted,
+    sortBy: opts.sortBy,
+    authorKeywords: opts.authorKeywords,
+    maxResults: opts.maxResults,
+    exclude: (post) =>
+      isSelfAuthored(post, {
+        providerUserId: identity.providerUserId,
+        publicIdentifier: identity.publicIdentifier,
+      }),
+  });
+  const budget = unipileHarvestBudget();
+
+  return {
+    posts: posts.map((p) => ({ ...p, voice: classifyPostVoice(p.text) })),
+    budget: {
+      usedByThisCall: Math.max(0, budget.used - callsBefore),
+      used: budget.used,
+      max: budget.max,
+    },
+    excludedSelf: excluded,
+  };
+}
 
 export async function findLinkedInPosts(opts: {
   queries?: string[];
