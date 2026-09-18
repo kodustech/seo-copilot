@@ -148,6 +148,62 @@ describe("runOutreachInboxCron", () => {
     }
   });
 
+  it("retries a phase whose lease expired instead of skipping it forever", async () => {
+    const now = vi.spyOn(Date, "now");
+    // Fresh pending promise per call: run1 sticks on the first, run2 on the
+    // second, so each run can be released independently.
+    const gmailGate: Array<(v: never) => void> = [];
+    vi.mocked(syncAllMailboxesInbox).mockImplementation(
+      () =>
+        new Promise((res) => {
+          gmailGate.push(res);
+        }),
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      now.mockReturnValue(1_000_000);
+      const first = runOutreachInboxCron();
+      await vi.waitFor(() => {
+        expect(syncAllMailboxesInbox).toHaveBeenCalledTimes(1);
+      });
+      // 21 minutes later the stuck phase's lease has expired: the next tick
+      // retries instead of logging "skipping overlap" forever.
+      now.mockReturnValue(1_000_000 + 21 * 60_000);
+      const second = runOutreachInboxCron();
+      await vi.waitFor(() => {
+        expect(syncAllMailboxesInbox).toHaveBeenCalledTimes(2);
+      });
+      gmailGate[1](gmailResult as never);
+      await second;
+      expect(syncUnipileLinkedInInbox).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("gmail phase lease expired"),
+      );
+      const line = log.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(line).not.toMatch(/gmail phase still active/);
+      // The originally stuck run settling late must not free the live lease.
+      // Releasing it now is safe: the retried run already completed and
+      // released its own stamp, so this delete is a no-op — assert the next
+      // tick still runs normally.
+      gmailGate[0](gmailResult as never);
+      await first;
+      // The next tick runs normally again (its Gmail call gets a fresh
+      // pending promise that this test must release).
+      const third = runOutreachInboxCron();
+      await vi.waitFor(() => {
+        expect(syncAllMailboxesInbox).toHaveBeenCalledTimes(3);
+      });
+      gmailGate[2](gmailResult as never);
+      await third;
+      expect(syncAllMailboxesInbox).toHaveBeenCalledTimes(3);
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+      now.mockRestore();
+    }
+  });
+
   it("still syncs Gmail while a previous run is stuck in the LinkedIn phase", async () => {
     let resolveLinkedin!: (v: never) => void;
     vi.mocked(syncUnipileLinkedInInbox).mockReturnValue(

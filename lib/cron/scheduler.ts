@@ -250,27 +250,34 @@ async function runAutoEnrollCron(): Promise<void> {
   );
 }
 
-// The inbox run pulls Gmail and LinkedIn back to back; a degraded backend can
-// stretch either phase past the 10-minute interval. node-cron overlaps ticks
-// by default (the installed v4 has no noOverlap option), so a second tick
-// would start a second concurrent pull against the same rate-limited account.
-// Guards are per phase, not per run: a stuck Gmail sync must not starve the
-// LinkedIn pull (or vice versa) — each phase skips only itself.
-const activeInboxPhases = new Set<"gmail" | "linkedin">();
+// Overlap guard as a lease: a phase whose work never settles (hung upstream
+// HTTP with no timeout) must not suppress itself for the rest of the process
+// life. Entries older than two intervals are treated as free, so a stuck
+// phase is retried instead of skipped forever; concurrent runs inside the
+// lease are still skipped to protect the rate-limited account.
+const PHASE_LEASE_MS = 20 * 60_000;
+const activeInboxPhases = new Map<"gmail" | "linkedin", number>();
 
 async function runInboxPhase<T>(
   phase: "gmail" | "linkedin",
   fn: () => Promise<T>,
 ): Promise<{ result: T | null; skipped: boolean }> {
-  if (activeInboxPhases.has(phase)) {
+  const previous = activeInboxPhases.get(phase);
+  if (previous != null && Date.now() - previous < PHASE_LEASE_MS) {
     console.log(`[cron] outreach-inbox: ${phase} phase still active, skipping overlap`);
     return { result: null, skipped: true };
   }
-  activeInboxPhases.add(phase);
+  if (previous != null) {
+    console.warn(`[cron] outreach-inbox: ${phase} phase lease expired, retrying despite previous run still active`);
+  }
+  const stamp = Date.now();
+  activeInboxPhases.set(phase, stamp);
   try {
     return { result: await fn(), skipped: false };
   } finally {
-    activeInboxPhases.delete(phase);
+    // A newer run may have re-stamped the lease while this one was stuck;
+    // only release our own stamp so we never free a live run's guard.
+    if (activeInboxPhases.get(phase) === stamp) activeInboxPhases.delete(phase);
   }
 }
 
