@@ -1,4 +1,6 @@
-import { fromMarkdown } from "mdast-util-from-markdown";
+import remarkGfm from "remark-gfm";
+import remarkParse from "remark-parse";
+import { unified } from "unified";
 
 export type ContentQualityIssue = {
   code: string;
@@ -30,7 +32,7 @@ function externalLinks(content: string): Array<{ anchor: string; url: string }> 
  * Invalid constructs remain untouched, including interrupted image titles.
  */
 function withoutImageDestinations(content: string): string {
-  const tree = fromMarkdown(content);
+  const tree = unified().use(remarkParse).use(remarkGfm).parse(content);
   const pending: Array<typeof tree | (typeof tree.children)[number]> = [tree];
   const images: Array<{ start: number; end: number; alt: string }> = [];
   while (pending.length) {

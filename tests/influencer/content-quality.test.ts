@@ -348,4 +348,13 @@ describe("validateLongFormContent", () => {
       expect(issues.map((issue) => issue.code)).not.toContain("long_form_raw_url");
     }
   });
+
+  it("keeps URLs visible when a GFM table interrupts an image title", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: "![Chart](https://cdn.example.com/chart.png \"Figure 1\n| a | b |\n| - | - |\n\")",
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_raw_url");
+  });
 });
