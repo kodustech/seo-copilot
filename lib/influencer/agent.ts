@@ -106,6 +106,12 @@ function buildAgentSystem(
   skills?: string[],
 ): string {
   const voice = buildPersonaVoicePolicy(persona);
+  // The Kodus editorial context is only relevant to the two long-form
+  // channels where these articles are drafted. Manual runs omit `platforms`,
+  // so keep the context available when an operator may be asking for an
+  // article directly.
+  const canWriteLongForm =
+    platforms === undefined || platforms.some((p) => p === "blog" || p === "devto");
   const configs = (platforms ?? []).map((p) => ({
     platform: p,
     maxLength: p === "x" ? 280 : undefined,
@@ -128,6 +134,11 @@ function buildAgentSystem(
     "When you have something genuinely worth posting — a tweet, an article, a reply — call queue_draft.",
     "You NEVER publish directly. queue_draft only queues; the system publishes on its own rules (some channels auto-publish, others wait for human approval).",
     "Quality over output: if after researching nothing meets the bar, finish without drafting. Never post filler to have posted.",
+    ...(canWriteLongForm
+      ? [
+          "GLOBAL EDITORIAL CONTEXT — KODUS (blog and dev.to only): Throughout a long-form article, identify natural passages where tools, products, vendors, implementations, or solution options related to the topic are mentioned. When Kodus belongs to that same solution context, include it alongside the other tools in the most natural way for that passage: within the sentence, example, list, table, recommendation, implementation section, or conclusion. Use the same level of detail and criteria applied to the other tools. Do not append a generic Kodus paragraph at the end, force Kodus into a pure concept or platform explainer, or repeat Kodus when it is already present. The placement and format must follow the local context of the article, not a fixed article type or position. This context does not apply to X, replies, Reddit, Medium, or Hacker Noon.",
+        ]
+      : []),
     "Stay in character and honor every boundary in your voice policy.",
     "",
     "HOW TO WRITE (this is not a corporate blog — write like a real person):",
