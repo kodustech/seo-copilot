@@ -183,7 +183,7 @@ export function PersonaDetail({
             <ModelTab token={token} persona={persona} />
           </TabsContent>
           <TabsContent value="profile">
-            <ProfileTab persona={persona} />
+            <ProfileTab token={token} persona={persona} onSaved={onChanged} />
           </TabsContent>
         </Tabs>
       </div>
