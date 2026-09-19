@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, Pencil, X } from "lucide-react";
 
 import { Textarea } from "@/components/ui/textarea";
@@ -39,11 +39,18 @@ function splitLines(value: string): string[] {
 export function ProfileTab({ token, persona, onSaved }: { token: string; persona: Persona; onSaved: () => void }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<ProfileDraft>(() => toDraft(persona));
+  const seededFrom = useRef(persona);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!editing) setDraft(toDraft(persona));
+    // Do not reseed when editing flips back to false: the parent refresh is
+    // asynchronous and can still carry the pre-save persona at that point.
+    // Only a new persona object should replace the local draft.
+    if (!editing && seededFrom.current !== persona) {
+      seededFrom.current = persona;
+      setDraft(toDraft(persona));
+    }
   }, [editing, persona]);
 
   function update<K extends keyof ProfileDraft>(key: K, value: ProfileDraft[K]) {
@@ -51,6 +58,7 @@ export function ProfileTab({ token, persona, onSaved }: { token: string; persona
   }
 
   function cancel() {
+    seededFrom.current = persona;
     setDraft(toDraft(persona));
     setError(null);
     setEditing(false);
