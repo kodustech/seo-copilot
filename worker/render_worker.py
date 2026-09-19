@@ -156,6 +156,7 @@ def fail_job(client, job: dict, message: str) -> None:
 def run_job(client, model, job: dict, bucket: str, render_script: str, work_root: Path) -> None:
     aid, pid = job["id"], job["persona_id"]
     log("job", aid)
+    Path(work_root).mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix="vjob-", dir=str(work_root)))
     try:
         meta = dict(job.get("content_meta") or {})
@@ -234,8 +235,12 @@ def run_job(client, model, job: dict, bucket: str, render_script: str, work_root
             plan["musicMp3"] = str(music_path)
         plan_file = work / "plan.json"
         plan_file.write_text(json.dumps(plan))
+        render_font = os.getenv(
+            "WORKER_RENDER_FONT",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        )
         run([sys.executable, render_script, str(plan_file),
-             "--font", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+             "--font", render_font,
              "--workdir", str(work / "render")])
 
         final = work / "final-captioned-music.mp4"
