@@ -43,7 +43,7 @@ type GoalDraft = {
   target?: number;
 };
 
-const CHANNEL_OPTIONS = ["blog", "devto", "x", "medium", "reddit", "hackernews", "hackernoon"];
+const CHANNEL_OPTIONS = ["blog", "devto", "x", "medium", "reddit", "hackernews", "hackernoon", "youtube"];
 
 /**
  * The stored goal, with only the computed fields removed.
