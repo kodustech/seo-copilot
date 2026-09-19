@@ -208,6 +208,7 @@ export async function runInfluencerAgentSession({
   openChannelIds,
   maxSteps,
   maxDrafts,
+  testRun = false,
 }: {
   client: SupabaseClient;
   persona: Persona;
@@ -224,6 +225,9 @@ export async function runInfluencerAgentSession({
   /** Hard cap on drafts this session (0 = none; 1 = one post/shift). Enforced
    *  live against the running counter, so a full queue can't be exceeded. */
   maxDrafts?: number;
+  /** Generate a review-only draft without publishing or mutating the persona's
+   *  memory, skills, mailbox, cadence, or channel queue capacity. */
+  testRun?: boolean;
 }): Promise<AgentRunResult> {
   const model = await getModelForPersona(client, persona);
   const channels = await listChannelsForPersona(client, persona.id);
@@ -562,6 +566,10 @@ export async function runInfluencerAgentSession({
       }),
       execute: async ({ to, subject, body }) => {
         await step({ kind: "tool_call", tool: "send_email", payload: { to, subject } });
+        if (testRun) {
+          await step({ kind: "tool_result", tool: "send_email", payload: { blocked: "test_run" } });
+          return "This is a test shift. Do not send email; finish the review-only article instead.";
+        }
         // Require an explicitly linked mailbox. Without this guard
         // sendOutreachEmail silently falls back to the workspace default
         // mailbox, so the persona would send as someone else.
@@ -637,6 +645,10 @@ export async function runInfluencerAgentSession({
       }),
       execute: async ({ title, content, tags }) => {
         await step({ kind: "tool_call", tool: "save_memory", payload: { title } });
+        if (testRun) {
+          await step({ kind: "tool_result", tool: "save_memory", payload: { blocked: "test_run" } });
+          return "This is a test shift. Use existing memory, but do not save new memory from the test.";
+        }
         try {
           const note = await saveMemory(client, persona.id, { title, content, tags });
           await step({ kind: "tool_result", tool: "save_memory", payload: { id: note.id } });
@@ -727,6 +739,10 @@ export async function runInfluencerAgentSession({
       }),
       execute: async ({ skill }) => {
         await step({ kind: "tool_call", tool: "learn_skill", payload: { skill } });
+        if (testRun) {
+          await step({ kind: "tool_result", tool: "learn_skill", payload: { blocked: "test_run" } });
+          return "This is a test shift. Apply existing skills, but do not create a new lasting skill.";
+        }
         if (!skill.trim()) {
           await step({ kind: "tool_result", tool: "learn_skill", payload: { error: "empty" } });
           return "A skill can't be empty.";
@@ -1003,7 +1019,7 @@ export async function runInfluencerAgentSession({
         }
         // Honor the channel's automation level: an `auto` channel publishes
         // without review; everything else waits in the queue for a human.
-        const autoPublish = channel.automation_level === "auto";
+        const autoPublish = !testRun && channel.automation_level === "auto";
         try {
           const [activity] = await insertActivities(client, [
             {
@@ -1015,6 +1031,7 @@ export async function runInfluencerAgentSession({
               content,
               content_meta: {
                 session_id: session.id,
+                ...(testRun ? { test_run: true } : {}),
                 ...(description ? { description } : {}),
                 ...(category ? { category } : {}),
                 // Kept only when the destination site has the axis: on a site
@@ -1029,7 +1046,7 @@ export async function runInfluencerAgentSession({
                 ...(replaces ? { replaces_slug: replaces } : {}),
                 ...(target ? { target_url: target } : {}),
               },
-              source_kind: "agent",
+              source_kind: testRun ? "agent_test" : "agent",
               source_ref: session.id,
             },
           ]);
@@ -1039,6 +1056,9 @@ export async function runInfluencerAgentSession({
             tool: "queue_draft",
             payload: { activity_id: activity?.id, platform, kind, auto: autoPublish },
           });
+          if (testRun) {
+            return `Saved a TEST draft for review (${platform} ${kind}). It cannot be published or scheduled.`;
+          }
           return autoPublish
             ? `Queued to publish (${platform} ${kind}). This channel is on auto — it goes out on the next publish cycle.`
             : `Queued for review (${platform} ${kind}). A human approves it before it goes live.`;
