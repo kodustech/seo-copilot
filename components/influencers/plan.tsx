@@ -103,6 +103,7 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
   const [acting, setActing] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+  const [testFailed, setTestFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -168,6 +169,7 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
   async function runTest() {
     setTesting(true);
     setTestResult(null);
+    setTestFailed(false);
     setError(null);
     try {
       const res = await fetch(`/api/influencers/${persona.id}/tasks`, {
@@ -178,6 +180,7 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "The test shift failed");
       setState((s) => ({ ...body, goals: body.goals ?? s?.goals }));
+      setTestFailed(body.result?.failed === true);
       setTestResult(
         body.result?.note ||
           "Test article added to the Review queue. It cannot be published or scheduled.",
@@ -236,7 +239,7 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
             </Status>
           )}
           {error ? <p className={cls.errorText}>{error}</p> : null}
-          {testResult ? <Status tone="good">{testResult}</Status> : null}
+          {testResult ? <Status tone={testFailed ? "warn" : "good"}>{testResult}</Status> : null}
           {!loading && state?.last_note ? (
             <figure className="rounded-md border border-white/[0.06] bg-neutral-950/60 p-3">
               <blockquote className="text-sm leading-relaxed text-neutral-200">{state.last_note}</blockquote>

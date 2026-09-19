@@ -344,6 +344,7 @@ export type TickResult = {
   wait_minutes: number;
   note: string;
   error?: string;
+  failed?: boolean;
 };
 
 export async function runPersonaTick({
@@ -489,6 +490,7 @@ export async function runPersonaTick({
         acted: true,
         note: testNote,
         drafts: run.drafts,
+        failed: true,
         ...(run.drafts ? {} : { error: run.error }),
       };
     }
