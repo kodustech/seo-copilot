@@ -106,3 +106,50 @@ export function youtubeChannelReady(cfg: YoutubeChannelConfig): string | null {
   if (!cfg.voiceId) return "Pick the voice (youtube_voice_id) this channel speaks with.";
   return null;
 }
+
+export const YOUTUBE_MAX_SLIDES = 7;
+
+export type VideoSlideSpec = {
+  title: string;
+  rows: string[];
+  note?: string | null;
+};
+
+/**
+ * Slide outlines ride with the script (one per body block — the intro has
+ * no slide). The worker renders pixels from these; the agent never touches
+ * layout, fonts, or colors, so every video of the channel looks related.
+ */
+export function parseSlideSpecs(input: unknown): VideoSlideSpec[] | null {
+  if (!Array.isArray(input)) return null;
+  const specs: VideoSlideSpec[] = [];
+  for (const raw of input) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const rec = raw as Record<string, unknown>;
+    const title = typeof rec.title === "string" ? rec.title.replace(/\s+/g, " ").trim() : "";
+    const rows = Array.isArray(rec.rows)
+      ? rec.rows
+          .filter((r): r is string => typeof r === "string")
+          .map((r) => r.replace(/\s+/g, " ").trim())
+          .filter(Boolean)
+          .slice(0, 6)
+      : [];
+    const note = typeof rec.note === "string" && rec.note.trim() ? rec.note.trim() : null;
+    if (!title || !rows.length) return null;
+    specs.push({ title, rows, note });
+  }
+  return specs.length ? specs : null;
+}
+
+export function validateSlideSpecs(slides: unknown, blockCount: number): string[] {
+  const parsed = parseSlideSpecs(slides);
+  if (!parsed) return ["slides_missing: one outline per body block (title + up to 6 short rows)."];
+  if (parsed.length > YOUTUBE_MAX_SLIDES) return [`too_many_slides: ${parsed.length} > ${YOUTUBE_MAX_SLIDES}.`];
+  // Block 1 is the full-frame intro; every block after it gets a slide.
+  if (parsed.length !== blockCount - 1) {
+    return [
+      `slides_mismatch: ${parsed.length} outlines for ${blockCount} blocks — the intro needs none, every other block needs exactly one.`,
+    ];
+  }
+  return [];
+}

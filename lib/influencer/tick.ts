@@ -231,7 +231,7 @@ function buildShiftGoal(
   // The system renders the avatar, composites slides, and uploads unlisted;
   // a person confirms YouTube's AI-content checkbox before anything public.
   const youtubeLine = open.includes("youtube")
-    ? "YOUTUBE is script-only — never write an article for it. Queue kind 'video' for platform 'youtube' with 3-8 short spoken blocks (one idea each, 20-600 chars, contractions, opinion, hook first). The system renders the avatar, composites the slides, and uploads unlisted; a person confirms the AI-content checkbox before anything goes public."
+    ? "YOUTUBE is script-only — never write an article for it. Queue kind 'video' for platform 'youtube' with 3-8 short spoken blocks (one idea each, 20-600 chars, contractions, opinion, hook first) plus one slide outline per body block (block 1 is the intro and needs none). The worker renders the avatar, the slides, and uploads unlisted; a person confirms the AI-content checkbox before anything goes public."
     : "";
   return [
     `This is your shift as ${persona.display_name} (@${persona.handle}). You are a relentless operator: your job is to HIT YOUR GOALS, and you do whatever it takes and never stop working to get there.`,

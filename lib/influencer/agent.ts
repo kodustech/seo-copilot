@@ -43,7 +43,7 @@ import {
   type PersonaChannel,
 } from "@/lib/influencer/types";
 import { buildPersonaVoicePolicy } from "@/lib/influencer/voice";
-import { validateVideoScript } from "@/lib/influencer/youtube";import { formatContentQualityIssues, validateLongFormContent } from "@/lib/influencer/content-quality";
+import { parseVideoBlocks, validateSlideSpecs, validateVideoScript } from "@/lib/influencer/youtube";import { formatContentQualityIssues, validateLongFormContent } from "@/lib/influencer/content-quality";
 
 const MAX_STEPS = 16;
 const FETCH_TIMEOUT_MS = 15_000;
@@ -776,6 +776,12 @@ export async function runInfluencerAgentSession({
           .describe(
             "YouTube only (kind 'video'): 3-8 spoken script blocks, one idea each, 20-600 chars, contractions, hook first. The avatar speaks these verbatim — write for a mouth, not a page.",
           ),
+        slides: z
+          .array(z.object({ title: z.string(), rows: z.array(z.string()), note: z.string().nullable().optional() }))
+          .optional()
+          .describe(
+            "YouTube only: one outline per body block (block 1 is the full-frame intro and needs none). Each outline is a slide title plus up to 6 short rows. The worker renders the pixels — you only write the words.",
+          ),
         replaces_slug: z
           .string()
           .nullable()
@@ -819,7 +825,7 @@ export async function runInfluencerAgentSession({
             "Optionally attach an image to a social post. 'screenshot' captures a REAL page (a benchmark chart, a tool's UI, a tweet, a GitHub diff) — real evidence, on-brand. 'image_url' attaches a public image URL (e.g. an article's own image). Use it when a visual genuinely strengthens the post.",
           ),
       }),
-      execute: async ({ kind, platform, title, content, description, category, blog_platform, tags, faq, blocks, image, reply_to, canonical_url, replaces_slug, target_url }) => {
+      execute: async ({ kind, platform, title, content, description, category, blog_platform, tags, faq, blocks, slides, image, reply_to, canonical_url, replaces_slug, target_url }) => {
         await step({ kind: "tool_call", tool: "queue_draft", payload: { kind, platform } });
         // Hard backpressure, enforced live against the running draft counter (not
         // a stale snapshot): 0 = queue is full, don't post; 1 = one post/shift.
@@ -954,6 +960,12 @@ export async function runInfluencerAgentSession({
             await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "video_script", issues: scriptIssues } });
             return `This video script is not ready:\n${scriptIssues.join("\n")}\nRewrite the blocks — spoken, one idea each — and queue again.`;
           }
+          const blockCount = parseVideoBlocks(blocks)?.length ?? 0;
+          const slideIssues = validateSlideSpecs(slides, blockCount);
+          if (slideIssues.length) {
+            await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "video_slides", issues: slideIssues } });
+            return `These slides are not ready:\n${slideIssues.join("\n")}\nOne outline per body block, title plus short rows, and queue again.`;
+          }
         }
         const target = typeof target_url === "string" ? target_url.trim() : "";
         if (target && !/^https?:\/\/\S+$/i.test(target)) {
@@ -1033,6 +1045,7 @@ export async function runInfluencerAgentSession({
                 ...(tags?.length ? { tags } : {}),
                 ...(faq?.length ? { faq } : {}),
                 ...(normalizedKind === "video" && blocks?.length ? { blocks } : {}),
+                ...(normalizedKind === "video" && slides?.length ? { slides } : {}),
                 ...(image?.url ? { image } : {}),
                 ...(reply_to ? { reply_to } : {}),
                 ...(canonical ? { canonical_url: canonical } : {}),

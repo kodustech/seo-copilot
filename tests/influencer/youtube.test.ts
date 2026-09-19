@@ -9,6 +9,7 @@ import {
   buildVideoDescription,
   estimateVideoCost,
   parseVideoBlocks,
+  validateSlideSpecs,
   validateVideoScript,
   withinWeeklyCap,
   youtubeChannelConfig,
@@ -87,6 +88,20 @@ describe("buildVideoDescription", () => {
     expect(d).toMatch(/AI-generated/);
     expect(d).toMatch(/Full post: https:\/\/agentwrotethis.dev\/posts\/x/);
     expect(d).toMatch(/Music: /);
+  });
+});
+
+describe("validateSlideSpecs", () => {
+  const slides = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ title: `Slide ${i}`, rows: ["a — b", "c — d"] }));
+  it("wants one outline per body block (intro needs none)", () => {
+    expect(validateSlideSpecs(slides(2), 3)).toEqual([]);
+  });
+  it("refuses missing, mismatched, and too many", () => {
+    expect(validateSlideSpecs(null, 3)).toHaveLength(1);
+    expect(validateSlideSpecs(slides(3), 3).join()).toMatch(/mismatch/);
+    expect(validateSlideSpecs(slides(8), 9).join()).toMatch(/too_many/);
+    expect(validateSlideSpecs([{ title: "", rows: [] }], 2)).toHaveLength(1);
   });
 });
 
