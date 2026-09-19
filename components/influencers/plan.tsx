@@ -178,7 +178,10 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "The test shift failed");
       setState((s) => ({ ...body, goals: body.goals ?? s?.goals }));
-      setTestResult("Test article added to the Review queue. It cannot be published or scheduled.");
+      setTestResult(
+        body.result?.note ||
+          "Test article added to the Review queue. It cannot be published or scheduled.",
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "The test shift failed");
     } finally {

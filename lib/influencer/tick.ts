@@ -481,7 +481,16 @@ export async function runPersonaTick({
   if (run.status === "failed") {
     const note = `Shift failed: ${run.error ?? "unknown error"}`;
     if (testRun) {
-      return { ...base, acted: true, note, error: run.error, drafts: run.drafts };
+      const testNote = run.drafts
+        ? `Test draft saved, then the shift failed: ${run.error ?? "unknown error"}`
+        : note;
+      return {
+        ...base,
+        acted: true,
+        note: testNote,
+        drafts: run.drafts,
+        ...(run.drafts ? {} : { error: run.error }),
+      };
     }
     const next = new Date(now.getTime() + FAILURE_WAIT_MIN * 60_000);
     await setTickState(client, persona, {

@@ -55,9 +55,14 @@ export async function PATCH(
       return NextResponse.json({ error: "Activity not found" }, { status: 404 });
     }
 
+    const testEditSchedules =
+      action === "edit" && body.scheduled_at !== undefined && body.scheduled_at !== null;
     if (
       isTestActivity(current) &&
-      (action === "approve" || action === "published" || action === "cancel_schedule")
+      (action === "approve" ||
+        action === "published" ||
+        action === "cancel_schedule" ||
+        testEditSchedules)
     ) {
       return NextResponse.json(
         { error: "Test drafts can be edited or discarded, but cannot be published or scheduled." },
