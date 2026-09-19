@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getSupabaseUserClient } from "@/lib/supabase-server";
 
-import { listActivities } from "@/lib/influencer/activities";
+import { isTestActivity, listActivities } from "@/lib/influencer/activities";
 import {
   createChannel,
   createPersona,
@@ -61,6 +61,7 @@ export async function GET(req: Request) {
 
     const pendingByPersona = new Map<string, number>();
     for (const draft of pendingDrafts) {
+      if (isTestActivity(draft)) continue;
       pendingByPersona.set(
         draft.persona_id,
         (pendingByPersona.get(draft.persona_id) ?? 0) + 1,

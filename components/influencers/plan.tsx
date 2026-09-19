@@ -10,7 +10,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, Loader2, Pencil, Play, Plus, X } from "lucide-react";
+import { Check, FlaskConical, Loader2, Pencil, Play, Plus, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -101,6 +101,8 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
   const [state, setState] = useState<TickState | null>(null);
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -163,9 +165,31 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
     }
   }
 
+  async function runTest() {
+    setTesting(true);
+    setTestResult(null);
+    setError(null);
+    try {
+      const res = await fetch(`/api/influencers/${persona.id}/tasks`, {
+        method: "POST",
+        headers: authHeaders(token),
+        body: JSON.stringify({ action: "test_shift" }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "The test shift failed");
+      setState((s) => ({ ...body, goals: body.goals ?? s?.goals }));
+      setTestResult("Test article added to the Review queue. It cannot be published or scheduled.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The test shift failed");
+    } finally {
+      setTesting(false);
+    }
+  }
+
   const reading = (() => {
-    if (!state || cadence === "off") return { tone: "muted" as const, text: "Autonomy is off. It acts only when you run a shift." };
+    if (testing) return { tone: "warn" as const, text: "Generating a test article for review." };
     if (acting) return { tone: "warn" as const, text: "Working a shift right now." };
+    if (!state || cadence === "off") return { tone: "muted" as const, text: "Autonomy is off. It acts only when you run a shift." };
     if (state.status === "waiting" && state.next_action_at) {
       return {
         tone: "info" as const,
@@ -190,10 +214,16 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
                 { value: "daily", label: "Active pace" },
               ]}
             />
-            <button type="button" onClick={actNow} disabled={acting} className={cn(cls.outline, "ml-auto")}>
-              {acting ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
-              Run a shift now
-            </button>
+            <div className="ml-auto flex items-center gap-2">
+              <button type="button" onClick={runTest} disabled={acting || testing} className={cls.outline}>
+                {testing ? <Loader2 className="size-3.5 animate-spin" /> : <FlaskConical className="size-3.5" />}
+                Run test
+              </button>
+              <button type="button" onClick={actNow} disabled={acting || testing} className={cls.outline}>
+                {acting ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+                Run a shift now
+              </button>
+            </div>
           </div>
           {loading ? (
             <Skeleton className="h-5 w-64 bg-white/[0.04]" />
@@ -203,6 +233,7 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
             </Status>
           )}
           {error ? <p className={cls.errorText}>{error}</p> : null}
+          {testResult ? <Status tone="good">{testResult}</Status> : null}
           {!loading && state?.last_note ? (
             <figure className="rounded-md border border-white/[0.06] bg-neutral-950/60 p-3">
               <blockquote className="text-sm leading-relaxed text-neutral-200">{state.last_note}</blockquote>

@@ -10,6 +10,12 @@ import {
 
 type Row = Record<string, unknown>;
 
+export function isTestActivity(
+  activity: Pick<PersonaActivity, "content_meta">,
+): boolean {
+  return activity.content_meta.test_run === true;
+}
+
 function asText(value: unknown): string {
   return typeof value === "string" ? value : "";
 }

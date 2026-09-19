@@ -91,6 +91,7 @@ export function ReviewQueue({
   }
 
   const failed = activities.filter((a) => a.status === "failed").length;
+  const tests = activities.filter((a) => a.content_meta.test_run === true).length;
 
   return (
     <section className="space-y-3">
@@ -98,7 +99,7 @@ export function ReviewQueue({
         <SectionLabel
           hint={
             activities.length
-              ? `${activities.length} waiting${failed ? `, ${failed} failed to publish` : ""}`
+              ? `${activities.length} waiting${tests ? `, ${tests} test` : ""}${failed ? `, ${failed} failed to publish` : ""}`
               : undefined
           }
         >
@@ -169,6 +170,7 @@ function QueueItem({
   const [actionError, setActionError] = useState<string | null>(null);
   const edited = content.trim() !== activity.content;
   const handPosted = channel ? isHandPosted(channel) : false;
+  const testRun = activity.content_meta.test_run === true;
   const isX = channel?.platform === "x";
   const targetUrl = typeof activity.content_meta.target_url === "string" ? activity.content_meta.target_url : null;
   const canonicalUrl =
@@ -198,6 +200,7 @@ function QueueItem({
         <span className="font-medium text-neutral-200">@{persona?.handle ?? "?"}</span>
         <span className="text-neutral-300">{channel ? platformLabel(channel.platform) : "unknown channel"}</span>
         <span>{activity.kind}</span>
+        {testRun ? <Status tone="info">test</Status> : null}
         {handPosted ? <span className="text-amber-300">posted by hand</span> : null}
         {activity.status === "failed" ? <Status tone="bad">failed to publish</Status> : null}
         {replyTo ? (
@@ -242,7 +245,7 @@ function QueueItem({
       {activity.error ? <p className={cls.errorText}>{activity.error}</p> : null}
       {actionError ? <p className={cls.errorText}>{actionError}</p> : null}
 
-      {handPosted ? (
+      {handPosted && !testRun ? (
         <Input
           value={postedUrl}
           onChange={(event) => setPostedUrl(event.target.value)}
@@ -258,7 +261,9 @@ function QueueItem({
             Save draft
           </button>
         ) : null}
-        {handPosted ? (
+        {testRun ? (
+          <Status tone="muted">Review only · cannot publish or schedule</Status>
+        ) : handPosted ? (
           <button type="button" disabled={busy !== null || !content.trim()} onClick={() => act("published")} className={cls.primary}>
             {busy === "published" ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
             Mark as published

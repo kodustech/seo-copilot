@@ -121,8 +121,21 @@ export async function POST(
       });
     }
 
+    if (body.action === "test_shift") {
+      const result = await runPersonaTick({
+        client,
+        persona,
+        now: new Date(),
+        testRun: true,
+      });
+      if (result.error) {
+        return NextResponse.json({ error: result.error, result }, { status: 400 });
+      }
+      return NextResponse.json({ result, ...tickState(persona, new Date()) });
+    }
+
     return NextResponse.json(
-      { error: "action must be 'set_cadence', 'set_goals' or 'act_now'." },
+      { error: "action must be 'set_cadence', 'set_goals', 'act_now' or 'test_shift'." },
       { status: 400 },
     );
   } catch (error) {
