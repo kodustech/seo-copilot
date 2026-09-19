@@ -44,13 +44,13 @@ export function ProfileTab({ token, persona, onSaved }: { token: string; persona
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Do not reseed when editing flips back to false: the parent refresh is
-    // asynchronous and can still carry the pre-save persona at that point.
-    // Only a new persona object should replace the local draft.
-    if (!editing && seededFrom.current !== persona) {
-      seededFrom.current = persona;
-      setDraft(toDraft(persona));
-    }
+    // Keep track of every persona refresh, including refreshes that arrive
+    // while editing. Only replace the local draft when the editor is closed;
+    // this prevents a post-save refresh from re-seeding stale values while
+    // still preserving unsaved edits made in the open form.
+    if (seededFrom.current === persona) return;
+    seededFrom.current = persona;
+    if (!editing) setDraft(toDraft(persona));
   }, [editing, persona]);
 
   function update<K extends keyof ProfileDraft>(key: K, value: ProfileDraft[K]) {
