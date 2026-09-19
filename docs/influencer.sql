@@ -34,7 +34,7 @@ create table if not exists public.persona_channels (
   id uuid primary key default gen_random_uuid(),
   persona_id uuid not null references public.personas(id) on delete cascade,
   platform text not null check (
-    platform in ('x', 'devto', 'blog', 'medium', 'reddit', 'hackernews', 'hackernoon')
+    platform in ('x', 'devto', 'blog', 'medium', 'reddit', 'hackernews', 'hackernoon', 'youtube')
   ),
   external_handle text,
   publish_via text not null check (
@@ -64,7 +64,7 @@ create table if not exists public.persona_activities (
   persona_id uuid not null references public.personas(id) on delete cascade,
   channel_id uuid not null references public.persona_channels(id) on delete cascade,
   kind text not null check (
-    kind in ('post', 'reply', 'quote', 'article', 'crosspost')
+    kind in ('post', 'reply', 'quote', 'article', 'crosspost', 'video')
   ),
   status text not null default 'draft' check (
     status in ('draft', 'approved', 'scheduled', 'publishing', 'published', 'failed', 'discarded')

@@ -93,7 +93,7 @@ export async function deletePersonaCredential(
 // ---------------------------------------------------------------------------
 
 /** Platforms whose publishing uses an in-app API key (not Post-Bridge). */
-export type ChannelCredentialPlatform = "devto" | "blog";
+export type ChannelCredentialPlatform = "devto" | "blog" | "youtube" | "heygen";
 
 export async function setChannelCredential(
   client: SupabaseClient,

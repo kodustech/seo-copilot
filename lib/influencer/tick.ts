@@ -30,6 +30,7 @@ import { buildGoalsBrief, computeProgress, silentChannels, startOfIsoWeek } from
 import { recentMemoryTitles } from "@/lib/influencer/memory";
 import { formatVisibilityBrief } from "@/lib/influencer/visibility-brief";
 import { getModelForPersona } from "@/lib/influencer/model";
+import { youtubeChannelConfig, youtubeChannelReady } from "@/lib/influencer/youtube";
 import {
   listActivePersonas,
   listChannelsForPersona,
@@ -127,6 +128,12 @@ export function isActionable(channel: PersonaChannel): boolean {
     const envName = contentEnvNameFor(channel);
     return Boolean(envName && process.env[envName]?.trim());
   }
+  // YouTube renders paid avatar clips: without a linked OAuth token AND a
+  // chosen avatar + voice, the persona would write scripts nobody can film.
+  if (channel.platform === "youtube") {
+    if (typeof channel.credentials_ref !== "string" || !channel.credentials_ref.length) return false;
+    return youtubeChannelReady(youtubeChannelConfig(channel)) === null;
+  }
   if (channel.publish_via === "post_bridge") {
     return Number(channel.channel_config.post_bridge_account_id) > 0;
   }
@@ -218,8 +225,13 @@ function buildShiftGoal(
     : "";
   // Hand-posted channels: the persona writes, a person posts from a real
   // account and marks it published. Ready to paste is the whole job.
-  const manualLine = manualOpen.length
-    ? `HAND-POSTED CHANNELS (${manualOpen.join(", ")}): you write, a person posts it from their own account and marks it published with the link. Write it ready to paste. For reddit: a reply or comment that adds something concrete to a specific live thread — pass target_url = that thread's URL and name the subreddit in the title — never a link drop or a standalone promo post. For hackernoon: a complete article in markdown with a title, which a person submits to their editors. The person posting handles whatever disclosure the platform asks for.`
+  const manualLine = manualOpen.length    ? `HAND-POSTED CHANNELS (${manualOpen.join(", ")}): you write, a person posts it from their own account and marks it published with the link. Write it ready to paste. For reddit: a reply or comment that adds something concrete to a specific live thread — pass target_url = that thread's URL and name the subreddit in the title — never a link drop or a standalone promo post. For hackernoon: a complete article in markdown with a title, which a person submits to their editors. The person posting handles whatever disclosure the platform asks for.`
+    : "";
+  // Video channels: the persona writes a spoken script, never an article.
+  // The system renders the avatar, composites slides, and uploads unlisted;
+  // a person confirms YouTube's AI-content checkbox before anything public.
+  const youtubeLine = open.includes("youtube")
+    ? "YOUTUBE is script-only — never write an article for it. Queue kind 'video' for platform 'youtube' with 3-8 short spoken blocks (one idea each, 20-600 chars, contractions, opinion, hook first). The system renders the avatar, composites the slides, and uploads unlisted; a person confirms the AI-content checkbox before anything goes public."
     : "";
   return [
     `This is your shift as ${persona.display_name} (@${persona.handle}). You are a relentless operator: your job is to HIT YOUR GOALS, and you do whatever it takes and never stop working to get there.`,
@@ -230,6 +242,7 @@ function buildShiftGoal(
     backedUpLine,
     mediumLine,
     manualLine,
+    youtubeLine,
     failureLine,
     feedbackLine,
     goalsBrief,
@@ -307,7 +320,7 @@ async function recentPostTitles(
     // Only real posts/articles that went out or are lined up — not failed
     // attempts or non-content rows, so the "don't repeat" list stays honest.
     .in("status", ["published", "scheduled", "approved"])
-    .in("kind", ["post", "article"])
+    .in("kind", ["post", "article", "video"])
     .order("created_at", { ascending: false })
     .limit(limit);
   if (error) return [];

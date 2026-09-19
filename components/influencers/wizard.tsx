@@ -91,6 +91,7 @@ export function WizardDialog({
             { platform: "reddit" },
             { platform: "hackernews" },
             { platform: "hackernoon" },
+            { platform: "youtube" },
           ],
         }),
       });
