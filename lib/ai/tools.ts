@@ -6075,6 +6075,89 @@ export const outreachListMailboxes = tool({
 });
 
 /**
+ * Read-only Google Calendar agenda for weekly planning ("what meetings do we
+ * have this week"). Reads the primary calendar of a connected mailbox through
+ * the same OAuth tokens as the outreach inbox — no new credentials.
+ * Mailboxes without the calendar.readonly scope are reported as skipped
+ * instead of silently returning nothing.
+ */
+export const listGoogleCalendarEvents = tool({
+  description:
+    "List Google Calendar events (past and upcoming) for a connected mailbox. Use this to answer 'what meetings do we have this week', to prep the weekly plan, or to check what happened with an account. Defaults to the last 7 days plus the next 7 days. Mailboxes connected without the calendar scope are reported as skipped.",
+  inputSchema: z.object({
+    mailbox_id: z.string().optional().describe("Mailbox id from outreachListMailboxes. Defaults to the default mailbox."),
+    time_min: z.string().optional().describe("ISO start, defaults to 7 days ago."),
+    time_max: z.string().optional().describe("ISO end, defaults to 7 days ahead."),
+    max_results: z.number().int().min(1).max(100).optional().describe("Max events per mailbox, defaults to 25."),
+  }),
+  execute: async ({ mailbox_id, time_min, time_max, max_results }) => {
+    try {
+      const client = getSupabaseServiceClient();
+      const { getMailboxWithSecrets, ensureFreshAccessToken } = await import("@/lib/outreach/mailbox");
+      const { scopesIncludeCalendarReadonly } = await import("@/lib/outreach/google-oauth");
+
+      const box = await getMailboxWithSecrets(client, mailbox_id?.trim() || null);
+      if (!box) {
+        return { success: false as const, message: "No connected mailbox found" };
+      }
+      if (!scopesIncludeCalendarReadonly(box.oauthGrantedScopes)) {
+        return {
+          success: true as const,
+          events: [],
+          skipped: [`${box.label ?? box.fromEmail}: connected without calendar scope — reconnect the mailbox to include it`],
+        };
+      }
+
+      const accessToken = await ensureFreshAccessToken(client, box);
+      const now = Date.now();
+      const start = time_min?.trim() || new Date(now - 7 * 86_400_000).toISOString();
+      const end = time_max?.trim() || new Date(now + 7 * 86_400_000).toISOString();
+      const limit = max_results ?? 25;
+
+      const url = new URL("https://www.googleapis.com/calendar/v3/calendars/primary/events");
+      url.searchParams.set("timeMin", start);
+      url.searchParams.set("timeMax", end);
+      url.searchParams.set("singleEvents", "true");
+      url.searchParams.set("orderBy", "startTime");
+      url.searchParams.set("maxResults", String(Math.min(limit, 100)));
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        return { success: false as const, message: `Google Calendar ${res.status}: ${body.slice(0, 200)}` };
+      }
+      const json = (await res.json()) as {
+        items?: Array<{
+          id?: string;
+          status?: string;
+          summary?: string;
+          description?: string;
+          start?: { dateTime?: string; date?: string };
+          end?: { dateTime?: string; date?: string };
+          attendees?: Array<{ email?: string; responseStatus?: string; self?: boolean }>;
+          hangoutLink?: string;
+        }>;
+      };
+      return {
+        success: true as const,
+        mailbox: box.fromEmail,
+        events: (json.items ?? []).map((e) => ({
+          id: e.id,
+          title: e.summary ?? "(no title)",
+          start: e.start?.dateTime ?? e.start?.date ?? null,
+          end: e.end?.dateTime ?? e.end?.date ?? null,
+          status: e.status ?? null,
+          attendees: (e.attendees ?? []).map((a) => a.email).filter(Boolean),
+          hangout_link: e.hangoutLink ?? null,
+        })),
+        skipped: [],
+      };
+    } catch (error) {
+      return { success: false as const, message: error instanceof Error ? error.message : "Failed" };
+    }
+  },
+});
+
+/**
  * Both inbox tools take either a company id or a name/domain. Resolving here
  * keeps the caller from having to run listCrmCompanies first, but an ambiguous
  * name must NOT silently pick the first hit — the wrong account would return a
@@ -7982,6 +8065,7 @@ export function createAgentTools(userEmail?: string) {
     researchPeopleHistory,
     researchRestorePeople,
     outreachListMailboxes,
+    listGoogleCalendarEvents,
     outreachListReplyThreads,
     sequenceList,
     sequenceGet,
