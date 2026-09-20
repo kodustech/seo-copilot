@@ -42,7 +42,18 @@ def probe_duration(path: str) -> float:
 
 
 def esc_text(s: str) -> str:
-    return s.replace("\\", "\\\\").replace(":", "\\:").replace("'", "").replace(",", "\\,")
+    # ffmpeg text expansion chokes on stray % (and brackets confuse filter
+    # parsing), so neutralize everything structural. Agent-written words like
+    # "30%" must never abort a render minutes into ffmpeg work.
+    return (
+        s.replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
+        .replace(":", "\\:")
+        .replace("'", "")
+        .replace(",", "\\,")
+    )
 
 
 def main() -> None:

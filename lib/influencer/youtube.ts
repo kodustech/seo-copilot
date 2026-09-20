@@ -12,6 +12,7 @@
  */
 
 export const YOUTUBE_MAX_BLOCKS = 8;
+export const YOUTUBE_MIN_BLOCKS = 3;
 export const YOUTUBE_MIN_BLOCK_CHARS = 20;
 export const YOUTUBE_MAX_BLOCK_CHARS = 600;
 /** Measured credits per rendered second (photo avatar, Avatar IV). */
@@ -39,7 +40,12 @@ export function validateVideoScript(blocks: unknown): string[] {
   const parsed = parseVideoBlocks(blocks);
   if (!parsed) return ["video_script_missing: queue 1-8 spoken blocks, not an article."];
   const issues: string[] = [];
-  if (parsed.length > YOUTUBE_MAX_BLOCKS) {
+  // The composite needs an intro clip plus at least one body clip, and every
+  // prompt promises "3-8 spoken blocks" — fewer would render spend into a
+  // video that can never be assembled.
+  if (parsed.length < YOUTUBE_MIN_BLOCKS) {
+    issues.push(`too_few_blocks: ${parsed.length} < ${YOUTUBE_MIN_BLOCKS}; the composite needs an intro plus body segments.`);
+  }  if (parsed.length > YOUTUBE_MAX_BLOCKS) {
     issues.push(`too_many_blocks: ${parsed.length} > ${YOUTUBE_MAX_BLOCKS}; one idea per block.`);
   }
   parsed.forEach((block, i) => {

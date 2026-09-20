@@ -22,6 +22,7 @@ Env:
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 STALE_CLAIM_MINUTES = 30
+MAX_ATTEMPTS = 3
 
 FONT_BOLD = os.getenv("WORKER_FONT_BOLD", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
 FONT_MONO = os.getenv("WORKER_FONT_MONO", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf")
@@ -102,7 +104,12 @@ def main() -> None:
         try:
             job = claim_job(client)
             if job:
-                run_job(client, model, job, bucket, render_script, work_root)
+                try:
+                    run_job(client, model, job, bucket, render_script, work_root)
+                except Exception:
+                    # run_job already recorded the failure; back off so a
+                    # deterministic failure doesn't spin select/update.
+                    time.sleep(60)
             else:
                 time.sleep(poll)
         except Exception as exc:  # never die on a bad job; the loop is the service
@@ -117,7 +124,10 @@ def claim_job(client, table=None):
         client.table("persona_activities")
         .select("id,persona_id,channel_id,title,content_meta")
         .eq("kind", "video")
-        .in_("status", ["approved", "scheduled"])
+        # "publishing" rows carrying finished HeyGen clips are the publish
+        # cron's parked leftovers; the stage == "clips_ready" + no-final_url
+        # gate below keeps the worker away from anything still in flight.
+        .in_("status", ["approved", "scheduled", "publishing"])
         .execute()
     )
     now = datetime.now(timezone.utc)
@@ -125,6 +135,8 @@ def claim_job(client, table=None):
     for row in res.data or []:
         meta = row.get("content_meta") or {}
         if meta.get("stage") != "clips_ready" or meta.get("final_url"):
+            continue
+        if meta.get("worker_failed_at"):
             continue
         if not isinstance(meta.get("video_urls"), list) or not meta["video_urls"]:
             continue
@@ -150,6 +162,12 @@ def fail_job(client, job: dict, message: str) -> None:
     meta = dict(job.get("content_meta") or {})
     meta.pop("worker_claim_at", None)
     meta["worker_error"] = message[:500]
+    attempts = int(meta.get("worker_attempts") or 0) + 1
+    meta["worker_attempts"] = attempts
+    if attempts >= MAX_ATTEMPTS:
+        # Terminal: a deterministic failure must not be re-claimed forever.
+        # A person clears worker_failed_at (or fixes the draft) to retry.
+        meta["worker_failed_at"] = datetime.now(timezone.utc).isoformat()
     client.table("persona_activities").update({"content_meta": meta}).eq("id", job["id"]).execute()
 
 
@@ -186,10 +204,14 @@ def run_job(client, model, job: dict, bucket: str, render_script: str, work_root
             download(cu, p)
             clip_paths.append(str(p))
 
-        # Voice track for captions: concatenated clip audio, HeyGen TTS only.
+        # Voice track for captions: MP4s carry per-file indexes, so byte-level
+        # concat would silently keep only the first clip — use the demuxer.
         wav = work / "voice.wav"
-        run(["ffmpeg", "-y", "-v", "error", "-i", f"concat:{'|'.join(clip_paths)}",
-             "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(wav)])
+        voice_list = work / "voice-concat.txt"
+        voice_list.write_text("".join(f"file '{p}'\n" for p in clip_paths))
+        run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
+             "-i", str(voice_list), "-ar", "16000", "-ac", "1",
+             "-c:a", "pcm_s16le", str(wav)])
         segments, _ = model.transcribe(str(wav), language="en", word_timestamps=True)
         segments = list(segments)
         srt_lines = []
@@ -267,6 +289,10 @@ def run_job(client, model, job: dict, bucket: str, render_script: str, work_root
         log("job failed", aid, exc)
         traceback.print_exc()
         fail_job(client, job, str(exc))
+    finally:
+        # Every run leaves clips, wavs, PNGs and full renders behind — tens of
+        # MB per video. Clean the scratch dir or the disk fills in weeks.
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def ts(s: float) -> str:

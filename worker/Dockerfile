@@ -10,7 +10,8 @@ WORKDIR /app
 COPY worker/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# The composite renderer the worker shells out to.
+# The worker itself and the composite renderer it shells out to.
+COPY worker/render_worker.py ./render_worker.py
 COPY scripts/render-video-from-plan.py ./scripts/render-video-from-plan.py
 
 ENV PYTHONUNBUFFERED=1 \

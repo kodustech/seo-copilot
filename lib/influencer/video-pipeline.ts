@@ -85,7 +85,7 @@ export function planVideoRender(
   const cfg = youtubeChannelConfig(channel);
   const missing = youtubeChannelReady(cfg);
   if (missing) throw new Error(missing);
-  const blocks = parseVideoBlocks(activity.content_meta.blocks);
+  const blocks = resolveScriptBlocks(activity);
   const issues = validateVideoScript(blocks);
   if (issues.length) throw new Error(issues[0]);
   const estimatedSeconds = blocks!.length * avgSecondsPerBlock;
@@ -99,10 +99,37 @@ export function planVideoRender(
 }
 
 /**
+ * The queue's review edit writes activities.content, never content_meta.blocks
+ * — so the reviewed text wins whenever it differs. Split on blank lines (the
+ * shape queue_draft asks for); if that doesn't parse to a valid script, fall
+ * back to the stored blocks, and let validation reject the result either way.
+ */
+export function resolveScriptBlocks(activity: PersonaActivity): string[] | null {
+  const stored = parseVideoBlocks(activity.content_meta.blocks);
+  const edited = typeof activity.content === "string" ? activity.content.trim() : "";
+  if (edited) {
+    const fromContent = edited
+      .split(/\n\s*\n/)
+      .map((b) => b.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+    if (
+      fromContent.length > 1 &&
+      (!stored || fromContent.join("\n\n") !== stored.join("\n\n")) &&
+      validateVideoScript(fromContent).length === 0
+    ) {
+      return fromContent;
+    }
+  }
+  return stored;
+}
+
+/**
  * Render every script block through HeyGen and park the clip URLs on the
- * activity. Polls inline (blocks are ~15-25s each); the cron's 60s budget
- * fits one short video per run — longer ones finish across runs because
- * completed blocks are skipped by id.
+ * activity. Never sleeps past the cron's budget: one poll round per block,
+ * then park and let the next run resume from heygen_video_ids — a render
+ * that holds the sequential publish loop hostage starves every persona.
+ * Spend accrues per completed block from HeyGen's real durations and is
+ * persisted on every exit path, so the weekly cap always sees burned money.
  */
 export async function renderVideoClips(
   client: SupabaseClient,
@@ -124,12 +151,29 @@ export async function renderVideoClips(
       )
     : [];
   const videoUrls = [...prior];
-  for (let i = prior.length; i < plan.blocks.length; i += 1) {
-    const ids = Array.isArray(activity.content_meta.heygen_video_ids)
+  // Real seconds already burned (persisted across runs); the cap prices what
+  // HeyGen actually rendered, never the estimate.
+  let burnSeconds = 0;
+  const persistPartial = (stage?: string) =>
+    updateActivity(client, activity.id, {
+      status: "scheduled",
+      scheduled_at: new Date(now.getTime() + 30 * 60 * 1000).toISOString(),
+      content_meta: {
+        ...activity.content_meta,
+        heygen_video_ids: currentIds(),
+        video_urls: videoUrls.filter(Boolean),
+        render_cost: estimateVideoCost(burnSeconds),
+        ...(stage ? { stage } : {}),
+      },
+    });
+  const currentIds = (): string[] =>
+    Array.isArray(activity.content_meta.heygen_video_ids)
       ? (activity.content_meta.heygen_video_ids as unknown[]).filter(
           (id): id is string => typeof id === "string" && id.length > 0,
         )
       : [];
+  for (let i = prior.length; i < plan.blocks.length; i += 1) {
+    const ids = currentIds();
     let videoId = ids[i];
     if (!videoId) {
       videoId = await createHeyGenVideo(apiKey, {
@@ -146,31 +190,29 @@ export async function renderVideoClips(
         content_meta: { ...activity.content_meta, heygen_video_ids: ids },
       });
     }
-    const deadline = Date.now() + 4 * 60 * 1000;
+    // One look per run: completed clips resume by id, anything still cooking
+    // parks for the next run instead of sleeping inside the publish loop.
+    const deadline = Date.now() + 45 * 1000;
     for (;;) {
       const job = await getHeyGenVideo(apiKey, videoId);
       if (job.status === "completed" && job.videoUrl) {
         videoUrls[i] = job.videoUrl;
+        burnSeconds += job.durationSeconds ?? 20;
         break;
       }
       if (job.status === "failed") {
+        await persistPartial();
         throw new Error(`HeyGen block ${i + 1} failed: ${job.failureMessage ?? "unknown"}. Fix the script and retry.`);
       }
       if (Date.now() > deadline) {
-        // Park progress; the next cron run resumes from heygen_video_ids.
-        await updateActivity(client, activity.id, {
-          status: "scheduled",
-          scheduled_at: new Date(now.getTime() + 30 * 60 * 1000).toISOString(),
-          content_meta: { ...activity.content_meta, heygen_video_ids: ids, video_urls: videoUrls.filter(Boolean) },
-        });
+        // Park progress; the next run resumes from heygen_video_ids.
+        await persistPartial();
         throw new YoutubeDeferred(`HeyGen block ${i + 1} still rendering; parked progress and retrying next run.`);
       }
-      await new Promise((r) => setTimeout(r, 15_000));
+      await new Promise((r) => setTimeout(r, 5_000));
     }
   }
-  const renderCost = estimateVideoCost(
-    plan.blocks.length * 20,
-  );
+  const renderCost = estimateVideoCost(burnSeconds);
   await updateActivity(client, activity.id, {
     content_meta: {
       ...activity.content_meta,

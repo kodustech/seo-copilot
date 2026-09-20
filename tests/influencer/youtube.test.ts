@@ -20,7 +20,7 @@ import {
 import { buildCompositePlan, compositePlanSeconds } from "../../lib/influencer/video-composite";
 import { buildHeyGenVideoBody } from "../../lib/influencer/heygen";
 import { buildYoutubeVideoMetadata } from "../../lib/influencer/youtube-upload";
-import { planVideoRender } from "../../lib/influencer/video-pipeline";
+import { planVideoRender, resolveScriptBlocks } from "../../lib/influencer/video-pipeline";
 
 describe("youtube channel defaults", () => {
   it("publishes one video a day through the API, never auto", () => {
@@ -42,7 +42,9 @@ describe("validateVideoScript", () => {
     expect(validateVideoScript("a whole article")).toHaveLength(1);
     expect(validateVideoScript([])).toHaveLength(1);
   });
-  it("refuses too many, too short, too long", () => {
+  it("refuses too few, too many, too short, too long", () => {
+    expect(validateVideoScript(["Only one spoken thought here."]).join()).toMatch(/too_few_blocks/);
+    expect(validateVideoScript(["First thought here.", "Second thought here."]).join()).toMatch(/too_few_blocks/);
     const many = Array.from({ length: YOUTUBE_MAX_BLOCKS + 1 }, (_, i) => `Spoken block number ${i} with enough words.`);
     expect(validateVideoScript(many).join()).toMatch(/too_many_blocks/);
     expect(validateVideoScript(["ok block with words here", "x"]).join()).toMatch(/too_short/);
@@ -130,7 +132,7 @@ describe("planVideoRender", () => {
     status: "approved",
     title: "Test video",
     content: "spoken script",
-    content_meta: { blocks: ["First spoken thought here.", "Second spoken thought here."] },
+    content_meta: { blocks: ["First spoken thought here.", "Second spoken thought here.", "Third spoken thought here."] },
     source_kind: null,
     source_ref: null,
     parent_activity_id: null,
@@ -146,7 +148,7 @@ describe("planVideoRender", () => {
   it("prices the render before it runs", () => {
     const plan = planVideoRender(activity, channel);
     expect(plan.avatarId).toBe("lk_1");
-    expect(plan.blocks).toHaveLength(2);
+    expect(plan.blocks).toHaveLength(3);
     expect(plan.estimatedCost).toBeGreaterThan(0);
   });
   it("refuses without avatar + voice", () => {
@@ -155,7 +157,46 @@ describe("planVideoRender", () => {
   });
   it("refuses a bad script", () => {
     const bad = { ...activity, content_meta: { blocks: ["x"] } };
-    expect(() => planVideoRender(bad, channel)).toThrow(/too_short/);
+    expect(() => planVideoRender(bad, channel)).toThrow(/too_few_blocks/);
+  });
+});
+
+describe("resolveScriptBlocks", () => {
+  const stored = ["First stored thought here.", "Second stored thought here.", "Third stored thought here."];
+  const base = {
+    id: "a",
+    persona_id: "p",
+    channel_id: "ch",
+    kind: "video",
+    status: "approved",
+    title: "Test video",
+    content: "spoken script",
+    content_meta: { blocks: stored },
+    source_kind: null,
+    source_ref: null,
+    parent_activity_id: null,
+    scheduled_at: null,
+    published_at: null,
+    external_id: null,
+    external_url: null,
+    error: null,
+    approved_by: null,
+    created_at: "",
+    updated_at: "",
+  } as Parameters<typeof resolveScriptBlocks>[0];
+  it("films the stored blocks when the content matches", () => {
+    expect(resolveScriptBlocks({ ...base, content: stored.join("\n\n") })).toEqual(stored);
+  });
+  it("films the reviewed text when the queue edit differs", () => {
+    const edited = "First edited thought here.\n\nSecond edited thought here.\n\nThird edited thought here.";
+    expect(resolveScriptBlocks({ ...base, content: edited })).toEqual([
+      "First edited thought here.",
+      "Second edited thought here.",
+      "Third edited thought here.",
+    ]);
+  });
+  it("ignores edits that are not a valid script", () => {
+    expect(resolveScriptBlocks({ ...base, content: "just tweaked a comma" })).toEqual(stored);
   });
 });
 

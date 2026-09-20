@@ -841,15 +841,27 @@ async function publishToYoutube(
   const meta = activity.content_meta;
   const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : "");
   const finalUrl = text(meta.final_url);
+  // The cron claimed this row (status = publishing) before calling here. Both
+  // exits below stop on purpose, so release the claim back to scheduled first
+  // — otherwise the row sits in publishing until the stale reset fails it and
+  // the pipeline's next passes never run.
+  const parkForComposite = () =>
+    updateActivity(client, activity.id, {
+      status: "scheduled",
+      scheduled_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      error: null,
+    });
   if (!finalUrl) {
     const clips = Array.isArray(meta.video_urls)
       ? (meta.video_urls as unknown[]).filter((u): u is string => typeof u === "string" && u.length > 0)
       : [];
     if (!clips.length) {
       await renderVideoClips(client, activity, channel, new Date());
-      throw new YoutubeDeferred("Avatar clips rendered — composite pending: run scripts/render-video-from-plan.py and attach final_url.");
+      await parkForComposite();
+      throw new YoutubeDeferred("Avatar clips rendered — composite pending: run the worker (or scripts/render-video-from-plan.py) and attach final_url.");
     }
-    throw new YoutubeDeferred("Composite pending: run scripts/render-video-from-plan.py and attach final_url to this activity.");
+    await parkForComposite();
+    throw new YoutubeDeferred("Composite pending: run the worker (or scripts/render-video-from-plan.py) and attach final_url to this activity.");
   }
   const cfg = youtubeChannelConfig(channel);
   const missing = youtubeChannelReady(cfg);
@@ -857,8 +869,14 @@ async function publishToYoutube(
   const cipher = await getChannelCredentialCipher(client, channel.persona_id, "youtube");
   if (!cipher) throw new Error("YouTube channel is not connected (no OAuth token in the vault).");
   const accessToken = await getYoutubeAccessToken(decryptPersonaKey(cipher).trim());
-  const res = await fetch(finalUrl, { cache: "no-store" });
+  const res = await fetch(finalUrl, { cache: "no-store", signal: AbortSignal.timeout(60_000) });
   if (!res.ok) throw new Error(`Finished video unreachable (HTTP ${res.status}): ${finalUrl.slice(0, 120)}`);
+  // Check the declared size before buffering: the guard must reject before
+  // the cron process allocates the file, not after.
+  const declared = Number(res.headers.get("content-length") ?? "0");
+  if (declared > 256 * 1024 * 1024) {
+    throw new Error("Finished video over 256MB — the server will not ferry it. Upload from Studio instead.");
+  }
   const bytes = new Uint8Array(await res.arrayBuffer());
   if (bytes.byteLength > 256 * 1024 * 1024) {
     throw new Error("Finished video over 256MB — the server will not ferry it. Upload from Studio instead.");
