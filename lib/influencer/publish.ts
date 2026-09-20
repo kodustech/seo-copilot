@@ -213,14 +213,13 @@ export function resolvePublishDecision({
   if (channel.platform === "youtube") {
     const meta = activity.content_meta;
     const finalUrl = typeof meta.final_url === "string" ? meta.final_url.trim() : "";
-    const clips = Array.isArray(meta.video_urls)
-      ? (meta.video_urls as unknown[]).filter((u): u is string => typeof u === "string" && u.length > 0)
-      : [];
-    if (!finalUrl && clips.length) {
+    // A finished clip set waits on the composite (worker or person). Anything
+    // else resumes rendering — partial clip sets included.
+    if (!finalUrl && meta.stage === "clips_ready") {
       return {
         action: "defer",
         until: nextDayStartUtcIso(now),
-        reason: "Composite pending: run scripts/render-video-from-plan.py and attach final_url.",
+        reason: "Composite pending: the worker (or scripts/render-video-from-plan.py) attaches final_url.",
       };
     }
   }
@@ -852,13 +851,13 @@ async function publishToYoutube(
       error: null,
     });
   if (!finalUrl) {
-    const clips = Array.isArray(meta.video_urls)
-      ? (meta.video_urls as unknown[]).filter((u): u is string => typeof u === "string" && u.length > 0)
-      : [];
-    if (!clips.length) {
+    // Resume whenever the script is not fully rendered — with the 45s poll
+    // budget, parking mid-render is the normal outcome, not the exception.
+    // Only a finished clip set (stage = clips_ready) waits on the composite.
+    if (meta.stage !== "clips_ready") {
       await renderVideoClips(client, activity, channel, new Date());
       await parkForComposite();
-      throw new YoutubeDeferred("Avatar clips rendered — composite pending: run the worker (or scripts/render-video-from-plan.py) and attach final_url.");
+      throw new YoutubeDeferred("Avatar clips incomplete — parked progress and resuming next run.");
     }
     await parkForComposite();
     throw new YoutubeDeferred("Composite pending: run the worker (or scripts/render-video-from-plan.py) and attach final_url to this activity.");

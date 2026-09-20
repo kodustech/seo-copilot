@@ -107,8 +107,9 @@ def main() -> None:
                 try:
                     run_job(client, model, job, bucket, render_script, work_root)
                 except Exception:
-                    # run_job already recorded the failure; back off so a
-                    # deterministic failure doesn't spin select/update.
+                    # run_job records its own failures and returns normally, so
+                    # a failed job must back off here — otherwise it re-claims
+                    # at once and spins select/update against Supabase.
                     time.sleep(60)
             else:
                 time.sleep(poll)
@@ -137,7 +138,12 @@ def claim_job(client, table=None):
         if meta.get("stage") != "clips_ready" or meta.get("final_url"):
             continue
         if meta.get("worker_failed_at"):
-            continue
+            # Parked for good — unless the draft changed since it failed, in
+            # which case the new script deserves its own attempts.
+            blocks = meta.get("blocks")
+            current = "\n\n".join(blocks) if isinstance(blocks, list) else None
+            if meta.get("worker_failed_script") == current:
+                continue
         if not isinstance(meta.get("video_urls"), list) or not meta["video_urls"]:
             continue
         claimed = meta.get("worker_claim_at")
@@ -165,9 +171,12 @@ def fail_job(client, job: dict, message: str) -> None:
     attempts = int(meta.get("worker_attempts") or 0) + 1
     meta["worker_attempts"] = attempts
     if attempts >= MAX_ATTEMPTS:
-        # Terminal: a deterministic failure must not be re-claimed forever.
+        # Terminal, but re-opens on its own: the fingerprint below lets a
+        # corrected draft retry while the same broken script stays parked.
         # A person clears worker_failed_at (or fixes the draft) to retry.
         meta["worker_failed_at"] = datetime.now(timezone.utc).isoformat()
+        blocks = meta.get("blocks")
+        meta["worker_failed_script"] = "\n\n".join(blocks) if isinstance(blocks, list) else None
     client.table("persona_activities").update({"content_meta": meta}).eq("id", job["id"]).execute()
 
 
@@ -289,6 +298,9 @@ def run_job(client, model, job: dict, bucket: str, render_script: str, work_root
         log("job failed", aid, exc)
         traceback.print_exc()
         fail_job(client, job, str(exc))
+        # Re-raise so the loop backs off: without this the failure is
+        # recorded but invisible to main, and the row re-claims at once.
+        raise
     finally:
         # Every run leaves clips, wavs, PNGs and full renders behind — tens of
         # MB per video. Clean the scratch dir or the disk fills in weeks.

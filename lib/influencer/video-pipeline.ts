@@ -100,9 +100,11 @@ export function planVideoRender(
 
 /**
  * The queue's review edit writes activities.content, never content_meta.blocks
- * — so the reviewed text wins whenever it differs. Split on blank lines (the
- * shape queue_draft asks for); if that doesn't parse to a valid script, fall
- * back to the stored blocks, and let validation reject the result either way.
+ * — so the reviewed text wins whenever it differs. But it wins loudly: an
+ * edit that fails validation, or that stops matching the queued slide
+ * outlines (one per body block — the worker refuses anything else and the
+ * paid clips would be wasted), throws instead of silently filming stale
+ * blocks.
  */
 export function resolveScriptBlocks(activity: PersonaActivity): string[] | null {
   const stored = parseVideoBlocks(activity.content_meta.blocks);
@@ -112,11 +114,17 @@ export function resolveScriptBlocks(activity: PersonaActivity): string[] | null 
       .split(/\n\s*\n/)
       .map((b) => b.replace(/\s+/g, " ").trim())
       .filter(Boolean);
-    if (
-      fromContent.length > 1 &&
-      (!stored || fromContent.join("\n\n") !== stored.join("\n\n")) &&
-      validateVideoScript(fromContent).length === 0
-    ) {
+    const differs = !stored || fromContent.join("\n\n") !== stored.join("\n\n");
+    if (fromContent.length > 1 && differs) {
+      const slides = activity.content_meta.slides;
+      const slideCount = Array.isArray(slides) ? slides.length : -1;
+      if (slideCount >= 0 && fromContent.length !== slideCount + 1) {
+        throw new Error(
+          `slides_mismatch: edited script has ${fromContent.length} blocks for ${slideCount} outlines — the worker refuses anything but one outline per body block. Fix the outlines or the split.`,
+        );
+      }
+      const issues = validateVideoScript(fromContent);
+      if (issues.length) throw new Error(issues[0]);
       return fromContent;
     }
   }
@@ -151,29 +159,38 @@ export async function renderVideoClips(
       )
     : [];
   const videoUrls = [...prior];
-  // Real seconds already burned (persisted across runs); the cap prices what
-  // HeyGen actually rendered, never the estimate.
+  // Cost already burned by earlier runs of this same render (persisted on
+  // every park): the cap prices cumulative HeyGen spend, never a per-run
+  // fresh count — resumed blocks don't re-bill, but they did bill once.
+  const priorCost =
+    typeof activity.content_meta.render_cost === "number" &&
+    Number.isFinite(activity.content_meta.render_cost) &&
+    activity.content_meta.render_cost > 0
+      ? activity.content_meta.render_cost
+      : 0;
   let burnSeconds = 0;
+  const runCost = () => Math.round((priorCost + estimateVideoCost(burnSeconds)) * 100) / 100;
+  // One id array for the whole run: re-deriving from the claim-time snapshot
+  // would erase the id persisted for a block created minutes ago and HeyGen
+  // would bill the same block again on the next run.
+  const ids: string[] = Array.isArray(activity.content_meta.heygen_video_ids)
+    ? (activity.content_meta.heygen_video_ids as unknown[]).filter(
+        (id): id is string => typeof id === "string" && id.length > 0,
+      )
+    : [];
   const persistPartial = (stage?: string) =>
     updateActivity(client, activity.id, {
       status: "scheduled",
       scheduled_at: new Date(now.getTime() + 30 * 60 * 1000).toISOString(),
       content_meta: {
         ...activity.content_meta,
-        heygen_video_ids: currentIds(),
+        heygen_video_ids: ids,
         video_urls: videoUrls.filter(Boolean),
-        render_cost: estimateVideoCost(burnSeconds),
+        render_cost: runCost(),
         ...(stage ? { stage } : {}),
       },
     });
-  const currentIds = (): string[] =>
-    Array.isArray(activity.content_meta.heygen_video_ids)
-      ? (activity.content_meta.heygen_video_ids as unknown[]).filter(
-          (id): id is string => typeof id === "string" && id.length > 0,
-        )
-      : [];
   for (let i = prior.length; i < plan.blocks.length; i += 1) {
-    const ids = currentIds();
     let videoId = ids[i];
     if (!videoId) {
       videoId = await createHeyGenVideo(apiKey, {
@@ -212,7 +229,7 @@ export async function renderVideoClips(
       await new Promise((r) => setTimeout(r, 5_000));
     }
   }
-  const renderCost = estimateVideoCost(burnSeconds);
+  const renderCost = runCost();
   await updateActivity(client, activity.id, {
     content_meta: {
       ...activity.content_meta,

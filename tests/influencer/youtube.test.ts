@@ -198,6 +198,19 @@ describe("resolveScriptBlocks", () => {
   it("ignores edits that are not a valid script", () => {
     expect(resolveScriptBlocks({ ...base, content: "just tweaked a comma" })).toEqual(stored);
   });
+  it("rejects a differing edit that fails validation instead of filming stale blocks", () => {
+    const short = "First edited thought here.\n\nSecond edited thought here.";
+    expect(() => resolveScriptBlocks({ ...base, content: short })).toThrow(/too_few_blocks/);
+  });
+  it("rejects a differing edit that breaks the slide pairing", () => {
+    const edited = "First edited thought here.\n\nSecond edited thought here.\n\nThird edited thought here.";
+    const withSlides = {
+      ...base,
+      content: edited,
+      content_meta: { blocks: stored, slides: [{ title: "One", rows: ["a — b"] }] },
+    };
+    expect(() => resolveScriptBlocks(withSlides)).toThrow(/slides_mismatch/);
+  });
 });
 
 describe("buildHeyGenVideoBody", () => {
