@@ -140,7 +140,11 @@ export async function PATCH(
       if (current.content_meta.final_url) {
         return NextResponse.json({ error: "This video is already rendered. Watch it in the queue." }, { status: 400 });
       }
-      const meta: Record<string, unknown> = { ...current.content_meta, render_requested: true };
+      // With the clips already made, only the composite needs another go:
+      // clearing the worker's failure is the retry. A render request would
+      // only hold a preview slot the next draft needs.
+      const clipsReady = current.content_meta.stage === "clips_ready";
+      const meta: Record<string, unknown> = { ...current.content_meta, render_requested: !clipsReady };
       for (const key of ["render_error", "worker_failed_at", "worker_attempts", "worker_error", "worker_retry_at"]) delete meta[key];
       patch.content_meta = meta;
       patch.status = "draft";

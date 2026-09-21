@@ -355,27 +355,39 @@ export async function renderRequestedPreviews(
     .eq("status", "draft")
     .contains("content_meta", { render_requested: true })
     .order("created_at", { ascending: true })
-    .limit(PREVIEWS_PER_RUN);
+    .limit(PREVIEWS_PER_RUN * 5);
   if (error) throw new Error(error.message);
   let handled = 0;
   for (const row of data ?? []) {
+    // Only rows handed to HeyGen count against the run's budget: a skipped
+    // one must never hold a slot a waiting draft could use.
+    if (handled >= PREVIEWS_PER_RUN) break;
     const activity = rowToActivity(row as Record<string, unknown>);
     const meta = activity.content_meta;
     if (meta.render_requested !== true || meta.stage === "clips_ready" || meta.final_url) continue;
     const channel = channelById.get(activity.channel_id);
     if (!channel) continue;
     handled += 1;
+    let clipsReady = false;
     try {
       await renderVideoClips(client, activity, channel, now, { keepStatus: true });
-      // Clips done: the worker takes it from here. Clearing the request frees
-      // this run's slots for drafts still waiting on HeyGen.
-      await mergeContentMeta(client, activity.id, { render_requested: false });
+      clipsReady = true;
     } catch (err) {
       if (err instanceof YoutubeDeferred && !(err instanceof VideoBudgetDeferred)) continue; // still rendering
       await mergeContentMeta(client, activity.id, {
         render_requested: false,
         render_error: err instanceof Error ? err.message : String(err),
       });
+    }
+    // Clips done: the worker takes it from here, and clearing the request
+    // frees the slot. A failure of this bookkeeping is not a render failure,
+    // so it is logged, never written on the draft.
+    if (clipsReady) {
+      try {
+        await mergeContentMeta(client, activity.id, { render_requested: false });
+      } catch (err) {
+        console.error("[influencer] could not clear render_requested:", err instanceof Error ? err.message : "unknown error");
+      }
     }
   }
   return handled;

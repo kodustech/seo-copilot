@@ -312,6 +312,7 @@ def finish_job(client, aid, meta: dict) -> bool:
     meta.pop("worker_claim_at", None)
     meta.pop("worker_error", None)
     meta.pop("render_requested", None)
+    meta.pop("render_error", None)
     moved = (
         client.table("persona_activities")
         .update({"content_meta": meta, "status": "draft"})

@@ -268,6 +268,19 @@ describe("preview renders", () => {
     expect(patches.at(-1)!.content_meta).toMatchObject({ render_requested: false });
   });
 
+  it("never lets drafts already composing hold the run's slots", async () => {
+    const channels = new Map([["ch", channelWith({ youtube_max_videos_per_week: 5 })]]);
+    const composing = { render_requested: true, stage: "clips_ready" };
+    const handled = await renderRequestedPreviews(
+      previewClient([draftRow("old1", composing), draftRow("old2", composing), draftRow("new", { render_requested: true })]),
+      now,
+      channels,
+    );
+    expect(handled).toBe(1);
+    const ids = vi.mocked(updateActivity).mock.calls.map((c) => c[1]);
+    expect(new Set(ids)).toEqual(new Set(["new"]));
+  });
+
   it("writes a spent budget on the draft instead of retrying it every run", async () => {
     const channels = new Map([["ch", channelWith({ youtube_max_videos_per_week: 0 })]]);
     await renderRequestedPreviews(previewClient([draftRow("a", { render_requested: true })]), now, channels);
