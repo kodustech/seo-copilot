@@ -175,7 +175,9 @@ export type YoutubeChannelConfig = {
 function pick<T extends string>(allowed: readonly T[], v: unknown, fallback: T): T;
 function pick<T extends string>(allowed: readonly T[], v: unknown, fallback: null): T | null;
 function pick<T extends string>(allowed: readonly T[], v: unknown, fallback: T | null): T | null {
-  return typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : fallback;
+  // Canonical form first: a stored "Private " must not fall back to public.
+  const value = typeof v === "string" ? v.trim().toLowerCase() : "";
+  return (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
 function numberIn(v: unknown, min: number, max: number): number | null {

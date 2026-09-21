@@ -39,6 +39,7 @@ from pathlib import Path
 STALE_CLAIM_MINUTES = 30
 MAX_ATTEMPTS = 3
 RETRY_MINUTES = 10
+PREVIEW_MAX_TRIES = 5
 
 
 def log(*parts: object) -> None:
@@ -147,6 +148,8 @@ def preview_pass(client, bucket: str, work_root: Path, render=None) -> int:
         if not visuals:
             continue
         fp = preview_fingerprint(visuals)
+        # slide_previews_for is only written once the attempt is settled: a
+        # render, a bad spec, or transient failures out of retries.
         if meta.get("slide_previews_for") == fp:
             continue
         render_previews(client, row, visuals, fp, bucket, work_root, render)
@@ -160,6 +163,7 @@ def render_previews(client, row: dict, visuals: list, fp: str, bucket: str, work
     work = Path(tempfile.mkdtemp(prefix="vprev-", dir=str(work_root)))
     urls: list = [None] * len(visuals)
     error = None
+    settled = True
     try:
         if render is None:
             from slides import render_slides as render  # Chromium: loaded only when needed
@@ -173,21 +177,33 @@ def render_previews(client, row: dict, visuals: list, fp: str, bucket: str, work
                 client.storage.from_(bucket).upload(path, f, {"content-type": "image/png", "upsert": "true"})
             urls[i] = client.storage.from_(bucket).get_public_url(path)
         log("preview ok", aid)
-    except Exception as exc:  # a bad slide must not stall the other drafts
+    except ValueError as exc:
+        # A malformed slide spec: the same input fails the same way, so record it once.
+        error = str(exc)[:300]
+        log("preview refused", aid, error)
+    except Exception as exc:  # Chromium, storage, network: worth another try
         error = str(exc)[:300]
         log("preview failed", aid, error)
+        tries = (row.get("content_meta") or {}).get("slide_previews_try") or {}
+        n = int(tries.get("n") or 0) + 1 if tries.get("fp") == fp else 1
+        settled = n >= PREVIEW_MAX_TRIES
     finally:
         shutil.rmtree(work, ignore_errors=True)
     # Merge into a fresh read: the reviewer may have edited the draft while
     # the slides rendered, and a stale whole-row write would undo that.
     fresh = client.table("persona_activities").select("content_meta").eq("id", aid).maybe_single().execute()
     meta = dict(((fresh.data if fresh else None) or {}).get("content_meta") or {})
+    # This attempt's images, even when empty: an old slide next to a new error misleads.
     meta["slide_previews"] = urls
-    meta["slide_previews_for"] = fp
     if error:
         meta["slide_previews_error"] = error
     else:
         meta.pop("slide_previews_error", None)
+    if settled:
+        meta["slide_previews_for"] = fp
+        meta.pop("slide_previews_try", None)
+    else:
+        meta["slide_previews_try"] = {"fp": fp, "n": n}
     client.table("persona_activities").update({"content_meta": meta}).eq("id", aid).execute()
 
 

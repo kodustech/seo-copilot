@@ -444,7 +444,8 @@ function YoutubeConnect({
   const [settings, setSettings] = useState<Record<string, string>>({
     youtube_avatar_id: str(cfg.youtube_avatar_id),
     youtube_voice_id: str(cfg.youtube_voice_id),
-    youtube_expressiveness: str(cfg.youtube_expressiveness, "high"),
+    // Not sent unless chosen: HeyGen documents it for photo avatars only.
+    youtube_expressiveness: str(cfg.youtube_expressiveness, "off"),
     youtube_motion_prompt: str(cfg.youtube_motion_prompt),
     youtube_voice_speed: str(cfg.youtube_voice_speed),
     youtube_privacy: str(cfg.youtube_privacy, "public"),
@@ -539,7 +540,7 @@ function YoutubeConnect({
         <div className="grid grid-cols-2 gap-2">
           {text("youtube_avatar_id", "Avatar look id")}
           {text("youtube_voice_id", "Voice id")}
-          {choice("youtube_expressiveness", "Expressiveness (photo avatars)", [
+          {choice("youtube_expressiveness", "Expressiveness (photo avatars: pick High)", [
             ["high", "High"],
             ["medium", "Medium"],
             ["low", "Low (HeyGen default)"],

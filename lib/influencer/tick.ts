@@ -437,7 +437,8 @@ export async function runPersonaTick({
   // could not render before next week. Open, the brief carries the channel's
   // own length, slide mode, direction and what is left to spend.
   let youtubeBrief = "";
-  const youtubeChannel = actionable.find((c) => c.platform === "youtube" && openChannelIds.includes(c.id));
+  const openIds = new Set(openChannelIds);
+  const youtubeChannel = actionable.find((c) => c.platform === "youtube" && openIds.has(c.id));
   if (youtubeChannel) {
     const cfg = youtubeChannelConfig(youtubeChannel);
     const usage = testRun ? null : await videoUsageThisWeek(client, youtubeChannel.id, now).catch(() => null);

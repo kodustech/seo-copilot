@@ -2,7 +2,8 @@
 --
 -- A youtube channel presents one avatar + one voice (stored on the channel's
 -- channel_config), renders script blocks through HeyGen, and uploads the
--- finished mp4 through the YouTube Data API with the synthetic-media flag set.
+-- finished mp4 through the YouTube Data API with status.containsSyntheticMedia
+-- set (videos.insert reference; payload pinned in tests/influencer/youtube.test.ts).
 --
 -- Safe to re-run.
 

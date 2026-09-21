@@ -122,7 +122,7 @@ describe("youtube channel config", () => {
   it("reads the form's string values and drops junk", () => {
     const cfg = youtubeChannelConfig({
       channel_config: {
-        youtube_privacy: "unlisted",
+        youtube_privacy: " Unlisted ",
         youtube_target_minutes: "5",
         youtube_weekly_budget_credits: "30",
         youtube_max_videos_per_week: "0",
