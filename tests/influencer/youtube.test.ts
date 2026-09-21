@@ -14,6 +14,7 @@ import {
   storedVideoVisuals,
   validateVideoLength,
   validateVideoScript,
+  validateVideoVoice,
   weeklyLimitReason,
   youtubeChannelConfig,
   youtubeChannelReady,
@@ -81,6 +82,32 @@ describe("video money gate", () => {
     // A parked render resumes even when the week's video slot is taken.
     expect(weeklyLimitReason({ credits: 0, videos: 1 }, 5, limits, false)).toBeNull();
     expect(weeklyLimitReason({ credits: 0, videos: 0 }, 5, { ...limits, maxVideosPerWeek: 0 }, true)).toMatch(/video limit/);
+  });
+});
+
+describe("validateVideoVoice", () => {
+  // Lines from a real test draft (2026-09-21) that read as generated.
+  const generated = [
+    "The gap is not what the AI knows about your project. It is what the AI is told to do with that knowledge.",
+    "Review instructions should live in the repository, not a wiki page.",
+    "Here is the line worth stealing from that piece. The standard runs every time.",
+    "Here is the deeper shift, and it is worth sitting with. The review becomes the first real look.",
+    "Buy the encoding, not the review tool.",
+  ];
+  it("flags stacked contrasts and announcements, quoting where they are", () => {
+    const issues = validateVideoVoice(generated).join("\n");
+    expect(issues).toMatch(/sounds_generated_contrast: 3/);
+    expect(issues).toMatch(/block 1: "not what the AI knows/);
+    expect(issues).toMatch(/sounds_generated_signposts/);
+  });
+  it("lets one of each through, the way a person talks", () => {
+    expect(
+      validateVideoVoice([
+        "The question isn't whether you have a harness, it's which part you own.",
+        "Here's my take: start from one rule you already enforce.",
+        "Write it as a config file and review it in a pull request like any code.",
+      ]),
+    ).toEqual([]);
   });
 });
 
@@ -155,6 +182,12 @@ describe("buildYoutubeBrief", () => {
   it("ties one block to one screen", () => {
     expect(buildYoutubeBrief(cfg, null)).toMatch(/one block per screen/);
     expect(buildYoutubeBrief(cfg, null)).toMatch(/15 to 30 seconds/);
+  });
+  it("asks for its own example, one named source and real code on screen", () => {
+    const brief = buildYoutubeBrief(cfg, null);
+    expect(brief).toMatch(/name its author/);
+    expect(brief).toMatch(/Never invent an anecdote/);
+    expect(brief).toMatch(/at least one code slide/);
   });
   it("teaches the html mode its canvas and safe area", () => {
     const brief = buildYoutubeBrief({ ...cfg, slideMode: "html" }, null);

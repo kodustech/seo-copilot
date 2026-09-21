@@ -111,6 +111,51 @@ export function validateVideoLength(blocks: string[], targetMinutes: number): st
   return [];
 }
 
+// Spoken scripts drift into the shapes of generated prose: "it's not X, it's
+// Y" and announcing the point before making it. One of each reads as a
+// person talking; more reads as a model, and a voice makes it louder.
+const CONTRAST_PATTERNS = [
+  /\bnot\b[^.!?]{1,90}[.;]\s*(it|that|this|they)\s*(is|'s|was|are)\b/gi,
+  /\b(isn't|is not|wasn't|was not|aren't|are not)\b[^.!?]{1,90},\s*(it|that|this)\s*(is|'s)\b/gi,
+  /\bnot (just |only |merely )?[^.!?,]{1,60},? but (also )?\b/gi,
+  /\bno longer (just )?[^.!?]{1,80}\.\s*(it|that|this)\s+(is|'s)\b/gi,
+  /,\s*not\s+(a|an|the|as)\s+[^.!?,]{1,60}[.!?]/gi,
+];
+const SIGNPOST_PATTERNS = [
+  /\b(here is|here's) (the|my|what|why|a|one|where|how)\b/gi,
+  /\bworth (sitting with|stealing|chasing)\b/gi,
+  /\bI want to show you\b/gi,
+  /\blet's (dive|break|unpack|look|talk)\b/gi,
+];
+const VOICE_ALLOWANCE = 1;
+
+function voiceHits(blocks: string[], patterns: RegExp[]): string[] {
+  return blocks.flatMap((block, i) =>
+    patterns.flatMap((re) => [...block.matchAll(re)].map((m) => `block ${i + 1}: "${m[0].trim()}"`)),
+  );
+}
+
+/**
+ * Patterns that make a script sound generated. Checked when the draft is
+ * queued, like the length: a reviewer's edit is theirs to judge.
+ */
+export function validateVideoVoice(blocks: string[]): string[] {
+  const issues: string[] = [];
+  const contrasts = voiceHits(blocks, CONTRAST_PATTERNS);
+  if (contrasts.length > VOICE_ALLOWANCE) {
+    issues.push(
+      `sounds_generated_contrast: ${contrasts.length} "not X, it's Y" lines (${contrasts.slice(0, 4).join("; ")}). Keep at most one, where someone really holds the first view; say the rest directly.`,
+    );
+  }
+  const signposts = voiceHits(blocks, SIGNPOST_PATTERNS);
+  if (signposts.length > VOICE_ALLOWANCE) {
+    issues.push(
+      `sounds_generated_signposts: ${signposts.length} lines announce a point instead of making it (${signposts.slice(0, 4).join("; ")}). Drop the announcement and just say the thing.`,
+    );
+  }
+  return issues;
+}
+
 /** Credits a render is expected to burn, before it runs. */
 export function estimateVideoCost(totalSeconds: number): number {
   if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return 0;
@@ -391,7 +436,8 @@ export function buildYoutubeBrief(cfg: YoutubeChannelConfig, usage: VideoUsage |
     : "";
   return [
     `YOUTUBE is a long-form talking video, never an article. Queue kind 'video' for platform 'youtube'. The video is a sequence of screens, one block per screen: each block is what you say while that screen is up, 15 to 30 seconds (40 to 85 words), and the screen changes when the next block starts. ~${cfg.targetMinutes} minutes in total (≈${targetWords} words, so about ${Math.ceil(targetWords / 70)} blocks; you speak about ${perMinute} words a minute). slides = one entry per block, same order: null films you full-frame talking to camera, an object puts a slide page on screen with you in a corner bubble. The format is close to a presentation: most screens are slides, with you in the bubble. Go full screen on camera for the hook, the close and the odd strong opinion. A topic that needs two slides is two blocks.`,
-    "Write for the ear: short sentences, contractions, talk to 'you', one concrete example or failure story per idea, say the opinion plainly. Never read the slide aloud; the slide shows the list, you say why it matters. No markdown, no URLs, no emoji. In blocks, say domains the way a person would ('agentwrotethis dot dev') and spell out acronyms a voice would mangle ('C I'); slides are read, not heard, so write them normally ('CI'). Pauses come from punctuation: end the sentence.",
+    "It is your video, not a summary of someone else's: most blocks are your own reasoning and a concrete example you can stand behind (a config you wrote, a pull request you read, something you tried and what happened). Never invent an anecdote; with none, walk through a worked example on screen. Lean on one outside source at most, name its author (not just the site it ran on), and quote only words that are in it. When the topic is code or configuration, show it: at least one code slide with the real thing.",
+    "Write for the ear: short sentences, contractions, talk to 'you', one concrete example or failure story per idea, say the opinion plainly. Say what something is instead of what it is not, and make the point instead of announcing it (no 'here's the thing', 'here is my take'). Never read the slide aloud; the slide shows the list, you say why it matters. No markdown, no URLs, no emoji. In blocks, say domains the way a person would ('agentwrotethis dot dev') and spell out acronyms a voice would mangle ('C I'); slides are read, not heard, so write them normally ('CI'). Pauses come from punctuation: end the sentence.",
     slides,
     "Build the video on one of your own published posts when you can, and pass its URL as canonical_url: it goes in the description as the full post.",
     cfg.direction ? `Direction for this channel from your operator: ${cfg.direction}` : "",

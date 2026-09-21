@@ -29,6 +29,7 @@ import {
   parseVideoVisuals,
   validateVideoLength,
   validateVideoScript,
+  validateVideoVoice,
   VIDEO_SLIDE_INPUT_SCHEMA,
   youtubeChannelConfig,
   type YoutubeSlideMode,
@@ -107,7 +108,7 @@ async function trial(post: string, mode: YoutubeSlideMode, outDir: string, write
     const object = await write(system, prompt);
     const issues = [...validateVideoScript(object.blocks)];
     const blocks = parseVideoBlocks(object.blocks) ?? [];
-    if (!issues.length) issues.push(...validateVideoLength(blocks, cfg.targetMinutes));
+    if (!issues.length) issues.push(...validateVideoLength(blocks, cfg.targetMinutes), ...validateVideoVoice(blocks));
     const { visuals, issues: visualIssues } = parseVideoVisuals(object.slides, blocks.length, mode);
     issues.push(...visualIssues);
     attempts.push({ issues });

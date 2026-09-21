@@ -21,7 +21,7 @@ avatar bubble, so the lower-right of the safe area (x > 1500, y > 680) stays
 empty too.
 
 CLI:
-    python3 worker/slides.py slides.json out_dir [--site agentwrotethis.dev]
+    python3 worker/slides.py slides.json out_dir [--site example.dev]
 """
 from __future__ import annotations
 
@@ -439,7 +439,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Render slide specs to 1920x1080 PNGs.")
     ap.add_argument("slides_json")
     ap.add_argument("out_dir")
-    ap.add_argument("--site", default="agentwrotethis.dev")
+    ap.add_argument("--site", default="", help="footer label; empty leaves the footer off")
     args = ap.parse_args()
     data = json.loads(Path(args.slides_json).read_text())
     specs = data.get("slides") if isinstance(data, dict) else data
