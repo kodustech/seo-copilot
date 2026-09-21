@@ -20,7 +20,7 @@ import {
   YOUTUBE_MAX_BLOCK_CHARS,
   YOUTUBE_MAX_BLOCKS,
 } from "../../lib/influencer/youtube";
-import { createYoutubeOAuthState, parseYoutubeOAuthState } from "../../lib/influencer/youtube-oauth";
+import { createYoutubeOAuthState, nonceMatches, parseYoutubeOAuthState } from "../../lib/influencer/youtube-oauth";
 import { buildCompositePlan, compositePlanSeconds } from "../../lib/influencer/video-composite";
 import { buildHeyGenVideoBody } from "../../lib/influencer/heygen";
 import { buildYoutubeVideoMetadata } from "../../lib/influencer/youtube-upload";
@@ -414,15 +414,20 @@ describe("youtube OAuth state", () => {
     process.env.INFLUENCER_SECRETS_KEY = prev;
   });
   it("round-trips the channel and the person who pressed Connect", () => {
-    const state = createYoutubeOAuthState({ channelId: "ch1", userEmail: "a@kodus.io" }, 1_000);
-    expect(parseYoutubeOAuthState(state, 2_000)).toMatchObject({ channelId: "ch1", userEmail: "a@kodus.io" });
+    const state = createYoutubeOAuthState({ channelId: "ch1", userEmail: "a@kodus.io", nonce: "n1" }, 1_000);
+    expect(parseYoutubeOAuthState(state, 2_000)).toMatchObject({ channelId: "ch1", userEmail: "a@kodus.io", nonce: "n1" });
   });
   it("refuses a tampered or stale state", () => {
-    const state = createYoutubeOAuthState({ channelId: "ch1", userEmail: "a@kodus.io" }, 1_000);
+    const state = createYoutubeOAuthState({ channelId: "ch1", userEmail: "a@kodus.io", nonce: "n1" }, 1_000);
     const [body, sig] = state.split(".");
-    const forged = Buffer.from(JSON.stringify({ channelId: "other", userEmail: "a@kodus.io", ts: 1_000 })).toString("base64url");
+    const forged = Buffer.from(JSON.stringify({ channelId: "other", userEmail: "a@kodus.io", nonce: "n1", ts: 1_000 })).toString("base64url");
     expect(() => parseYoutubeOAuthState(`${forged}.${sig}`, 2_000)).toThrow(/signature/);
     expect(() => parseYoutubeOAuthState(`${body}.${sig}`, 1_000 + 31 * 60 * 1000)).toThrow(/expired/);
+  });
+  it("only finishes on the browser that started the flow", () => {
+    expect(nonceMatches("n1", "n1")).toBe(true);
+    expect(nonceMatches("n1", undefined)).toBe(false);
+    expect(nonceMatches("n1", "n2")).toBe(false);
   });
 });
 

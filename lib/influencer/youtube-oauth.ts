@@ -1,10 +1,11 @@
 /**
  * "Connect with Google" for a persona's YouTube channel: consent in the
  * browser, refresh token straight into the vault. Same shape as the mailbox
- * OAuth (lib/outreach/google-oauth.ts), with its own redirect and a state that
- * names the channel, so the callback can only ever write to that one.
+ * OAuth (lib/outreach/google-oauth.ts), with its own redirect, a state that
+ * names the channel so the callback can only ever write to that one, and a
+ * nonce that ties the flow to the browser that started it.
  */
-import { createHmac, timingSafeEqual } from "crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { getChannelCredentialCipher } from "@/lib/influencer/credentials";
@@ -53,9 +54,21 @@ function stateSecret(): string {
   return secret;
 }
 
-export type YoutubeOAuthState = { channelId: string; userEmail: string; ts: number };
+/**
+ * Also carried in an httpOnly cookie on the browser that pressed Connect. The
+ * callback requires both to match, so a leaked callback URL is useless on any
+ * other browser: without it, anyone holding the URL could finish the consent
+ * with their own Google account and bind that channel to our persona.
+ */
+export const YOUTUBE_OAUTH_NONCE_COOKIE = "yt_oauth_nonce";
+export const YOUTUBE_OAUTH_COOKIE_PATH = "/api/influencers/youtube/callback";
 
-export function createYoutubeOAuthState(payload: { channelId: string; userEmail: string }, now = Date.now()): string {
+export type YoutubeOAuthState = { channelId: string; userEmail: string; nonce: string; ts: number };
+
+export function createYoutubeOAuthState(
+  payload: { channelId: string; userEmail: string; nonce: string },
+  now = Date.now(),
+): string {
   const body = Buffer.from(JSON.stringify({ ...payload, ts: now }), "utf8").toString("base64url");
   const sig = createHmac("sha256", stateSecret()).update(body).digest("base64url");
   return `${body}.${sig}`;
@@ -69,11 +82,23 @@ export function parseYoutubeOAuthState(state: string, now = Date.now()): Youtube
   const b = Buffer.from(expected);
   if (a.length !== b.length || !timingSafeEqual(a, b)) throw new Error("Invalid OAuth state signature");
   const parsed = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as Partial<YoutubeOAuthState>;
-  if (!parsed.channelId || !parsed.userEmail || typeof parsed.ts !== "number") {
+  if (!parsed.channelId || !parsed.userEmail || !parsed.nonce || typeof parsed.ts !== "number") {
     throw new Error("OAuth state is incomplete");
   }
   if (now - parsed.ts > STATE_TTL_MS) throw new Error("OAuth state expired, press Connect again");
   return parsed as YoutubeOAuthState;
+}
+
+/** The cookie half of the state check, compared in constant time. */
+export function newOAuthNonce(): string {
+  return randomBytes(16).toString("base64url");
+}
+
+export function nonceMatches(stateNonce: string, cookieNonce: string | undefined): boolean {
+  if (!cookieNonce) return false;
+  const a = Buffer.from(stateNonce);
+  const b = Buffer.from(cookieNonce);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 export function buildYoutubeAuthUrl(state: string, req?: Request): string {

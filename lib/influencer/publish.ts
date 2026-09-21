@@ -905,12 +905,13 @@ async function publishToYoutube(
   // YouTube keeps uploads from an API project that has not passed its audit
   // private, whatever was asked. Say so on the row and to the operator, once a
   // week per channel, instead of reporting a public video nobody can see.
-  const heldPrivate = cfg.privacy !== "private" && uploaded.privacyStatus === "private";
+  const applied = uploaded.privacyStatus?.trim().toLowerCase() || null;
+  const heldPrivate = cfg.privacy !== "private" && applied === "private";
   await updateActivity(client, activity.id, {
     content_meta: {
       ...meta,
       stage: "uploaded",
-      youtube_privacy: uploaded.privacyStatus ?? cfg.privacy,
+      youtube_privacy: applied ?? cfg.privacy,
       ...(heldPrivate
         ? {
             youtube_notice:
