@@ -29,8 +29,16 @@ import {
   resetStalePublishing,
   updateActivity,
 } from "@/lib/influencer/activities";
+import { alertOperator } from "@/lib/influencer/alerts";
 import { getChannelCredentialCipher } from "@/lib/influencer/credentials";
 import { listChannels, listPersonas } from "@/lib/influencer/personas";
+import { renderVideoClips, weekStartUtcIso, YoutubeDeferred } from "@/lib/influencer/video-pipeline";
+import {
+  buildVideoDescription,
+  youtubeChannelConfig,
+  youtubeChannelReady,
+} from "@/lib/influencer/youtube";
+import { getYoutubeAccessToken, uploadYoutubeVideo } from "@/lib/influencer/youtube-upload";
 import {
   isReplyKind,
   type ActivityKind,
@@ -201,6 +209,25 @@ export function resolvePublishDecision({
       action: "reject",
       reason: `Touches forbidden topic "${forbidden}".`,
     };
+  }
+
+  // YouTube without a finished file is not a failure — it is a pipeline
+  // waiting on the worker's composite. Defer with
+  // the next action instead of claiming it every run.
+  if (channel.platform === "youtube") {
+    const meta = activity.content_meta;
+    const finalUrl = typeof meta.final_url === "string" ? meta.final_url.trim() : "";
+    // A finished clip set waits on the composite (worker or person). Anything
+    // else resumes rendering — partial clip sets included.
+    // A composite the worker gave up on is not pending: let it reach the
+    // publisher, which fails it with the worker's error.
+    if (!finalUrl && meta.stage === "clips_ready" && !meta.worker_failed_at) {
+      return {
+        action: "defer",
+        until: nextDayStartUtcIso(now),
+        reason: "Composite pending: the worker (or scripts/render-video-from-plan.py) attaches final_url.",
+      };
+    }
   }
 
   // Freshness: an X take that has sat past its due time for too long is stale
@@ -804,6 +831,108 @@ export function manualChannelIds(channels: PersonaChannel[]): string[] {
   return channels.filter((c) => c.publish_via === "manual").map((c) => c.id);
 }
 
+/**
+ * YouTube in three passes across cron runs: (1) approved script with no
+ * clips → render HeyGen clips (money gate inside), then stop; (2) clips but
+ * no finished file → stop, the worker composites; (3) finished file attached
+ * → upload with the synthetic-media flag at the channel's visibility.
+ */
+async function publishToYoutube(
+  client: SupabaseClient,
+  activity: PersonaActivity,
+  channel: PersonaChannel,
+  persona: Persona,
+): Promise<PublishOutcome> {
+  const meta = activity.content_meta;
+  const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : "");
+  const finalUrl = text(meta.final_url);
+  // The cron claimed this row (status = publishing) before calling here. Both
+  // exits below stop on purpose, so release the claim back to scheduled first
+  // — otherwise the row sits in publishing until the stale reset fails it and
+  // the pipeline's next passes never run.
+  const parkForComposite = () =>
+    updateActivity(client, activity.id, {
+      status: "scheduled",
+      scheduled_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      error: null,
+    });
+  if (!finalUrl) {
+    // Resume whenever the script is not fully rendered — with the 45s poll
+    // budget, parking mid-render is the normal outcome, not the exception.
+    // Only a finished clip set (stage = clips_ready) waits on the composite.
+    if (meta.stage !== "clips_ready") {
+      await renderVideoClips(client, activity, channel, new Date());
+      await parkForComposite();
+      throw new YoutubeDeferred("Avatar clips incomplete — parked progress and resuming next run.");
+    }
+    if (meta.worker_failed_at) {
+      throw new Error(`Video composite failed: ${text(meta.worker_error) || "see the worker logs"}. Approve it again to retry.`);
+    }
+    await parkForComposite();
+    throw new YoutubeDeferred("Composite pending: run the worker (or scripts/render-video-from-plan.py) and attach final_url to this activity.");
+  }
+  const cfg = youtubeChannelConfig(channel);
+  const missing = youtubeChannelReady(cfg);
+  if (missing) throw new Error(missing);
+  const cipher = await getChannelCredentialCipher(client, channel.persona_id, "youtube");
+  if (!cipher) throw new Error("YouTube channel is not connected (no OAuth token in the vault).");
+  const accessToken = await getYoutubeAccessToken(decryptPersonaKey(cipher).trim());
+  const res = await fetch(finalUrl, { cache: "no-store", signal: AbortSignal.timeout(60_000) });
+  if (!res.ok) throw new Error(`Finished video unreachable (HTTP ${res.status}): ${finalUrl.slice(0, 120)}`);
+  // Check the declared size before buffering: the guard must reject before
+  // the cron process allocates the file, not after.
+  const declared = Number(res.headers.get("content-length") ?? "0");
+  if (declared > 256 * 1024 * 1024) {
+    throw new Error("Finished video over 256MB — the server will not ferry it. Upload from Studio instead.");
+  }
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  if (bytes.byteLength > 256 * 1024 * 1024) {
+    throw new Error("Finished video over 256MB — the server will not ferry it. Upload from Studio instead.");
+  }
+  const description = buildVideoDescription({
+    canonicalUrl: text(meta.canonical_url) || null,
+    musicCredit: text(meta.music_credit) || null,
+    siteUrl: cfg.siteUrl,
+  });
+  const uploaded = await uploadYoutubeVideo({
+    accessToken,
+    title: activity.title?.trim() || activity.content.slice(0, 80),
+    description,
+    videoBytes: bytes,
+    privacyStatus: cfg.privacy,
+    tags: Array.isArray(meta.tags) ? meta.tags.filter((t): t is string => typeof t === "string") : undefined,
+  });
+  // YouTube keeps uploads from an API project that has not passed its audit
+  // private, whatever was asked. Say so on the row and to the operator, once a
+  // week per channel, instead of reporting a public video nobody can see.
+  const applied = uploaded.privacyStatus?.trim().toLowerCase() || null;
+  const heldPrivate = cfg.privacy !== "private" && applied === "private";
+  await updateActivity(client, activity.id, {
+    content_meta: {
+      ...meta,
+      stage: "uploaded",
+      youtube_privacy: applied ?? cfg.privacy,
+      ...(heldPrivate
+        ? {
+            youtube_notice:
+              "YouTube kept this upload private: the Google Cloud project behind the YouTube OAuth client has not passed YouTube's API audit. Switch it in Studio, or finish the audit so uploads keep their visibility.",
+          }
+        : {}),
+    },
+  });
+  if (heldPrivate) {
+    await alertOperator(client, {
+      userEmail: persona.created_by,
+      title: `@${persona.handle}: YouTube is holding uploads private`,
+      body: "The API project has not passed YouTube's audit, so every upload lands private. Publish from Studio until the audit clears.",
+      dedupeKey: `youtube-private-${channel.id}-${weekStartUtcIso(new Date()).slice(0, 10)}`,
+    }).catch(() => {});
+  }
+  const videoId = uploaded.videoId;
+  const watchUrl = uploaded.watchUrl;
+  return { external_id: videoId, external_url: watchUrl };
+}
+
 /** dev.to (and most tag systems) reject non-alphanumeric tags like "ai-agents".
  *  Normalize to lowercase alphanumeric, drop empties/dupes, cap the count. */
 function sanitizeTags(
@@ -835,6 +964,7 @@ async function publishActivity(
   // browser. The stored publish_via says "browser" once connected, but a
   // channel created before that existed still says "manual".
   if (channel.platform === "medium") return publishToMedium(activity, channel, persona);
+  if (channel.platform === "youtube") return publishToYoutube(client, activity, channel, persona);
 
   switch (channel.publish_via) {
     case "post_bridge":
@@ -924,7 +1054,7 @@ export async function runInfluencerPublishCron(
         await countPublishedToday(
           client,
           activity.channel_id,
-          isReplyKind(activity.kind) ? ["reply", "quote"] : ["post", "article", "crosspost"],
+          isReplyKind(activity.kind) ? ["reply", "quote"] : ["post", "article", "crosspost", "video"],
           dayStart,
         ),
       );
@@ -994,6 +1124,12 @@ export async function runInfluencerPublishCron(
       todayCount.set(key, (todayCount.get(key) ?? 0) + 1);
       summary.published += 1;
     } catch (error) {
+      // A stage that stopped on purpose (parked HeyGen render, composite
+      // waiting on a person) is progress, not failure.
+      if (error instanceof YoutubeDeferred) {
+        summary.deferred += 1;
+        continue;
+      }
       await updateActivity(client, activity.id, {
         status: "failed",
         error: error instanceof Error ? error.message : String(error),

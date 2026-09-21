@@ -127,6 +127,7 @@ export async function POST(
         persona,
         now: new Date(),
         testRun: true,
+        testPlatform: typeof body.platform === "string" ? body.platform : undefined,
       });
       if (result.error) {
         return NextResponse.json({ error: result.error, result }, { status: 400 });

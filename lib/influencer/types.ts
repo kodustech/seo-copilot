@@ -15,7 +15,12 @@ export type ChannelPlatform =
   | "hackernews"
   // Hacker Noon, not Hacker News: a different site, and a manual channel — it
   // has no publishing API and every story passes a human editor.
-  | "hackernoon";
+  | "hackernoon"
+  // Long-form video: script blocks render through an avatar provider (HeyGen)
+  // and upload through the YouTube Data API with status.containsSyntheticMedia
+  // set, the API side of Studio's altered-content label (videos.insert
+  // reference; the payload is pinned in tests/influencer/youtube.test.ts).
+  | "youtube";
 
 // "browser" drives the persona's logged-in session in a remote browser. It is
 // how Medium gets published: the API stopped issuing integration tokens in 2023,
@@ -50,6 +55,8 @@ export function channelDefaults(platform: ChannelPlatform): {
       return { publish_via: "api", automation_level: "approve_first", max_posts_per_day: 1, max_replies_per_day: 0 };
     case "medium":
       return { publish_via: "browser", automation_level: "approve_first", max_posts_per_day: 2, max_replies_per_day: 5 };
+    case "youtube":
+      return { publish_via: "api", automation_level: "approve_first", max_posts_per_day: 1, max_replies_per_day: 0 };
     // Hand-posted: the tool writes, a person posts from their own account.
     case "reddit":
     case "hackernews":
@@ -62,7 +69,7 @@ export type AutomationLevel = "auto" | "approve_first" | "draft_only";
 
 export type ChannelStatus = "pending_setup" | "active" | "paused";
 
-export type ActivityKind = "post" | "reply" | "quote" | "article" | "crosspost";
+export type ActivityKind = "post" | "reply" | "quote" | "article" | "crosspost" | "video";
 
 export type ActivityStatus =
   | "draft"
@@ -182,6 +189,7 @@ export const CHANNEL_PLATFORMS: ChannelPlatform[] = [
   "reddit",
   "hackernews",
   "hackernoon",
+  "youtube",
 ];
 const AUTOMATION_LEVELS: AutomationLevel[] = [
   "auto",
@@ -195,6 +203,7 @@ const ACTIVITY_KINDS: ActivityKind[] = [
   "quote",
   "article",
   "crosspost",
+  "video",
 ];
 const ACTIVITY_STATUSES: ActivityStatus[] = [
   "draft",

@@ -1,0 +1,5 @@
+faster-whisper
+pillow
+playwright
+supabase
+httpx

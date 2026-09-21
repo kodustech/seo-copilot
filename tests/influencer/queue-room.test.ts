@@ -7,7 +7,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { pickChannel } from "../../lib/influencer/agent";
-import { isActionable, splitPlatformsByQueueRoom } from "../../lib/influencer/tick";
+import { isActionable, splitPlatformsByQueueRoom, testShiftChannels } from "../../lib/influencer/tick";
 import type { PersonaChannel } from "../../lib/influencer/types";
 
 function makeChannel(overrides: Partial<PersonaChannel> = {}): PersonaChannel {
@@ -183,5 +183,19 @@ describe("isActionable, for a blog channel", () => {
 
   it("is not actionable with no key at all", () => {
     expect(isActionable(blogChannel(null))).toBe(false);
+  });
+});
+
+describe("testShiftChannels", () => {
+  const youtube = makeChannel({ id: "y1", platform: "youtube", publish_via: "api", status: "pending_setup" });
+  it("lets a video test run before the YouTube account is linked", () => {
+    expect(testShiftChannels([x, blog, youtube], "youtube").map((c) => c.id)).toEqual(["y1"]);
+  });
+  it("never tests on a paused channel, or on one outside the test set", () => {
+    expect(testShiftChannels([{ ...youtube, status: "paused" }], "youtube")).toEqual([]);
+    expect(testShiftChannels([x])).toEqual([]);
+  });
+  it("keeps articles to active blog and dev.to channels", () => {
+    expect(testShiftChannels([{ ...blog, status: "pending_setup" }, devto]).map((c) => c.id)).toEqual(["d1"]);
   });
 });

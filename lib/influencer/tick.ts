@@ -30,6 +30,14 @@ import { buildGoalsBrief, computeProgress, silentChannels, startOfIsoWeek } from
 import { recentMemoryTitles } from "@/lib/influencer/memory";
 import { formatVisibilityBrief } from "@/lib/influencer/visibility-brief";
 import { getModelForPersona } from "@/lib/influencer/model";
+import { videoUsageThisWeek } from "@/lib/influencer/video-pipeline";
+import {
+  buildYoutubeBrief,
+  estimateVideoCost,
+  weeklyLimitReason,
+  youtubeChannelConfig,
+  youtubeChannelReady,
+} from "@/lib/influencer/youtube";
 import {
   listActivePersonas,
   listChannelsForPersona,
@@ -43,7 +51,22 @@ const MIN_WAIT_MIN = 15;
 const MAX_WAIT_MIN = 8 * 60;
 const NO_CHANNEL_WAIT_MIN = 6 * 60;
 const FAILURE_WAIT_MIN = 60;
-const TEST_PLATFORMS = new Set(["blog", "devto"]);
+const TEST_PLATFORMS = new Set(["blog", "devto", "youtube"]);
+
+/**
+ * The channels a review-only test shift may write for. A test draft never
+ * publishes, so YouTube needs no linked account yet: testing the persona's
+ * video before paying for the channel setup is the point. `platform` narrows
+ * the shift to one channel, or the persona writes where it always writes.
+ */
+export function testShiftChannels(channels: PersonaChannel[], platform?: string): PersonaChannel[] {
+  return channels.filter(
+    (c) =>
+      TEST_PLATFORMS.has(c.platform) &&
+      (c.platform === "youtube" ? c.status !== "paused" : c.status === "active") &&
+      (!platform || c.platform === platform),
+  );
+}
 // The unpublished buffer is held PER CHANNEL: a channel has room while it holds
 // less than one day of its own cap. A single global ceiling looks tidier but
 // starves the slow channels — X fills 8 a day, so a week of queued tweets froze
@@ -128,6 +151,12 @@ export function isActionable(channel: PersonaChannel): boolean {
     const envName = contentEnvNameFor(channel);
     return Boolean(envName && process.env[envName]?.trim());
   }
+  // YouTube renders paid avatar clips: without a linked OAuth token AND a
+  // chosen avatar + voice, the persona would write scripts nobody can film.
+  if (channel.platform === "youtube") {
+    if (typeof channel.credentials_ref !== "string" || !channel.credentials_ref.length) return false;
+    return youtubeChannelReady(youtubeChannelConfig(channel)) === null;
+  }
   if (channel.publish_via === "post_bridge") {
     return Number(channel.channel_config.post_bridge_account_id) > 0;
   }
@@ -183,6 +212,7 @@ function buildShiftGoal(
   failureCount: number,
   recentPosts: string[],
   testRun = false,
+  youtubeBrief = "",
 ): string {
   // Never inline the raw external API error into the prompt (injection). Just
   // signal that failures exist; the persona pulls the details through the
@@ -204,8 +234,10 @@ function buildShiftGoal(
         .map((t) => `"${t}"`)
         .join(", ")}. The exception is a deliberate CROSSPOST: an article of yours that already went live on one of our own sites can run again on another channel, as long as you pass canonical_url with that exact URL so the original keeps the credit.`
     : "";
+  // A test of the video channel alone asks for a video, not an article.
+  const testPiece = open.length === 1 && open[0] === "youtube" ? "video" : "long-form article";
   const postBeat = testRun
-    ? `4) WRITE and save ONE complete long-form article with queue_draft, for one of: ${open.join(", ")}. This is a review-only TEST draft: finish the same article you would create in a real automatic shift.`
+    ? `4) WRITE and save ONE complete ${testPiece} with queue_draft, for one of: ${open.join(", ")}. This is a review-only TEST draft: finish the same ${testPiece} you would create in a real automatic shift.`
     : postingAllowed
       ? `4) WRITE and queue ONE self-contained piece with queue_draft, for one of: ${open.join(", ")}. For X, a single standalone tweet that stands on its own — never a thread. A shift with no draft is wasted unless nothing is genuinely worth posting.`
     : "4) Every one of your channels is backed up right now — do NOT queue a new post. Instead go deeper: read more, save what you learn to memory, and engage (read your inbox / reply if you have email).";
@@ -222,12 +254,11 @@ function buildShiftGoal(
     : "";
   // Hand-posted channels: the persona writes, a person posts from a real
   // account and marks it published. Ready to paste is the whole job.
-  const manualLine = manualOpen.length
-    ? `HAND-POSTED CHANNELS (${manualOpen.join(", ")}): you write, a person posts it from their own account and marks it published with the link. Write it ready to paste. For reddit: a reply or comment that adds something concrete to a specific live thread — pass target_url = that thread's URL and name the subreddit in the title — never a link drop or a standalone promo post. For hackernoon: a complete article in markdown with a title, which a person submits to their editors. The person posting handles whatever disclosure the platform asks for.`
+  const manualLine = manualOpen.length    ? `HAND-POSTED CHANNELS (${manualOpen.join(", ")}): you write, a person posts it from their own account and marks it published with the link. Write it ready to paste. For reddit: a reply or comment that adds something concrete to a specific live thread — pass target_url = that thread's URL and name the subreddit in the title — never a link drop or a standalone promo post. For hackernoon: a complete article in markdown with a title, which a person submits to their editors. The person posting handles whatever disclosure the platform asks for.`
     : "";
   return [
     testRun
-      ? `This is a TEST shift as ${persona.display_name} (@${persona.handle}). Choose the topic exactly as you would in an automatic shift, then produce one complete review-only long-form article.`
+      ? `This is a TEST shift as ${persona.display_name} (@${persona.handle}). Choose the topic exactly as you would in an automatic shift, then produce one complete review-only ${testPiece}.`
       : `This is your shift as ${persona.display_name} (@${persona.handle}). You are a relentless operator: your job is to HIT YOUR GOALS, and you do whatever it takes and never stop working to get there.`,
     `Your beat: ${persona.beat}.`,
     postingAllowed
@@ -236,6 +267,7 @@ function buildShiftGoal(
     backedUpLine,
     mediumLine,
     manualLine,
+    youtubeBrief,
     failureLine,
     feedbackLine,
     goalsBrief,
@@ -318,7 +350,7 @@ async function recentPostTitles(
     // Only real posts/articles that went out or are lined up — not failed
     // attempts or non-content rows, so the "don't repeat" list stays honest.
     .in("status", ["published", "scheduled", "approved"])
-    .in("kind", ["post", "article"])
+    .in("kind", ["post", "article", "video"])
     .order("created_at", { ascending: false })
     .limit(limit);
   if (error) return [];
@@ -352,19 +384,17 @@ export async function runPersonaTick({
   persona,
   now,
   testRun = false,
+  testPlatform,
 }: {
   client: SupabaseClient;
   persona: Persona;
   now: Date;
   testRun?: boolean;
+  /** Test shifts only: write for this platform. */
+  testPlatform?: string;
 }): Promise<TickResult> {
   const channels = await listChannelsForPersona(client, persona.id);
-  const actionable = testRun
-    ? channels.filter(
-        (channel) =>
-          channel.status === "active" && TEST_PLATFORMS.has(channel.platform),
-      )
-    : channels.filter(isActionable);
+  const actionable = testRun ? testShiftChannels(channels, testPlatform) : channels.filter(isActionable);
   const allowed = Array.from(new Set(actionable.map((c) => c.platform)));
 
   const base: TickResult = {
@@ -379,7 +409,9 @@ export async function runPersonaTick({
   // Nothing it can publish on its own — wait and ask for a connected channel.
   if (allowed.length === 0) {
     const note = testRun
-      ? "Run test needs an active blog or dev.to channel."
+      ? testPlatform === "youtube"
+        ? "A video test needs a YouTube channel on this persona."
+        : "Run test needs an active blog or dev.to channel."
       : "No connected channel I can publish to on my own — waiting for one to be linked.";
     if (testRun) return { ...base, note, error: note };
     const next = new Date(now.getTime() + NO_CHANNEL_WAIT_MIN * 60_000);
@@ -401,6 +433,24 @@ export async function runPersonaTick({
     actionable,
     pendingByChannel,
   );
+  // YouTube out of weekly budget closes like a full queue: a script queued now
+  // could not render before next week. Open, the brief carries the channel's
+  // own length, slide mode, direction and what is left to spend.
+  let youtubeBrief = "";
+  const openIds = new Set(openChannelIds);
+  const youtubeChannel = actionable.find((c) => c.platform === "youtube" && openIds.has(c.id));
+  if (youtubeChannel) {
+    const cfg = youtubeChannelConfig(youtubeChannel);
+    const usage = testRun ? null : await videoUsageThisWeek(client, youtubeChannel.id, now).catch(() => null);
+    const limit = usage ? weeklyLimitReason(usage, estimateVideoCost(cfg.targetMinutes * 60), cfg, true) : null;
+    if (limit) {
+      open.splice(open.indexOf("youtube"), 1);
+      openChannelIds.splice(openChannelIds.indexOf(youtubeChannel.id), 1);
+      youtubeBrief = `YOUTUBE is closed until next week. ${limit} Do not write a video script this shift.`;
+    } else {
+      youtubeBrief = buildYoutubeBrief(cfg, usage);
+    }
+  }
   const postingAllowed = open.length > 0;
   const manualPlatforms = new Set<string>(
     actionable.filter((c) => c.publish_via === "manual").map((c) => c.platform),
@@ -456,6 +506,7 @@ export async function runPersonaTick({
       failures.length,
       recentPosts,
       testRun,
+      youtubeBrief,
     ),
     trigger: testRun ? "manual" : "scheduled",
     // Only the channels with room: a draft for a backed-up channel would just be

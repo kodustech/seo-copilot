@@ -43,6 +43,17 @@ import {
   type PersonaChannel,
 } from "@/lib/influencer/types";
 import { buildPersonaVoicePolicy } from "@/lib/influencer/voice";
+import {
+  parseVideoBlocks,
+  parseVideoVisuals,
+  VIDEO_SLIDE_INPUT_SCHEMA,
+  validateVideoLength,
+  validateVideoScript,
+  youtubeChannelConfig,
+  YOUTUBE_MAX_BLOCKS,
+  YOUTUBE_MIN_BLOCKS,
+  type VideoVisual,
+} from "@/lib/influencer/youtube";
 import { formatContentQualityIssues, validateLongFormContent } from "@/lib/influencer/content-quality";
 
 const MAX_STEPS = 16;
@@ -768,12 +779,12 @@ export async function runInfluencerAgentSession({
           : "."),
       inputSchema: z.object({
         kind: z
-          .enum(["post", "reply", "quote", "article", "crosspost"])
+          .enum(["post", "reply", "quote", "article", "crosspost", "video"])
           .describe("The kind of content"),
         platform: z
-          .enum(["x", "devto", "blog", "medium", "reddit", "hackernews", "hackernoon"])
+          .enum(["x", "devto", "blog", "medium", "reddit", "hackernews", "hackernoon", "youtube"])
           .describe(
-            "Which channel this is for. 'medium' is import-only: kind 'crosspost' + canonical_url of your own live article. 'reddit' and 'hackernoon' are posted by a person from the draft you queue.",
+            "Which channel this is for. 'medium' is import-only: kind 'crosspost' + canonical_url of your own live article. 'reddit' and 'hackernoon' are posted by a person from the draft you queue. 'youtube' takes kind 'video' only: spoken blocks plus one visual per block, never an article. The system films the avatar, composites the video and uploads it.",
           ),
         title: z.string().nullable().optional().describe("Title (for articles)"),
         content: z.string().describe("The full content, in the persona's voice"),
@@ -801,6 +812,18 @@ export async function runInfluencerAgentSession({
           .array(z.object({ q: z.string(), a: z.string() }))
           .optional()
           .describe("Optional FAQ entries for a blog post"),
+        blocks: z
+          .array(z.string())
+          .optional()
+          .describe(
+            `YouTube only (kind 'video'): what you say out loud, ${YOUTUBE_MIN_BLOCKS}-${YOUTUBE_MAX_BLOCKS} blocks adding up to the channel's target length (your brief gives it). Plain spoken English: no markdown, no URLs. The avatar speaks these verbatim.`,
+          ),
+        slides: z
+          .array(VIDEO_SLIDE_INPUT_SCHEMA)
+          .optional()
+          .describe(
+            "YouTube only: one entry per block, same order. null films you on camera, full frame. An object puts a slide on screen with you in a corner bubble: {layout, ...fields} on a layouts channel, {html} on a channel that designs its own slides. Your brief says which, and lists the fields.",
+          ),
         replaces_slug: z
           .string()
           .nullable()
@@ -844,7 +867,7 @@ export async function runInfluencerAgentSession({
             "Optionally attach an image to a social post. 'screenshot' captures a REAL page (a benchmark chart, a tool's UI, a tweet, a GitHub diff) — real evidence, on-brand. 'image_url' attaches a public image URL (e.g. an article's own image). Use it when a visual genuinely strengthens the post.",
           ),
       }),
-      execute: async ({ kind, platform, title, content, description, category, blog_platform, tags, faq, image, reply_to, canonical_url, replaces_slug, target_url }) => {
+      execute: async ({ kind, platform, title, content, description, category, blog_platform, tags, faq, blocks, slides, image, reply_to, canonical_url, replaces_slug, target_url }) => {
         await step({ kind: "tool_call", tool: "queue_draft", payload: { kind, platform } });
         // Hard backpressure, enforced live against the running draft counter (not
         // a stale snapshot): 0 = queue is full, don't post; 1 = one post/shift.
@@ -962,6 +985,40 @@ export async function runInfluencerAgentSession({
           await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "medium_not_crosspost" } });
           return "Medium is import-only: queue kind 'crosspost' with canonical_url = the exact URL of an article you already published on one of our sites (copy it from your recent posts). Medium imports that page; nothing is typed into Medium.";
         }
+        // YouTube films a script, never an article: kind and platform are
+        // paired, and the blocks are validated now — a bad script caught by
+        // the publisher hours later is just a dead row that already spent review.
+        if (normalizedPlatform === "youtube" && normalizedKind !== "video") {
+          await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "youtube_not_video" } });
+          return "YouTube takes kind 'video' only: spoken script blocks, not an article. Split the idea into 3-8 blocks and queue again.";
+        }
+        if (normalizedKind === "video" && normalizedPlatform !== "youtube") {
+          await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "video_not_youtube" } });
+          return "Kind 'video' only exists for platform 'youtube'. Queue this idea for youtube, or rewrite it as the channel's own kind.";
+        }
+        // Checked against the channel it lands on: its target length and
+        // whether it uses layouts or lets the persona design its slides.
+        let videoScript: { blocks: string[]; visuals: VideoVisual[] } | null = null;
+        if (normalizedKind === "video") {
+          const scriptIssues = validateVideoScript(blocks);
+          if (scriptIssues.length) {
+            await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "video_script", issues: scriptIssues } });
+            return `This video script is not ready:\n${scriptIssues.join("\n")}\nRewrite the blocks as spoken sentences and queue again.`;
+          }
+          const ytCfg = youtubeChannelConfig(channel);
+          const spoken = parseVideoBlocks(blocks)!;
+          const lengthIssues = validateVideoLength(spoken, ytCfg.targetMinutes);
+          if (lengthIssues.length) {
+            await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "video_length", issues: lengthIssues } });
+            return `This video is the wrong length:\n${lengthIssues.join("\n")}\nRework the blocks and queue again.`;
+          }
+          const { visuals, issues: visualIssues } = parseVideoVisuals(slides, spoken.length, ytCfg.slideMode);
+          if (visualIssues.length) {
+            await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "video_slides", issues: visualIssues } });
+            return `These visuals are not ready:\n${visualIssues.join("\n")}\nOne entry per block (null for on camera) and queue again.`;
+          }
+          videoScript = { blocks: spoken, visuals };
+        }
         const target = typeof target_url === "string" ? target_url.trim() : "";
         if (target && !/^https?:\/\/\S+$/i.test(target)) {
           await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "target_not_url" } });
@@ -1028,7 +1085,9 @@ export async function runInfluencerAgentSession({
               kind: normalizedKind,
               status: autoPublish ? "approved" : "draft",
               title: title ?? null,
-              content,
+              // A video's text is its script, so the review edit edits what gets
+              // said. A free-form content here would read as an edit at render.
+              content: videoScript ? videoScript.blocks.join("\n\n") : content,
               content_meta: {
                 session_id: session.id,
                 ...(testRun ? { test_run: true } : {}),
@@ -1040,6 +1099,7 @@ export async function runInfluencerAgentSession({
                 ...(platformAxis && blogPlatform ? { blog_platform: blogPlatform } : {}),
                 ...(tags?.length ? { tags } : {}),
                 ...(faq?.length ? { faq } : {}),
+                ...(videoScript ? { blocks: videoScript.blocks, visuals: videoScript.visuals } : {}),
                 ...(image?.url ? { image } : {}),
                 ...(reply_to ? { reply_to } : {}),
                 ...(canonical ? { canonical_url: canonical } : {}),

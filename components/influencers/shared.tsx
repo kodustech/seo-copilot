@@ -19,7 +19,8 @@ export type Platform =
   | "medium"
   | "reddit"
   | "hackernews"
-  | "hackernoon";
+  | "hackernoon"
+  | "youtube";
 
 export type Channel = {
   id: string;
@@ -113,6 +114,7 @@ export const PLATFORM_LABEL: Record<Platform, string> = {
   reddit: "Reddit",
   hackernews: "Hacker News",
   hackernoon: "Hacker Noon",
+  youtube: "YouTube",
 };
 
 export function platformLabel(platform: string): string {

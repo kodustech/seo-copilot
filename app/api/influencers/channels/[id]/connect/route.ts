@@ -6,6 +6,7 @@ import {
   deleteChannelCredential,
   setChannelCredential,
 } from "@/lib/influencer/credentials";
+import { youtubeChannelNeeds } from "@/lib/influencer/youtube-oauth";
 import { deleteContext, releaseSession, startLoginSession } from "@/lib/influencer/browser";
 import {
   MEDIUM_CONTEXT_KEY,
@@ -247,6 +248,62 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       return NextResponse.json({ connected: true, platform: "blog", channel: updated });
     }
 
+    if (channel.platform === "youtube") {
+      // Two credentials, two jobs: the OAuth refresh token uploads to YouTube
+      // (normally linked by "Connect with Google"; pasting one is the manual
+      // fallback), the HeyGen key renders the avatar. Either may come first;
+      // the channel activates once both are linked and avatar + voice are set.
+      const refreshToken = typeof body.youtube_refresh_token === "string" ? body.youtube_refresh_token.trim() : "";
+      const heygenKey = typeof body.heygen_api_key === "string" ? body.heygen_api_key.trim() : "";
+      if (heygenKey) {
+        // Read-only probe: a bad key fails here, not at 2am in the publisher.
+        const probe = await fetch("https://api.heygen.com/v3/avatars/looks?limit=1", {
+          headers: { "X-Api-Key": heygenKey },
+        });
+        if (!probe.ok) {
+          return NextResponse.json({ error: "HeyGen rejected this API key." }, { status: 400 });
+        }
+        await setChannelCredential(client, {
+          persona_id: channel.persona_id,
+          platform: "heygen",
+          key: heygenKey,
+          label: "heygen",
+          created_by: userEmail,
+        });
+      }
+      if (refreshToken) {
+        await setChannelCredential(client, {
+          persona_id: channel.persona_id,
+          platform: "youtube",
+          key: refreshToken,
+          label: typeof body.youtube_channel === "string" ? body.youtube_channel : "youtube",
+          created_by: userEmail,
+        });
+      }
+      // Only this channel's own settings: a youtube_* key, or nothing.
+      const incoming =
+        body.channel_config && typeof body.channel_config === "object" && !Array.isArray(body.channel_config)
+          ? Object.fromEntries(
+              Object.entries(body.channel_config as Record<string, unknown>).filter(([k]) => k.startsWith("youtube_")),
+            )
+          : {};
+      const channelConfig = { ...channel.channel_config, ...incoming };
+      const oauthLinked = Boolean(refreshToken || channel.credentials_ref?.length);
+      const needs = await youtubeChannelNeeds(client, { ...channel, channel_config: channelConfig }, oauthLinked);
+      const ready = !needs.oauth && !needs.heygen && !needs.avatar && !needs.voice;
+      const updated = await updateChannel(client, id, {
+        ...(Object.keys(incoming).length ? { channel_config: channelConfig } : {}),
+        ...(refreshToken ? { credentials_ref: "vault:youtube" } : {}),
+        status: ready ? "active" : channel.status,
+      });
+      return NextResponse.json({
+        connected: !needs.oauth && !needs.heygen,
+        platform: "youtube",
+        needs,
+        channel: updated,
+      });
+    }
+
     if (channel.platform === "medium") {
       // Step 1: open a browser a person can sign in with. The context it lands
       // in is remembered on the channel so step 2 can only confirm THAT one.
@@ -395,6 +452,15 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
       // Nothing is left exposed by keeping it: credentials_ref goes null here,
       // and resolveBlogApiKey only reads the vault when it says vault:blog. A
       // reconnect rewrites the marker either way.
+      await updateChannel(client, id, {
+        status: "pending_setup",
+        credentials_ref: null,
+      });
+    } else if (channel.platform === "youtube") {
+      // Forgetting the OAuth token parks the channel; the HeyGen key belongs
+      // to the persona (shared renderer), so disconnecting one channel must
+      // not revoke renders for its siblings.
+      await deleteChannelCredential(client, channel.persona_id, "youtube");
       await updateChannel(client, id, {
         status: "pending_setup",
         credentials_ref: null,
