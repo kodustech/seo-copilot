@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, Plus } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   AUTOMATION_HINT,
   AUTOMATION_LABEL,
+  PLATFORM_LABEL,
   SectionLabel,
   Status,
   authHeaders,
@@ -28,7 +29,17 @@ import {
  * a chevron. Six channels used to be six tall cards; the page scrolled before
  * it said anything.
  */
-export function ChannelsTab({ token, channels, onChanged }: { token: string; channels: Channel[]; onChanged: () => void }) {
+export function ChannelsTab({
+  token,
+  personaId,
+  channels,
+  onChanged,
+}: {
+  token: string;
+  personaId: string;
+  channels: Channel[];
+  onChanged: () => void;
+}) {
   const [openId, setOpenId] = useState<string | null>(() => channels.find((c) => c.status === "pending_setup")?.id ?? null);
 
   return (
@@ -48,8 +59,72 @@ export function ChannelsTab({ token, channels, onChanged }: { token: string; cha
           />
         ))}
         {channels.length === 0 ? <p className="px-4 py-6 text-sm text-neutral-500">No channels on this persona.</p> : null}
+        <AddChannel token={token} personaId={personaId} channels={channels} onAdded={onChanged} />
       </div>
     </section>
+  );
+}
+
+/** The platforms this persona has no channel on yet, one click to add. */
+function AddChannel({
+  token,
+  personaId,
+  channels,
+  onAdded,
+}: {
+  token: string;
+  personaId: string;
+  channels: Channel[];
+  onAdded: () => void;
+}) {
+  const missing = (Object.keys(PLATFORM_LABEL) as (keyof typeof PLATFORM_LABEL)[]).filter(
+    (p) => !channels.some((c) => c.platform === p),
+  );
+  const [platform, setPlatform] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!missing.length) return null;
+  const picked = missing.includes(platform as (typeof missing)[number]) ? platform : missing[0];
+
+  async function add() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/influencers/${personaId}/channels`, {
+        method: "POST",
+        headers: authHeaders(token),
+        body: JSON.stringify({ platform: picked }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Could not add the channel");
+      onAdded();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not add the channel");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 px-4 py-3">
+      <Select value={picked} onValueChange={setPlatform}>
+        <SelectTrigger className={cn(cls.select, "w-48")}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent className={cls.menu}>
+          {missing.map((p) => (
+            <SelectItem key={p} value={p}>
+              {PLATFORM_LABEL[p]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <button type="button" disabled={busy} onClick={add} className={cls.outline}>
+        {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
+        Add channel
+      </button>
+      {error ? <p className={cls.errorText}>{error}</p> : null}
+    </div>
   );
 }
 

@@ -191,7 +191,7 @@ export function PersonaDetail({
             <RunsTab token={token} persona={persona} onChanged={onChanged} />
           </TabsContent>
           <TabsContent value="channels">
-            <ChannelsTab token={token} channels={persona.channels} onChanged={onChanged} />
+            <ChannelsTab token={token} personaId={persona.id} channels={persona.channels} onChanged={onChanged} />
           </TabsContent>
           <TabsContent value="model">
             <ModelTab token={token} persona={persona} />
