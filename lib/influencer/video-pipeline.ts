@@ -42,18 +42,25 @@ export function weekStartUtcIso(now: Date): string {
   return monday.toISOString();
 }
 
-/** Credits already burned by this persona's videos since Monday 00:00 UTC. */
+/**
+ * Credits already burned by this persona's videos since Monday 00:00 UTC.
+ * `excludeActivityId` leaves one row out: a resumed render prices its own
+ * full plan, so its persisted render_cost must not be counted a second time.
+ */
 export async function sumVideoSpendThisWeek(
   client: SupabaseClient,
   personaId: string,
   now: Date,
+  excludeActivityId?: string,
 ): Promise<number> {
-  const { data, error } = await client
+  let query = client
     .from("persona_activities")
     .select("content_meta")
     .eq("persona_id", personaId)
     .eq("kind", "video")
     .gte("created_at", weekStartUtcIso(now));
+  if (excludeActivityId) query = query.neq("id", excludeActivityId);
+  const { data, error } = await query;
   if (error) throw new Error(error.message);
   let sum = 0;
   for (const row of data ?? []) {
@@ -146,9 +153,19 @@ export async function renderVideoClips(
   now: Date,
 ): Promise<{ videoUrls: string[]; renderCost: number }> {
   const plan = planVideoRender(activity, channel);
-  const spent = await sumVideoSpendThisWeek(client, activity.persona_id, now);
+  // The full-plan estimate already covers this row's earlier runs, so sum
+  // every other video only — counting this row too would refuse a resume
+  // that fits.
+  const spent = await sumVideoSpendThisWeek(client, activity.persona_id, now, activity.id);
   if (!withinWeeklyCap(spent, plan.estimatedCost)) {
-    throw new Error(
+    // Park until the week rolls over, releasing the cron's claim: failing
+    // would strand clips already paid for on a resumed render.
+    const nextWeek = new Date(Date.parse(weekStartUtcIso(now)) + 7 * 24 * 60 * 60 * 1000);
+    await updateActivity(client, activity.id, {
+      status: "scheduled",
+      scheduled_at: nextWeek.toISOString(),
+    });
+    throw new YoutubeDeferred(
       `Weekly video cap reached (${spent}/${YOUTUBE_WEEKLY_CAP_CREDITS} credits). This render (~${plan.estimatedCost}) waits for next week.`,
     );
   }
