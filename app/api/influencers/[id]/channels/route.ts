@@ -52,7 +52,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       return NextResponse.json({ error: message }, { status: 401 });
     }
     // The database's own wording (table, constraint names) stays in the log.
-    console.error("[influencers] add channel failed:", error);
+    // Only the message: client errors carry request context, auth header included.
+    console.error("[influencers] add channel failed:", { message });
     return NextResponse.json({ error: "Could not add the channel." }, { status: 500 });
   }
 }
