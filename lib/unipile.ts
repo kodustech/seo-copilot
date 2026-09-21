@@ -1073,6 +1073,60 @@ export async function defaultLinkedInAccountId(): Promise<string | null> {
   return (await linkedInAccountIdentity()).accountId;
 }
 
+/** One 1st-degree connection of the connected account. */
+export type UnipileRelation = {
+  publicIdentifier: string | null;
+  /** LinkedIn member id as Unipile returns it on a relation. */
+  memberId: string | null;
+  profileUrl: string | null;
+  /** When the connection was made, in epoch ms; null when unreadable. */
+  createdAt: number | null;
+};
+
+/**
+ * One page of the account's relations (GET /api/v1/users/relations), newest
+ * connection first according to Unipile's guide on detecting accepted
+ * invitations. Callers must not rely on that order blindly: see
+ * lib/outreach/linkedin-relations.ts, which checks it before stopping early.
+ *
+ * Through the harvest gate: a relations read hits the connected account like
+ * any other read, and Unipile asks for it to be rare and irregular.
+ */
+export async function listLinkedInRelations(opts: {
+  accountId: string;
+  limit?: number;
+  cursor?: string | null;
+}): Promise<{ items: UnipileRelation[]; cursor: string | null }> {
+  const params = new URLSearchParams({
+    account_id: opts.accountId,
+    limit: String(Math.min(1000, Math.max(1, opts.limit ?? 100))),
+  });
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  const data = await harvestFetch<{
+    items?: Record<string, unknown>[];
+    cursor?: unknown;
+  }>(`/api/v1/users/relations?${params.toString()}`);
+  const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  const items = (data.items ?? []).map((r) => {
+    // The schema only says "number". Seconds and milliseconds are both in use
+    // across Unipile, so anything too small to be milliseconds is taken as
+    // seconds.
+    const raw = typeof r.created_at === "number" ? r.created_at : Number(r.created_at);
+    const createdAt =
+      Number.isFinite(raw) && raw > 0 ? (raw < 1e12 ? raw * 1000 : raw) : null;
+    return {
+      publicIdentifier: text(r.public_identifier),
+      memberId: text(r.member_id),
+      profileUrl: text(r.public_profile_url),
+      createdAt,
+    };
+  });
+  return {
+    items,
+    cursor: typeof data.cursor === "string" && data.cursor ? data.cursor : null,
+  };
+}
+
 /**
  * The account list, cached briefly.
  *

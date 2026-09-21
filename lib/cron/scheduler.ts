@@ -231,7 +231,7 @@ async function runOutreachSequencesCron(): Promise<void> {
     reseedOrphans: true,
   });
   console.log(
-    `[cron] outreach-sequences: promoted ${res.promoted}, emails sent ${res.emailsSent}, failed ${res.emailsFailed}, skipped ${res.emailsSkipped}, deferred off-day ${res.deferred}, reseeded ${res.reseeded ?? 0}`,
+    `[cron] outreach-sequences: promoted ${res.promoted}, emails sent ${res.emailsSent}, failed ${res.emailsFailed}, skipped ${res.emailsSkipped}, deferred off-day ${res.deferred}, reseeded ${res.reseeded ?? 0}, LinkedIn DMs waiting on invite ${res.linkedinWaiting}, cancelled after 14 days ${res.linkedinCancelled}`,
   );
 }
 
