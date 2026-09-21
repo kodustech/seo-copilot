@@ -1018,6 +1018,56 @@ export async function listUnipilePostComments(opts: {
   return out.slice(0, max);
 }
 
+/** A person's profile as the agent sees it (linkedinGetProfile). */
+export type LinkedInProfile = {
+  providerId: string | null;
+  publicIdentifier: string | null;
+  name: string | null;
+  headline: string | null;
+  location: string | null;
+  profileUrl: string | null;
+  isConnection: boolean | null;
+  networkDistance: string | null;
+  followerCount: number | null;
+  connectionsCount: number | null;
+};
+
+/**
+ * One profile read for the agent. A profile read is a profile view on the
+ * connected account, so it goes through the harvest gate: an agent looking up
+ * fifty people in a row gets paced and capped like a harvest, not waved
+ * through. Unlike getUnipileUserProfile this throws, so the caller can tell a
+ * missing profile from a spent budget.
+ */
+export async function getLinkedInProfile(opts: {
+  accountId: string;
+  identifier: string;
+}): Promise<LinkedInProfile> {
+  const params = new URLSearchParams({ account_id: opts.accountId });
+  const data = await harvestFetch<Record<string, unknown>>(
+    `/api/v1/users/${encodeURIComponent(opts.identifier)}?${params}`,
+  );
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : null);
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const publicIdentifier = str(data.public_identifier);
+  const name =
+    [str(data.first_name), str(data.last_name)].filter(Boolean).join(" ") || null;
+  return {
+    providerId: str(data.provider_id),
+    publicIdentifier,
+    name,
+    headline: str(data.headline),
+    location: str(data.location),
+    profileUrl: publicIdentifier
+      ? `https://www.linkedin.com/in/${publicIdentifier}`
+      : str(data.profile_url),
+    isConnection: typeof data.is_relationship === "boolean" ? data.is_relationship : null,
+    networkDistance: str(data.network_distance),
+    followerCount: num(data.follower_count),
+    connectionsCount: num(data.connections_count),
+  };
+}
+
 /** The LinkedIn account harvests run through, unless the caller names one. */
 export async function defaultLinkedInAccountId(): Promise<string | null> {
   return (await linkedInAccountIdentity()).accountId;
@@ -1374,6 +1424,29 @@ export type UnipileWebhookPayload = {
     attendee_profile_url?: string;
   }>;
 };
+
+/**
+ * What to hand Unipile for a profile read. Member ids are case-sensitive, so
+ * one found bare or in a /in/ URL keeps its case; normalizeLinkedInIdentity
+ * lowercases everything, which is right for matching and wrong for lookup.
+ */
+export function linkedInLookupIdentifier(
+  urlOrId: string | null | undefined,
+): string | null {
+  const raw = urlOrId?.trim();
+  if (!raw) return null;
+  const segment = raw.match(/\/(?:in|pub)\/([^/?#]+)/i)?.[1];
+  let candidate = raw;
+  if (segment) {
+    try {
+      candidate = decodeURIComponent(segment);
+    } catch {
+      candidate = segment;
+    }
+  }
+  if (isLinkedInProviderId(candidate)) return candidate;
+  return normalizeLinkedInIdentity(raw);
+}
 
 /** Normalize LinkedIn profile URL / public id for matching. */
 export function normalizeLinkedInIdentity(

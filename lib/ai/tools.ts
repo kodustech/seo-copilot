@@ -7955,6 +7955,87 @@ export const linkedinHarvestCommenters = tool({
   },
 });
 
+/**
+ * LinkedIn DMs and profiles for the agent, read-only. The inbox tools see
+ * every conversation on the connected account, not only sequence replies
+ * (outreachListReplyThreads). Replying stays with outreachSendLinkedInMessage,
+ * which takes the same chat_id and previews before sending.
+ */
+export const linkedinListChats = tool({
+  description:
+    "List recent LinkedIn DM conversations on the connected account, newest first: who (name, profile URL), last activity and unread count. Covers every conversation, not only sequence replies. Read one with linkedinGetChat; reply with outreachSendLinkedInMessage using the same chat_id. Each conversation costs one call on the LinkedIn account, so keep limit small.",
+  inputSchema: z.object({
+    limit: z.number().int().min(1).max(30).optional().describe("Conversations to return, defaults to 15."),
+    account_id: z.string().optional().describe("Unipile account id. Defaults to the connected LinkedIn account."),
+  }),
+  execute: async ({ limit, account_id }) => {
+    try {
+      const { isUnipileConfigured } = await import("@/lib/unipile");
+      if (!isUnipileConfigured()) {
+        return { success: false as const, message: "Unipile is not configured (UNIPILE_API_KEY / UNIPILE_DSN)" };
+      }
+      const { resolveLinkedInAccount, listLinkedInChats } = await import("@/lib/linkedin-inbox");
+      const accountId = await resolveLinkedInAccount(account_id);
+      const chats = await listLinkedInChats({ accountId, limit: limit ?? 15 });
+      return { success: true as const, account_id: accountId, chats };
+    } catch (error) {
+      return { success: false as const, message: error instanceof Error ? error.message : "Failed" };
+    }
+  },
+});
+
+export const linkedinGetChat = tool({
+  description:
+    "Read one LinkedIn DM conversation by chat_id (from linkedinListChats), oldest message first, with who it is with. Use before replying so the answer fits what was actually said.",
+  inputSchema: z.object({
+    chat_id: z.string().min(1).describe("Unipile chat id."),
+    limit: z.number().int().min(1).max(50).optional().describe("Most recent messages to return, defaults to 20."),
+    account_id: z.string().optional().describe("Unipile account id. Defaults to the connected LinkedIn account."),
+  }),
+  execute: async ({ chat_id, limit, account_id }) => {
+    try {
+      const { isUnipileConfigured } = await import("@/lib/unipile");
+      if (!isUnipileConfigured()) {
+        return { success: false as const, message: "Unipile is not configured (UNIPILE_API_KEY / UNIPILE_DSN)" };
+      }
+      const { resolveLinkedInAccount, getLinkedInChat } = await import("@/lib/linkedin-inbox");
+      const accountId = await resolveLinkedInAccount(account_id);
+      const chat = await getLinkedInChat({ accountId, chatId: chat_id.trim(), limit: limit ?? 20 });
+      return { success: true as const, account_id: accountId, chat_id: chat_id.trim(), ...chat };
+    } catch (error) {
+      return { success: false as const, message: error instanceof Error ? error.message : "Failed" };
+    }
+  },
+});
+
+export const linkedinGetProfile = tool({
+  description:
+    "Look up one person's LinkedIn profile (name, headline, location, whether they are a connection, network distance, followers) by profile URL, slug or member id. Each lookup is a profile view on the connected account and is paced and capped with the harvest budget, so look up the people you are about to act on, not whole lists.",
+  inputSchema: z.object({
+    linkedin: z.string().min(1).describe("Profile URL (https://www.linkedin.com/in/slug), slug, or member id (ACoAA…)."),
+    account_id: z.string().optional().describe("Unipile account id. Defaults to the connected LinkedIn account."),
+  }),
+  execute: async ({ linkedin, account_id }) => {
+    try {
+      const { isUnipileConfigured, linkedInLookupIdentifier, getLinkedInProfile } =
+        await import("@/lib/unipile");
+      if (!isUnipileConfigured()) {
+        return { success: false as const, message: "Unipile is not configured (UNIPILE_API_KEY / UNIPILE_DSN)" };
+      }
+      const identifier = linkedInLookupIdentifier(linkedin);
+      if (!identifier) {
+        return { success: false as const, message: `Unreadable LinkedIn identity: ${linkedin}` };
+      }
+      const { resolveLinkedInAccount } = await import("@/lib/linkedin-inbox");
+      const accountId = await resolveLinkedInAccount(account_id);
+      const profile = await getLinkedInProfile({ accountId, identifier });
+      return { success: true as const, account_id: accountId, profile };
+    } catch (error) {
+      return { success: false as const, message: error instanceof Error ? error.message : "Failed" };
+    }
+  },
+});
+
 export function createAgentTools(userEmail?: string) {
   return {
     generateIdeas,
@@ -8087,6 +8168,9 @@ export function createAgentTools(userEmail?: string) {
     linkedinFindPosts,
     linkedinListPostCommenters,
     linkedinHarvestCommenters,
+    linkedinListChats,
+    linkedinGetChat,
+    linkedinGetProfile,
   };
 }
 
