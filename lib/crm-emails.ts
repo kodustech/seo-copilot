@@ -70,16 +70,16 @@ export type CompanyEmailTimeline = {
 const MAX_PER_MAILBOX = 40;
 const BODY_TEXT_MAX = 40_000;
 
-// ── small Gmail helpers (local; mirror inbox.ts) ───────────────────
+// ── small Gmail helpers (mirror inbox.ts; also used by lib/outreach/gmail.ts) ──
 
-type GmailHeader = { name?: string; value?: string };
-type GmailPart = {
+export type GmailHeader = { name?: string; value?: string };
+export type GmailPart = {
   mimeType?: string;
   body?: { data?: string; size?: number };
   parts?: GmailPart[];
   headers?: GmailHeader[];
 };
-type GmailMessage = {
+export type GmailMessage = {
   id?: string;
   threadId?: string;
   snippet?: string;
@@ -87,7 +87,7 @@ type GmailMessage = {
   payload?: GmailPart & { headers?: GmailHeader[] };
 };
 
-function headerValue(
+export function headerValue(
   headers: GmailHeader[] | undefined,
   name: string,
 ): string | null {
@@ -122,7 +122,7 @@ function walkParts(
   for (const child of part.parts ?? []) walkParts(child, acc);
 }
 
-function extractTextBody(msg: GmailMessage): string | null {
+export function extractTextBody(msg: GmailMessage): string | null {
   const acc = { text: [] as string[], html: [] as string[] };
   walkParts(msg.payload, acc);
   if (!acc.text.length && !acc.html.length && msg.payload?.body?.data) {
@@ -146,7 +146,7 @@ function extractTextBody(msg: GmailMessage): string | null {
     .slice(0, BODY_TEXT_MAX);
 }
 
-function extractEmail(raw: string | null | undefined): string | null {
+export function extractEmail(raw: string | null | undefined): string | null {
   if (!raw?.trim()) return null;
   const angle = raw.match(/<([^>]+)>/);
   const candidate = (angle?.[1] || raw).trim().toLowerCase();
@@ -168,7 +168,7 @@ function preview(text: string | null | undefined, max = 220): string | null {
   return one.length > max ? `${one.slice(0, max)}…` : one;
 }
 
-async function gmailGetJson<T>(
+export async function gmailGetJson<T>(
   accessToken: string,
   path: string,
 ): Promise<T> {
