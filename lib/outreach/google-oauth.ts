@@ -8,6 +8,10 @@ export const GMAIL_SEND_SCOPE =
 export const GMAIL_READONLY_SCOPE =
   "https://www.googleapis.com/auth/gmail.readonly";
 
+/** Draft creation for the agent's gmailCreateDraft tool. Drafts are never sent by us. */
+export const GMAIL_COMPOSE_SCOPE =
+  "https://www.googleapis.com/auth/gmail.compose";
+
 /** Read-only calendar: the CRM meeting sync matches event attendees to accounts. */
 export const CALENDAR_READONLY_SCOPE =
   "https://www.googleapis.com/auth/calendar.readonly";
@@ -15,6 +19,7 @@ export const CALENDAR_READONLY_SCOPE =
 const GMAIL_SCOPES = [
   GMAIL_SEND_SCOPE,
   GMAIL_READONLY_SCOPE,
+  GMAIL_COMPOSE_SCOPE,
   CALENDAR_READONLY_SCOPE,
   "https://www.googleapis.com/auth/userinfo.email",
   "openid",
@@ -25,6 +30,18 @@ export function scopesIncludeCalendarReadonly(
 ): boolean {
   if (!scopes?.trim()) return false;
   return scopes.split(/\s+/).includes(CALENDAR_READONLY_SCOPE);
+}
+
+export function scopesIncludeGmailCompose(
+  scopes: string | null | undefined,
+): boolean {
+  if (!scopes?.trim()) return false;
+  const set = new Set(scopes.split(/\s+/).filter(Boolean));
+  return (
+    set.has(GMAIL_COMPOSE_SCOPE) ||
+    set.has("https://www.googleapis.com/auth/gmail.modify") ||
+    set.has("https://mail.google.com/")
+  );
 }
 
 export function scopesIncludeGmailReadonly(
@@ -280,6 +297,7 @@ function normalizeMsgId(id: string): string {
 export function buildRawGmailMessage(opts: {
   from: string;
   to: string;
+  cc?: string | null;
   subject: string;
   text: string;
   html?: string | null;
@@ -288,6 +306,9 @@ export function buildRawGmailMessage(opts: {
   const subjectEncoded = `=?UTF-8?B?${Buffer.from(opts.subject || "(no subject)", "utf8").toString("base64")}?=`;
   const boundary = `kodus_${Date.now().toString(36)}`;
   const threadHeaders: string[] = [];
+  if (opts.cc?.trim()) {
+    threadHeaders.push(`Cc: ${opts.cc.trim()}`);
+  }
   if (opts.thread?.messageId?.trim()) {
     threadHeaders.push(`Message-ID: ${normalizeMsgId(opts.thread.messageId)}`);
   }

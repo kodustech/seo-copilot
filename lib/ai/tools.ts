@@ -6158,6 +6158,109 @@ export const listGoogleCalendarEvents = tool({
 });
 
 /**
+ * Gmail for the agent: search, read a thread, write a draft. Same mailbox
+ * OAuth tokens as the outreach inbox. Drafts are never sent — the human opens
+ * them in Gmail and hits send.
+ */
+export const gmailSearch = tool({
+  description:
+    "Search a connected Gmail mailbox with Gmail search syntax (from:, to:, subject:, newer_than:7d, is:unread, in:inbox, …). Returns message summaries with thread_id; read the full conversation with gmailGetThread. Use for 'what came in today', 'find my thread with X', or before drafting a follow-up. For an account's whole correspondence across every mailbox use crmGetCompanyEmails instead.",
+  inputSchema: z.object({
+    query: z.string().min(1).describe("Gmail search query, e.g. 'from:juliano newer_than:30d' or 'is:unread in:inbox'."),
+    mailbox_id: z.string().optional().describe("Mailbox id from outreachListMailboxes. Defaults to the default mailbox."),
+    max_results: z.number().int().min(1).max(50).optional().describe("Max messages, defaults to 20."),
+  }),
+  execute: async ({ query, mailbox_id, max_results }) => {
+    try {
+      const { openGmailMailbox, searchGmailMessages } = await import("@/lib/outreach/gmail");
+      const access = await openGmailMailbox(getSupabaseServiceClient(), mailbox_id?.trim() || null, "read");
+      if (!access.ok) return { success: false as const, message: access.message };
+      const messages = await searchGmailMessages(access.accessToken, query.trim(), max_results ?? 20);
+      return { success: true as const, mailbox: access.mailbox, query: query.trim(), messages };
+    } catch (error) {
+      return { success: false as const, message: error instanceof Error ? error.message : "Failed" };
+    }
+  },
+});
+
+export const gmailGetThread = tool({
+  description:
+    "Read a full Gmail conversation (every message with sender, recipients, date and plain-text body) by thread_id from gmailSearch or crmGetCompanyEmails. Use before writing a reply so the draft answers what was actually said.",
+  inputSchema: z.object({
+    thread_id: z.string().min(1).describe("Gmail thread id."),
+    mailbox_id: z.string().optional().describe("Mailbox that holds the thread. Defaults to the default mailbox."),
+  }),
+  execute: async ({ thread_id, mailbox_id }) => {
+    try {
+      const { openGmailMailbox, getGmailThread } = await import("@/lib/outreach/gmail");
+      const access = await openGmailMailbox(getSupabaseServiceClient(), mailbox_id?.trim() || null, "read");
+      if (!access.ok) return { success: false as const, message: access.message };
+      const thread = await getGmailThread(access.accessToken, thread_id.trim());
+      return { success: true as const, mailbox: access.mailbox, ...thread };
+    } catch (error) {
+      return { success: false as const, message: error instanceof Error ? error.message : "Failed" };
+    }
+  },
+});
+
+export const gmailCreateDraft = tool({
+  description:
+    "Create a Gmail DRAFT in a connected mailbox. Never sends: the user opens it in Gmail, edits if needed and sends. Pass thread_id to draft a reply inside an existing conversation (subject and threading headers are filled from the thread). Write the body in the user's voice; tell the user the draft is waiting in Gmail.",
+  inputSchema: z.object({
+    to: z.string().min(1).describe("Recipient(s), comma-separated, e.g. 'Ana <ana@acme.com>, bob@acme.com'."),
+    body: z.string().min(1).describe("Plain-text email body."),
+    subject: z.string().optional().describe("Subject. Required for a new email; for a reply it defaults to 'Re: <thread subject>'."),
+    cc: z.string().optional().describe("Cc recipient(s), comma-separated."),
+    thread_id: z.string().optional().describe("Gmail thread id to reply in. Omit for a new email."),
+    mailbox_id: z.string().optional().describe("Mailbox to draft from. Defaults to the default mailbox."),
+  }),
+  execute: async ({ to, body, subject, cc, thread_id, mailbox_id }) => {
+    try {
+      const { openGmailMailbox, getGmailThread, replyHeadersFor, createGmailDraft } = await import("@/lib/outreach/gmail");
+      const threadId = thread_id?.trim() || null;
+      if (!threadId && !subject?.trim()) {
+        return { success: false as const, message: "subject is required for a new email (or pass thread_id to reply)" };
+      }
+      const access = await openGmailMailbox(getSupabaseServiceClient(), mailbox_id?.trim() || null, "compose");
+      if (!access.ok) return { success: false as const, message: access.message };
+
+      let headers = { subject: subject?.trim() ?? "", inReplyTo: null as string | null, references: null as string | null };
+      if (threadId) {
+        // Reading the thread needs gmail.readonly too; every mailbox granted
+        // compose through our OAuth flow has it.
+        const thread = await getGmailThread(access.accessToken, threadId);
+        headers = replyHeadersFor(thread, subject);
+      }
+
+      const draft = await createGmailDraft({
+        accessToken: access.accessToken,
+        from: access.fromHeader,
+        to: to.trim(),
+        cc: cc?.trim() || null,
+        subject: headers.subject,
+        text: body,
+        gmailThreadId: threadId,
+        inReplyTo: headers.inReplyTo,
+        references: headers.references,
+      });
+      return {
+        success: true as const,
+        mailbox: access.mailbox,
+        draft_id: draft.draftId,
+        thread_id: draft.threadId,
+        to: to.trim(),
+        cc: cc?.trim() || null,
+        subject: headers.subject,
+        open_in_gmail: "https://mail.google.com/mail/u/0/#drafts",
+        note: "Draft only — nothing was sent.",
+      };
+    } catch (error) {
+      return { success: false as const, message: error instanceof Error ? error.message : "Failed" };
+    }
+  },
+});
+
+/**
  * Both inbox tools take either a company id or a name/domain. Resolving here
  * keeps the caller from having to run listCrmCompanies first, but an ambiguous
  * name must NOT silently pick the first hit — the wrong account would return a
@@ -8066,6 +8169,9 @@ export function createAgentTools(userEmail?: string) {
     researchRestorePeople,
     outreachListMailboxes,
     listGoogleCalendarEvents,
+    gmailSearch,
+    gmailGetThread,
+    gmailCreateDraft,
     outreachListReplyThreads,
     sequenceList,
     sequenceGet,
