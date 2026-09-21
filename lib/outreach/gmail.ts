@@ -17,11 +17,14 @@ import {
 } from "@/lib/crm-emails";
 import {
   buildRawGmailMessage,
+  scopesIncludeCalendarReadonly,
   scopesIncludeGmailCompose,
 } from "@/lib/outreach/google-oauth";
 import {
   ensureFreshAccessToken,
   getMailboxWithSecrets,
+  listMailboxes,
+  type OutreachMailboxPublic,
 } from "@/lib/outreach/mailbox";
 
 /** Per-message body cap in thread output; quoted history makes bodies long. */
@@ -30,6 +33,47 @@ const THREAD_BODY_MAX = 12_000;
 const THREAD_MESSAGES_MAX = 15;
 
 type GmailMessageWithLabels = GmailMessage & { labelIds?: string[] };
+
+type GmailNeed = "read" | "compose" | "reply";
+
+/** What a mailbox's Google grant lets the agent do. Each owner grants their own. */
+export function mailboxCapabilities(box: OutreachMailboxPublic): {
+  read_email: boolean;
+  draft: boolean;
+  read_calendar: boolean;
+} {
+  const google =
+    box.connected && (box.authMethod === "oauth" || box.provider === "google_oauth");
+  return {
+    read_email: box.inboxSyncReady,
+    draft: google && scopesIncludeGmailCompose(box.oauthGrantedScopes),
+    read_calendar: google && scopesIncludeCalendarReadonly(box.oauthGrantedScopes),
+  };
+}
+
+function canDo(box: OutreachMailboxPublic, need: GmailNeed): boolean {
+  const can = mailboxCapabilities(box);
+  if (need === "read") return can.read_email;
+  if (need === "compose") return can.draft;
+  return can.read_email && can.draft;
+}
+
+/**
+ * Appended to a missing-scope error: the default mailbox failing says nothing
+ * about the others, and without this the agent reads "reconnect" as "I cannot".
+ */
+async function mailboxesThatCan(
+  client: SupabaseClient,
+  need: GmailNeed,
+  exceptId: string,
+): Promise<string> {
+  const boxes = (await listMailboxes(client)).filter(
+    (b) => b.enabled && b.id !== exceptId && canDo(b, need),
+  );
+  if (!boxes.length) return "";
+  const list = boxes.map((b) => `${b.fromEmail} (mailbox_id ${b.id})`).join(", ");
+  return ` Mailboxes that can: ${list}.`;
+}
 
 export type GmailAccess =
   | { ok: true; accessToken: string; mailbox: string; fromHeader: string }
@@ -46,7 +90,7 @@ export type GmailAccess =
 export async function openGmailMailbox(
   client: SupabaseClient,
   mailboxId: string | null,
-  need: "read" | "compose" | "reply",
+  need: GmailNeed,
 ): Promise<GmailAccess> {
   const box = await getMailboxWithSecrets(client, mailboxId);
   if (!box) return { ok: false, message: "No connected mailbox found" };
@@ -60,7 +104,7 @@ export async function openGmailMailbox(
   if ((need === "read" || need === "reply") && !box.inboxSyncReady) {
     return {
       ok: false,
-      message: `${label}: connected without gmail.readonly — reconnect the mailbox in Settings to read email`,
+      message: `${label}: connected without gmail.readonly — reconnect the mailbox in Settings to read email.${await mailboxesThatCan(client, need, box.id)}`,
     };
   }
   if (
@@ -69,7 +113,7 @@ export async function openGmailMailbox(
   ) {
     return {
       ok: false,
-      message: `${label}: connected without gmail.compose — reconnect the mailbox in Settings to create drafts`,
+      message: `${label}: connected without gmail.compose — reconnect the mailbox in Settings to create drafts.${await mailboxesThatCan(client, need, box.id)}`,
     };
   }
   const accessToken = await ensureFreshAccessToken(client, box);
@@ -135,6 +179,62 @@ export async function searchGmailMessages(
     }
   }
   return out;
+}
+
+export type GmailSearchHit = GmailMessageSummary & {
+  mailbox: string;
+  /** Thread ids belong to one mailbox: pass this on to read or reply. */
+  mailbox_id: string;
+};
+
+/**
+ * Search every enabled mailbox that has read access, newest first across all
+ * of them. Mailboxes without read access, or that fail, are reported instead
+ * of silently contributing nothing.
+ */
+export async function searchGmailMailboxes(
+  client: SupabaseClient,
+  query: string,
+  maxResults: number,
+): Promise<{ messages: GmailSearchHit[]; searched: string[]; skipped: string[] }> {
+  const boxes = (await listMailboxes(client)).filter((b) => b.enabled && b.connected);
+  // Mailboxes are independent (separate Gmail accounts and quotas), so they
+  // run at once; order of searched/skipped still follows the mailbox list.
+  const perBox = await Promise.all(
+    boxes.map(async (box): Promise<{ skip: string } | { hits: GmailSearchHit[] }> => {
+      if (!box.inboxSyncReady) {
+        return { skip: "no email read access — reconnect the mailbox in Settings to include it" };
+      }
+      try {
+        const secrets = await getMailboxWithSecrets(client, box.id);
+        if (!secrets) {
+          return { skip: "mailbox not found — its connection may have been removed" };
+        }
+        const accessToken = await ensureFreshAccessToken(client, secrets);
+        const found = await searchGmailMessages(accessToken, query, maxResults);
+        return {
+          hits: found.map((m) => ({ ...m, mailbox: box.fromEmail, mailbox_id: box.id })),
+        };
+      } catch (err) {
+        return { skip: err instanceof Error ? err.message : "search failed" };
+      }
+    }),
+  );
+
+  const messages: GmailSearchHit[] = [];
+  const searched: string[] = [];
+  const skipped: string[] = [];
+  perBox.forEach((result, i) => {
+    const email = boxes[i].fromEmail;
+    if ("skip" in result) {
+      skipped.push(`${email}: ${result.skip}`);
+    } else {
+      searched.push(email);
+      messages.push(...result.hits);
+    }
+  });
+  messages.sort((a, b) => (b.date ?? "").localeCompare(a.date ?? ""));
+  return { messages: messages.slice(0, maxResults), searched, skipped };
 }
 
 export type GmailThreadMessage = {
