@@ -32,7 +32,7 @@ import {
 import { alertOperator } from "@/lib/influencer/alerts";
 import { getChannelCredentialCipher } from "@/lib/influencer/credentials";
 import { listChannels, listPersonas } from "@/lib/influencer/personas";
-import { renderVideoClips, weekStartUtcIso, YoutubeDeferred } from "@/lib/influencer/video-pipeline";
+import { renderRequestedPreviews, renderVideoClips, weekStartUtcIso, YoutubeDeferred } from "@/lib/influencer/video-pipeline";
 import {
   buildVideoDescription,
   youtubeChannelConfig,
@@ -988,6 +988,8 @@ async function publishActivity(
 // ---------------------------------------------------------------------------
 
 export type PublishCronSummary = {
+  /** Video drafts rendering a preview this run (never published). */
+  previews: number;
   examined: number;
   published: number;
   deferred: number;
@@ -1002,6 +1004,7 @@ export async function runInfluencerPublishCron(
   const client = options.client ?? getSupabaseServiceClient();
   const now = options.now ?? new Date();
   const summary: PublishCronSummary = {
+    previews: 0,
     examined: 0,
     published: 0,
     deferred: 0,
@@ -1021,6 +1024,14 @@ export async function runInfluencerPublishCron(
     listPersonas(client),
     listChannels(client),
   ]);
+  // Previews first: they are drafts, so they never show up in the due list,
+  // and a run with nothing to publish must still move them along.
+  try {
+    summary.previews = await renderRequestedPreviews(client, now, new Map(channels.map((c) => [c.id, c])));
+  } catch (err) {
+    console.error("[influencer] preview renders failed:", err instanceof Error ? err.message : "unknown error");
+  }
+
   // Hand-posted channels never come through here: their approved drafts wait
   // for a person, and pulling them into a 50-row due list every run would
   // crowd out the ones the publisher can actually send.

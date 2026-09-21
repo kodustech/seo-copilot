@@ -44,6 +44,7 @@ STALE_CLAIM_MINUTES = 30
 MAX_ATTEMPTS = 3
 RETRY_MINUTES = 10
 PREVIEW_MAX_TRIES = 5
+CLAIMABLE_STATUSES = ["approved", "scheduled", "publishing", "draft"]
 
 
 def log(*parts: object) -> None:
@@ -225,9 +226,10 @@ def claim_job(client, table=None):
         .select("id,persona_id,channel_id,title,content_meta")
         .eq("kind", "video")
         # "publishing" rows carrying finished HeyGen clips are the publish
-        # cron's parked leftovers; the stage == "clips_ready" + no-final_url
+        # cron's parked leftovers; "draft" rows with clips are previews
+        # someone asked to watch. The stage == "clips_ready" + no-final_url
         # gate below keeps the worker away from anything still in flight.
-        .in_("status", ["approved", "scheduled", "publishing"])
+        .in_("status", CLAIMABLE_STATUSES)
         .execute()
     )
     now = datetime.now(timezone.utc)
@@ -282,11 +284,47 @@ def fail_job(client, job: dict, message: str) -> None:
     patch: dict = {"content_meta": meta}
     if attempts >= MAX_ATTEMPTS:
         meta["worker_failed_at"] = now.isoformat()
+        meta.pop("render_requested", None)  # no longer in flight; the queue offers the retry
         patch["status"] = "failed"
         patch["error"] = f"Video composite failed {attempts} times: {message}"[:500]
     else:
         meta["worker_retry_at"] = (now + timedelta(minutes=RETRY_MINUTES * attempts)).isoformat()
-    client.table("persona_activities").update(patch).eq("id", job["id"]).execute()
+    # Same guard as finish_job: a row discarded mid-composite keeps its status
+    # and only gets the error recorded.
+    moved = (
+        client.table("persona_activities")
+        .update(patch)
+        .eq("id", job["id"])
+        .in_("status", CLAIMABLE_STATUSES)
+        .execute()
+    )
+    if not moved.data:
+        client.table("persona_activities").update({"content_meta": meta}).eq("id", job["id"]).execute()
+
+
+def finish_job(client, aid, meta: dict) -> bool:
+    """Record the finished video and send it back to the review queue, where a
+    person watches it and approving it is what uploads it. Only while the row
+    is still where the worker found it: a reviewer may have discarded it during
+    the composite, and bringing it back would put a discarded video one click
+    from YouTube. Returns whether it went back to the queue."""
+    meta["stage"] = "ready"
+    meta.pop("worker_claim_at", None)
+    meta.pop("worker_error", None)
+    meta.pop("render_requested", None)
+    meta.pop("render_error", None)
+    moved = (
+        client.table("persona_activities")
+        .update({"content_meta": meta, "status": "draft"})
+        .eq("id", aid)
+        .in_("status", CLAIMABLE_STATUSES)
+        .execute()
+    )
+    if moved.data:
+        return True
+    # It moved on: keep the finished file on it, leave its status alone.
+    client.table("persona_activities").update({"content_meta": meta}).eq("id", aid).execute()
+    return False
 
 
 def run_job(client, model, job: dict, bucket: str, render_script: str, work_root: Path) -> None:
@@ -393,13 +431,7 @@ def run_job(client, model, job: dict, bucket: str, render_script: str, work_root
         public_url = client.storage.from_(bucket).get_public_url(storage_path)
 
         meta["final_url"] = public_url
-        meta["stage"] = "ready"
-        meta.pop("worker_claim_at", None)
-        meta.pop("worker_error", None)
-        client.table("persona_activities").update({
-            "content_meta": meta,
-            "status": "approved",
-        }).eq("id", aid).execute()
+        finish_job(client, aid, meta)
         log("job done", aid, public_url)
     except Exception as exc:
         log("job failed", aid, exc)
