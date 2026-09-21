@@ -6221,13 +6221,11 @@ export const gmailCreateDraft = tool({
       if (!threadId && !subject?.trim()) {
         return { success: false as const, message: "subject is required for a new email (or pass thread_id to reply)" };
       }
-      const access = await openGmailMailbox(getSupabaseServiceClient(), mailbox_id?.trim() || null, "compose");
+      const access = await openGmailMailbox(getSupabaseServiceClient(), mailbox_id?.trim() || null, threadId ? "reply" : "compose");
       if (!access.ok) return { success: false as const, message: access.message };
 
       let headers = { subject: subject?.trim() ?? "", inReplyTo: null as string | null, references: null as string | null };
       if (threadId) {
-        // Reading the thread needs gmail.readonly too; every mailbox granted
-        // compose through our OAuth flow has it.
         const thread = await getGmailThread(access.accessToken, threadId);
         headers = replyHeadersFor(thread, subject);
       }

@@ -287,8 +287,16 @@ export type GmailThreadHeaders = {
   references?: string | null;
 };
 
+/**
+ * CR/LF out of a header value. To and Cc can come from a model that just read
+ * an untrusted email; a line break there would add a hidden Bcc: header.
+ */
+function headerSafe(value: string): string {
+  return value.replace(/[\r\n]+/g, " ").trim();
+}
+
 function normalizeMsgId(id: string): string {
-  const t = id.trim();
+  const t = headerSafe(id);
   if (!t) return t;
   return t.startsWith("<") ? t : `<${t}>`;
 }
@@ -307,7 +315,7 @@ export function buildRawGmailMessage(opts: {
   const boundary = `kodus_${Date.now().toString(36)}`;
   const threadHeaders: string[] = [];
   if (opts.cc?.trim()) {
-    threadHeaders.push(`Cc: ${opts.cc.trim()}`);
+    threadHeaders.push(`Cc: ${headerSafe(opts.cc)}`);
   }
   if (opts.thread?.messageId?.trim()) {
     threadHeaders.push(`Message-ID: ${normalizeMsgId(opts.thread.messageId)}`);
@@ -327,8 +335,8 @@ export function buildRawGmailMessage(opts: {
   let raw: string;
   if (opts.html) {
     raw = [
-      `From: ${opts.from}`,
-      `To: ${opts.to}`,
+      `From: ${headerSafe(opts.from)}`,
+      `To: ${headerSafe(opts.to)}`,
       `Subject: ${subjectEncoded}`,
       ...threadHeaders,
       "MIME-Version: 1.0",
@@ -348,8 +356,8 @@ export function buildRawGmailMessage(opts: {
     ].join("\r\n");
   } else {
     raw = [
-      `From: ${opts.from}`,
-      `To: ${opts.to}`,
+      `From: ${headerSafe(opts.from)}`,
+      `To: ${headerSafe(opts.to)}`,
       `Subject: ${subjectEncoded}`,
       ...threadHeaders,
       "MIME-Version: 1.0",

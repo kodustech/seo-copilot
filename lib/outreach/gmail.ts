@@ -26,6 +26,8 @@ import {
 
 /** Per-message body cap in thread output; quoted history makes bodies long. */
 const THREAD_BODY_MAX = 12_000;
+/** Most recent messages kept from a thread, so a long one cannot flood the context. */
+const THREAD_MESSAGES_MAX = 15;
 
 type GmailMessageWithLabels = GmailMessage & { labelIds?: string[] };
 
@@ -37,11 +39,14 @@ export type GmailAccess =
  * Resolve a mailbox (default when no id) and a fresh access token, checking
  * the scope the caller needs. A missing scope comes back as a message telling
  * the user to reconnect, never as an empty result.
+ *
+ * "reply" needs both: the draft reads the thread before writing into it, and
+ * Google's per-permission consent can grant compose without readonly.
  */
 export async function openGmailMailbox(
   client: SupabaseClient,
   mailboxId: string | null,
-  need: "read" | "compose",
+  need: "read" | "compose" | "reply",
 ): Promise<GmailAccess> {
   const box = await getMailboxWithSecrets(client, mailboxId);
   if (!box) return { ok: false, message: "No connected mailbox found" };
@@ -52,13 +57,16 @@ export async function openGmailMailbox(
     };
   }
   const label = box.fromEmail;
-  if (need === "read" && !box.inboxSyncReady) {
+  if ((need === "read" || need === "reply") && !box.inboxSyncReady) {
     return {
       ok: false,
       message: `${label}: connected without gmail.readonly — reconnect the mailbox in Settings to read email`,
     };
   }
-  if (need === "compose" && !scopesIncludeGmailCompose(box.oauthGrantedScopes)) {
+  if (
+    (need === "compose" || need === "reply") &&
+    !scopesIncludeGmailCompose(box.oauthGrantedScopes)
+  ) {
     return {
       ok: false,
       message: `${label}: connected without gmail.compose — reconnect the mailbox in Settings to create drafts`,
@@ -101,16 +109,18 @@ export async function searchGmailMessages(
   const out: GmailMessageSummary[] = [];
   const concurrency = 5;
   for (let i = 0; i < ids.length; i += concurrency) {
+    // One message deleted between list and get (404) or a burst 429 skips
+    // that message, not the whole search — same as crm-emails.
     const batch = await Promise.all(
       ids.slice(i, i + concurrency).map((id) =>
         gmailGetJson<GmailMessageWithLabels>(
           accessToken,
           `users/me/messages/${encodeURIComponent(id)}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
-        ),
+        ).catch(() => null),
       ),
     );
     for (const msg of batch) {
-      if (!msg.id) continue;
+      if (!msg?.id) continue;
       const headers = msg.payload?.headers;
       out.push({
         id: msg.id,
@@ -144,6 +154,8 @@ export type GmailThreadMessage = {
 export type GmailThread = {
   thread_id: string;
   subject: string | null;
+  /** Older messages left out; the newest are always kept, newest last. */
+  omitted_older: number;
   messages: GmailThreadMessage[];
 };
 
@@ -156,8 +168,9 @@ export async function getGmailThread(
     messages?: GmailMessage[];
   }>(accessToken, `users/me/threads/${encodeURIComponent(threadId)}?format=full`);
 
-  const messages: GmailThreadMessage[] = (thread.messages ?? [])
-    .filter((m) => m.id)
+  const all = (thread.messages ?? []).filter((m) => m.id);
+  const kept = all.slice(-THREAD_MESSAGES_MAX);
+  const messages: GmailThreadMessage[] = kept
     .map((m) => {
       const headers = m.payload?.headers;
       const body = extractTextBody(m);
@@ -177,7 +190,9 @@ export async function getGmailThread(
 
   return {
     thread_id: thread.id ?? threadId,
-    subject: messages[0]?.subject ?? null,
+    // From the first message of the whole thread, not the first one kept.
+    subject: headerValue(all[0]?.payload?.headers, "Subject"),
+    omitted_older: all.length - kept.length,
     messages,
   };
 }
