@@ -105,6 +105,10 @@ describe("validateVideoVoice", () => {
     const quoted = ['Here is the rule she wrote down: "tests first." It is worth sitting with.'];
     expect(validateVideoVoice(quoted).join()).toMatch(/sounds_generated_signposts: 2 sentences/);
   });
+  it("keeps a quoted line mid-sentence inside its sentence", () => {
+    const one = ['She opens with "here is the rule." and then gets to the line worth stealing.'];
+    expect(validateVideoVoice(one)).toEqual([]);
+  });
   it("lets one of each through, the way a person talks", () => {
     expect(
       validateVideoVoice([
