@@ -98,7 +98,8 @@ describe("validateVideoVoice", () => {
     const issues = validateVideoVoice(generated).join("\n");
     expect(issues).toMatch(/sounds_generated_contrast: 3/);
     expect(issues).toMatch(/block 1: "not what the AI knows/);
-    expect(issues).toMatch(/sounds_generated_signposts/);
+    // Two sentences, though the first trips two patterns ("Here is the", "worth stealing").
+    expect(issues).toMatch(/sounds_generated_signposts: 2 sentences/);
   });
   it("lets one of each through, the way a person talks", () => {
     expect(

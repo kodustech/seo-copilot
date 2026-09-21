@@ -129,10 +129,24 @@ const SIGNPOST_PATTERNS = [
 ];
 const VOICE_ALLOWANCE = 1;
 
+/**
+ * One hit per sentence: "here is the line worth stealing" trips two patterns
+ * and is still one sentence to rewrite. A contrast that spans two sentences
+ * counts where it starts.
+ */
 function voiceHits(blocks: string[], patterns: RegExp[]): string[] {
-  return blocks.flatMap((block, i) =>
-    patterns.flatMap((re) => [...block.matchAll(re)].map((m) => `block ${i + 1}: "${m[0].trim()}"`)),
-  );
+  return blocks.flatMap((block, i) => {
+    const starts = [0, ...[...block.matchAll(/[.!?]\s+/g)].map((m) => (m.index ?? 0) + m[0].length)];
+    const sentenceOf = (at: number) => starts.filter((start) => start <= at).length - 1;
+    const bySentence = new Map<number, string>();
+    for (const re of patterns) {
+      for (const m of block.matchAll(re)) {
+        const sentence = sentenceOf(m.index ?? 0);
+        if (!bySentence.has(sentence)) bySentence.set(sentence, m[0].trim());
+      }
+    }
+    return [...bySentence.entries()].sort(([a], [b]) => a - b).map(([, hit]) => `block ${i + 1}: "${hit}"`);
+  });
 }
 
 /**
@@ -144,13 +158,13 @@ export function validateVideoVoice(blocks: string[]): string[] {
   const contrasts = voiceHits(blocks, CONTRAST_PATTERNS);
   if (contrasts.length > VOICE_ALLOWANCE) {
     issues.push(
-      `sounds_generated_contrast: ${contrasts.length} "not X, it's Y" lines (${contrasts.slice(0, 4).join("; ")}). Keep at most one, where someone really holds the first view; say the rest directly.`,
+      `sounds_generated_contrast: ${contrasts.length} "not X, it's Y" sentences (${contrasts.slice(0, 4).join("; ")}). Keep at most one, where someone really holds the first view; say the rest directly.`,
     );
   }
   const signposts = voiceHits(blocks, SIGNPOST_PATTERNS);
   if (signposts.length > VOICE_ALLOWANCE) {
     issues.push(
-      `sounds_generated_signposts: ${signposts.length} lines announce a point instead of making it (${signposts.slice(0, 4).join("; ")}). Drop the announcement and just say the thing.`,
+      `sounds_generated_signposts: ${signposts.length} sentences announce a point instead of making it (${signposts.slice(0, 4).join("; ")}). Drop the announcement and just say the thing.`,
     );
   }
   return issues;
