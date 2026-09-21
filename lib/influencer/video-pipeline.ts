@@ -6,8 +6,8 @@
  * flag set, visibility from the channel).
  *
  * Rendering burns real money, so every render passes the channel's weekly
- * budget first. Spend is tracked on the activities themselves
- * (content_meta.render_cost), summed per channel per ISO week — no new table.
+ * budget first. Spend is tracked on the activities themselves, filed under
+ * the ISO week it was burned (content_meta.render_spend) — no new table.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -47,11 +47,30 @@ export function weekStartUtcIso(now: Date): string {
   return monday.toISOString();
 }
 
+/** The ISO week a credit was burned in, as its Monday: "2026-09-21". */
+export function weekKey(now: Date): string {
+  return weekStartUtcIso(now).slice(0, 10);
+}
+
+/** How far back a row can still be rendering: parked renders resume, drafts wait for review. */
+const USAGE_LOOKBACK_DAYS = 35;
+
+function spendByWeek(meta: Record<string, unknown>): Record<string, number> {
+  const raw = meta.render_spend;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  return Object.fromEntries(
+    Object.entries(raw as Record<string, unknown>).filter(
+      (entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] > 0,
+    ),
+  );
+}
+
 /**
- * What this channel's videos burned since Monday 00:00 UTC: credits, and how
- * many videos started rendering. `excludeActivityId` leaves one row out: a
- * resumed render prices its own full plan, so its persisted render_cost must
- * not be counted a second time.
+ * What this channel's videos burned in the current ISO week, counted by the
+ * week the credits were spent (content_meta.render_spend), not the week the
+ * draft was queued: a render parked last week that resumes today spends
+ * today's budget. Videos count by the week their render started.
+ * `excludeActivityId` leaves one row out, so a render can price its own share.
  */
 export async function videoUsageThisWeek(
   client: SupabaseClient,
@@ -59,25 +78,24 @@ export async function videoUsageThisWeek(
   now: Date,
   excludeActivityId?: string,
 ): Promise<VideoUsage> {
+  const since = new Date(Date.parse(weekStartUtcIso(now)) - USAGE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
   let query = client
     .from("persona_activities")
     .select("content_meta")
     .eq("channel_id", channelId)
     .eq("kind", "video")
-    .gte("created_at", weekStartUtcIso(now));
+    .gte("created_at", since.toISOString());
   if (excludeActivityId) query = query.neq("id", excludeActivityId);
   const { data, error } = await query;
   if (error) throw new Error(error.message);
+  const week = weekKey(now);
   let credits = 0;
   let videos = 0;
   for (const row of data ?? []) {
     const raw = (row as { content_meta?: unknown }).content_meta;
     const meta = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
-    const cost = meta.render_cost;
-    const burned = typeof cost === "number" && Number.isFinite(cost) && cost > 0;
-    if (burned) credits += cost;
-    const started = Array.isArray(meta.heygen_video_ids) && meta.heygen_video_ids.length > 0;
-    if (burned || started) videos += 1;
+    credits += spendByWeek(meta)[week] ?? 0;
+    if (meta.render_started_week === week) videos += 1;
   }
   return { credits: Math.round(credits * 100) / 100, videos };
 }
@@ -170,11 +188,23 @@ export async function renderVideoClips(
     });
   const ids = positional(activity.content_meta.heygen_video_ids);
   const videoUrls = positional(activity.content_meta.video_urls);
-  // The full-plan estimate already covers this row's earlier runs, so count
-  // every other video only — counting this row too would refuse a resume
-  // that fits.
+  // Cost already burned by earlier runs of this same render (persisted on
+  // every park): resumed blocks don't re-bill, but they did bill once.
+  const priorCost =
+    typeof activity.content_meta.render_cost === "number" &&
+    Number.isFinite(activity.content_meta.render_cost) &&
+    activity.content_meta.render_cost > 0
+      ? activity.content_meta.render_cost
+      : 0;
+  const week = weekKey(now);
+  const priorSpend = spendByWeek(activity.content_meta);
+  // This row's share of the week: what it already burned this week plus what
+  // is left of its plan. The others are counted apart, so a resume never pays
+  // twice for its own blocks, and a render resumed in a new week only asks
+  // the new week for what remains.
   const usage = await videoUsageThisWeek(client, activity.channel_id, now, activity.id);
-  const limit = weeklyLimitReason(usage, plan.estimatedCost, plan.cfg, !ids.some(Boolean));
+  const share = Math.round(((priorSpend[week] ?? 0) + Math.max(0, plan.estimatedCost - priorCost)) * 100) / 100;
+  const limit = weeklyLimitReason(usage, share, plan.cfg, !ids.some(Boolean));
   if (limit) {
     // Park until the week rolls over, releasing the cron's claim: failing
     // would strand clips already paid for on a resumed render.
@@ -186,22 +216,26 @@ export async function renderVideoClips(
     throw new YoutubeDeferred(`${limit} This render waits for next week.`);
   }
   const apiKey = await resolveHeyGenKey(client, activity.persona_id);
-  // Cost already burned by earlier runs of this same render (persisted on
-  // every park): the budget prices cumulative HeyGen spend, never a per-run
-  // fresh count — resumed blocks don't re-bill, but they did bill once.
-  const priorCost =
-    typeof activity.content_meta.render_cost === "number" &&
-    Number.isFinite(activity.content_meta.render_cost) &&
-    activity.content_meta.render_cost > 0
-      ? activity.content_meta.render_cost
-      : 0;
   let burnSeconds = 0;
-  const runCost = () => Math.round((priorCost + estimateVideoCost(burnSeconds)) * 100) / 100;
+  const round = (n: number) => Math.round(n * 100) / 100;
+  // Total for the row, and the same money filed under the week it was spent.
+  const spent = () => ({
+    render_cost: round(priorCost + estimateVideoCost(burnSeconds)),
+    render_spend: { ...priorSpend, [week]: round((priorSpend[week] ?? 0) + estimateVideoCost(burnSeconds)) },
+  });
+  const startedWeek =
+    typeof activity.content_meta.render_started_week === "string" ? activity.content_meta.render_started_week : week;
   const persistPartial = () =>
     updateActivity(client, activity.id, {
       status: "scheduled",
       scheduled_at: new Date(now.getTime() + 30 * 60 * 1000).toISOString(),
-      content_meta: { ...activity.content_meta, heygen_video_ids: ids, video_urls: videoUrls, render_cost: runCost() },
+      content_meta: {
+        ...activity.content_meta,
+        heygen_video_ids: ids,
+        video_urls: videoUrls,
+        render_started_week: startedWeek,
+        ...spent(),
+      },
     });
   // Submit every block first, so HeyGen renders them side by side. One at a
   // time, a 12-block video would advance one clip per cron run.
@@ -231,7 +265,7 @@ export async function renderVideoClips(
     }
     // Persisted as each one is created: a crash here must not re-bill a block.
     await updateActivity(client, activity.id, {
-      content_meta: { ...activity.content_meta, heygen_video_ids: ids, video_urls: videoUrls },
+      content_meta: { ...activity.content_meta, heygen_video_ids: ids, video_urls: videoUrls, render_started_week: startedWeek },
     });
   }
   // One look round per run: finished clips land by index, anything still
@@ -257,16 +291,17 @@ export async function renderVideoClips(
     }
     await new Promise((r) => setTimeout(r, 5_000));
   }
-  const renderCost = runCost();
   const clips = videoUrls as string[]; // every slot filled: the loop above only breaks when done
+  const final = spent();
   await updateActivity(client, activity.id, {
     content_meta: {
       ...activity.content_meta,
       heygen_video_ids: ids,
       video_urls: clips,
-      render_cost: renderCost,
+      render_started_week: startedWeek,
+      ...final,
       stage: "clips_ready",
     },
   });
-  return { videoUrls: clips, renderCost };
+  return { videoUrls: clips, renderCost: final.render_cost };
 }

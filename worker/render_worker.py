@@ -38,6 +38,7 @@ from pathlib import Path
 
 STALE_CLAIM_MINUTES = 30
 MAX_ATTEMPTS = 3
+RETRY_MINUTES = 10
 
 
 def log(*parts: object) -> None:
@@ -190,16 +191,6 @@ def render_previews(client, row: dict, visuals: list, fp: str, bucket: str, work
     client.table("persona_activities").update({"content_meta": meta}).eq("id", aid).execute()
 
 
-def input_fingerprint(meta: dict) -> str:
-    """What the worker consumes: the clip set and the visuals. The review edit
-    (activities.content) is already spent by the time clips exist, so only a
-    change here can make a retry turn out differently."""
-    return json.dumps(
-        {"clips": meta.get("video_urls"), "visuals": meta.get("visuals"), "slides": meta.get("slides")},
-        sort_keys=True,
-    )
-
-
 def claim_job(client, table=None):
     """Oldest approved video with clips but no finished file, unclaimed."""
     res = (
@@ -219,10 +210,16 @@ def claim_job(client, table=None):
         if meta.get("stage") != "clips_ready" or meta.get("final_url"):
             continue
         if meta.get("worker_failed_at"):
-            # Parked for good — unless its clips or slides changed since it
-            # failed, in which case the new inputs deserve their own attempts.
-            if meta.get("worker_failed_inputs") == input_fingerprint(meta):
-                continue
+            # Out of attempts: the row is marked failed with the error, and a
+            # person re-approving it clears this and sends it back here.
+            continue
+        retry_at = meta.get("worker_retry_at")
+        if retry_at:
+            try:
+                if datetime.fromisoformat(retry_at) > now:
+                    continue
+            except ValueError:
+                pass
         if not isinstance(meta.get("video_urls"), list) or not meta["video_urls"]:
             continue
         claimed = meta.get("worker_claim_at")
@@ -237,11 +234,7 @@ def claim_job(client, table=None):
         return None
     job = cands[0]
     meta = dict(job["content_meta"] or {})
-    if meta.get("worker_failed_at"):
-        # Re-opened on new inputs: start the attempt count over, or the first
-        # failure would park it again.
-        for k in ("worker_failed_at", "worker_failed_inputs", "worker_failed_script", "worker_attempts"):
-            meta.pop(k, None)
+    meta.pop("worker_retry_at", None)
     meta["worker_claim_at"] = now.isoformat()
     client.table("persona_activities").update({"content_meta": meta}).eq("id", job["id"]).execute()
     job["content_meta"] = meta
@@ -249,18 +242,24 @@ def claim_job(client, table=None):
 
 
 def fail_job(client, job: dict, message: str) -> None:
+    """Record a failed composite. Early failures retry later and further apart,
+    since most are transient (a download timeout, an upload error). The last
+    one marks the row failed with the error, where the review queue shows it;
+    re-approving it there is the retry."""
     meta = dict(job.get("content_meta") or {})
     meta.pop("worker_claim_at", None)
     meta["worker_error"] = message[:500]
     attempts = int(meta.get("worker_attempts") or 0) + 1
     meta["worker_attempts"] = attempts
+    now = datetime.now(timezone.utc)
+    patch: dict = {"content_meta": meta}
     if attempts >= MAX_ATTEMPTS:
-        # Terminal, but re-opens on its own: the fingerprint below lets new
-        # clips or slides retry while the same broken inputs stay parked.
-        # A person clears worker_failed_at to retry unchanged inputs.
-        meta["worker_failed_at"] = datetime.now(timezone.utc).isoformat()
-        meta["worker_failed_inputs"] = input_fingerprint(meta)
-    client.table("persona_activities").update({"content_meta": meta}).eq("id", job["id"]).execute()
+        meta["worker_failed_at"] = now.isoformat()
+        patch["status"] = "failed"
+        patch["error"] = f"Video composite failed {attempts} times: {message}"[:500]
+    else:
+        meta["worker_retry_at"] = (now + timedelta(minutes=RETRY_MINUTES * attempts)).isoformat()
+    client.table("persona_activities").update(patch).eq("id", job["id"]).execute()
 
 
 def run_job(client, model, job: dict, bucket: str, render_script: str, work_root: Path) -> None:

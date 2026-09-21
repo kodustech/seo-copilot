@@ -219,7 +219,9 @@ export function resolvePublishDecision({
     const finalUrl = typeof meta.final_url === "string" ? meta.final_url.trim() : "";
     // A finished clip set waits on the composite (worker or person). Anything
     // else resumes rendering — partial clip sets included.
-    if (!finalUrl && meta.stage === "clips_ready") {
+    // A composite the worker gave up on is not pending: let it reach the
+    // publisher, which fails it with the worker's error.
+    if (!finalUrl && meta.stage === "clips_ready" && !meta.worker_failed_at) {
       return {
         action: "defer",
         until: nextDayStartUtcIso(now),
@@ -862,6 +864,9 @@ async function publishToYoutube(
       await renderVideoClips(client, activity, channel, new Date());
       await parkForComposite();
       throw new YoutubeDeferred("Avatar clips incomplete — parked progress and resuming next run.");
+    }
+    if (meta.worker_failed_at) {
+      throw new Error(`Video composite failed: ${text(meta.worker_error) || "see the worker logs"}. Approve it again to retry.`);
     }
     await parkForComposite();
     throw new YoutubeDeferred("Composite pending: run the worker (or scripts/render-video-from-plan.py) and attach final_url to this activity.");

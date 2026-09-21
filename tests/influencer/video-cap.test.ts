@@ -17,7 +17,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { updateActivity } from "../../lib/influencer/activities";
 import { createHeyGenVideo, getHeyGenVideo } from "../../lib/influencer/heygen";
-import { renderVideoClips, YoutubeDeferred } from "../../lib/influencer/video-pipeline";
+import { renderVideoClips, videoUsageThisWeek, YoutubeDeferred } from "../../lib/influencer/video-pipeline";
 
 type Row = { id: string; content_meta: Record<string, unknown> };
 
@@ -76,31 +76,61 @@ describe("renderVideoClips weekly limits", () => {
       video_urls: ["https://clip/1.mp4", "https://clip/2.mp4"],
       heygen_video_ids: ["id1", "id2"],
       render_cost: 9,
+      render_spend: { "2026-09-21": 9 },
     });
     const client = fakeClient([
-      { id: "a", content_meta: { render_cost: 9 } },
-      { id: "other", content_meta: { render_cost: 1 } },
+      { id: "a", content_meta: { render_cost: 9, render_spend: { "2026-09-21": 9 } } },
+      { id: "other", content_meta: { render_spend: { "2026-09-21": 1 } } },
     ]);
-    // Counting its own 9 credits: 10.16 > 10.1. Without them: 1.16.
+    // Counting its own 9 credits twice: 19 > 10.1. Once, as its share: 10.
     const out = await renderVideoClips(client, resumed, channelWith({ youtube_weekly_budget_credits: 10.1 }), now);
     expect(out.videoUrls).toHaveLength(3);
   });
 
   it("parks for next Monday when the credit budget blocks", async () => {
-    const client = fakeClient([{ id: "other", content_meta: { render_cost: 11 } }]);
+    const client = fakeClient([{ id: "other", content_meta: { render_spend: { "2026-09-21": 11 } } }]);
     const channel = channelWith({ youtube_weekly_budget_credits: 11.1, youtube_max_videos_per_week: 5 });
     await expect(renderVideoClips(client, activity({}), channel, now)).rejects.toThrow(/budget reached/);
     expect(updateActivity).toHaveBeenCalledWith(client, "a", nextMonday);
   });
 
   it("parks a fresh render when the week's videos are used, but lets a started one finish", async () => {
-    const client = fakeClient([{ id: "other", content_meta: { heygen_video_ids: ["x"] } }]);
+    const client = fakeClient([{ id: "other", content_meta: { render_started_week: "2026-09-21" } }]);
     const channel = channelWith({ youtube_max_videos_per_week: 1 });
     await expect(renderVideoClips(client, activity({}), channel, now)).rejects.toBeInstanceOf(YoutubeDeferred);
     expect(updateActivity).toHaveBeenCalledWith(client, "a", nextMonday);
     const started = activity({ video_urls: ["https://clip/1.mp4", "https://clip/2.mp4"], heygen_video_ids: ["id1", "id2"] });
     const out = await renderVideoClips(client, started, channel, now);
     expect(out.videoUrls).toHaveLength(3);
+  });
+});
+
+describe("spend by the week it was burned", () => {
+  beforeEach(() => vi.mocked(updateActivity).mockReset());
+
+  it("counts only this week's share of each row", async () => {
+    const client = fakeClient([
+      { id: "old", content_meta: { render_spend: { "2026-09-14": 5, "2026-09-21": 2 }, render_started_week: "2026-09-14" } },
+      { id: "new", content_meta: { render_spend: { "2026-09-21": 3 }, render_started_week: "2026-09-21" } },
+    ]);
+    expect(await videoUsageThisWeek(client, "ch", now)).toEqual({ credits: 5, videos: 1 });
+  });
+
+  it("files what a render parked last week burns today under this week", async () => {
+    const resumed = activity({
+      video_urls: ["https://clip/1.mp4", "https://clip/2.mp4"],
+      heygen_video_ids: ["id1", "id2"],
+      render_cost: 9,
+      render_spend: { "2026-09-14": 9 },
+      render_started_week: "2026-09-14",
+    });
+    // Last week's 9 credits are not this week's: only what remains of the plan is asked of it.
+    await renderVideoClips(fakeClient([]), resumed, channelWith({ youtube_weekly_budget_credits: 3 }), now);
+    const meta = vi.mocked(updateActivity).mock.calls.at(-1)![2].content_meta as Record<string, unknown>;
+    // Block 3 came back 20s long: 0.8 credits, spent this week.
+    expect(meta.render_spend).toEqual({ "2026-09-14": 9, "2026-09-21": 0.8 });
+    expect(meta.render_cost).toBe(9.8);
+    expect(meta.render_started_week).toBe("2026-09-14");
   });
 });
 

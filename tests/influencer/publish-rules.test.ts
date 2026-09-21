@@ -128,6 +128,22 @@ describe("resolvePublishDecision", () => {
     expect(decide({})).toEqual({ action: "publish" });
   });
 
+  it("defers a YouTube video waiting on its composite", () => {
+    const decision = decide({
+      activity: { kind: "video", content_meta: { stage: "clips_ready" } },
+      channel: { platform: "youtube", publish_via: "api" },
+    });
+    expect(decision.action).toBe("defer");
+  });
+
+  it("lets a composite the worker gave up on through, so it fails where people see it", () => {
+    const decision = decide({
+      activity: { kind: "video", content_meta: { stage: "clips_ready", worker_failed_at: NOW.toISOString() } },
+      channel: { platform: "youtube", publish_via: "api" },
+    });
+    expect(decision.action).not.toBe("defer");
+  });
+
   it("never publishes a test draft even if its status was changed", () => {
     const decision = decide({
       activity: { content_meta: { test_run: true }, status: "approved" },

@@ -117,6 +117,13 @@ export async function PATCH(
       patch.status = "approved";
       patch.approved_by = userEmail;
       patch.error = null;
+      // A video the worker gave up on: approving it again is the retry, with
+      // fresh attempts. The clips already rendered stay and are reused.
+      if (current.kind === "video" && current.content_meta.worker_failed_at) {
+        const meta = { ...current.content_meta };
+        for (const key of ["worker_failed_at", "worker_attempts", "worker_error", "worker_retry_at"]) delete meta[key];
+        patch.content_meta = meta;
+      }
     } else if (action === "published") {
       patch.status = "published";
       patch.published_at = new Date().toISOString();
