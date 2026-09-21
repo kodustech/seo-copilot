@@ -6050,23 +6050,30 @@ export const researchRestorePeople = tool({
 
 export const outreachListMailboxes = tool({
   description:
-    "List connected outreach sender mailboxes. Use the returned id as mailbox_id on sequenceCreate or sequenceUpdate to choose one sender per campaign.",
+    "List connected mailboxes and what each one's Google grant allows (can_read_email, can_draft, can_read_calendar). Use the returned id as mailbox_id on sequenceCreate or sequenceUpdate to choose one sender per campaign, and on the Gmail and calendar tools to pick a mailbox that can do the job.",
   inputSchema: z.object({}),
   execute: async () => {
     try {
       const client = getSupabaseServiceClient();
       const { listMailboxes } = await import("@/lib/outreach/mailbox");
+      const { mailboxCapabilities } = await import("@/lib/outreach/gmail");
       const mailboxes = await listMailboxes(client);
       return {
         success: true as const,
-        mailboxes: mailboxes.map((mailbox) => ({
-          id: mailbox.id,
-          label: mailbox.label,
-          from_email: mailbox.fromEmail,
-          connected: mailbox.connected,
-          enabled: mailbox.enabled,
-          is_default: mailbox.isDefault,
-        })),
+        mailboxes: mailboxes.map((mailbox) => {
+          const can = mailboxCapabilities(mailbox);
+          return {
+            id: mailbox.id,
+            label: mailbox.label,
+            from_email: mailbox.fromEmail,
+            connected: mailbox.connected,
+            enabled: mailbox.enabled,
+            is_default: mailbox.isDefault,
+            can_read_email: can.read_email,
+            can_draft: can.draft,
+            can_read_calendar: can.read_calendar,
+          };
+        }),
       };
     } catch (error) {
       return { success: false as const, message: error instanceof Error ? error.message : "Failed" };
@@ -6083,7 +6090,7 @@ export const outreachListMailboxes = tool({
  */
 export const listGoogleCalendarEvents = tool({
   description:
-    "List Google Calendar events (past and upcoming) for a connected mailbox. Use this to answer 'what meetings do we have this week', to prep the weekly plan, or to check what happened with an account. Defaults to the last 7 days plus the next 7 days. Mailboxes connected without the calendar scope are reported as skipped.",
+    "List Google Calendar events (past and upcoming) for a connected mailbox. Use this to answer 'what meetings do we have this week', to prep the weekly plan, or to check what happened with an account. Defaults to the last 7 days plus the next 7 days. Mailboxes connected without the calendar scope are reported as skipped; outreachListMailboxes shows which ones have can_read_calendar.",
   inputSchema: z.object({
     mailbox_id: z.string().optional().describe("Mailbox id from outreachListMailboxes. Defaults to the default mailbox."),
     time_min: z.string().optional().describe("ISO start, defaults to 7 days ago."),
@@ -6164,19 +6171,30 @@ export const listGoogleCalendarEvents = tool({
  */
 export const gmailSearch = tool({
   description:
-    "Search a connected Gmail mailbox with Gmail search syntax (from:, to:, subject:, newer_than:7d, is:unread, in:inbox, …). Returns message summaries with thread_id; read the full conversation with gmailGetThread. Use for 'what came in today', 'find my thread with X', or before drafting a follow-up. For an account's whole correspondence across every mailbox use crmGetCompanyEmails instead.",
+    "Search Gmail with Gmail search syntax (from:, to:, subject:, newer_than:7d, is:unread, in:inbox, …). Without mailbox_id it searches every connected mailbox with read access, newest first. Each message carries thread_id and mailbox_id: pass both to gmailGetThread, and the mailbox_id to gmailCreateDraft to reply from the mailbox that holds the thread. Use for 'what came in today', 'find my thread with X', or before drafting a follow-up. For an account's whole correspondence across every mailbox use crmGetCompanyEmails instead.",
   inputSchema: z.object({
     query: z.string().min(1).describe("Gmail search query, e.g. 'from:juliano newer_than:30d' or 'is:unread in:inbox'."),
-    mailbox_id: z.string().optional().describe("Mailbox id from outreachListMailboxes. Defaults to the default mailbox."),
-    max_results: z.number().int().min(1).max(50).optional().describe("Max messages, defaults to 20."),
+    mailbox_id: z.string().optional().describe("Search only this mailbox (id from outreachListMailboxes). Omit to search every mailbox with read access."),
+    max_results: z.number().int().min(1).max(50).optional().describe("Max messages in total, defaults to 20."),
   }),
   execute: async ({ query, mailbox_id, max_results }) => {
     try {
-      const { openGmailMailbox, searchGmailMessages } = await import("@/lib/outreach/gmail");
-      const access = await openGmailMailbox(getSupabaseServiceClient(), mailbox_id?.trim() || null, "read");
+      const { openGmailMailbox, searchGmailMessages, searchGmailMailboxes } = await import("@/lib/outreach/gmail");
+      const client = getSupabaseServiceClient();
+      const q = query.trim();
+      const limit = max_results ?? 20;
+      if (!mailbox_id?.trim()) {
+        const found = await searchGmailMailboxes(client, q, limit);
+        return { success: true as const, query: q, ...found };
+      }
+      const access = await openGmailMailbox(client, mailbox_id.trim(), "read");
       if (!access.ok) return { success: false as const, message: access.message };
-      const messages = await searchGmailMessages(access.accessToken, query.trim(), max_results ?? 20);
-      return { success: true as const, mailbox: access.mailbox, query: query.trim(), messages };
+      const messages = (await searchGmailMessages(access.accessToken, q, limit)).map((m) => ({
+        ...m,
+        mailbox: access.mailbox,
+        mailbox_id: mailbox_id.trim(),
+      }));
+      return { success: true as const, query: q, messages, searched: [access.mailbox], skipped: [] };
     } catch (error) {
       return { success: false as const, message: error instanceof Error ? error.message : "Failed" };
     }
@@ -6185,10 +6203,10 @@ export const gmailSearch = tool({
 
 export const gmailGetThread = tool({
   description:
-    "Read a full Gmail conversation (every message with sender, recipients, date and plain-text body) by thread_id from gmailSearch or crmGetCompanyEmails. Use before writing a reply so the draft answers what was actually said.",
+    "Read a full Gmail conversation (every message with sender, recipients, date and plain-text body) by thread_id from gmailSearch or crmGetCompanyEmails. Thread ids belong to one mailbox: pass the mailbox_id that came with the thread. Use before writing a reply so the draft answers what was actually said.",
   inputSchema: z.object({
     thread_id: z.string().min(1).describe("Gmail thread id."),
-    mailbox_id: z.string().optional().describe("Mailbox that holds the thread. Defaults to the default mailbox."),
+    mailbox_id: z.string().optional().describe("Mailbox that holds the thread (mailbox_id from gmailSearch). Defaults to the default mailbox."),
   }),
   execute: async ({ thread_id, mailbox_id }) => {
     try {
@@ -6205,14 +6223,14 @@ export const gmailGetThread = tool({
 
 export const gmailCreateDraft = tool({
   description:
-    "Create a Gmail DRAFT in a connected mailbox. Never sends: the user opens it in Gmail, edits if needed and sends. Pass thread_id to draft a reply inside an existing conversation (subject and threading headers are filled from the thread). Write the body in the user's voice; tell the user the draft is waiting in Gmail.",
+    "Create a Gmail DRAFT in a connected mailbox. Never sends: the user opens it in Gmail, edits if needed and sends. Pass thread_id and its mailbox_id to draft a reply inside an existing conversation (subject and threading headers are filled from the thread). Without mailbox_id the default mailbox is used; if it cannot draft, the error names the mailboxes that can. Write the body in the user's voice; tell the user the draft is waiting in Gmail.",
   inputSchema: z.object({
     to: z.string().min(1).describe("Recipient(s), comma-separated, e.g. 'Ana <ana@acme.com>, bob@acme.com'."),
     body: z.string().min(1).describe("Plain-text email body."),
     subject: z.string().optional().describe("Subject. Required for a new email; for a reply it defaults to 'Re: <thread subject>'."),
     cc: z.string().optional().describe("Cc recipient(s), comma-separated."),
     thread_id: z.string().optional().describe("Gmail thread id to reply in. Omit for a new email."),
-    mailbox_id: z.string().optional().describe("Mailbox to draft from. Defaults to the default mailbox."),
+    mailbox_id: z.string().optional().describe("Mailbox to draft from; for a reply, the mailbox_id that came with the thread. Defaults to the default mailbox."),
   }),
   execute: async ({ to, body, subject, cc, thread_id, mailbox_id }) => {
     try {

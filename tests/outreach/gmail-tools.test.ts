@@ -1,17 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const mailbox = vi.hoisted(() => ({ box: null as Record<string, unknown> | null }));
+const mailbox = vi.hoisted(() => ({
+  box: null as Record<string, unknown> | null,
+  all: [] as Array<Record<string, unknown>>,
+}));
 vi.mock("@/lib/outreach/mailbox", () => ({
-  getMailboxWithSecrets: async () => mailbox.box,
-  ensureFreshAccessToken: async () => "tok",
+  getMailboxWithSecrets: async (_c: unknown, id: string | null) =>
+    (id ? mailbox.all.find((b) => b.id === id) : null) ?? mailbox.box,
+  listMailboxes: async () => mailbox.all,
+  ensureFreshAccessToken: async (_c: unknown, box: { id?: string }) => `tok-${box.id ?? "default"}`,
 }));
 
 import { buildMcpTools } from "@/lib/mcp/server";
 import {
   createGmailDraft,
   getGmailThread,
+  mailboxCapabilities,
   openGmailMailbox,
   replyHeadersFor,
+  searchGmailMailboxes,
   searchGmailMessages,
   type GmailThread,
 } from "@/lib/outreach/gmail";
@@ -101,16 +108,24 @@ describe("replyHeadersFor", () => {
   });
 });
 
+const box = (scopes: string, inboxSyncReady: boolean, extra: Record<string, unknown> = {}) => ({
+  id: "default",
+  fromEmail: "gabriel@kodus.io",
+  fromName: null,
+  authMethod: "oauth",
+  provider: "google_oauth",
+  connected: true,
+  enabled: true,
+  oauthGrantedScopes: scopes,
+  inboxSyncReady,
+  ...extra,
+});
+const client = {} as never;
+
 describe("openGmailMailbox", () => {
-  const box = (scopes: string, inboxSyncReady: boolean) => ({
-    fromEmail: "gabriel@kodus.io",
-    fromName: null,
-    authMethod: "oauth",
-    provider: "google_oauth",
-    oauthGrantedScopes: scopes,
-    inboxSyncReady,
+  afterEach(() => {
+    mailbox.all = [];
   });
-  const client = {} as never;
 
   it("refuses a reply draft on a compose-only grant instead of a raw 403 later", async () => {
     mailbox.box = box(GMAIL_COMPOSE_SCOPE, false);
@@ -120,9 +135,65 @@ describe("openGmailMailbox", () => {
     expect(reply.ok ? "" : reply.message).toContain("gmail.readonly");
   });
 
+  it("names the mailboxes that can draft when the default cannot", async () => {
+    mailbox.box = box(GMAIL_READONLY_SCOPE, true, { fromEmail: "gabriel@trykodus.com" });
+    mailbox.all = [
+      mailbox.box,
+      box(`${GMAIL_READONLY_SCOPE} ${GMAIL_COMPOSE_SCOPE}`, true, { id: "kio", fromEmail: "gabriel.malinosqui@kodus.io" }),
+      box(GMAIL_COMPOSE_SCOPE, false, { id: "off", fromEmail: "off@kodus.io", enabled: false }),
+    ];
+    const res = await openGmailMailbox(client, null, "compose");
+    expect(res.ok).toBe(false);
+    const message = res.ok ? "" : res.message;
+    expect(message).toContain("gabriel@trykodus.com: connected without gmail.compose");
+    expect(message).toContain("Mailboxes that can: gabriel.malinosqui@kodus.io (mailbox_id kio).");
+    expect(message).not.toContain("off@kodus.io");
+  });
+
   it("allows a reply draft when both scopes are granted", async () => {
     mailbox.box = box(`${GMAIL_READONLY_SCOPE} ${GMAIL_COMPOSE_SCOPE}`, true);
-    expect(await openGmailMailbox(client, null, "reply")).toMatchObject({ ok: true, accessToken: "tok" });
+    expect(await openGmailMailbox(client, null, "reply")).toMatchObject({ ok: true, accessToken: "tok-default" });
+  });
+});
+
+describe("mailboxCapabilities", () => {
+  it("reads each grant separately", () => {
+    const b = box(`${GMAIL_READONLY_SCOPE} ${GMAIL_COMPOSE_SCOPE}`, true) as never;
+    expect(mailboxCapabilities(b)).toEqual({ read_email: true, draft: true, read_calendar: false });
+    const smtp = box(GMAIL_COMPOSE_SCOPE, false, { authMethod: "smtp", provider: "smtp" }) as never;
+    expect(mailboxCapabilities(smtp)).toEqual({ read_email: false, draft: false, read_calendar: false });
+  });
+});
+
+describe("searchGmailMailboxes", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    mailbox.all = [];
+  });
+
+  it("searches every readable mailbox, newest first, tagging each hit with its mailbox_id", async () => {
+    mailbox.all = [
+      box(GMAIL_READONLY_SCOPE, true, { id: "a", fromEmail: "a@kodus.io" }),
+      box(GMAIL_READONLY_SCOPE, true, { id: "b", fromEmail: "b@kodus.io" }),
+      box("", false, { id: "c", fromEmail: "c@kodus.io" }),
+      box(GMAIL_READONLY_SCOPE, true, { id: "d", fromEmail: "d@kodus.io", enabled: false }),
+    ];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const token = String((init?.headers as Record<string, string>).Authorization).replace("Bearer tok-", "");
+      if (url.includes("/messages?q=")) {
+        return new Response(JSON.stringify({ messages: [{ id: `${token}1` }] }), { status: 200 });
+      }
+      const at = token === "a" ? "1000" : "2000";
+      return new Response(JSON.stringify({ id: `${token}1`, threadId: `t-${token}`, internalDate: at, payload: { headers: [] } }), { status: 200 });
+    }));
+
+    const out = await searchGmailMailboxes(client, "from:juliano", 20);
+    expect(out.messages.map((m) => [m.id, m.mailbox_id, m.mailbox])).toEqual([
+      ["b1", "b", "b@kodus.io"],
+      ["a1", "a", "a@kodus.io"],
+    ]);
+    expect(out.searched).toEqual(["a@kodus.io", "b@kodus.io"]);
+    expect(out.skipped).toEqual(["c@kodus.io: no email read access — reconnect the mailbox in Settings to include it"]);
   });
 });
 
