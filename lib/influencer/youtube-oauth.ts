@@ -9,6 +9,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { getChannelCredentialCipher } from "@/lib/influencer/credentials";
+import { fleetHeyGenKey } from "@/lib/influencer/heygen";
 import type { PersonaChannel } from "@/lib/influencer/types";
 import { youtubeChannelConfig } from "@/lib/influencer/youtube";
 import { getAppBaseUrl } from "@/lib/outreach/google-oauth";
@@ -149,7 +150,7 @@ export async function youtubeChannelNeeds(
   channel: PersonaChannel,
   oauthLinked: boolean,
 ): Promise<{ oauth: boolean; heygen: boolean; avatar: boolean; voice: boolean }> {
-  const heygen = Boolean(await getChannelCredentialCipher(client, channel.persona_id, "heygen"));
+  const heygen = Boolean(fleetHeyGenKey()) || Boolean(await getChannelCredentialCipher(client, channel.persona_id, "heygen"));
   const cfg = youtubeChannelConfig(channel);
   return { oauth: !oauthLinked, heygen: !heygen, avatar: !cfg.avatarId, voice: !cfg.voiceId };
 }

@@ -134,19 +134,26 @@ export async function uploadHeyGenAudioAsset(
   return id;
 }
 
+/** The fleet's shared HeyGen account, set once on the server (HEYGEN_API_KEY). */
+export function fleetHeyGenKey(): string | null {
+  return process.env.HEYGEN_API_KEY?.trim() || null;
+}
+
 /**
- * Resolve the HeyGen key for a persona. Channel-scoped ("heygen" provider on
- * the vault row) so two personas never share one wallet.
+ * Resolve the HeyGen key for a persona: its own key from the vault when one
+ * is linked (a persona on a separate wallet), else the fleet's shared key.
  */
 export async function resolveHeyGenKey(
   client: SupabaseClient,
   personaId: string,
 ): Promise<string> {
   const cipher = await getChannelCredentialCipher(client, personaId, "heygen");
-  if (!cipher) {
-    throw new Error("No HeyGen key for this persona. Connect one (channel credentials, provider 'heygen').");
+  if (cipher) {
+    const key = decryptPersonaKey(cipher).trim();
+    if (!key) throw new Error("Stored HeyGen key is empty. Reconnect it.");
+    return key;
   }
-  const key = decryptPersonaKey(cipher).trim();
-  if (!key) throw new Error("Stored HeyGen key is empty. Reconnect it.");
-  return key;
+  const fleet = fleetHeyGenKey();
+  if (fleet) return fleet;
+  throw new Error("No HeyGen key: set HEYGEN_API_KEY on the server, or link one on the persona's YouTube channel.");
 }
