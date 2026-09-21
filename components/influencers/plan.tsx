@@ -166,7 +166,9 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
     }
   }
 
-  async function runTest() {
+  const hasYoutube = persona.channels.some((c) => c.platform === "youtube" && c.status !== "paused");
+
+  async function runTest(platform?: "youtube") {
     setTesting(true);
     setTestResult(null);
     setTestFailed(false);
@@ -175,7 +177,7 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
       const res = await fetch(`/api/influencers/${persona.id}/tasks`, {
         method: "POST",
         headers: authHeaders(token),
-        body: JSON.stringify({ action: "test_shift" }),
+        body: JSON.stringify({ action: "test_shift", ...(platform ? { platform } : {}) }),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "The test shift failed");
@@ -183,7 +185,9 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
       setTestFailed(body.result?.failed === true);
       setTestResult(
         body.result?.note ||
-          "Test article added to the Review queue. It cannot be published or scheduled.",
+          (platform === "youtube"
+            ? "Test video added to the Review queue. Slide previews show up there once the worker renders them. It cannot be rendered or published."
+            : "Test article added to the Review queue. It cannot be published or scheduled."),
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "The test shift failed");
@@ -193,7 +197,7 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
   }
 
   const reading = (() => {
-    if (testing) return { tone: "warn" as const, text: "Generating a test article for review." };
+    if (testing) return { tone: "warn" as const, text: "Generating a test draft for review." };
     if (acting) return { tone: "warn" as const, text: "Working a shift right now." };
     if (!state || cadence === "off") return { tone: "muted" as const, text: "Autonomy is off. It acts only when you run a shift." };
     if (state.status === "waiting" && state.next_action_at) {
@@ -221,10 +225,16 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
               ]}
             />
             <div className="ml-auto flex items-center gap-2">
-              <button type="button" onClick={runTest} disabled={acting || testing} className={cls.outline}>
+              <button type="button" onClick={() => runTest()} disabled={acting || testing} className={cls.outline}>
                 {testing ? <Loader2 className="size-3.5 animate-spin" /> : <FlaskConical className="size-3.5" />}
                 Run test
               </button>
+              {hasYoutube ? (
+                <button type="button" onClick={() => runTest("youtube")} disabled={acting || testing} className={cls.outline}>
+                  {testing ? <Loader2 className="size-3.5 animate-spin" /> : <FlaskConical className="size-3.5" />}
+                  Test video
+                </button>
+              ) : null}
               <button type="button" onClick={actNow} disabled={acting || testing} className={cls.outline}>
                 {acting ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
                 Run a shift now

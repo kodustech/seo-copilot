@@ -51,7 +51,22 @@ const MIN_WAIT_MIN = 15;
 const MAX_WAIT_MIN = 8 * 60;
 const NO_CHANNEL_WAIT_MIN = 6 * 60;
 const FAILURE_WAIT_MIN = 60;
-const TEST_PLATFORMS = new Set(["blog", "devto"]);
+const TEST_PLATFORMS = new Set(["blog", "devto", "youtube"]);
+
+/**
+ * The channels a review-only test shift may write for. A test draft never
+ * publishes, so YouTube needs no linked account yet: testing the persona's
+ * video before paying for the channel setup is the point. `platform` narrows
+ * the shift to one channel, or the persona writes where it always writes.
+ */
+export function testShiftChannels(channels: PersonaChannel[], platform?: string): PersonaChannel[] {
+  return channels.filter(
+    (c) =>
+      TEST_PLATFORMS.has(c.platform) &&
+      (c.platform === "youtube" ? c.status !== "paused" : c.status === "active") &&
+      (!platform || c.platform === platform),
+  );
+}
 // The unpublished buffer is held PER CHANNEL: a channel has room while it holds
 // less than one day of its own cap. A single global ceiling looks tidier but
 // starves the slow channels — X fills 8 a day, so a week of queued tweets froze
@@ -219,8 +234,10 @@ function buildShiftGoal(
         .map((t) => `"${t}"`)
         .join(", ")}. The exception is a deliberate CROSSPOST: an article of yours that already went live on one of our own sites can run again on another channel, as long as you pass canonical_url with that exact URL so the original keeps the credit.`
     : "";
+  // A test of the video channel alone asks for a video, not an article.
+  const testPiece = open.length === 1 && open[0] === "youtube" ? "video" : "long-form article";
   const postBeat = testRun
-    ? `4) WRITE and save ONE complete long-form article with queue_draft, for one of: ${open.join(", ")}. This is a review-only TEST draft: finish the same article you would create in a real automatic shift.`
+    ? `4) WRITE and save ONE complete ${testPiece} with queue_draft, for one of: ${open.join(", ")}. This is a review-only TEST draft: finish the same ${testPiece} you would create in a real automatic shift.`
     : postingAllowed
       ? `4) WRITE and queue ONE self-contained piece with queue_draft, for one of: ${open.join(", ")}. For X, a single standalone tweet that stands on its own — never a thread. A shift with no draft is wasted unless nothing is genuinely worth posting.`
     : "4) Every one of your channels is backed up right now — do NOT queue a new post. Instead go deeper: read more, save what you learn to memory, and engage (read your inbox / reply if you have email).";
@@ -241,7 +258,7 @@ function buildShiftGoal(
     : "";
   return [
     testRun
-      ? `This is a TEST shift as ${persona.display_name} (@${persona.handle}). Choose the topic exactly as you would in an automatic shift, then produce one complete review-only long-form article.`
+      ? `This is a TEST shift as ${persona.display_name} (@${persona.handle}). Choose the topic exactly as you would in an automatic shift, then produce one complete review-only ${testPiece}.`
       : `This is your shift as ${persona.display_name} (@${persona.handle}). You are a relentless operator: your job is to HIT YOUR GOALS, and you do whatever it takes and never stop working to get there.`,
     `Your beat: ${persona.beat}.`,
     postingAllowed
@@ -367,19 +384,17 @@ export async function runPersonaTick({
   persona,
   now,
   testRun = false,
+  testPlatform,
 }: {
   client: SupabaseClient;
   persona: Persona;
   now: Date;
   testRun?: boolean;
+  /** Test shifts only: write for this platform. */
+  testPlatform?: string;
 }): Promise<TickResult> {
   const channels = await listChannelsForPersona(client, persona.id);
-  const actionable = testRun
-    ? channels.filter(
-        (channel) =>
-          channel.status === "active" && TEST_PLATFORMS.has(channel.platform),
-      )
-    : channels.filter(isActionable);
+  const actionable = testRun ? testShiftChannels(channels, testPlatform) : channels.filter(isActionable);
   const allowed = Array.from(new Set(actionable.map((c) => c.platform)));
 
   const base: TickResult = {
@@ -394,7 +409,9 @@ export async function runPersonaTick({
   // Nothing it can publish on its own — wait and ask for a connected channel.
   if (allowed.length === 0) {
     const note = testRun
-      ? "Run test needs an active blog or dev.to channel."
+      ? testPlatform === "youtube"
+        ? "A video test needs a YouTube channel on this persona."
+        : "Run test needs an active blog or dev.to channel."
       : "No connected channel I can publish to on my own — waiting for one to be linked.";
     if (testRun) return { ...base, note, error: note };
     const next = new Date(now.getTime() + NO_CHANNEL_WAIT_MIN * 60_000);

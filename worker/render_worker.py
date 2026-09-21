@@ -23,6 +23,7 @@ Env:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -98,11 +99,95 @@ def main() -> None:
                     # spins select/update against Supabase.
                     time.sleep(60)
             else:
+                # Idle: draw the slides of drafts waiting for review, so the
+                # reviewer sees them before any HeyGen credit is spent.
+                preview_pass(client, bucket, work_root)
                 time.sleep(poll)
         except Exception as exc:  # never die on a bad job; the loop is the service
             log("loop error:", exc)
             traceback.print_exc()
             time.sleep(60)
+
+
+def preview_fingerprint(visuals: list) -> str:
+    return hashlib.sha256(json.dumps(visuals, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def channel_site(client, channel_id) -> str:
+    chan = (
+        client.table("persona_channels")
+        .select("channel_config")
+        .eq("id", channel_id)
+        .maybe_single()
+        .execute()
+    )
+    # maybe_single() can hand back None instead of an empty result.
+    data = (chan.data if chan else None) or {}
+    cfg = data.get("channel_config") or {}
+    return str(cfg.get("youtube_site_url") or "agentwrotethis.dev")
+
+
+def preview_pass(client, bucket: str, work_root: Path, render=None) -> int:
+    """Render slide previews for video drafts still in review. Only drafts:
+    once approved, the publish cron owns content_meta and a second writer
+    could clobber its clip ids. Returns how many drafts were rendered."""
+    res = (
+        client.table("persona_activities")
+        .select("id,persona_id,channel_id,content_meta")
+        .eq("kind", "video")
+        .eq("status", "draft")
+        .execute()
+    )
+    rendered = 0
+    for row in res.data or []:
+        meta = row.get("content_meta") or {}
+        blocks = meta.get("blocks")
+        visuals = worker_visuals(meta, len(blocks)) if isinstance(blocks, list) else None
+        if not visuals:
+            continue
+        fp = preview_fingerprint(visuals)
+        if meta.get("slide_previews_for") == fp:
+            continue
+        render_previews(client, row, visuals, fp, bucket, work_root, render)
+        rendered += 1
+    return rendered
+
+
+def render_previews(client, row: dict, visuals: list, fp: str, bucket: str, work_root: Path, render=None) -> None:
+    aid, pid = row["id"], row["persona_id"]
+    Path(work_root).mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix="vprev-", dir=str(work_root)))
+    urls: list = [None] * len(visuals)
+    error = None
+    try:
+        if render is None:
+            from slides import render_slides as render  # Chromium: loaded only when needed
+        pngs = render(visuals, channel_site(client, row["channel_id"]), work)
+        for i, png in enumerate(pngs):
+            if png is None:
+                continue
+            # The fingerprint in the path: an edited draft gets new URLs, never a cached old slide.
+            path = f"{pid}/previews/{aid}/{fp}/slide{i}.png"
+            with open(png, "rb") as f:
+                client.storage.from_(bucket).upload(path, f, {"content-type": "image/png", "upsert": "true"})
+            urls[i] = client.storage.from_(bucket).get_public_url(path)
+        log("preview ok", aid)
+    except Exception as exc:  # a bad slide must not stall the other drafts
+        error = str(exc)[:300]
+        log("preview failed", aid, error)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    # Merge into a fresh read: the reviewer may have edited the draft while
+    # the slides rendered, and a stale whole-row write would undo that.
+    fresh = client.table("persona_activities").select("content_meta").eq("id", aid).maybe_single().execute()
+    meta = dict(((fresh.data if fresh else None) or {}).get("content_meta") or {})
+    meta["slide_previews"] = urls
+    meta["slide_previews_for"] = fp
+    if error:
+        meta["slide_previews_error"] = error
+    else:
+        meta.pop("slide_previews_error", None)
+    client.table("persona_activities").update({"content_meta": meta}).eq("id", aid).execute()
 
 
 def input_fingerprint(meta: dict) -> str:

@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { YOUTUBE_WORDS_PER_SECOND } from "@/lib/influencer/youtube";
 
 import {
   Counter,
@@ -236,6 +237,8 @@ function QueueItem({
           className={cls.textarea}
           autoFocus
         />
+      ) : activity.kind === "video" ? (
+        <VideoStoryboard activity={activity} content={content} />
       ) : (
         <p className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-md border border-white/[0.06] bg-neutral-950/40 p-3 text-sm leading-relaxed text-neutral-200">
           {content}
@@ -289,5 +292,66 @@ function QueueItem({
         <span className="ml-auto">{isX ? <Counter n={content.trim().length} max={280} /> : null}</span>
       </div>
     </article>
+  );
+}
+
+/**
+ * A video draft as the viewer will get it: one row per screen, the slide
+ * preview (or "on camera") next to what is said while it is up. The text is
+ * the current draft, which is what gets filmed; the previews come from the
+ * worker a few minutes after the draft lands.
+ */
+function VideoStoryboard({ activity, content }: { activity: Activity; content: string }) {
+  const meta = activity.content_meta;
+  const blocks = content
+    .split(/\n\s*\n/)
+    .map((b) => b.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const visuals = Array.isArray(meta.visuals) ? (meta.visuals as unknown[]) : null;
+  const previews = Array.isArray(meta.slide_previews) ? (meta.slide_previews as unknown[]) : [];
+  const previewError = typeof meta.slide_previews_error === "string" ? meta.slide_previews_error : null;
+  const words = blocks.reduce((n, b) => n + b.split(" ").length, 0);
+  const minutes = words / YOUTUBE_WORDS_PER_SECOND / 60;
+  const slideCount = visuals ? visuals.filter((v) => v !== null).length : 0;
+  const unpaired = visuals !== null && visuals.length !== blocks.length;
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-neutral-500">
+        ~{minutes.toFixed(1)} min · {blocks.length} screens · {slideCount} slides
+        {visuals && !meta.slide_previews_for ? " · slide previews rendering" : ""}
+      </p>
+      {unpaired ? (
+        <p className={cls.errorText}>
+          The text has {blocks.length} paragraphs for {visuals!.length} screens. Keep one paragraph per screen or the render refuses it.
+        </p>
+      ) : null}
+      {previewError ? <p className={cls.errorText}>Slide preview failed: {previewError}</p> : null}
+      <ol className="max-h-[32rem] space-y-2 overflow-y-auto">
+        {blocks.map((block, i) => {
+          const url = typeof previews[i] === "string" ? (previews[i] as string) : null;
+          const onCamera = visuals ? visuals[i] === null : false;
+          return (
+            <li key={i} className="grid grid-cols-[12rem_minmax(0,1fr)] gap-3 rounded-md border border-white/[0.06] bg-neutral-950/40 p-2">
+              <div className="flex aspect-video items-center justify-center overflow-hidden rounded bg-neutral-900 text-[11px] text-neutral-500">
+                {url ? (
+                  <a href={url} target="_blank" rel="noreferrer">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={url} alt={`Slide for screen ${i + 1}`} className="size-full object-cover" />
+                  </a>
+                ) : onCamera ? (
+                  "on camera"
+                ) : (
+                  "slide preview pending"
+                )}
+              </div>
+              <p className="text-sm leading-relaxed text-neutral-200">
+                <span className="mr-1.5 tabular-nums text-neutral-500">{i + 1}</span>
+                {block}
+              </p>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
   );
 }
