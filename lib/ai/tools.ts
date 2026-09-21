@@ -8017,14 +8017,12 @@ export const linkedinGetProfile = tool({
   }),
   execute: async ({ linkedin, account_id }) => {
     try {
-      const { isUnipileConfigured, isLinkedInProviderId, normalizeLinkedInIdentity, getLinkedInProfile } =
+      const { isUnipileConfigured, linkedInLookupIdentifier, getLinkedInProfile } =
         await import("@/lib/unipile");
       if (!isUnipileConfigured()) {
         return { success: false as const, message: "Unipile is not configured (UNIPILE_API_KEY / UNIPILE_DSN)" };
       }
-      // Member ids are case-sensitive; normalizeLinkedInIdentity lowercases them.
-      const raw = linkedin.trim();
-      const identifier = isLinkedInProviderId(raw) ? raw : normalizeLinkedInIdentity(raw);
+      const identifier = linkedInLookupIdentifier(linkedin);
       if (!identifier) {
         return { success: false as const, message: `Unreadable LinkedIn identity: ${linkedin}` };
       }

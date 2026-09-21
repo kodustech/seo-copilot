@@ -1425,6 +1425,29 @@ export type UnipileWebhookPayload = {
   }>;
 };
 
+/**
+ * What to hand Unipile for a profile read. Member ids are case-sensitive, so
+ * one found bare or in a /in/ URL keeps its case; normalizeLinkedInIdentity
+ * lowercases everything, which is right for matching and wrong for lookup.
+ */
+export function linkedInLookupIdentifier(
+  urlOrId: string | null | undefined,
+): string | null {
+  const raw = urlOrId?.trim();
+  if (!raw) return null;
+  const segment = raw.match(/\/(?:in|pub)\/([^/?#]+)/i)?.[1];
+  let candidate = raw;
+  if (segment) {
+    try {
+      candidate = decodeURIComponent(segment);
+    } catch {
+      candidate = segment;
+    }
+  }
+  if (isLinkedInProviderId(candidate)) return candidate;
+  return normalizeLinkedInIdentity(raw);
+}
+
 /** Normalize LinkedIn profile URL / public id for matching. */
 export function normalizeLinkedInIdentity(
   urlOrId: string | null | undefined,

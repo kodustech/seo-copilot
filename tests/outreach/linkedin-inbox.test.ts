@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { orderChatMessages } from "@/lib/linkedin-inbox";
 import { buildMcpTools } from "@/lib/mcp/server";
+import { linkedInLookupIdentifier } from "@/lib/unipile";
 
 describe("LinkedIn read tools MCP wiring", () => {
   const { tools } = buildMcpTools({ userEmail: "test@kodus.io" });
@@ -36,5 +37,22 @@ describe("orderChatMessages", () => {
       { from_me: true, text: "oi Juliano", at: "2026-09-19T10:00:00.000Z" },
       { from_me: false, text: "tudo certo, vamos marcar", at: "2026-09-20T10:00:00.000Z" },
     ]);
+  });
+});
+
+describe("linkedInLookupIdentifier", () => {
+  it("keeps a member id's case, bare or inside a profile URL", () => {
+    expect(linkedInLookupIdentifier("ACoAABcDeF")).toBe("ACoAABcDeF");
+    expect(linkedInLookupIdentifier("https://www.linkedin.com/in/ACoAABcDeF/")).toBe("ACoAABcDeF");
+    expect(linkedInLookupIdentifier("https://www.linkedin.com/in/ACoAABcDeF?miniProfileUrn=x")).toBe("ACoAABcDeF");
+  });
+
+  it("normalizes a vanity slug from a URL or bare", () => {
+    expect(linkedInLookupIdentifier("https://www.linkedin.com/in/Juliano-Silva/")).toBe("juliano-silva");
+    expect(linkedInLookupIdentifier("Juliano-Silva")).toBe("juliano-silva");
+  });
+
+  it("returns null for empty input", () => {
+    expect(linkedInLookupIdentifier("  ")).toBeNull();
   });
 });
