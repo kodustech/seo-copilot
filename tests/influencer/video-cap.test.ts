@@ -181,6 +181,31 @@ describe("renderVideoClips in parallel", () => {
     });
   });
 
+  it("resubmits blocks that failed in an earlier run, once, in the same run", async () => {
+    vi.mocked(createHeyGenVideo).mockImplementation(async () => "fresh");
+    vi.mocked(getHeyGenVideo).mockImplementation(async (_key, id) =>
+      id === "dead" ? { ...done(id), status: "failed", videoUrl: null, failureMessage: "Insufficient credit" } : done(id),
+    );
+    const started = activity({
+      heygen_video_ids: ["id1", "dead", "dead"],
+      video_urls: ["https://clip/id1.mp4", null, null],
+    });
+    const out = await renderVideoClips(fakeClient([]), started, channel, now);
+    expect(out.videoUrls).toEqual(["https://clip/id1.mp4", "https://clip/fresh.mp4", "https://clip/fresh.mp4"]);
+  });
+
+  it("stops with every failed block named when the fresh submission fails too", async () => {
+    vi.mocked(createHeyGenVideo).mockImplementation(async () => "dead");
+    vi.mocked(getHeyGenVideo).mockImplementation(async (_key, id) =>
+      id === "dead" ? { ...done(id), status: "failed", videoUrl: null, failureMessage: "Insufficient credit" } : done(id),
+    );
+    const started = activity({ heygen_video_ids: ["id1", "dead", "dead"], video_urls: ["https://clip/id1.mp4", null, null] });
+    await expect(renderVideoClips(fakeClient([]), started, channel, now)).rejects.toThrow(
+      /HeyGen failed 2 block\(s\) \(block 2, block 3\): Insufficient credit\. Retry render/,
+    );
+    expect(lastMeta()).toMatchObject({ heygen_video_ids: ["id1", null, null] });
+  });
+
   it("waits when HeyGen is at its concurrency limit, keeping the ids it got", async () => {
     let n = 0;
     vi.mocked(createHeyGenVideo).mockImplementation(async () => {
