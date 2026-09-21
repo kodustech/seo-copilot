@@ -2,11 +2,12 @@
 """Video worker: the hands of the youtube channel.
 
 Polls Supabase for approved video activities whose avatar clips are ready but
-whose finished file is missing, then: downloads clips, renders slides from
-the queued outlines, transcribes for captions, composites (intro + bubble +
-karaoke + music) via scripts/render-video-from-plan.py, uploads the mp4 to
-Storage, and points the activity at it. The publish cron takes it from there
-(unlisted YouTube upload).
+whose finished file is missing, then: downloads clips, renders the queued
+slides (worker/slides.py, headless Chromium), transcribes for captions,
+composites (on-camera blocks full frame, slide blocks with the avatar bubble,
+karaoke, music) via scripts/render-video-from-plan.py, uploads the mp4 to
+Storage, and points the activity at it. The publish cron uploads it to
+YouTube from there.
 
 One replica only. A claim stamp (content_meta.worker_claim_at) keeps a second
 replica — or a restart mid-render — from doubling paid work; stale claims
@@ -20,6 +21,8 @@ Env:
   RENDER_SCRIPT (default /app/scripts/render-video-from-plan.py),
   WORK_DIR (default /tmp/video-worker).
 """
+from __future__ import annotations
+
 import json
 import os
 import shutil
@@ -34,9 +37,6 @@ from pathlib import Path
 
 STALE_CLAIM_MINUTES = 30
 MAX_ATTEMPTS = 3
-
-FONT_BOLD = os.getenv("WORKER_FONT_BOLD", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
-FONT_MONO = os.getenv("WORKER_FONT_MONO", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf")
 
 
 def log(*parts: object) -> None:
@@ -55,31 +55,17 @@ def download(url: str, dest: Path) -> None:
         f.write(res.read())
 
 
-def render_slide(spec: dict, site: str, dest: Path) -> None:
-    """Deterministic channel template: dark, mono rows, accent note."""
-    from PIL import Image, ImageDraw, ImageFont
-
-    bg, white, gray, acc, green = (15, 15, 35), (255, 255, 255), (150, 150, 170), (139, 92, 246), (52, 211, 153)
-    img = Image.new("RGB", (1920, 1080), bg)
-    dr = ImageDraw.Draw(img)
-    title_f = ImageFont.truetype(FONT_BOLD, 72)
-    mono_f = ImageFont.truetype(FONT_MONO, 40)
-    small_f = ImageFont.truetype(FONT_BOLD, 30)
-    note_f = ImageFont.truetype(FONT_BOLD, 36)
-    dr.rectangle([0, 0, 1920, 10], fill=acc)
-    y = 120
-    for line in spec["title"].split("\n"):
-        dr.text((80, y), line, font=title_f, fill=white)
-        y += 95
-    y = max(y + 40, 380)
-    for row in spec["rows"][:6]:
-        dr.text((120, y), "> " + row, font=mono_f, fill=white)
-        y += 90
-    if spec.get("note"):
-        dr.text((80, 880), spec["note"], font=note_f, fill=acc)
-    dr.text((80, 1020), site, font=small_f, fill=gray)
-    img.save(dest)
-    log("slide ok", Path(dest).name)
+def worker_visuals(meta: dict, clip_count: int) -> list | None:
+    """One visual per clip: None films the avatar full frame, a dict is a slide.
+    content_meta.visuals is one per block; older drafts carry slides, one per
+    body block with the first block on camera."""
+    visuals = meta.get("visuals")
+    if isinstance(visuals, list):
+        return visuals if len(visuals) == clip_count else None
+    slides = meta.get("slides")
+    if isinstance(slides, list) and len(slides) == clip_count - 1:
+        return [None, *slides]
+    return None
 
 
 def main() -> None:
@@ -120,10 +106,13 @@ def main() -> None:
 
 
 def input_fingerprint(meta: dict) -> str:
-    """What the worker consumes: the clip set and the slide outlines. The
-    review edit (activities.content) is already spent by the time clips exist,
-    so only a change here can make a retry turn out differently."""
-    return json.dumps({"clips": meta.get("video_urls"), "slides": meta.get("slides")}, sort_keys=True)
+    """What the worker consumes: the clip set and the visuals. The review edit
+    (activities.content) is already spent by the time clips exist, so only a
+    change here can make a retry turn out differently."""
+    return json.dumps(
+        {"clips": meta.get("video_urls"), "visuals": meta.get("visuals"), "slides": meta.get("slides")},
+        sort_keys=True,
+    )
 
 
 def claim_job(client, table=None):
@@ -197,13 +186,12 @@ def run_job(client, model, job: dict, bucket: str, render_script: str, work_root
     try:
         meta = dict(job.get("content_meta") or {})
         clips: list[str] = [u for u in meta.get("video_urls", []) if isinstance(u, str) and u]
-        slides: list[dict] = meta.get("slides") or []
-        if len(slides) != len(clips) - 1:
-            # Intro (block 1) has no slide; anything else is a malformed draft
-            # the agent validator should have refused — refuse it here too.
-            # Raise, don't return: the except below records it once and the
-            # loop backs off like any other failure.
-            raise RuntimeError(f"slides_mismatch: {len(slides)} outlines for {len(clips)} clips")
+        visuals = worker_visuals(meta, len(clips))
+        if visuals is None:
+            # Anything but one visual per clip is a malformed draft the agent
+            # validator should have refused. Raise, don't return: the except
+            # below records it once and the loop backs off like any failure.
+            raise RuntimeError(f"slides_mismatch: visuals do not pair one per clip ({len(clips)} clips)")
 
         chan = (
             client.table("persona_channels")
@@ -243,11 +231,9 @@ def run_job(client, model, job: dict, bucket: str, render_script: str, work_root
         words_json = work / "words.json"
         words_json.write_text(json.dumps(words))
 
-        slide_pngs = []
-        for i, spec in enumerate(slides):
-            p = work / f"slide{i + 2}.png"
-            render_slide(spec, site, p)
-            slide_pngs.append(str(p))
+        from slides import render_slides  # Chromium: loaded only when a job runs
+
+        slide_pngs = render_slides(visuals, site, work)
 
         def dur(p: str) -> float:
             r = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
@@ -258,9 +244,10 @@ def run_job(client, model, job: dict, bucket: str, render_script: str, work_root
         plan = {
             "version": 1,
             "segments": [
-                {"kind": "intro", "avatarMp4": clip_paths[0], "durationSeconds": dur(clip_paths[0])},
-                *[{"kind": "slide", "slidePng": png, "avatarMp4": cp, "durationSeconds": dur(cp)}
-                  for png, cp in zip(slide_pngs, clip_paths[1:])],
+                {"kind": "face", "avatarMp4": cp, "durationSeconds": dur(cp)}
+                if png is None
+                else {"kind": "slide", "slidePng": str(png), "avatarMp4": cp, "durationSeconds": dur(cp)}
+                for png, cp in zip(slide_pngs, clip_paths)
             ],
             "musicMp3": None,
             "musicLevel": 0.06,

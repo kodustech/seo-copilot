@@ -29,9 +29,10 @@ import {
   resetStalePublishing,
   updateActivity,
 } from "@/lib/influencer/activities";
+import { alertOperator } from "@/lib/influencer/alerts";
 import { getChannelCredentialCipher } from "@/lib/influencer/credentials";
 import { listChannels, listPersonas } from "@/lib/influencer/personas";
-import { renderVideoClips, YoutubeDeferred } from "@/lib/influencer/video-pipeline";
+import { renderVideoClips, weekStartUtcIso, YoutubeDeferred } from "@/lib/influencer/video-pipeline";
 import {
   buildVideoDescription,
   youtubeChannelConfig,
@@ -211,7 +212,7 @@ export function resolvePublishDecision({
   }
 
   // YouTube without a finished file is not a failure — it is a pipeline
-  // waiting on a person (composite script, then Studio checkbox). Defer with
+  // waiting on the worker's composite. Defer with
   // the next action instead of claiming it every run.
   if (channel.platform === "youtube") {
     const meta = activity.content_meta;
@@ -831,14 +832,14 @@ export function manualChannelIds(channels: PersonaChannel[]): string[] {
 /**
  * YouTube in three passes across cron runs: (1) approved script with no
  * clips → render HeyGen clips (money gate inside), then stop; (2) clips but
- * no finished file → stop, a person runs the composite script; (3) finished
- * file attached → upload unlisted. The person publishes from Studio after
- * the AI-content checkbox. Nothing here can put a video public alone.
+ * no finished file → stop, the worker composites; (3) finished file attached
+ * → upload with the synthetic-media flag at the channel's visibility.
  */
 async function publishToYoutube(
   client: SupabaseClient,
   activity: PersonaActivity,
   channel: PersonaChannel,
+  persona: Persona,
 ): Promise<PublishOutcome> {
   const meta = activity.content_meta;
   const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : "");
@@ -888,15 +889,41 @@ async function publishToYoutube(
     musicCredit: text(meta.music_credit) || null,
     siteUrl: cfg.siteUrl,
   });
-  const { videoId, watchUrl } = await uploadYoutubeVideo({
+  const uploaded = await uploadYoutubeVideo({
     accessToken,
     title: activity.title?.trim() || activity.content.slice(0, 80),
     description,
     videoBytes: bytes,
+    privacyStatus: cfg.privacy,
+    tags: Array.isArray(meta.tags) ? meta.tags.filter((t): t is string => typeof t === "string") : undefined,
   });
+  // YouTube keeps uploads from an API project that has not passed its audit
+  // private, whatever was asked. Say so on the row and to the operator, once a
+  // week per channel, instead of reporting a public video nobody can see.
+  const heldPrivate = cfg.privacy !== "private" && uploaded.privacyStatus === "private";
   await updateActivity(client, activity.id, {
-    content_meta: { ...meta, stage: "uploaded_unlisted" },
+    content_meta: {
+      ...meta,
+      stage: "uploaded",
+      youtube_privacy: uploaded.privacyStatus ?? cfg.privacy,
+      ...(heldPrivate
+        ? {
+            youtube_notice:
+              "YouTube kept this upload private: the Google Cloud project behind the YouTube OAuth client has not passed YouTube's API audit. Switch it in Studio, or finish the audit so uploads keep their visibility.",
+          }
+        : {}),
+    },
   });
+  if (heldPrivate) {
+    await alertOperator(client, {
+      userEmail: persona.created_by,
+      title: `@${persona.handle}: YouTube is holding uploads private`,
+      body: "The API project has not passed YouTube's audit, so every upload lands private. Publish from Studio until the audit clears.",
+      dedupeKey: `youtube-private-${channel.id}-${weekStartUtcIso(new Date()).slice(0, 10)}`,
+    }).catch(() => {});
+  }
+  const videoId = uploaded.videoId;
+  const watchUrl = uploaded.watchUrl;
   return { external_id: videoId, external_url: watchUrl };
 }
 
@@ -931,7 +958,7 @@ async function publishActivity(
   // browser. The stored publish_via says "browser" once connected, but a
   // channel created before that existed still says "manual".
   if (channel.platform === "medium") return publishToMedium(activity, channel, persona);
-  if (channel.platform === "youtube") return publishToYoutube(client, activity, channel);
+  if (channel.platform === "youtube") return publishToYoutube(client, activity, channel, persona);
 
   switch (channel.publish_via) {
     case "post_bridge":

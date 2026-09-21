@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 import {
@@ -288,7 +289,7 @@ function ChannelConnect({ token, channel, onChanged }: { token: string; channel:
     return <MediumConnect token={token} {...common} onConnect={(payload) => connect(payload)} />;
   }
   if (channel.platform === "youtube") {
-    return <YoutubeConnect {...common} onConnect={(payload) => connect(payload)} />;
+    return <YoutubeConnect token={token} {...common} onConnect={(payload) => connect(payload)} />;
   }
   if (channel.publish_via === "manual") {
     return <ManualConnect {...common} onConnect={() => connect({ enable: true })} />;
@@ -422,12 +423,14 @@ function DevtoConnect({
 }
 
 function YoutubeConnect({
+  token,
   channel,
   busy,
   error,
   onConnect,
   onDisconnect,
 }: {
+  token: string;
   channel: Channel;
   busy: boolean;
   error: string | null;
@@ -435,73 +438,165 @@ function YoutubeConnect({
   onDisconnect: () => void;
 }) {
   const cfg = (channel.channel_config ?? {}) as Record<string, unknown>;
-  const str = (v: unknown) => (typeof v === "string" ? v : "");
-  const [refreshToken, setRefreshToken] = useState("");
+  const str = (v: unknown, fallback = "") => (typeof v === "string" ? v : typeof v === "number" ? String(v) : fallback);
   const [heygenKey, setHeygenKey] = useState("");
-  const [avatarId, setAvatarId] = useState(str(cfg.youtube_avatar_id));
-  const [voiceId, setVoiceId] = useState(str(cfg.youtube_voice_id));
-  const [musicUrl, setMusicUrl] = useState(str(cfg.youtube_music_url));
-  const [siteUrl, setSiteUrl] = useState(str(cfg.youtube_site_url));
+  const [refreshToken, setRefreshToken] = useState("");
+  const [settings, setSettings] = useState<Record<string, string>>({
+    youtube_avatar_id: str(cfg.youtube_avatar_id),
+    youtube_voice_id: str(cfg.youtube_voice_id),
+    youtube_expressiveness: str(cfg.youtube_expressiveness, "high"),
+    youtube_motion_prompt: str(cfg.youtube_motion_prompt),
+    youtube_voice_speed: str(cfg.youtube_voice_speed),
+    youtube_privacy: str(cfg.youtube_privacy, "public"),
+    youtube_target_minutes: str(cfg.youtube_target_minutes, "4.5"),
+    youtube_slide_mode: str(cfg.youtube_slide_mode, "layouts"),
+    youtube_weekly_budget_credits: str(cfg.youtube_weekly_budget_credits, "12"),
+    youtube_max_videos_per_week: str(cfg.youtube_max_videos_per_week, "1"),
+    youtube_music_url: str(cfg.youtube_music_url),
+    youtube_site_url: str(cfg.youtube_site_url),
+    youtube_direction: str(cfg.youtube_direction),
+  });
+  const [oauthBusy, setOauthBusy] = useState(false);
+  const [oauthError, setOauthError] = useState<string | null>(null);
   const linked = channel.credentials_ref?.startsWith("vault:") ?? false;
+  const set = (key: string) => (value: string) => setSettings((prev) => ({ ...prev, [key]: value }));
 
-  if (channel.status === "active" && linked) {
-    return (
-      <div className="space-y-2">
-        <Hint>
-          Uploads land unlisted with the AI note in the description. Confirm YouTube&apos;s altered-content checkbox in Studio, then publish. Renders cost credits (weekly cap per persona).
-        </Hint>
-        {error ? <p className={cls.errorText}>{error}</p> : null}
-        <button type="button" disabled={busy} onClick={onDisconnect} className={cls.outline}>
-          Disconnect
-        </button>
-      </div>
-    );
+  async function connectGoogle() {
+    setOauthBusy(true);
+    setOauthError(null);
+    try {
+      const res = await fetch(`/api/influencers/channels/${channel.id}/youtube-oauth`, {
+        method: "POST",
+        headers: authHeaders(token),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.url) throw new Error(body.error || "Could not start Google sign-in");
+      window.location.href = body.url;
+    } catch (err) {
+      setOauthError(err instanceof Error ? err.message : "Could not start Google sign-in");
+      setOauthBusy(false);
+    }
   }
 
+  function save() {
+    // Empty text clears a setting back to its default; the server keeps only youtube_* keys.
+    const channelConfig = Object.fromEntries(
+      Object.entries(settings).map(([k, v]) => [k, v.trim() === "" ? null : v.trim()]),
+    );
+    onConnect({
+      ...(heygenKey.trim() ? { heygen_api_key: heygenKey.trim() } : {}),
+      ...(refreshToken.trim() ? { youtube_refresh_token: refreshToken.trim() } : {}),
+      channel_config: channelConfig,
+    });
+  }
+
+  const text = (key: string, label: string, placeholder = "") => (
+    <label className="block">
+      <span className={cn(cls.label, "mb-1 block")}>{label}</span>
+      <Input value={settings[key]} onChange={(e) => set(key)(e.target.value)} placeholder={placeholder} className={cls.input} />
+    </label>
+  );
+  const choice = (key: string, label: string, options: [string, string][]) => (
+    <label className="block">
+      <span className={cn(cls.label, "mb-1 block")}>{label}</span>
+      <Select value={settings[key]} onValueChange={set(key)}>
+        <SelectTrigger className={cls.select}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent className={cls.menu}>
+          {options.map(([value, name]) => (
+            <SelectItem key={value} value={value}>
+              {name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </label>
+  );
+
   return (
-    <div className="space-y-2">
-      <Hint>
-        Link the channel&apos;s YouTube OAuth refresh token and the persona&apos;s HeyGen key (both stored encrypted), then pick the avatar look + voice this channel presents as. Either half can be linked first; the channel activates with both plus avatar and voice.
-      </Hint>
-      <div className="flex flex-wrap items-center gap-2">
-        <Input type="password" value={refreshToken} onChange={(e) => setRefreshToken(e.target.value)} placeholder="YouTube OAuth refresh token" className={cn(cls.input, "w-64")} />
-        <Input type="password" value={heygenKey} onChange={(e) => setHeygenKey(e.target.value)} placeholder="HeyGen API key" className={cn(cls.input, "w-64")} />
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <Hint>
+          Videos upload with YouTube&apos;s altered or synthetic content label set. A Google Cloud project that has not passed YouTube&apos;s API audit has every upload held private by YouTube; the draft says so when that happens.
+        </Hint>
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" disabled={oauthBusy || busy} onClick={connectGoogle} className={linked ? cls.outline : cls.primary}>
+            {oauthBusy ? <Loader2 className="size-3.5 animate-spin" /> : linked ? "Reconnect YouTube account" : "Connect with Google"}
+          </button>
+          {linked ? <span className="text-xs text-neutral-400">YouTube account linked</span> : null}
+          <Input type="password" value={heygenKey} onChange={(e) => setHeygenKey(e.target.value)} placeholder="HeyGen API key (stored encrypted)" className={cn(cls.input, "w-64")} />
+        </div>
+        {oauthError ? <p className={cls.errorText}>{oauthError}</p> : null}
+        <details className="text-xs text-neutral-500">
+          <summary className="cursor-pointer">Paste a refresh token instead</summary>
+          <Input type="password" value={refreshToken} onChange={(e) => setRefreshToken(e.target.value)} placeholder="YouTube OAuth refresh token" className={cn(cls.input, "mt-2 w-64")} />
+        </details>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <Input value={avatarId} onChange={(e) => setAvatarId(e.target.value)} placeholder="Avatar look id (youtube_avatar_id)" className={cn(cls.input, "w-64")} />
-        <Input value={voiceId} onChange={(e) => setVoiceId(e.target.value)} placeholder="Voice id (youtube_voice_id)" className={cn(cls.input, "w-64")} />
+
+      <div className="space-y-2">
+        <span className={cls.label}>Presenter</span>
+        <div className="grid grid-cols-2 gap-2">
+          {text("youtube_avatar_id", "Avatar look id")}
+          {text("youtube_voice_id", "Voice id")}
+          {choice("youtube_expressiveness", "Expressiveness (photo avatars)", [
+            ["high", "High"],
+            ["medium", "Medium"],
+            ["low", "Low (HeyGen default)"],
+            ["off", "Not sent (video avatars)"],
+          ])}
+          {text("youtube_voice_speed", "Voice speed", "1.0 (0.5-1.5)")}
+        </div>
+        {text("youtube_motion_prompt", "Gestures", "Relaxed hand gestures while explaining, like a developer talking to camera")}
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <Input value={musicUrl} onChange={(e) => setMusicUrl(e.target.value)} placeholder="Music bed mp3 URL (optional)" className={cn(cls.input, "w-64")} />
-        <Input value={siteUrl} onChange={(e) => setSiteUrl(e.target.value)} placeholder="Site URL for descriptions (optional)" className={cn(cls.input, "w-64")} />
+
+      <div className="space-y-2">
+        <span className={cls.label}>Videos</span>
+        <div className="grid grid-cols-2 gap-2">
+          {choice("youtube_privacy", "Visibility", [
+            ["public", "Public"],
+            ["unlisted", "Unlisted"],
+            ["private", "Private"],
+          ])}
+          {text("youtube_target_minutes", "Target length (minutes)", "4.5")}
+          {choice("youtube_slide_mode", "Slides", [
+            ["layouts", "Layouts: the persona fills templates"],
+            ["html", "Free: the persona designs each slide"],
+          ])}
+          {text("youtube_weekly_budget_credits", "Weekly budget (HeyGen credits)", "12")}
+          {text("youtube_max_videos_per_week", "Videos per week (0 pauses)", "1")}
+          {text("youtube_site_url", "Site URL for descriptions")}
+        </div>
+        {text("youtube_music_url", "Music bed mp3 URL (optional)")}
+        <label className="block">
+          <span className={cn(cls.label, "mb-1 block")}>Direction</span>
+          <Textarea
+            value={settings.youtube_direction}
+            onChange={(e) => set("youtube_direction")(e.target.value)}
+            placeholder="What these videos should be about. The persona reads it every shift."
+            rows={3}
+            className={cls.textarea}
+          />
+        </label>
       </div>
-      <div>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() =>
-            onConnect({
-              ...(refreshToken.trim() ? { youtube_refresh_token: refreshToken.trim() } : {}),
-              ...(heygenKey.trim() ? { heygen_api_key: heygenKey.trim() } : {}),
-              channel_config: {
-                ...(avatarId.trim() ? { youtube_avatar_id: avatarId.trim() } : {}),
-                ...(voiceId.trim() ? { youtube_voice_id: voiceId.trim() } : {}),
-                ...(musicUrl.trim() ? { youtube_music_url: musicUrl.trim() } : {}),
-                ...(siteUrl.trim() ? { youtube_site_url: siteUrl.trim() } : {}),
-              },
-            })
-          }
-          className={cls.primary}
-        >
-          {busy ? <Loader2 className="size-3.5 animate-spin" /> : "Connect"}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" disabled={busy} onClick={save} className={cls.primary}>
+          {busy ? <Loader2 className="size-3.5 animate-spin" /> : "Save"}
         </button>
+        {linked ? (
+          <button type="button" disabled={busy} onClick={onDisconnect} className={cls.outline}>
+            Disconnect
+          </button>
+        ) : null}
       </div>
       {error ? <p className={cls.errorText}>{error}</p> : null}
     </div>
   );
 }
 
-function BlogConnect({  channel,
+function BlogConnect({
+  channel,
   busy,
   error,
   onConnect,

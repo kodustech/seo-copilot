@@ -6,10 +6,9 @@ Usage:
     python3 scripts/render-video-from-plan.py plan.json
 
 Needs: ffmpeg + ffprobe on PATH, DejaVu Sans Bold (or pass --font).
- constructive pipeline, proven on the agentwrotethis POC:
- intro full-frame -> slide segments with a white circular bubble ->
- concat -> burned captions (karaoke when wordsJson is present) ->
- music bed mix.
+Pipeline, proven on the agentwrotethis POC: face segments full frame, slide
+segments with the avatar in a circular bubble, in any order -> concat ->
+burned captions (karaoke when wordsJson is present) -> music bed mix.
 
 Writes <outputMp4> next to a <output>-captioned.mp4 when captions exist.
 """
@@ -77,7 +76,8 @@ def main() -> None:
     )
     for i, seg in enumerate(plan["segments"]):
         out = str(work / f"seg{i}.mp4")
-        if seg["kind"] == "intro":
+        # "intro" is the older name for an on-camera segment.
+        if seg["kind"] in ("face", "intro"):
             run(["ffmpeg", "-y", "-v", "error", "-i", seg["avatarMp4"],
                  "-filter_complex", "[0:v]scale=1920:1080,fps=30[v]",
                  "-map", "[v]", "-map", "0:a",

@@ -2,9 +2,7 @@
 --
 -- A youtube channel presents one avatar + one voice (stored on the channel's
 -- channel_config), renders script blocks through HeyGen, and uploads the
--- finished mp4 through the YouTube Data API — always unlisted, because the
--- platform's AI-content checkbox has no API and a person confirms it in
--- Studio before anything goes public.
+-- finished mp4 through the YouTube Data API with the synthetic-media flag set.
 --
 -- Safe to re-run.
 

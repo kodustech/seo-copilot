@@ -20,6 +20,12 @@ export type HeyGenVideoRequest = {
   removeBackground?: boolean;
   title?: string;
   resolution?: "720p" | "1080p";
+  /** Photo avatars only (Avatar IV). HeyGen defaults to "low", which reads stiff. */
+  expressiveness?: "high" | "medium" | "low" | null;
+  /** Natural-language body motion and hand gestures. */
+  motionPrompt?: string | null;
+  /** 0.5-1.5 playback multiplier for the TTS voice. */
+  voiceSpeed?: number | null;
 };
 
 export function buildHeyGenVideoBody(req: HeyGenVideoRequest): Record<string, unknown> {
@@ -39,10 +45,15 @@ export function buildHeyGenVideoBody(req: HeyGenVideoRequest): Record<string, un
   if (hasScript) {
     body.script = req.script!.trim();
     if (req.voiceId?.trim()) body.voice_id = req.voiceId.trim();
+    if (typeof req.voiceSpeed === "number" && req.voiceSpeed >= 0.5 && req.voiceSpeed <= 1.5) {
+      body.voice_settings = { speed: req.voiceSpeed };
+    }
   } else {
     body.audio_asset_id = req.audioAssetId!.trim();
   }
   if (req.removeBackground) body.remove_background = true;
+  if (req.expressiveness) body.expressiveness = req.expressiveness;
+  if (req.motionPrompt?.trim()) body.motion_prompt = req.motionPrompt.trim();
   return body;
 }
 

@@ -4,9 +4,9 @@ import { getSupabaseUserClient } from "@/lib/supabase-server";
 
 import {
   deleteChannelCredential,
-  getChannelCredentialCipher,
   setChannelCredential,
 } from "@/lib/influencer/credentials";
+import { youtubeChannelNeeds } from "@/lib/influencer/youtube-oauth";
 import { deleteContext, releaseSession, startLoginSession } from "@/lib/influencer/browser";
 import {
   MEDIUM_CONTEXT_KEY,
@@ -249,10 +249,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     }
 
     if (channel.platform === "youtube") {
-      // Two credentials, two jobs: the OAuth refresh token uploads bytes to
-      // YouTube; the HeyGen key renders the avatar that speaks. Either may be
-      // linked first — the channel only activates with both halves present,
-      // plus a chosen avatar + voice in channel_config.
+      // Two credentials, two jobs: the OAuth refresh token uploads to YouTube
+      // (normally linked by "Connect with Google"; pasting one is the manual
+      // fallback), the HeyGen key renders the avatar. Either may come first;
+      // the channel activates once both are linked and avatar + voice are set.
       const refreshToken = typeof body.youtube_refresh_token === "string" ? body.youtube_refresh_token.trim() : "";
       const heygenKey = typeof body.heygen_api_key === "string" ? body.heygen_api_key.trim() : "";
       if (heygenKey) {
@@ -280,37 +280,32 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
           created_by: userEmail,
         });
       }
-      const patch: Record<string, unknown> = {};
-      if (body.channel_config && typeof body.channel_config === "object") {
-        patch.channel_config = { ...channel.channel_config, ...(body.channel_config as Record<string, unknown>) };
-      }
-      const merged = {
-        ...channel.channel_config,
-        ...((patch.channel_config as Record<string, unknown> | undefined) ?? {}),
-      };
-      const hasOauth = Boolean(refreshToken || channel.credentials_ref?.length);
-      const heygenCipher = await getChannelCredentialCipher(client, channel.persona_id, "heygen");
-      const hasAvatar = typeof merged.youtube_avatar_id === "string" && merged.youtube_avatar_id.trim().length > 0;
-      const hasVoice = typeof merged.youtube_voice_id === "string" && merged.youtube_voice_id.trim().length > 0;
+      // Only this channel's own settings: a youtube_* key, or nothing.
+      const incoming =
+        body.channel_config && typeof body.channel_config === "object" && !Array.isArray(body.channel_config)
+          ? Object.fromEntries(
+              Object.entries(body.channel_config as Record<string, unknown>).filter(([k]) => k.startsWith("youtube_")),
+            )
+          : {};
+      const channelConfig = { ...channel.channel_config, ...incoming };
+      const oauthLinked = Boolean(refreshToken || channel.credentials_ref?.length);
+      const needs = await youtubeChannelNeeds(client, { ...channel, channel_config: channelConfig }, oauthLinked);
+      const ready = !needs.oauth && !needs.heygen && !needs.avatar && !needs.voice;
       const updated = await updateChannel(client, id, {
-        ...(Object.keys(patch).length ? { channel_config: patch.channel_config as Record<string, unknown> } : {}),
+        ...(Object.keys(incoming).length ? { channel_config: channelConfig } : {}),
         ...(refreshToken ? { credentials_ref: "vault:youtube" } : {}),
-        status: hasOauth && heygenCipher && hasAvatar && hasVoice ? "active" : channel.status,
+        status: ready ? "active" : channel.status,
       });
       return NextResponse.json({
-        connected: Boolean(hasOauth && heygenCipher),
+        connected: !needs.oauth && !needs.heygen,
         platform: "youtube",
-        needs: {
-          oauth: !hasOauth,
-          heygen: !heygenCipher,
-          avatar: !hasAvatar,
-          voice: !hasVoice,
-        },
+        needs,
         channel: updated,
       });
     }
 
-    if (channel.platform === "medium") {      // Step 1: open a browser a person can sign in with. The context it lands
+    if (channel.platform === "medium") {
+      // Step 1: open a browser a person can sign in with. The context it lands
       // in is remembered on the channel so step 2 can only confirm THAT one.
       if (body.start_login === true) {
         // The proxy choice is part of the login: a session signed in from a
@@ -470,7 +465,8 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
         status: "pending_setup",
         credentials_ref: null,
       });
-    } else if (channel.platform === "medium") {      // The login lives in the Browserbase context; forgetting the channel's
+    } else if (channel.platform === "medium") {
+      // The login lives in the Browserbase context; forgetting the channel's
       // pointer without deleting the context would leave a signed-in browser
       // nobody can see from the app.
       const contextId = mediumContextId(channel);

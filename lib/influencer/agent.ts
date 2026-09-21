@@ -43,7 +43,18 @@ import {
   type PersonaChannel,
 } from "@/lib/influencer/types";
 import { buildPersonaVoicePolicy } from "@/lib/influencer/voice";
-import { parseVideoBlocks, validateSlideSpecs, validateVideoScript } from "@/lib/influencer/youtube";import { formatContentQualityIssues, validateLongFormContent } from "@/lib/influencer/content-quality";
+import {
+  parseVideoBlocks,
+  parseVideoVisuals,
+  VIDEO_SLIDE_INPUT_SCHEMA,
+  validateVideoLength,
+  validateVideoScript,
+  youtubeChannelConfig,
+  YOUTUBE_MAX_BLOCKS,
+  YOUTUBE_MIN_BLOCKS,
+  type VideoVisual,
+} from "@/lib/influencer/youtube";
+import { formatContentQualityIssues, validateLongFormContent } from "@/lib/influencer/content-quality";
 
 const MAX_STEPS = 16;
 const FETCH_TIMEOUT_MS = 15_000;
@@ -773,7 +784,7 @@ export async function runInfluencerAgentSession({
         platform: z
           .enum(["x", "devto", "blog", "medium", "reddit", "hackernews", "hackernoon", "youtube"])
           .describe(
-            "Which channel this is for. 'medium' is import-only: kind 'crosspost' + canonical_url of your own live article. 'reddit' and 'hackernoon' are posted by a person from the draft you queue. 'youtube' takes kind 'video' only: spoken script blocks, never an article — the system films the avatar and uploads unlisted.",
+            "Which channel this is for. 'medium' is import-only: kind 'crosspost' + canonical_url of your own live article. 'reddit' and 'hackernoon' are posted by a person from the draft you queue. 'youtube' takes kind 'video' only: spoken blocks plus one visual per block, never an article. The system films the avatar, composites the video and uploads it.",
           ),
         title: z.string().nullable().optional().describe("Title (for articles)"),
         content: z.string().describe("The full content, in the persona's voice"),
@@ -805,13 +816,13 @@ export async function runInfluencerAgentSession({
           .array(z.string())
           .optional()
           .describe(
-            "YouTube only (kind 'video'): 3-8 spoken script blocks, one idea each, 20-600 chars, contractions, hook first. The avatar speaks these verbatim — write for a mouth, not a page.",
+            `YouTube only (kind 'video'): what you say out loud, ${YOUTUBE_MIN_BLOCKS}-${YOUTUBE_MAX_BLOCKS} blocks adding up to the channel's target length (your brief gives it). Plain spoken English: no markdown, no URLs. The avatar speaks these verbatim.`,
           ),
         slides: z
-          .array(z.object({ title: z.string(), rows: z.array(z.string()), note: z.string().nullable().optional() }))
+          .array(VIDEO_SLIDE_INPUT_SCHEMA)
           .optional()
           .describe(
-            "YouTube only: one outline per body block (block 1 is the full-frame intro and needs none). Each outline is a slide title plus up to 6 short rows. The worker renders the pixels — you only write the words.",
+            "YouTube only: one entry per block, same order. null films you on camera, full frame. An object puts a slide on screen with you in a corner bubble: {layout, ...fields} on a layouts channel, {html} on a channel that designs its own slides. Your brief says which, and lists the fields.",
           ),
         replaces_slug: z
           .string()
@@ -985,18 +996,28 @@ export async function runInfluencerAgentSession({
           await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "video_not_youtube" } });
           return "Kind 'video' only exists for platform 'youtube'. Queue this idea for youtube, or rewrite it as the channel's own kind.";
         }
+        // Checked against the channel it lands on: its target length and
+        // whether it uses layouts or lets the persona design its slides.
+        let videoScript: { blocks: string[]; visuals: VideoVisual[] } | null = null;
         if (normalizedKind === "video") {
           const scriptIssues = validateVideoScript(blocks);
           if (scriptIssues.length) {
             await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "video_script", issues: scriptIssues } });
-            return `This video script is not ready:\n${scriptIssues.join("\n")}\nRewrite the blocks — spoken, one idea each — and queue again.`;
+            return `This video script is not ready:\n${scriptIssues.join("\n")}\nRewrite the blocks as spoken sentences and queue again.`;
           }
-          const blockCount = parseVideoBlocks(blocks)?.length ?? 0;
-          const slideIssues = validateSlideSpecs(slides, blockCount);
-          if (slideIssues.length) {
-            await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "video_slides", issues: slideIssues } });
-            return `These slides are not ready:\n${slideIssues.join("\n")}\nOne outline per body block, title plus short rows, and queue again.`;
+          const ytCfg = youtubeChannelConfig(channel);
+          const spoken = parseVideoBlocks(blocks)!;
+          const lengthIssues = validateVideoLength(spoken, ytCfg.targetMinutes);
+          if (lengthIssues.length) {
+            await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "video_length", issues: lengthIssues } });
+            return `This video is the wrong length:\n${lengthIssues.join("\n")}\nRework the blocks and queue again.`;
           }
+          const { visuals, issues: visualIssues } = parseVideoVisuals(slides, spoken.length, ytCfg.slideMode);
+          if (visualIssues.length) {
+            await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "video_slides", issues: visualIssues } });
+            return `These visuals are not ready:\n${visualIssues.join("\n")}\nOne entry per block (null for on camera) and queue again.`;
+          }
+          videoScript = { blocks: spoken, visuals };
         }
         const target = typeof target_url === "string" ? target_url.trim() : "";
         if (target && !/^https?:\/\/\S+$/i.test(target)) {
@@ -1064,7 +1085,9 @@ export async function runInfluencerAgentSession({
               kind: normalizedKind,
               status: autoPublish ? "approved" : "draft",
               title: title ?? null,
-              content,
+              // A video's text is its script, so the review edit edits what gets
+              // said. A free-form content here would read as an edit at render.
+              content: videoScript ? videoScript.blocks.join("\n\n") : content,
               content_meta: {
                 session_id: session.id,
                 ...(testRun ? { test_run: true } : {}),
@@ -1076,8 +1099,7 @@ export async function runInfluencerAgentSession({
                 ...(platformAxis && blogPlatform ? { blog_platform: blogPlatform } : {}),
                 ...(tags?.length ? { tags } : {}),
                 ...(faq?.length ? { faq } : {}),
-                ...(normalizedKind === "video" && blocks?.length ? { blocks } : {}),
-                ...(normalizedKind === "video" && slides?.length ? { slides } : {}),
+                ...(videoScript ? { blocks: videoScript.blocks, visuals: videoScript.visuals } : {}),
                 ...(image?.url ? { image } : {}),
                 ...(reply_to ? { reply_to } : {}),
                 ...(canonical ? { canonical_url: canonical } : {}),

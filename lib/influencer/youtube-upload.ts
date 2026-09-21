@@ -1,48 +1,61 @@
 /**
- * YouTube Data API: resumable upload + the honesty boundary.
+ * YouTube Data API: resumable upload.
  *
- * The API uploads bytes; it does NOT expose the "altered content" AI
- * checkbox — that lives in YouTube Studio only. So every upload lands
- * `unlisted` with the AI note in the description, and a person flips the
- * checkbox + publishes. An "auto" youtube channel is refused: there is no
- * publish path here that skips the human, by construction.
+ * Every upload sets status.containsSyntheticMedia, the API side of Studio's
+ * "altered or synthetic content" label, so disclosure never waits on a
+ * person. Visibility comes from the channel. YouTube itself holds uploads from
+ * an API project that has not passed its audit at private, whatever we ask
+ * for, so the upload reports back the visibility YouTube actually applied.
  */
+import { youtubeOAuthClient } from "@/lib/influencer/youtube-oauth";
+import type { YoutubePrivacy } from "@/lib/influencer/youtube";
+
 export const YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload";
 
-export type YoutubeUploadInput = {  accessToken: string;
+export type YoutubeUploadInput = {
+  accessToken: string;
   title: string;
   description: string;
   /** File bytes of the finished mp4. */
   videoBytes: Uint8Array | Buffer;
   mimeType?: string;
-  /** Always unlisted — see module doc. Never accept anything else. */
-  privacyStatus?: "unlisted";
+  privacyStatus: YoutubePrivacy;
+  tags?: string[];
   categoryId?: string;
 };
 
 export function buildYoutubeVideoMetadata(input: {
   title: string;
   description: string;
+  privacyStatus: YoutubePrivacy;
+  tags?: string[];
   categoryId?: string;
 }): Record<string, unknown> {
   const title = input.title.trim().slice(0, 100);
   if (!title) throw new Error("YouTube title is required (≤100 chars).");
+  const tags = (input.tags ?? []).map((t) => t.trim()).filter(Boolean).slice(0, 15);
   return {
     snippet: {
       title,
       description: input.description,
       categoryId: input.categoryId ?? "28",
+      ...(tags.length ? { tags } : {}),
     },
     status: {
-      // Unlisted, always. The person who confirms the AI-content checkbox
-      // publishes from Studio. Anything else here would bypass disclosure.
-      privacyStatus: "unlisted",
+      privacyStatus: input.privacyStatus,
+      // The presenter is an AI avatar with a synthetic voice: always disclosed.
+      containsSyntheticMedia: true,
       selfDeclaredMadeForKids: false,
     },
   };
 }
 
-export type YoutubeUploadResult = { videoId: string; watchUrl: string };
+export type YoutubeUploadResult = {
+  videoId: string;
+  watchUrl: string;
+  /** What YouTube applied, which can be stricter than what was asked. */
+  privacyStatus: string | null;
+};
 
 /** Step 1 of resumable upload: session URL for the byte transfer. */
 export async function startYoutubeUploadSession(
@@ -73,13 +86,13 @@ export async function startYoutubeUploadSession(
   return sessionUrl;
 }
 
-/** Step 2: PUT the bytes; resolves to the video id once processing starts. */
+/** Step 2: PUT the bytes; resolves to the video resource once processing starts. */
 export async function uploadYoutubeBytes(
   sessionUrl: string,
   accessToken: string,
   videoBytes: Uint8Array | Buffer,
   mimeType = "video/mp4",
-): Promise<string> {
+): Promise<{ id: string; privacyStatus: string | null }> {
   const res = await fetch(sessionUrl, {
     method: "PUT",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": mimeType },
@@ -89,18 +102,17 @@ export async function uploadYoutubeBytes(
     const text = await res.text().catch(() => "");
     throw new Error(`YouTube upload HTTP ${res.status}: ${text.slice(0, 300)}`);
   }
-  const body = (await res.json()) as { id?: string };
+  const body = (await res.json()) as { id?: string; status?: { privacyStatus?: string } };
   if (!body.id) throw new Error("YouTube upload finished without a video id.");
-  return body.id;
+  return { id: body.id, privacyStatus: body.status?.privacyStatus ?? null };
 }
 
 export async function uploadYoutubeVideo(input: YoutubeUploadInput): Promise<YoutubeUploadResult> {
-  if (input.privacyStatus && input.privacyStatus !== "unlisted") {
-    throw new Error('YouTube uploads are always unlisted — a person publishes from Studio after the AI-content checkbox.');
-  }
   const metadata = buildYoutubeVideoMetadata({
     title: input.title,
     description: input.description,
+    privacyStatus: input.privacyStatus,
+    tags: input.tags,
     categoryId: input.categoryId,
   });
   const bytes = input.videoBytes;
@@ -110,20 +122,21 @@ export async function uploadYoutubeVideo(input: YoutubeUploadInput): Promise<You
     bytes.byteLength,
     input.mimeType ?? "video/mp4",
   );
-  const videoId = await uploadYoutubeBytes(sessionUrl, input.accessToken, bytes, input.mimeType ?? "video/mp4");
-  return { videoId, watchUrl: `https://www.youtube.com/watch?v=${videoId}` };
+  const uploaded = await uploadYoutubeBytes(sessionUrl, input.accessToken, bytes, input.mimeType ?? "video/mp4");
+  return {
+    videoId: uploaded.id,
+    watchUrl: `https://www.youtube.com/watch?v=${uploaded.id}`,
+    privacyStatus: uploaded.privacyStatus,
+  };
 }
 
 /**
  * Exchange the stored refresh token (vault, provider "youtube") for a live
- * access token. Client id/secret live in env — never in a row anyone can edit.
+ * access token. Client id/secret live in env, never in a row anyone can edit.
  */
 export async function getYoutubeAccessToken(refreshToken: string): Promise<string> {
-  const clientId = process.env.GOOGLE_YOUTUBE_CLIENT_ID?.trim();
-  const clientSecret = process.env.GOOGLE_YOUTUBE_CLIENT_SECRET?.trim();
-  if (!clientId || !clientSecret) {
-    throw new Error("YouTube OAuth is not configured (GOOGLE_YOUTUBE_CLIENT_ID/SECRET).");
-  }
+  // Same client that issued the token: a refresh token only works with it.
+  const { clientId, clientSecret } = youtubeOAuthClient();
   if (!refreshToken.trim()) throw new Error("YouTube channel is not connected (no refresh token).");
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",

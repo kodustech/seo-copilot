@@ -30,7 +30,14 @@ import { buildGoalsBrief, computeProgress, silentChannels, startOfIsoWeek } from
 import { recentMemoryTitles } from "@/lib/influencer/memory";
 import { formatVisibilityBrief } from "@/lib/influencer/visibility-brief";
 import { getModelForPersona } from "@/lib/influencer/model";
-import { youtubeChannelConfig, youtubeChannelReady } from "@/lib/influencer/youtube";
+import { videoUsageThisWeek } from "@/lib/influencer/video-pipeline";
+import {
+  buildYoutubeBrief,
+  estimateVideoCost,
+  weeklyLimitReason,
+  youtubeChannelConfig,
+  youtubeChannelReady,
+} from "@/lib/influencer/youtube";
 import {
   listActivePersonas,
   listChannelsForPersona,
@@ -190,6 +197,7 @@ function buildShiftGoal(
   failureCount: number,
   recentPosts: string[],
   testRun = false,
+  youtubeBrief = "",
 ): string {
   // Never inline the raw external API error into the prompt (injection). Just
   // signal that failures exist; the persona pulls the details through the
@@ -231,12 +239,6 @@ function buildShiftGoal(
   // account and marks it published. Ready to paste is the whole job.
   const manualLine = manualOpen.length    ? `HAND-POSTED CHANNELS (${manualOpen.join(", ")}): you write, a person posts it from their own account and marks it published with the link. Write it ready to paste. For reddit: a reply or comment that adds something concrete to a specific live thread — pass target_url = that thread's URL and name the subreddit in the title — never a link drop or a standalone promo post. For hackernoon: a complete article in markdown with a title, which a person submits to their editors. The person posting handles whatever disclosure the platform asks for.`
     : "";
-  // Video channels: the persona writes a spoken script, never an article.
-  // The system renders the avatar, composites slides, and uploads unlisted;
-  // a person confirms YouTube's AI-content checkbox before anything public.
-  const youtubeLine = open.includes("youtube")
-    ? "YOUTUBE is script-only — never write an article for it. Queue kind 'video' for platform 'youtube' with 3-8 short spoken blocks (one idea each, 20-600 chars, contractions, opinion, hook first) plus one slide outline per body block (block 1 is the intro and needs none). The worker renders the avatar, the slides, and uploads unlisted; a person confirms the AI-content checkbox before anything goes public."
-    : "";
   return [
     testRun
       ? `This is a TEST shift as ${persona.display_name} (@${persona.handle}). Choose the topic exactly as you would in an automatic shift, then produce one complete review-only long-form article.`
@@ -248,7 +250,7 @@ function buildShiftGoal(
     backedUpLine,
     mediumLine,
     manualLine,
-    youtubeLine,
+    youtubeBrief,
     failureLine,
     feedbackLine,
     goalsBrief,
@@ -414,6 +416,23 @@ export async function runPersonaTick({
     actionable,
     pendingByChannel,
   );
+  // YouTube out of weekly budget closes like a full queue: a script queued now
+  // could not render before next week. Open, the brief carries the channel's
+  // own length, slide mode, direction and what is left to spend.
+  let youtubeBrief = "";
+  const youtubeChannel = actionable.find((c) => c.platform === "youtube" && openChannelIds.includes(c.id));
+  if (youtubeChannel) {
+    const cfg = youtubeChannelConfig(youtubeChannel);
+    const usage = testRun ? null : await videoUsageThisWeek(client, youtubeChannel.id, now).catch(() => null);
+    const limit = usage ? weeklyLimitReason(usage, estimateVideoCost(cfg.targetMinutes * 60), cfg, true) : null;
+    if (limit) {
+      open.splice(open.indexOf("youtube"), 1);
+      openChannelIds.splice(openChannelIds.indexOf(youtubeChannel.id), 1);
+      youtubeBrief = `YOUTUBE is closed until next week. ${limit} Do not write a video script this shift.`;
+    } else {
+      youtubeBrief = buildYoutubeBrief(cfg, usage);
+    }
+  }
   const postingAllowed = open.length > 0;
   const manualPlatforms = new Set<string>(
     actionable.filter((c) => c.publish_via === "manual").map((c) => c.platform),
@@ -469,6 +488,7 @@ export async function runPersonaTick({
       failures.length,
       recentPosts,
       testRun,
+      youtubeBrief,
     ),
     trigger: testRun ? "manual" : "scheduled",
     // Only the channels with room: a draft for a backed-up channel would just be

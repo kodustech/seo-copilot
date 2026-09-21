@@ -17,9 +17,7 @@ export type ChannelPlatform =
   // has no publishing API and every story passes a human editor.
   | "hackernoon"
   // Long-form video: script blocks render through an avatar provider (HeyGen)
-  // and upload through the YouTube Data API. Like Medium, the final
-  // platform-side disclosure (YouTube's "altered content" checkbox) has no
-  // API — a person confirms it before the video goes public.
+  // and upload through the YouTube Data API with the synthetic-media flag set.
   | "youtube";
 
 // "browser" drives the persona's logged-in session in a remote browser. It is

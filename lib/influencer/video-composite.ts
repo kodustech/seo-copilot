@@ -11,8 +11,8 @@
 
 export type CompositeSegment =
   | {
-      kind: "intro";
-      /** Full-frame avatar clip with its setting (no slides here). */
+      kind: "face";
+      /** Full-frame avatar clip with its setting (no slide). */
       avatarMp4: string;
       durationSeconds: number;
     }
@@ -57,7 +57,7 @@ export function buildCompositePlan(input: {
   return {
     version: 1,
     segments: [
-      { kind: "intro", avatarMp4: input.introAvatarMp4, durationSeconds: input.introSeconds },
+      { kind: "face", avatarMp4: input.introAvatarMp4, durationSeconds: input.introSeconds },
       ...input.slides.map((s) => ({
         kind: "slide" as const,
         slidePng: s.png,
