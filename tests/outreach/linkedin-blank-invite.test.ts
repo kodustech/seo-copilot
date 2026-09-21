@@ -35,7 +35,7 @@ vi.mock("@/lib/supabase-server", async (importOriginal) => ({
 }));
 
 import { outreachSendLinkedInMessage, outreachSendQueuedTask } from "@/lib/ai/tools";
-import { sendTaskNow } from "@/lib/outreach/sequences";
+import { resolveLinkedInSendAction, sendTaskNow } from "@/lib/outreach/sequences";
 
 type Row = Record<string, unknown>;
 
@@ -164,6 +164,20 @@ beforeEach(() => {
   for (const fn of Object.values(unipile)) fn.mockClear();
 });
 
+describe("resolveLinkedInSendAction", () => {
+  it.each([
+    ["connect_note", "", "connect_note"],
+    ["connect_note", "Hi Jane", "connect_note"],
+    ["message", "Hi Jane", "message"],
+    ["message", "  ", null],
+    [null, "", null],
+    // Backward compatibility: a body with no readable action is an invite.
+    [null, "Hi Jane", "connect_note"],
+  ] as const)("%s with body %j sends as %s", (action, body, expected) => {
+    expect(resolveLinkedInSendAction(action, body)).toBe(expected);
+  });
+});
+
 describe("sendTaskNow on a LinkedIn step with an empty body", () => {
   it("sends a connect_note as an invitation with no note", async () => {
     const { client, tables } = linkedInTask({ action: "connect_note", body: "" });
@@ -275,6 +289,22 @@ const run = <T,>(t: { execute?: (input: T, opts: never) => unknown }, input: T) 
   >;
 
 describe("outreachSendQueuedTask preview", () => {
+  it("shows the action the send will use and record, not the raw step value", async () => {
+    // An unset action with a body goes out as a connection request, so the
+    // preview has to say connect_note, not null.
+    db.client = linkedInTask({ action: null, body: "Hi Jane" }).client;
+    const out = await run(outreachSendQueuedTask, { task_id: "task-1" });
+
+    expect(out).toMatchObject({ success: true, would_send: true, refusal: null });
+    expect(out.preview).toMatchObject({ linkedin_action: "connect_note" });
+
+    const sent = linkedInTask({ action: null, body: "Hi Jane" });
+    await sendTaskNow(sent.client, "task-1");
+    expect(task(sent.tables).meta).toMatchObject({
+      linkedin_action: (out.preview as Row).linkedin_action,
+    });
+  });
+
   it("previews an empty-body connect_note as sendable", async () => {
     db.client = linkedInTask({ action: "connect_note", body: "" }).client;
 

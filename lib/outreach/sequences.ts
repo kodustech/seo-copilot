@@ -2092,17 +2092,15 @@ export async function getActivityStats(
 }
 
 /**
- * What a LinkedIn step sends: a connection request or a DM.
+ * The action a LinkedIn step is set to: a connection request or a DM.
  *
  * The step decides connect-note vs message; a stored task has no copy of it.
- * Kept in one place because the send path and the send preview both branch on
- * it, and they must agree on which empty bodies are sendable.
- *
  * Null when the step does not say: an unset action, a missing step, or a read
- * that failed. Only an explicit connect_note makes an empty body a deliberate
- * blank invite, and guessing wrong here sends one in place of a DM, which
- * cannot be taken back. A failed read returns null instead of throwing, so a
- * step that has a body sends exactly as it did before this helper existed.
+ * that failed. A failed read returns null instead of throwing, so a step that
+ * has a body sends exactly as it did before this helper existed.
+ *
+ * This is the step's setting, not what goes out. resolveLinkedInSendAction
+ * turns it into that.
  */
 export async function linkedInActionForStep(
   client: SupabaseClient,
@@ -2116,6 +2114,29 @@ export async function linkedInActionForStep(
   if (error) return null;
   const action = stepRow?.linkedin_action as string | null | undefined;
   return action === "connect_note" || action === "message" ? action : null;
+}
+
+/**
+ * What a LinkedIn send actually does with this step's action and this body,
+ * or null when the send must be refused.
+ *
+ * The send path and the send preview both call this, so the action a preview
+ * shows is the one the send uses and records.
+ */
+export function resolveLinkedInSendAction(
+  action: LinkedinAction | null,
+  body: string | null | undefined,
+): LinkedinAction | null {
+  // A connection request with no note is a deliberate choice (sequences often
+  // open with a blank invite), so it goes out as a plain invitation. A DM with
+  // no text has nothing to send, and neither does a step whose action is
+  // unknown: guessing wrong sends a connection request in place of a DM, which
+  // cannot be taken back.
+  if (!body?.trim()) return action === "connect_note" ? "connect_note" : null;
+  // Backward compatibility: before the action could be unknown, anything that
+  // was not "message" was sent as a connection request. A step with a body and
+  // no readable action keeps going out that way.
+  return action ?? "connect_note";
 }
 
 /**
@@ -2171,24 +2192,17 @@ async function sendDueLinkedInTask(
     return "skipped";
   }
 
-  // Read before the body check, because an empty body means something
-  // different for each action.
-  const action = await linkedInActionForStep(client, task.stepId);
-
-  // A connection request with no note is a deliberate choice (sequences often
-  // open with a blank invite), so it goes out as a plain invitation. A DM with
-  // no text has nothing to send, and neither does a step whose action is
-  // unknown: only an explicit connect_note makes a blank invite deliberate.
+  // Resolved before the other guards, because an empty body means something
+  // different for each action. Only an explicit connect_note sends blank.
   const body = (opts?.override?.body ?? task.renderedBody ?? "").trim();
-  if (!body && action !== "connect_note") {
+  const sendAs = resolveLinkedInSendAction(
+    await linkedInActionForStep(client, task.stepId),
+    body,
+  );
+  if (!sendAs) {
     await fail("Empty message body");
     return "failed";
   }
-
-  // Backward compatibility: before the action could be unknown, anything that
-  // was not "message" was sent as a connection request. A step with a body and
-  // no readable action keeps going out that way.
-  const sendAs: LinkedinAction = action ?? "connect_note";
 
   // Same reasoning as email: a message with a visible {{token}} in it is worse
   // than a late one, and on LinkedIn it is public in the thread forever.
@@ -2428,7 +2442,10 @@ export async function sendTaskNow(
     if (
       editedBody !== undefined &&
       !editedBody &&
-      (await linkedInActionForStep(client, task.stepId)) !== "connect_note"
+      !resolveLinkedInSendAction(
+        await linkedInActionForStep(client, task.stepId),
+        editedBody,
+      )
     ) {
       throw new Error("The message body is empty — nothing to send.");
     }

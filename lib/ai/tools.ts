@@ -7382,15 +7382,20 @@ export const outreachSendQueuedTask = tool({
       const finalSubject = subject ?? (taskRow.rendered_subject as string | null);
       const finalBody = body ?? (taskRow.rendered_body as string | null);
 
-      const { linkedInActionForStep, sendTaskNow } = await import(
-        "@/lib/outreach/sequences"
-      );
-      // An empty LinkedIn body is a blank connection request on an explicit
-      // connect_note step and nothing to send on any other, so the preview
-      // needs the step's action to say which. Null when the step does not say.
+      const {
+        linkedInActionForStep,
+        resolveLinkedInSendAction,
+        sendTaskNow,
+      } = await import("@/lib/outreach/sequences");
+      // Resolved the way the send resolves it, so the preview shows the action
+      // that would actually go out (and be recorded). Null on LinkedIn means
+      // the send would refuse this body.
       const linkedinAction =
         channel === "linkedin"
-          ? await linkedInActionForStep(client, taskRow.step_id as string)
+          ? resolveLinkedInSendAction(
+              await linkedInActionForStep(client, taskRow.step_id as string),
+              finalBody,
+            )
           : null;
 
       const recipient =
@@ -7425,9 +7430,7 @@ export const outreachSendQueuedTask = tool({
             ? `task is ${taskRow.status}`
             : enr && enr.status !== "active"
               ? `enrollment is ${enr.status}`
-              : channel === "linkedin" &&
-                  linkedinAction !== "connect_note" &&
-                  !finalBody?.trim()
+              : channel === "linkedin" && !linkedinAction
                 ? "the body is empty, and only a connect_note step can send without one"
                 : null;
 
