@@ -323,6 +323,8 @@ export async function renderVideoClips(
   return { videoUrls: clips, renderCost: final.render_cost };
 }
 
+const PREVIEWS_PER_RUN = 2;
+
 /** Merge keys into an activity's content_meta on a fresh read, not a snapshot. */
 async function mergeContentMeta(client: SupabaseClient, id: string, patch: Record<string, unknown>): Promise<void> {
   const { data, error } = await client.from("persona_activities").select("content_meta").eq("id", id).maybeSingle();
@@ -344,11 +346,16 @@ export async function renderRequestedPreviews(
   now: Date,
   channelById: Map<string, PersonaChannel>,
 ): Promise<number> {
+  // Only the rows that asked, oldest first, a few per run: each render may
+  // hold the run for its poll budget, and the publish loop waits behind it.
   const { data, error } = await client
     .from("persona_activities")
     .select("*")
     .eq("kind", "video")
-    .eq("status", "draft");
+    .eq("status", "draft")
+    .contains("content_meta", { render_requested: true })
+    .order("created_at", { ascending: true })
+    .limit(PREVIEWS_PER_RUN);
   if (error) throw new Error(error.message);
   let handled = 0;
   for (const row of data ?? []) {

@@ -214,10 +214,20 @@ describe("preview renders", () => {
         eq: (col: string, v: unknown) => ((filters[col] = v), b),
         gte: () => b,
         neq: () => b,
+        order: () => b,
+        limit: () => b,
+        contains: (_col: string, v: Record<string, unknown>) => ((filters.contains = v), b),
         maybeSingle: () => Promise.resolve({ data: rows.find((r) => r.id === filters.id) ?? null, error: null }),
         then: (resolve: (v: { data: unknown[]; error: null }) => unknown) =>
           resolve({
-            data: filters.status === "draft" ? rows.filter((r) => r.status === "draft") : [],
+            data:
+              filters.status === "draft"
+                ? rows.filter(
+                    (r) =>
+                      r.status === "draft" &&
+                      (!filters.contains || (r.content_meta as Record<string, unknown>).render_requested === true),
+                  )
+                : [],
             error: null,
           }),
       };

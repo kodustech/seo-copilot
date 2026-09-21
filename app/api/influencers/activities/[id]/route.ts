@@ -114,7 +114,10 @@ export async function PATCH(
       ((Array.isArray(current.content_meta.heygen_video_ids) &&
         current.content_meta.heygen_video_ids.some(Boolean)) ||
         Boolean(current.content_meta.final_url));
-    if (renderStarted && patch.content !== undefined && patch.content !== current.content) {
+    // Only actions that carry a text edit: the queue sends its textarea with
+    // every action, and a discard must always go through.
+    const editsText = action === "edit" || action === "save_draft" || action === "approve" || action === "render_preview";
+    if (renderStarted && editsText && patch.content !== undefined && patch.content !== current.content) {
       return NextResponse.json(
         { error: "This video is already rendered or rendering, so a text edit would not reach it. Discard it and queue a new one." },
         { status: 409 },

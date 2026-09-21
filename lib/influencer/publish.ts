@@ -1029,7 +1029,7 @@ export async function runInfluencerPublishCron(
   try {
     summary.previews = await renderRequestedPreviews(client, now, new Map(channels.map((c) => [c.id, c])));
   } catch (err) {
-    console.error("[influencer] preview renders failed:", err instanceof Error ? err.message : err);
+    console.error("[influencer] preview renders failed:", err instanceof Error ? err.message : "unknown error");
   }
 
   // Hand-posted channels never come through here: their approved drafts wait
