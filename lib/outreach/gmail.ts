@@ -1,7 +1,7 @@
 /**
  * Gmail read + draft for the agent (gmailSearch, gmailGetThread,
- * gmailCreateDraft). Uses the same mailbox OAuth tokens as the outreach
- * inbox — no new credentials.
+ * gmailCreateDraft, gmailDeleteDraft). Uses the same mailbox OAuth tokens as
+ * the outreach inbox — no new credentials.
  *
  * Drafts only: nothing here sends. A human opens the draft in Gmail and
  * sends it.
@@ -374,6 +374,51 @@ export async function createGmailDraft(opts: {
     messageId: data.message?.id ?? null,
     threadId: data.message?.threadId ?? null,
   };
+}
+
+/**
+ * gmailSearch ("in:draft") returns message ids, but Gmail deletes by draft id.
+ * drafts.list is the only place the two are paired.
+ */
+export async function findGmailDraftIdByMessage(
+  accessToken: string,
+  messageId: string,
+): Promise<string | null> {
+  let pageToken = "";
+  // 5 pages × 100 covers any real drafts folder without an unbounded loop.
+  for (let page = 0; page < 5; page++) {
+    const list = await gmailGetJson<{
+      drafts?: Array<{ id?: string; message?: { id?: string } }>;
+      nextPageToken?: string;
+    }>(
+      accessToken,
+      `users/me/drafts?maxResults=100${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`,
+    );
+    const hit = (list.drafts ?? []).find((d) => d.message?.id === messageId);
+    if (hit?.id) return hit.id;
+    if (!list.nextPageToken) return null;
+    pageToken = list.nextPageToken;
+  }
+  return null;
+}
+
+/** Permanent: Gmail's drafts.delete skips the trash. */
+export async function deleteGmailDraft(
+  accessToken: string,
+  draftId: string,
+): Promise<void> {
+  const res = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/drafts/${encodeURIComponent(draftId)}`,
+    { method: "DELETE", headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (res.ok) return;
+  if (res.status === 404) {
+    throw new Error("Draft not found — it may already have been sent or deleted");
+  }
+  const data = (await res.json().catch(() => null)) as {
+    error?: { message?: string };
+  } | null;
+  throw new Error(data?.error?.message || `Gmail API ${res.status} on drafts`);
 }
 
 function toIso(internalDate: string | undefined): string | null {

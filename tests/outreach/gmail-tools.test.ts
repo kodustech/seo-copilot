@@ -18,6 +18,8 @@ vi.mock("@/lib/outreach/mailbox", () => ({
 import { buildMcpTools } from "@/lib/mcp/server";
 import {
   createGmailDraft,
+  deleteGmailDraft,
+  findGmailDraftIdByMessage,
   getGmailThread,
   mailboxCapabilities,
   openGmailMailbox,
@@ -78,6 +80,12 @@ describe("Gmail MCP wiring", () => {
     expect(Object.keys(schema.properties ?? {}).sort()).toEqual(
       ["body", "cc", "mailbox_id", "subject", "thread_id", "to"],
     );
+  });
+
+  it("registers gmailDeleteDraft with draft_id or message_id, neither required by schema", () => {
+    const schema = schemaOf("gmailDeleteDraft");
+    expect(schema.required ?? []).toEqual([]);
+    expect(Object.keys(schema.properties ?? {}).sort()).toEqual(["draft_id", "mailbox_id", "message_id"]);
   });
 });
 
@@ -318,5 +326,40 @@ describe("createGmailDraft", () => {
     await expect(
       createGmailDraft({ accessToken: "tok", from: "a@kodus.io", to: "b@x.com", subject: "s", text: "t" }),
     ).rejects.toThrow("Insufficient Permission");
+  });
+});
+
+describe("deleteGmailDraft", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends DELETE to the draft, never to messages", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await deleteGmailDraft("tok", "r-123");
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://gmail.googleapis.com/gmail/v1/users/me/drafts/r-123");
+    expect(init.method).toBe("DELETE");
+  });
+
+  it("says the draft is gone on 404 and surfaces other Gmail errors", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { message: "Not Found" } }), { status: 404 })));
+    await expect(deleteGmailDraft("tok", "x")).rejects.toThrow("already have been sent or deleted");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { message: "Insufficient Permission" } }), { status: 403 })));
+    await expect(deleteGmailDraft("tok", "x")).rejects.toThrow("Insufficient Permission");
+  });
+});
+
+describe("findGmailDraftIdByMessage", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("pairs a search hit's message id with its draft id, following pages", async () => {
+    const fetchMock = vi.fn(async (url: string) =>
+      url.includes("pageToken=p2")
+        ? new Response(JSON.stringify({ drafts: [{ id: "d2", message: { id: "m2" } }] }), { status: 200 })
+        : new Response(JSON.stringify({ drafts: [{ id: "d1", message: { id: "m1" } }], nextPageToken: "p2" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await findGmailDraftIdByMessage("tok", "m2")).toBe("d2");
+    expect(await findGmailDraftIdByMessage("tok", "nope")).toBeNull();
   });
 });
