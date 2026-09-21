@@ -601,7 +601,7 @@ function YoutubeConnect({
             {oauthBusy ? <Loader2 className="size-3.5 animate-spin" /> : linked ? "Reconnect YouTube account" : "Connect with Google"}
           </button>
           {linked ? <span className="text-xs text-neutral-400">YouTube account linked</span> : null}
-          <Input type="password" value={heygenKey} onChange={(e) => setHeygenKey(e.target.value)} placeholder="HeyGen API key (stored encrypted)" className={cn(cls.input, "w-64")} />
+          <Input type="password" value={heygenKey} onChange={(e) => setHeygenKey(e.target.value)} placeholder="HeyGen key (optional: the fleet key is used by default)" className={cn(cls.input, "w-64")} />
         </div>
         {oauthError ? <p className={cls.errorText}>{oauthError}</p> : null}
         <details className="text-xs text-neutral-500">
