@@ -2092,6 +2092,27 @@ export async function getActivityStats(
 }
 
 /**
+ * What a LinkedIn step sends: a connection request or a DM.
+ *
+ * The step decides connect-note vs message; a stored task has no copy of it.
+ * Kept in one place because the send path and the send preview both branch on
+ * it, and they must agree on which empty bodies are sendable.
+ */
+export async function linkedInActionForStep(
+  client: SupabaseClient,
+  stepId: string,
+): Promise<LinkedinAction> {
+  const { data: stepRow } = await client
+    .from("outreach_sequence_steps")
+    .select("linkedin_action")
+    .eq("id", stepId)
+    .maybeSingle();
+  return (stepRow?.linkedin_action as string | null) === "message"
+    ? "message"
+    : "connect_note";
+}
+
+/**
  * Send a queued LinkedIn step through Unipile.
  *
  * Mirrors sendDueEmailTask's discipline — same token guard, same checked
@@ -2144,8 +2165,15 @@ async function sendDueLinkedInTask(
     return "skipped";
   }
 
+  // Read before the body check, because an empty body means something
+  // different for each action.
+  const action = await linkedInActionForStep(client, task.stepId);
+
+  // A connection request with no note is a deliberate choice (sequences often
+  // open with a blank invite), so it goes out as a plain invitation. A DM with
+  // no text has nothing to send.
   const body = (opts?.override?.body ?? task.renderedBody ?? "").trim();
-  if (!body) {
+  if (!body && action === "message") {
     await fail("Empty message body");
     return "failed";
   }
@@ -2230,17 +2258,6 @@ async function sendDueLinkedInTask(
     return "failed";
   }
 
-  // The step decides connect-note vs message; a stored task has no copy of it.
-  const { data: stepRow } = await client
-    .from("outreach_sequence_steps")
-    .select("linkedin_action")
-    .eq("id", task.stepId)
-    .maybeSingle();
-  const action =
-    (stepRow?.linkedin_action as string | null) === "message"
-      ? "message"
-      : "connect_note";
-
   // Claim before the network call, from the exact status we were told to take
   // it from. Claiming from the wrong one silently no-ops the guard and the
   // send still fires — with nothing stopping a second.
@@ -2296,8 +2313,9 @@ async function sendDueLinkedInTask(
       .update({
         status: "sent",
         // Only on an edit, and only on success — same rule as email: this row
-        // is the app's record of what actually left.
-        ...(opts?.override?.body ? { rendered_body: body } : {}),
+        // is the app's record of what actually left. An edit that cleared the
+        // note counts: the invite went out blank, and the row must say so.
+        ...(opts?.override?.body !== undefined ? { rendered_body: body } : {}),
         sent_at: now,
         sent_by_email: opts?.actorEmail ?? null,
         provider: "linkedin",
@@ -2391,7 +2409,14 @@ export async function sendTaskNow(
   if (task.channel === "linkedin") {
     const editedBody =
       typeof input.body === "string" ? input.body.trim() : undefined;
-    if (editedBody !== undefined && !editedBody) {
+    // Clearing the note on a connection request means "send it without one",
+    // which is a valid send. Clearing a DM is a mistake, and refusing here
+    // leaves the task untouched instead of failing it further down.
+    if (
+      editedBody !== undefined &&
+      !editedBody &&
+      (await linkedInActionForStep(client, task.stepId)) === "message"
+    ) {
       throw new Error("The message body is empty — nothing to send.");
     }
     const result = await sendDueLinkedInTask(client, task, {

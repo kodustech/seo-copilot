@@ -7381,6 +7381,18 @@ export const outreachSendQueuedTask = tool({
       const channel = taskRow.channel as string;
       const finalSubject = subject ?? (taskRow.rendered_subject as string | null);
       const finalBody = body ?? (taskRow.rendered_body as string | null);
+
+      const { linkedInActionForStep, sendTaskNow } = await import(
+        "@/lib/outreach/sequences"
+      );
+      // An empty LinkedIn body is a blank connection request on one action and
+      // nothing to send on the other, so the preview needs the step's action
+      // to say which.
+      const linkedinAction =
+        channel === "linkedin"
+          ? await linkedInActionForStep(client, taskRow.step_id as string)
+          : null;
+
       const recipient =
         channel === "linkedin"
           ? (enr?.contact_linkedin as string | null)
@@ -7391,6 +7403,7 @@ export const outreachSendQueuedTask = tool({
       const preview = {
         task_id,
         channel,
+        linkedin_action: linkedinAction,
         task_status: taskRow.status,
         enrollment_status: enr?.status ?? null,
         to: recipient,
@@ -7412,7 +7425,9 @@ export const outreachSendQueuedTask = tool({
             ? `task is ${taskRow.status}`
             : enr && enr.status !== "active"
               ? `enrollment is ${enr.status}`
-              : null;
+              : linkedinAction === "message" && !finalBody?.trim()
+                ? "a LinkedIn message needs a body"
+                : null;
 
       if (dry_run !== false) {
         return {
@@ -7439,7 +7454,6 @@ export const outreachSendQueuedTask = tool({
         };
       }
 
-      const { sendTaskNow } = await import("@/lib/outreach/sequences");
       const result = await sendTaskNow(client, task_id, {
         sentByEmail: user_email ?? null,
         subject,
@@ -7480,12 +7494,16 @@ export const outreachSendLinkedInMessage = tool({
       .string()
       .optional()
       .describe("Unipile chat id, to reply in a known conversation"),
-    text: z.string().describe("Message body (the note, for connect_note)"),
+    text: z
+      .string()
+      .describe(
+        "Message body. For connect_note it is the note, and an empty string sends the request without one.",
+      ),
     action: z
       .enum(["message", "connect_note"])
       .optional()
       .describe(
-        "message = DM (default); connect_note = connection request with a note. A DM to a non-connection is often rejected by LinkedIn.",
+        "message = DM (default); connect_note = connection request, with or without a note. A DM to a non-connection is often rejected by LinkedIn.",
       ),
     account_id: z
       .string()
@@ -7495,7 +7513,9 @@ export const outreachSendLinkedInMessage = tool({
   }),
   execute: async ({ linkedin, chat_id, text, action, account_id, dry_run }) => {
     try {
-      if (!text?.trim()) {
+      const mode = action ?? "message";
+      // A connection request may go without a note; a DM cannot.
+      if (mode === "message" && !text?.trim()) {
         return { success: false as const, message: "text is empty" };
       }
       if (!linkedin?.trim() && !chat_id?.trim()) {
@@ -7535,8 +7555,6 @@ export const outreachSendLinkedInMessage = tool({
         }
         accountId = accounts[0].id;
       }
-
-      const mode = action ?? "message";
 
       // Resolve the recipient before the dry-run answer: "who would this go
       // to" is the question the preview exists to answer, and a slug that
@@ -7591,7 +7609,9 @@ export const outreachSendLinkedInMessage = tool({
         // reads very differently from a reply, and the caller should see which.
         resolves_to:
           mode === "connect_note"
-            ? "connection request with note"
+            ? text?.trim()
+              ? "connection request with note"
+              : "connection request without a note"
             : targetChatId
               ? "reply in existing conversation"
               : "new conversation",
