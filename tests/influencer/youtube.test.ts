@@ -152,6 +152,10 @@ describe("buildYoutubeBrief", () => {
     expect(brief).toMatch(/3\/12 credits and 0\/1 videos/);
     expect(brief).toMatch(/layout/);
   });
+  it("ties one block to one screen", () => {
+    expect(buildYoutubeBrief(cfg, null)).toMatch(/one block per screen/);
+    expect(buildYoutubeBrief(cfg, null)).toMatch(/15 to 30 seconds/);
+  });
   it("teaches the html mode its canvas and safe area", () => {
     const brief = buildYoutubeBrief({ ...cfg, slideMode: "html" }, null);
     expect(brief).toMatch(/1920x1080/);

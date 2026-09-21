@@ -145,9 +145,10 @@ export function resolveScriptBlocks(activity: PersonaActivity): string[] | null 
 
 /**
  * Render every script block through HeyGen and park the clip URLs on the
- * activity. Never sleeps past the cron's budget: one poll round per block,
- * then park and let the next run resume from heygen_video_ids — a render
- * that holds the sequential publish loop hostage starves every persona.
+ * activity. All blocks are submitted up front and polled together within one
+ * short budget, then the run parks and the next one resumes from
+ * heygen_video_ids — a render that holds the sequential publish loop hostage
+ * starves every persona.
  * Spend accrues per completed block from HeyGen's real durations and is
  * persisted on every exit path, so the weekly budget always sees burned money.
  */
@@ -158,19 +159,22 @@ export async function renderVideoClips(
   now: Date,
 ): Promise<{ videoUrls: string[]; renderCost: number }> {
   const plan = planVideoRender(activity, channel);
-  // One id array for the whole run: re-deriving from the claim-time snapshot
-  // would erase the id persisted for a block created minutes ago and HeyGen
-  // would bill the same block again on the next run.
-  const ids: string[] = Array.isArray(activity.content_meta.heygen_video_ids)
-    ? (activity.content_meta.heygen_video_ids as unknown[]).filter(
-        (id): id is string => typeof id === "string" && id.length > 0,
-      )
-    : [];
+  // Positional by block: ids[i] and videoUrls[i] belong to block i, and a null
+  // is a block not submitted or not finished yet. One array for the whole run:
+  // re-deriving from the claim-time snapshot would erase an id persisted
+  // minutes ago, and HeyGen would bill that block again next run.
+  const positional = (raw: unknown) =>
+    plan.blocks.map((_, i) => {
+      const v = Array.isArray(raw) ? raw[i] : null;
+      return typeof v === "string" && v.length > 0 ? v : null;
+    });
+  const ids = positional(activity.content_meta.heygen_video_ids);
+  const videoUrls = positional(activity.content_meta.video_urls);
   // The full-plan estimate already covers this row's earlier runs, so count
   // every other video only — counting this row too would refuse a resume
   // that fits.
   const usage = await videoUsageThisWeek(client, activity.channel_id, now, activity.id);
-  const limit = weeklyLimitReason(usage, plan.estimatedCost, plan.cfg, ids.length === 0);
+  const limit = weeklyLimitReason(usage, plan.estimatedCost, plan.cfg, !ids.some(Boolean));
   if (limit) {
     // Park until the week rolls over, releasing the cron's claim: failing
     // would strand clips already paid for on a resumed render.
@@ -182,14 +186,8 @@ export async function renderVideoClips(
     throw new YoutubeDeferred(`${limit} This render waits for next week.`);
   }
   const apiKey = await resolveHeyGenKey(client, activity.persona_id);
-  const prior = Array.isArray(activity.content_meta.video_urls)
-    ? (activity.content_meta.video_urls as unknown[]).filter(
-        (u): u is string => typeof u === "string" && u.length > 0,
-      )
-    : [];
-  const videoUrls = [...prior];
   // Cost already burned by earlier runs of this same render (persisted on
-  // every park): the cap prices cumulative HeyGen spend, never a per-run
+  // every park): the budget prices cumulative HeyGen spend, never a per-run
   // fresh count — resumed blocks don't re-bill, but they did bill once.
   const priorCost =
     typeof activity.content_meta.render_cost === "number" &&
@@ -199,22 +197,18 @@ export async function renderVideoClips(
       : 0;
   let burnSeconds = 0;
   const runCost = () => Math.round((priorCost + estimateVideoCost(burnSeconds)) * 100) / 100;
-  const persistPartial = (stage?: string) =>
+  const persistPartial = () =>
     updateActivity(client, activity.id, {
       status: "scheduled",
       scheduled_at: new Date(now.getTime() + 30 * 60 * 1000).toISOString(),
-      content_meta: {
-        ...activity.content_meta,
-        heygen_video_ids: ids,
-        video_urls: videoUrls.filter(Boolean),
-        render_cost: runCost(),
-        ...(stage ? { stage } : {}),
-      },
+      content_meta: { ...activity.content_meta, heygen_video_ids: ids, video_urls: videoUrls, render_cost: runCost() },
     });
-  for (let i = prior.length; i < plan.blocks.length; i += 1) {
-    let videoId = ids[i];
-    if (!videoId) {
-      videoId = await createHeyGenVideo(apiKey, {
+  // Submit every block first, so HeyGen renders them side by side. One at a
+  // time, a 12-block video would advance one clip per cron run.
+  for (let i = 0; i < plan.blocks.length; i += 1) {
+    if (ids[i] || videoUrls[i]) continue;
+    try {
+      ids[i] = await createHeyGenVideo(apiKey, {
         avatarId: plan.cfg.avatarId!,
         script: plan.blocks[i],
         voiceId: plan.cfg.voiceId!,
@@ -227,41 +221,52 @@ export async function renderVideoClips(
         voiceSpeed: plan.cfg.voiceSpeed,
         title: `${activity.title ?? "persona video"} block ${i + 1}`,
       });
-      ids[i] = videoId;
-      await updateActivity(client, activity.id, {
-        content_meta: { ...activity.content_meta, heygen_video_ids: ids },
-      });
+    } catch (err) {
+      // HeyGen caps concurrent renders per plan: over the cap is a wait, not a failure.
+      if (err instanceof Error && /HTTP 429/.test(err.message)) {
+        await persistPartial();
+        throw new YoutubeDeferred(`HeyGen is at its concurrency limit after ${ids.filter(Boolean).length} of ${ids.length} blocks; submitting the rest next run.`);
+      }
+      throw err;
     }
-    // One look per run: completed clips resume by id, anything still cooking
-    // parks for the next run instead of sleeping inside the publish loop.
-    const deadline = Date.now() + 45 * 1000;
-    for (;;) {
-      const job = await getHeyGenVideo(apiKey, videoId);
+    // Persisted as each one is created: a crash here must not re-bill a block.
+    await updateActivity(client, activity.id, {
+      content_meta: { ...activity.content_meta, heygen_video_ids: ids, video_urls: videoUrls },
+    });
+  }
+  // One look round per run: finished clips land by index, anything still
+  // cooking parks for the next run instead of holding the publish loop.
+  const deadline = Date.now() + 45 * 1000;
+  for (;;) {
+    for (let i = 0; i < plan.blocks.length; i += 1) {
+      if (videoUrls[i]) continue;
+      const job = await getHeyGenVideo(apiKey, ids[i]!);
       if (job.status === "completed" && job.videoUrl) {
         videoUrls[i] = job.videoUrl;
-        burnSeconds += job.durationSeconds ?? 20;
-        break;
-      }
-      if (job.status === "failed") {
+        burnSeconds += job.durationSeconds ?? estimateSpeechSeconds([plan.blocks[i]]);
+      } else if (job.status === "failed") {
         await persistPartial();
         throw new Error(`HeyGen block ${i + 1} failed: ${job.failureMessage ?? "unknown"}. Fix the script and retry.`);
       }
-      if (Date.now() > deadline) {
-        // Park progress; the next run resumes from heygen_video_ids.
-        await persistPartial();
-        throw new YoutubeDeferred(`HeyGen block ${i + 1} still rendering; parked progress and retrying next run.`);
-      }
-      await new Promise((r) => setTimeout(r, 5_000));
     }
+    const done = videoUrls.filter(Boolean).length;
+    if (done === plan.blocks.length) break;
+    if (Date.now() > deadline) {
+      await persistPartial();
+      throw new YoutubeDeferred(`${done} of ${plan.blocks.length} HeyGen clips ready; parked progress and retrying next run.`);
+    }
+    await new Promise((r) => setTimeout(r, 5_000));
   }
   const renderCost = runCost();
+  const clips = videoUrls as string[]; // every slot filled: the loop above only breaks when done
   await updateActivity(client, activity.id, {
     content_meta: {
       ...activity.content_meta,
-      video_urls: videoUrls,
+      heygen_video_ids: ids,
+      video_urls: clips,
       render_cost: renderCost,
       stage: "clips_ready",
     },
   });
-  return { videoUrls, renderCost };
+  return { videoUrls: clips, renderCost };
 }

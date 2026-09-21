@@ -14,9 +14,11 @@
 import { z } from "zod";
 
 export const YOUTUBE_MIN_BLOCKS = 3;
-export const YOUTUBE_MAX_BLOCKS = 12;
+/** One block is one screen: a slide page or a stretch on camera. */
+export const YOUTUBE_MAX_BLOCKS = 16;
 export const YOUTUBE_MIN_BLOCK_CHARS = 20;
-export const YOUTUBE_MAX_BLOCK_CHARS = 1200;
+/** ~85 spoken words, ~30s: a page that stays up longer goes stale on screen. */
+export const YOUTUBE_MAX_BLOCK_CHARS = 500;
 /** Spoken pace of the POC render (310 words in 104s, 2026-09-19), rounded down. */
 export const YOUTUBE_WORDS_PER_SECOND = 2.9;
 export const YOUTUBE_DEFAULT_TARGET_MINUTES = 4.5;
@@ -75,7 +77,7 @@ export function validateVideoScript(blocks: unknown): string[] {
       issues.push(`block_${n}_too_short: ${block.length} chars; a block must carry a full spoken thought.`);
     }
     if (block.length > YOUTUBE_MAX_BLOCK_CHARS) {
-      issues.push(`block_${n}_too_long: ${block.length} chars (max ${YOUTUBE_MAX_BLOCK_CHARS}); split it where the visual changes.`);
+      issues.push(`block_${n}_too_long: ${block.length} chars (max ${YOUTUBE_MAX_BLOCK_CHARS}, about 30 seconds); split it where the next screen should start.`);
     }
     // The avatar reads every character aloud: markup and links come out as noise.
     if (/[*#`]|^\s*[-•]\s/.test(block)) {
@@ -386,7 +388,7 @@ export function buildYoutubeBrief(cfg: YoutubeChannelConfig, usage: VideoUsage |
     ? `Budget this week: ${usage.credits}/${cfg.weeklyBudgetCredits} credits and ${usage.videos}/${cfg.maxVideosPerWeek} videos used; a video like this costs ~${cost} credits.`
     : "";
   return [
-    `YOUTUBE is a long-form talking video, never an article. Queue kind 'video' for platform 'youtube'. blocks = what you say out loud, ${YOUTUBE_MIN_BLOCKS}-${YOUTUBE_MAX_BLOCKS} blocks, ~${cfg.targetMinutes} minutes in total (≈${targetWords} words; you speak about ${perMinute} words a minute). slides = one entry per block, same order: null films you full-frame talking to camera, an object puts a slide on screen with you in a corner bubble. Open on camera with the hook, come back to camera for opinions and stories, use a slide when the viewer needs to see a list, a comparison, a flow or code.`,
+    `YOUTUBE is a long-form talking video, never an article. Queue kind 'video' for platform 'youtube'. The video is a sequence of screens, one block per screen: each block is what you say while that screen is up, 15 to 30 seconds (40 to 85 words), and the screen changes when the next block starts. ~${cfg.targetMinutes} minutes in total (≈${targetWords} words, so about ${Math.ceil(targetWords / 70)} blocks; you speak about ${perMinute} words a minute). slides = one entry per block, same order: null films you full-frame talking to camera, an object puts a slide page on screen with you in a corner bubble. The format is close to a presentation: most screens are slides, with you in the bubble. Go full screen on camera for the hook, the close and the odd strong opinion. A topic that needs two slides is two blocks.`,
     "Write for the ear: short sentences, contractions, talk to 'you', one concrete example or failure story per idea, say the opinion plainly. Never read the slide aloud; the slide shows the list, you say why it matters. No markdown, no URLs, no emoji. In blocks, say domains the way a person would ('agentwrotethis dot dev') and spell out acronyms a voice would mangle ('C I'); slides are read, not heard, so write them normally ('CI'). Pauses come from punctuation: end the sentence.",
     slides,
     "Build the video on one of your own published posts when you can, and pass its URL as canonical_url: it goes in the description as the full post.",

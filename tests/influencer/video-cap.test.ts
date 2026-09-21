@@ -4,7 +4,7 @@
  * only stops renders that have not started; a blocked render parks for next
  * week instead of failing.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/influencer/activities", () => ({ updateActivity: vi.fn() }));
 vi.mock("@/lib/influencer/heygen", () => ({
@@ -16,6 +16,7 @@ vi.mock("@/lib/influencer/heygen", () => ({
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { updateActivity } from "../../lib/influencer/activities";
+import { createHeyGenVideo, getHeyGenVideo } from "../../lib/influencer/heygen";
 import { renderVideoClips, YoutubeDeferred } from "../../lib/influencer/video-pipeline";
 
 type Row = { id: string; content_meta: Record<string, unknown> };
@@ -100,5 +101,64 @@ describe("renderVideoClips weekly limits", () => {
     const started = activity({ video_urls: ["https://clip/1.mp4", "https://clip/2.mp4"], heygen_video_ids: ["id1", "id2"] });
     const out = await renderVideoClips(client, started, channel, now);
     expect(out.videoUrls).toHaveLength(3);
+  });
+});
+
+describe("renderVideoClips in parallel", () => {
+  const done = (id: string) => ({
+    videoId: id,
+    status: "completed" as const,
+    videoUrl: `https://clip/${id}.mp4`,
+    durationSeconds: 4,
+    failureMessage: null,
+  });
+  const lastMeta = () => vi.mocked(updateActivity).mock.calls.at(-1)![2].content_meta as Record<string, unknown>;
+  const channel = channelWith({ youtube_max_videos_per_week: 5 });
+  beforeEach(() => vi.mocked(updateActivity).mockReset());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.mocked(createHeyGenVideo).mockImplementation(async () => "new-id");
+    vi.mocked(getHeyGenVideo).mockImplementation(async () => done("3"));
+  });
+
+  it("submits every block before polling, and parks with each clip in its block's slot", async () => {
+    vi.useFakeTimers();
+    const calls: string[] = [];
+    vi.mocked(createHeyGenVideo).mockImplementation(async (_key, req) => {
+      calls.push(`create ${req.title}`);
+      return `id-${calls.length}`;
+    });
+    vi.mocked(getHeyGenVideo).mockImplementation(async (_key, id) => {
+      calls.push(`poll ${id}`);
+      return id === "id-2" ? { ...done(id), status: "processing", videoUrl: null } : done(id);
+    });
+    const run = expect(renderVideoClips(fakeClient([]), activity({}), channel, now)).rejects.toThrow(/2 of 3 HeyGen clips ready/);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await run;
+    expect(calls.slice(0, 3)).toEqual(["create Test video block 1", "create Test video block 2", "create Test video block 3"]);
+    expect(lastMeta()).toMatchObject({
+      heygen_video_ids: ["id-1", "id-2", "id-3"],
+      video_urls: ["https://clip/id-1.mp4", null, "https://clip/id-3.mp4"],
+    });
+  });
+
+  it("waits when HeyGen is at its concurrency limit, keeping the ids it got", async () => {
+    let n = 0;
+    vi.mocked(createHeyGenVideo).mockImplementation(async () => {
+      n += 1;
+      if (n === 3) throw new Error("HeyGen /v3/videos HTTP 429: too many concurrent renders");
+      return `id-${n}`;
+    });
+    await expect(renderVideoClips(fakeClient([]), activity({}), channel, now)).rejects.toBeInstanceOf(YoutubeDeferred);
+    expect(lastMeta()).toMatchObject({ heygen_video_ids: ["id-1", "id-2", null] });
+  });
+
+  it("finishes with every clip in order and the ids kept", async () => {
+    let n = 0;
+    vi.mocked(createHeyGenVideo).mockImplementation(async () => `id-${(n += 1)}`);
+    vi.mocked(getHeyGenVideo).mockImplementation(async (_key, id) => done(id));
+    const out = await renderVideoClips(fakeClient([]), activity({}), channel, now);
+    expect(out.videoUrls).toEqual(["https://clip/id-1.mp4", "https://clip/id-2.mp4", "https://clip/id-3.mp4"]);
+    expect(lastMeta()).toMatchObject({ stage: "clips_ready", heygen_video_ids: ["id-1", "id-2", "id-3"] });
   });
 });
