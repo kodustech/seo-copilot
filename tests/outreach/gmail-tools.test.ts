@@ -15,9 +15,12 @@ vi.mock("@/lib/outreach/mailbox", () => ({
   ensureFreshAccessToken: async (_c: unknown, box: { id?: string }) => `tok-${box.id ?? "default"}`,
 }));
 
+import { gmailDeleteDraft } from "@/lib/ai/tools";
 import { buildMcpTools } from "@/lib/mcp/server";
 import {
   createGmailDraft,
+  deleteGmailDraft,
+  findGmailDraftIdByMessage,
   getGmailThread,
   mailboxCapabilities,
   openGmailMailbox,
@@ -78,6 +81,12 @@ describe("Gmail MCP wiring", () => {
     expect(Object.keys(schema.properties ?? {}).sort()).toEqual(
       ["body", "cc", "mailbox_id", "subject", "thread_id", "to"],
     );
+  });
+
+  it("registers gmailDeleteDraft with confirm as the only required field", () => {
+    const schema = schemaOf("gmailDeleteDraft");
+    expect(schema.required).toEqual(["confirm"]);
+    expect(Object.keys(schema.properties ?? {}).sort()).toEqual(["confirm", "draft_id", "mailbox_id", "message_id"]);
   });
 });
 
@@ -318,5 +327,69 @@ describe("createGmailDraft", () => {
     await expect(
       createGmailDraft({ accessToken: "tok", from: "a@kodus.io", to: "b@x.com", subject: "s", text: "t" }),
     ).rejects.toThrow("Insufficient Permission");
+  });
+});
+
+describe("deleteGmailDraft", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends DELETE to the draft, never to messages", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await deleteGmailDraft("tok", "r-123");
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://gmail.googleapis.com/gmail/v1/users/me/drafts/r-123");
+    expect(init.method).toBe("DELETE");
+  });
+
+  it("says the draft is gone on 404 and surfaces other Gmail errors", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { message: "Not Found" } }), { status: 404 })));
+    await expect(deleteGmailDraft("tok", "x")).rejects.toThrow("already have been sent or deleted");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { message: "Insufficient Permission" } }), { status: 403 })));
+    await expect(deleteGmailDraft("tok", "x")).rejects.toThrow("Insufficient Permission");
+  });
+});
+
+describe("findGmailDraftIdByMessage", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("pairs a search hit's message id with its draft id, following pages", async () => {
+    const fetchMock = vi.fn(async (url: string) =>
+      url.includes("pageToken=p2")
+        ? new Response(JSON.stringify({ drafts: [{ id: "d2", message: { id: "m2" } }] }), { status: 200 })
+        : new Response(JSON.stringify({ drafts: [{ id: "d1", message: { id: "m1" } }], nextPageToken: "p2" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await findGmailDraftIdByMessage("tok", "m2")).toBe("d2");
+    expect(await findGmailDraftIdByMessage("tok", "nope")).toBeNull();
+  });
+});
+
+describe("gmailDeleteDraft tool", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("refuses without confirm=true before touching Gmail", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await gmailDeleteDraft.execute?.(
+      { draft_id: "r-123", confirm: false },
+      { toolCallId: "t", messages: [] },
+    );
+    expect(out).toMatchObject({ success: false });
+    expect((out as { message: string }).message).toContain("confirm=true");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("treats a truthy non-boolean confirm as a refusal (HTTP MCP passes raw JSON)", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await gmailDeleteDraft.execute?.(
+      { draft_id: "r-123", confirm: "false" as unknown as boolean },
+      { toolCallId: "t", messages: [] },
+    );
+    expect(out).toMatchObject({ success: false });
+    // The message, not just success:false — any thrown error has that shape too.
+    expect((out as { message: string }).message).toContain("confirm=true");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
