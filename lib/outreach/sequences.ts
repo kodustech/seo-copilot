@@ -2167,9 +2167,7 @@ async function releaseDueLinkedInTasks(
       // The account the send path uses: its relations are the ones that count.
       const accountId = (await listLinkedInAccounts())[0]?.id ?? null;
       if (accountId) {
-        snapshot = await getLinkedInRelations(client, accountId, {
-          initialSync: true,
-        });
+        snapshot = await getLinkedInRelations(client, accountId);
       }
     } catch (err) {
       failure = err instanceof Error ? err.message : String(err);
@@ -2218,9 +2216,10 @@ async function releaseDueLinkedInTasks(
 /**
  * The send path's check before a DM: true when the task was put back to wait
  * (or its enrollment cancelled) because the person is known not to be
- * connected. Reads the same cached relations as the release, never starts
- * the full first read and reads at most one page; with no read stored, a read
- * that fails or a partial read, the send goes ahead as it did before.
+ * connected. It reads only what the cron stored and never calls Unipile, so
+ * a click in the queue costs the LinkedIn account nothing. With nothing
+ * stored, a stored read that is partial or older than 8 hours, or a cache
+ * that cannot be read, the send goes ahead as it did before.
  */
 async function holdDmUntilConnected(
   client: SupabaseClient,
@@ -2231,16 +2230,10 @@ async function holdDmUntilConnected(
 ): Promise<boolean> {
   let ctx: DmConnectionContext | undefined;
   try {
-    const { getLinkedInRelations, connectionState } = await import(
+    const { readStoredLinkedInRelations, connectionState } = await import(
       "@/lib/outreach/linkedin-relations"
     );
-    // One page at most: this runs inside a click in the queue. A refresh that
-    // cannot catch up in one page leaves the read partial, which proves
-    // nothing, so the send goes ahead.
-    const snapshot = await getLinkedInRelations(client, accountId, {
-      initialSync: false,
-      maxPages: 1,
-    });
+    const snapshot = await readStoredLinkedInRelations(client, accountId);
     if (!snapshot) return false;
     ctx = (await loadDmConnectionContext(client, [task])).get(task.id);
     if (!ctx || ctx.candidates.length === 0) return false;

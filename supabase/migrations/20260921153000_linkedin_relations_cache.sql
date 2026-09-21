@@ -5,8 +5,9 @@
 -- A sequence DM is only released once the person has accepted the invite.
 -- Unipile asks for the relations list to be read rarely and at irregular
 -- times, so one read serves every DM check until next_fetch_after, which
--- carries its own random jitter. Identities are normalized (lowercased) slugs
--- and member ids, never names.
+-- carries its own random jitter. Only the sequence cron reads Unipile; the
+-- send path reads this row and nothing else. Identities are normalized
+-- (lowercased) slugs and member ids, never names.
 --
 -- The app tolerates this table being absent (it falls back to an in-process
 -- cache), so the code may deploy before or after this migration.
@@ -15,12 +16,17 @@
 CREATE TABLE IF NOT EXISTS public.linkedin_relations_cache (
   account_id       TEXT PRIMARY KEY,
   identities       TEXT[] NOT NULL DEFAULT '{}',
-  -- The whole list was read (or a complete read was refreshed without a
-  -- gap): someone missing from it is not a connection. A partial read only
+  -- The whole list was read, and every refresh since met the read before
+  -- it: someone missing from it is not a connection. An incomplete read only
   -- proves who is connected.
   complete         BOOLEAN NOT NULL DEFAULT false,
   fetched_at       TIMESTAMPTZ NOT NULL,
   next_fetch_after TIMESTAMPTZ NOT NULL,
+  -- When the last full read started. An incomplete one is retried at most
+  -- once a day, and never automatically once the list outgrew the page cap
+  -- (full_sync_capped); deleting the row forces a new full read.
+  full_sync_at     TIMESTAMPTZ NOT NULL,
+  full_sync_capped BOOLEAN NOT NULL DEFAULT false,
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

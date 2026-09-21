@@ -5,18 +5,28 @@
  * step's delay counts from the invite, not from the acceptance. The sequence
  * engine asks this module before it releases a DM.
  *
- * Unipile's guidance (docs/detecting-accepted-invitations and
- * docs/provider-limits-and-restrictions): an initial sync may page through the
- * whole relations list; after that, read the first page only, a few times a
- * day, at irregular intervals. So: one full sync, then refreshes that stop as
- * soon as they reach connections the previous read already saw, no sooner
- * than every few hours plus random jitter, only when a DM is waiting on the
- * answer, and within a small page budget. Never a profile read per person:
- * each one is a visible profile view on the sender's account.
+ * Every read here runs against the account all founder-voice outreach goes
+ * out from, so reads are few and bounded. Unipile's guidance
+ * (docs/detecting-accepted-invitations, docs/provider-limits-and-restrictions):
+ * an initial sync may page through the whole relations list; after that, read
+ * the first page only, a few times a day, at irregular intervals. Hence:
+ *
+ * - Only the sequence cron reads Unipile (getLinkedInRelations). The send path
+ *   reads the stored result and nothing else (readStoredLinkedInRelations).
+ * - One full read, at most FULL_SYNC_MAX_PAGES, when nothing is stored.
+ * - After that, a refresh of at most REFRESH_MAX_PAGES that stops as soon as
+ *   it reaches connections the previous read already saw, no sooner than every
+ *   3 to 6 hours, and only when a DM is due.
+ * - A read that could not cover the whole list is stored incomplete. Nothing
+ *   short of another full read can make it complete, so it is not refreshed;
+ *   the full read is retried at most once a day, and never automatically when
+ *   the list outgrew the page cap (delete the row to force one).
+ *
+ * Never a profile read per person: each one is a visible profile view.
  *
  * Presence in any read proves a connection. Absence proves the opposite only
- * on a complete, recent read; everything else is "unknown", and the caller
- * falls back to sending as before.
+ * on a complete read at most ABSENCE_MAX_AGE_MS old; everything else is
+ * "unknown", and the caller falls back to sending as before.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -32,17 +42,16 @@ const TABLE = "linkedin_relations_cache";
 const REFRESH_MIN_MS = 3 * 60 * 60_000;
 /** …plus up to this much, so reads never settle into fixed times. */
 const REFRESH_JITTER_MS = 3 * 60 * 60_000;
-/**
- * Absence is only trusted on a read this recent. Refreshes land well inside
- * it; this guards against a stored read that stopped being refreshed.
- */
+/** Absence is only trusted on a complete read this recent. */
 const ABSENCE_MAX_AGE_MS = 8 * 60 * 60_000;
+/** An incomplete full read is retried no more often than this. */
+const FULL_SYNC_RETRY_MS = 24 * 60 * 60_000;
 /** After a failed read, Unipile is not asked again for this long. */
 const FAILURE_BACKOFF_MS = 30 * 60_000;
 const PAGE_SIZE = 500;
-/** The one full read: 15k connections. A longer list stays incomplete. */
+/** The full read: 15k connections. A longer list is stored incomplete. */
 const FULL_SYNC_MAX_PAGES = 30;
-/** A refresh of a complete read: past this it gives up and goes partial. */
+/** A refresh: past this without meeting the previous read, it gives up. */
 const REFRESH_MAX_PAGES = 3;
 /**
  * A refresh reads back this far past the previous read, so a connection made
@@ -55,12 +64,16 @@ export type LinkedInRelationsSnapshot = {
   /** Normalized slugs and member ids of every relation read. */
   identities: Set<string>;
   /**
-   * The whole list was read (or a complete read was refreshed without a
-   * gap), so someone missing from it is not connected.
+   * The whole list was read, and every refresh since met the read before it,
+   * so someone missing from it is not connected.
    */
   complete: boolean;
   fetchedAt: number;
   nextFetchAfter: number;
+  /** When the last full read started. */
+  fullSyncAt: number;
+  /** The last full read stopped at the page cap with more list left. */
+  fullSyncCapped: boolean;
 };
 
 export type ConnectionState = "connected" | "not_connected" | "unknown";
@@ -83,7 +96,8 @@ export function connectionState(
 }
 
 // Fallback store for when the table is not migrated yet, and the per-process
-// guards: one read at a time per account, and a pause after a failed read.
+// guards: one read at a time per account (a slow cron tick can overlap the
+// next one, or the manual queue run), and a pause after a failed read.
 const memory = new Map<string, LinkedInRelationsSnapshot>();
 const inflight = new Map<string, Promise<LinkedInRelationsSnapshot>>();
 const failures = new Map<string, number>();
@@ -117,14 +131,17 @@ function fromRow(r: Record<string, unknown>): LinkedInRelationsSnapshot {
     const t = typeof v === "string" ? Date.parse(v) : NaN;
     return Number.isFinite(t) ? t : null;
   };
+  const fetchedAt = ms(r.fetched_at) ?? 0;
   return {
     accountId: r.account_id as string,
     identities: new Set(
       Array.isArray(r.identities) ? (r.identities as string[]) : [],
     ),
     complete: Boolean(r.complete),
-    fetchedAt: ms(r.fetched_at) ?? 0,
+    fetchedAt,
     nextFetchAfter: ms(r.next_fetch_after) ?? 0,
+    fullSyncAt: ms(r.full_sync_at) ?? fetchedAt,
+    fullSyncCapped: Boolean(r.full_sync_capped),
   };
 }
 
@@ -162,6 +179,8 @@ async function writeSnapshot(
       complete: snap.complete,
       fetched_at: iso(snap.fetchedAt),
       next_fetch_after: iso(snap.nextFetchAfter),
+      full_sync_at: iso(snap.fullSyncAt),
+      full_sync_capped: snap.fullSyncCapped,
       updated_at: new Date().toISOString(),
     },
     { onConflict: "account_id" },
@@ -181,20 +200,24 @@ function relationIdentities(rel: UnipileRelation): string[] {
     .filter((v): v is string => Boolean(v));
 }
 
-async function syncRelations(
+/**
+ * One read from the newest connection down. `prev` null is a full read;
+ * otherwise a refresh of `prev` that may stop once it meets it.
+ */
+async function readRelations(
   client: SupabaseClient,
   accountId: string,
   prev: LinkedInRelationsSnapshot | null,
-  maxPages: number,
 ): Promise<LinkedInRelationsSnapshot> {
   const startedAt = Date.now();
+  const maxPages = prev ? REFRESH_MAX_PAGES : FULL_SYNC_MAX_PAGES;
 
   const fetched = new Set<string>();
   let cursor: string | null = null;
   let pages = 0;
   // Stopping early leans on the newest-first order Unipile documents. It is
   // checked on every item rather than trusted: out of order, or undated, and
-  // the refresh cannot prove it caught up.
+  // the refresh cannot prove it met the previous read.
   let ordered = true;
   let previousCreatedAt = Infinity;
   let oldest: number | null = null;
@@ -221,11 +244,10 @@ async function syncRelations(
         break;
       }
       // An empty page that still carries a cursor proves nothing: stop, and
-      // keep the read partial.
+      // do not call the read complete.
       if (res.items.length === 0) break;
-      // Only a complete read can be carried forward from its newest end.
       if (
-        prev?.complete &&
+        prev &&
         ordered &&
         oldest !== null &&
         oldest <= prev.fetchedAt - OVERLAP_MS
@@ -241,6 +263,7 @@ async function syncRelations(
   }
   failures.delete(accountId);
 
+  const capped = !exhausted && pages >= maxPages;
   const base = {
     accountId,
     fetchedAt: startedAt,
@@ -249,67 +272,90 @@ async function syncRelations(
   let snap: LinkedInRelationsSnapshot;
   if (exhausted) {
     // The whole list: replace, so a removed connection stops counting.
-    snap = { ...base, identities: fetched, complete: true };
-  } else if (caughtUp && prev) {
+    snap = {
+      ...base,
+      identities: fetched,
+      complete: true,
+      fullSyncAt: startedAt,
+      fullSyncCapped: false,
+    };
+  } else if (!prev) {
+    // A full read that could not reach the end: incomplete until another full
+    // read, which waits a day, or for good when the list outgrew the cap.
+    snap = {
+      ...base,
+      identities: fetched,
+      complete: false,
+      fullSyncAt: startedAt,
+      fullSyncCapped: capped,
+    };
+  } else {
+    // A refresh. Meeting the previous read keeps its completeness; a gap (page
+    // budget spent, an empty page, an order it could not verify) loses it.
+    // What was seen is kept either way: it still proves "connected".
     snap = {
       ...base,
       identities: new Set([...prev.identities, ...fetched]),
-      complete: true,
-    };
-  } else {
-    // Page budget spent, or a page that proves nothing. What was seen still
-    // proves "connected"; absence proves nothing until a later full read.
-    snap = {
-      ...base,
-      identities: new Set([...(prev?.identities ?? []), ...fetched]),
-      complete: false,
+      complete: caughtUp && prev.complete,
+      fullSyncAt: prev.fullSyncAt,
+      fullSyncCapped: prev.fullSyncCapped,
     };
   }
   console.info(
-    `[linkedin-relations] ${accountId}: ${pages} page(s), ${fetched.size} identities read, ` +
-      `${snap.identities.size} known, complete=${snap.complete}`,
+    `[linkedin-relations] ${accountId}: ${prev ? "refresh" : "full read"}, ${pages} page(s), ` +
+      `${fetched.size} identities read, ${snap.identities.size} known, complete=${snap.complete}`,
   );
   await writeSnapshot(client, snap);
   return snap;
 }
 
 /**
- * The account's relations, read from Unipile only when the stored read is due
- * for a refresh.
- *
- * With nothing stored, `initialSync: false` returns null instead of starting
- * the one-off full read. `maxPages` caps the pages this call may read on top
- * of the built-in budgets (FULL_SYNC_MAX_PAGES for a read from scratch,
- * REFRESH_MAX_PAGES for refreshing a complete one); the send path passes 1 so
- * a click in the queue costs at most one request.
+ * The stored read, with no Unipile call. The send path uses only this: a
+ * click in the queue never reads the sender's LinkedIn account.
+ */
+export async function readStoredLinkedInRelations(
+  client: SupabaseClient,
+  accountId: string,
+): Promise<LinkedInRelationsSnapshot | null> {
+  return readSnapshot(client, accountId);
+}
+
+/**
+ * The account's relations for the sequence cron, read from Unipile only when
+ * the stored read is due: a full read when nothing is stored, a bounded
+ * refresh of a complete read, or the daily retry of an incomplete full read.
+ * An incomplete read between retries is returned as is, since no refresh can
+ * make it prove absence.
  *
  * Throws when Unipile or the store fails; callers treat that as "unknown".
  */
 export async function getLinkedInRelations(
   client: SupabaseClient,
   accountId: string,
-  opts: { initialSync: boolean; maxPages?: number },
-): Promise<LinkedInRelationsSnapshot | null> {
+): Promise<LinkedInRelationsSnapshot> {
   const cached = await readSnapshot(client, accountId);
   const now = Date.now();
   if (cached && now < cached.nextFetchAfter) return cached;
-  if (!cached && !opts.initialSync) return null;
+
+  let prev: LinkedInRelationsSnapshot | null;
+  if (!cached) {
+    prev = null;
+  } else if (cached.complete) {
+    prev = cached;
+  } else if (!cached.fullSyncCapped && now - cached.fullSyncAt >= FULL_SYNC_RETRY_MS) {
+    prev = null;
+  } else {
+    return cached;
+  }
 
   const failedAt = failures.get(accountId);
   if (failedAt !== undefined && now - failedAt < FAILURE_BACKOFF_MS) {
     throw new Error("LinkedIn relations read failed recently; not retrying yet");
   }
 
-  const budget = Math.max(
-    1,
-    Math.min(
-      opts.maxPages ?? Infinity,
-      cached?.complete ? REFRESH_MAX_PAGES : FULL_SYNC_MAX_PAGES,
-    ),
-  );
   let pending = inflight.get(accountId);
   if (!pending) {
-    pending = syncRelations(client, accountId, cached, budget).finally(() => {
+    pending = readRelations(client, accountId, prev).finally(() => {
       inflight.delete(accountId);
     });
     inflight.set(accountId, pending);

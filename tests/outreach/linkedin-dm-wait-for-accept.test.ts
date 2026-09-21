@@ -37,6 +37,7 @@ vi.mock("@/lib/unipile", async (importOriginal) => ({
 
 import {
   connectionState,
+  getLinkedInRelations,
   resetLinkedInRelationsMemo,
 } from "@/lib/outreach/linkedin-relations";
 import {
@@ -440,9 +441,9 @@ describe("the relations read", () => {
           account_id: "acc-1",
           identities: ["old-friend"],
           complete: true,
-          covered_since: null,
           fetched_at: ago(7 * HOUR),
           next_fetch_after: ago(HOUR),
+          full_sync_at: ago(3 * DAY),
         },
       ],
     });
@@ -468,9 +469,9 @@ describe("sending a DM from the queue", () => {
       account_id: "acc-1",
       identities,
       complete: true,
-      covered_since: null,
       fetched_at: ago(HOUR),
       next_fetch_after: new Date(Date.parse(NOW) + 3 * HOUR).toISOString(),
+      full_sync_at: ago(3 * DAY),
     },
   ];
 
@@ -527,16 +528,22 @@ describe("sending a DM from the queue", () => {
 // cancelling an enrollment, needs a complete and recent read that does not
 // list the person. Anything less releases the DM as before, flagged.
 
-/** A stored read that is complete but due for a refresh. */
-const staleCompleteRead = (identities: string[]) => [
+/** A stored read that is due for a refresh (read 7h ago, due 1h ago). */
+const storedRead = (
+  identities: string[],
+  opts: { complete?: boolean; fetchedAgo?: number; fullSyncAgo?: number; capped?: boolean } = {},
+) => [
   {
     account_id: "acc-1",
     identities,
-    complete: true,
-    fetched_at: ago(7 * HOUR),
+    complete: opts.complete ?? true,
+    fetched_at: ago(opts.fetchedAgo ?? 7 * HOUR),
     next_fetch_after: ago(HOUR),
+    full_sync_at: ago(opts.fullSyncAgo ?? opts.fetchedAgo ?? 7 * HOUR),
+    full_sync_capped: opts.capped ?? false,
   },
 ];
+const staleCompleteRead = (identities: string[]) => storedRead(identities);
 
 /** A full page of connections all newer than the stored read: never catches up. */
 const pageNewerThanStoredRead = () => ({
@@ -554,7 +561,11 @@ describe("a partial relations read", () => {
 
     const res = await processDueSequenceTasks(client);
 
-    expect(tables.linkedin_relations_cache[0].complete).toBe(false);
+    expect(tables.linkedin_relations_cache[0]).toMatchObject({
+      complete: false,
+      // Not the page cap: the full read is retried after a day.
+      full_sync_capped: false,
+    });
     const dm = find(tables.outreach_send_tasks, "dm-1");
     expect(dm.status).toBe("ready");
     expect(dm.meta).toMatchObject({ connection_check: "unknown" });
@@ -562,7 +573,7 @@ describe("a partial relations read", () => {
     expect(res).toMatchObject({ linkedinWaiting: 0, linkedinCancelled: 0 });
   });
 
-  it("bounds a cron refresh to a few pages, then releases unchecked instead of holding", async () => {
+  it("bounds a cron refresh after the initial sync to 3 pages, then releases unchecked instead of holding", async () => {
     const { client, tables } = world({
       enrollments: [enrollment("enr-1", "jane-doe")],
       tasks: [sentInvite("enr-1", ago(3 * DAY)), dueTask("dm-1", "enr-1", "step-dm")],
@@ -586,6 +597,8 @@ describe("a partial relations read", () => {
       complete: true,
       fetchedAt: Date.parse(NOW) - 9 * HOUR,
       nextFetchAfter: Date.parse(NOW) + HOUR,
+      fullSyncAt: Date.parse(NOW) - 9 * HOUR,
+      fullSyncCapped: false,
     };
     expect(connectionState(snap, ["jane-doe"], Date.parse(NOW))).toBe("unknown");
     expect(connectionState({ ...snap, fetchedAt: Date.parse(NOW) - HOUR }, ["jane-doe"], Date.parse(NOW))).toBe(
@@ -705,20 +718,131 @@ describe("which LinkedIn values count as a person", () => {
   });
 });
 
-describe("the send path's relations read", () => {
-  it("reads at most one page inside a click, and a partial read lets the send go", async () => {
+describe("the send path never reads Unipile", () => {
+  it("decides from the stored read alone, even when it is due for a refresh", async () => {
     const { client, tables } = world({
       enrollments: [enrollment("enr-1", "jane-doe")],
       tasks: [sentInvite("enr-1", ago(3 * DAY)), dueTask("dm-1", "enr-1", "step-dm", { status: "ready" })],
-      relationsCache: staleCompleteRead(["old-friend"]),
+      // Complete, 7h old (inside the 8h limit), past next_fetch_after.
+      relationsCache: storedRead(["old-friend"]),
     });
-    unipile.listLinkedInRelations.mockImplementation(async () => pageNewerThanStoredRead());
 
     const result = await sendTaskNow(client, "dm-1");
 
-    expect(unipile.listLinkedInRelations).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ ok: false, status: "skipped" });
+    expect(find(tables.outreach_send_tasks, "dm-1").status).toBe("scheduled");
+    expect(unipile.listLinkedInRelations).not.toHaveBeenCalled();
+    expect(unipile.startUnipileChat).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["older than 8 hours", storedRead(["old-friend"], { fetchedAgo: 9 * HOUR })],
+    ["incomplete", storedRead(["old-friend"], { complete: false })],
+  ])("sends as before, without reading, when the stored read is %s", async (_label, cache) => {
+    const { client, tables } = world({
+      enrollments: [enrollment("enr-1", "jane-doe")],
+      tasks: [sentInvite("enr-1", ago(3 * DAY)), dueTask("dm-1", "enr-1", "step-dm", { status: "ready" })],
+      relationsCache: cache,
+    });
+
+    const result = await sendTaskNow(client, "dm-1");
+
     expect(result).toEqual({ ok: true, status: "sent" });
-    expect(tables.linkedin_relations_cache[0].complete).toBe(false);
+    expect(unipile.listLinkedInRelations).not.toHaveBeenCalled();
+    // The click wrote nothing: the stored read is the cron's alone.
+    expect(tables.linkedin_relations_cache).toEqual(cache);
+  });
+});
+
+describe("an incomplete stored read", () => {
+  it("is not refreshed: no full scan every few hours", async () => {
+    const { client, tables } = world({
+      enrollments: [enrollment("enr-1", "jane-doe")],
+      tasks: [sentInvite("enr-1", ago(15 * DAY)), dueTask("dm-1", "enr-1", "step-dm")],
+      relationsCache: storedRead(["old-friend"], { complete: false }),
+    });
+
+    await processDueSequenceTasks(client);
+
+    expect(unipile.listLinkedInRelations).not.toHaveBeenCalled();
+    const dm = find(tables.outreach_send_tasks, "dm-1");
+    expect(dm.status).toBe("ready");
+    expect(dm.meta).toMatchObject({ connection_check: "unknown" });
+    expect(find(tables.outreach_enrollments, "enr-1").status).toBe("active");
+  });
+
+  it("gets its full read retried once a day", async () => {
+    const { client, tables } = world({
+      enrollments: [enrollment("enr-1", "jane-doe")],
+      tasks: [sentInvite("enr-1", ago(3 * DAY)), dueTask("dm-1", "enr-1", "step-dm")],
+      relationsCache: storedRead(["old-friend"], { complete: false, fullSyncAgo: 25 * HOUR }),
+    });
+    unipile.listLinkedInRelations.mockResolvedValue({
+      items: [relation("old-friend", ago(30 * DAY))],
+      cursor: null,
+    });
+
+    await processDueSequenceTasks(client);
+
+    expect(unipile.listLinkedInRelations).toHaveBeenCalledTimes(1);
+    expect(tables.linkedin_relations_cache[0]).toMatchObject({ complete: true, full_sync_at: NOW });
+    expect(find(tables.outreach_send_tasks, "dm-1").meta).toMatchObject({
+      connection_check: "not_connected",
+    });
+  });
+
+  it("from a list that outgrew the page cap is not scanned again", async () => {
+    const { client, tables } = world({
+      enrollments: [enrollment("enr-1", "jane-doe"), enrollment("enr-2", "john-roe")],
+      tasks: [sentInvite("enr-1", ago(3 * DAY)), dueTask("dm-1", "enr-1", "step-dm")],
+    });
+    let n = 0;
+    unipile.listLinkedInRelations.mockImplementation(async () => ({
+      items: [relation(`person-${n}`, ago(++n * HOUR))],
+      cursor: "more",
+    }));
+
+    await processDueSequenceTasks(client);
+
+    expect(unipile.listLinkedInRelations).toHaveBeenCalledTimes(30);
+    expect(tables.linkedin_relations_cache[0]).toMatchObject({
+      complete: false,
+      full_sync_capped: true,
+    });
+    expect(find(tables.outreach_send_tasks, "dm-1").meta).toMatchObject({
+      connection_check: "unknown",
+    });
+
+    // 25 hours later (Friday): past next_fetch_after and past the daily retry.
+    resetLinkedInRelationsMemo();
+    vi.setSystemTime(new Date(Date.parse(NOW) + 25 * HOUR));
+    tables.outreach_send_tasks.push(sentInvite("enr-2", ago(DAY)), dueTask("dm-2", "enr-2", "step-dm"));
+    await processDueSequenceTasks(client);
+
+    expect(unipile.listLinkedInRelations).toHaveBeenCalledTimes(30);
+    expect(find(tables.outreach_send_tasks, "dm-2").status).toBe("ready");
+  });
+});
+
+describe("the cron's relations read", () => {
+  it("is shared by overlapping callers instead of read twice", async () => {
+    const { client } = world({ enrollments: [], tasks: [] });
+    let release: () => void = () => {};
+    unipile.listLinkedInRelations.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ items: [relation("jane-doe", ago(DAY))], cursor: null });
+        }),
+    );
+
+    const first = getLinkedInRelations(client, "acc-1");
+    const second = getLinkedInRelations(client, "acc-1");
+    await vi.waitFor(() => expect(unipile.listLinkedInRelations).toHaveBeenCalled());
+    release();
+
+    const [a, b] = await Promise.all([first, second]);
+    expect(unipile.listLinkedInRelations).toHaveBeenCalledTimes(1);
+    expect(a).toBe(b);
   });
 });
 
