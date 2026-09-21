@@ -36,6 +36,9 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+# Stdlib-only at import time; Chromium loads inside render_slides.
+from slides import SlideSpecError
+
 STALE_CLAIM_MINUTES = 30
 MAX_ATTEMPTS = 3
 RETRY_MINUTES = 10
@@ -177,8 +180,9 @@ def render_previews(client, row: dict, visuals: list, fp: str, bucket: str, work
                 client.storage.from_(bucket).upload(path, f, {"content-type": "image/png", "upsert": "true"})
             urls[i] = client.storage.from_(bucket).get_public_url(path)
         log("preview ok", aid)
-    except ValueError as exc:
+    except SlideSpecError as exc:
         # A malformed slide spec: the same input fails the same way, so record it once.
+        # Any other ValueError (a decode error in a storage response) is transient.
         error = str(exc)[:300]
         log("preview refused", aid, error)
     except Exception as exc:  # Chromium, storage, network: worth another try

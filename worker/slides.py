@@ -32,6 +32,12 @@ import re
 import sys
 from pathlib import Path
 
+class SlideSpecError(ValueError):
+    """A malformed slide spec: the same input fails the same way every time.
+    Its own type so callers can tell it from a ValueError raised elsewhere
+    (a JSON or Unicode decode in a network response is one, and is transient)."""
+
+
 WIDTH, HEIGHT = 1920, 1080
 TIMEOUT_MS = 15_000
 
@@ -166,7 +172,7 @@ def rich(text: str) -> str:
 def need_str(spec: dict, key: str, where: str) -> str:
     val = spec.get(key)
     if not isinstance(val, str) or not val.strip():
-        raise ValueError(f"{where}: '{key}' is required (non-empty string)")
+        raise SlideSpecError(f"{where}: '{key}' is required (non-empty string)")
     return " ".join(val.split())
 
 
@@ -178,10 +184,10 @@ def opt_str(spec: dict, key: str) -> str | None:
 def str_list(spec: dict, key: str, where: str, lo: int, hi: int) -> list[str]:
     val = spec.get(key)
     if not isinstance(val, list):
-        raise ValueError(f"{where}: '{key}' must be a list of {lo}-{hi} strings")
+        raise SlideSpecError(f"{where}: '{key}' must be a list of {lo}-{hi} strings")
     items = [" ".join(v.split()) for v in val if isinstance(v, str) and v.strip()]
     if not lo <= len(items) <= hi:
-        raise ValueError(f"{where}: '{key}' needs {lo}-{hi} non-empty strings, got {len(items)}")
+        raise SlideSpecError(f"{where}: '{key}' needs {lo}-{hi} non-empty strings, got {len(items)}")
     return items
 
 
@@ -251,7 +257,7 @@ def layout_bullets(spec: dict, where: str) -> str:
 def compare_side(spec: dict, side: str, where: str) -> tuple[str, list[str]]:
     raw = spec.get(side)
     if not isinstance(raw, dict):
-        raise ValueError(f"{where}: '{side}' must be an object with 'heading' and 'rows'")
+        raise SlideSpecError(f"{where}: '{side}' must be an object with 'heading' and 'rows'")
     heading = need_str(raw, "heading", f"{where}.{side}")
     rows_raw = raw.get("rows", [])
     if rows_raw is None:
@@ -322,10 +328,10 @@ def layout_code(spec: dict, where: str) -> str:
     title = need_str(spec, "title", where)
     code = spec.get("code")
     if not isinstance(code, str) or not code.strip():
-        raise ValueError(f"{where}: 'code' is required (non-empty string)")
+        raise SlideSpecError(f"{where}: 'code' is required (non-empty string)")
     lines = code.strip("\n").expandtabs(2).split("\n")
     if len(lines) > MAX_CODE_LINES:
-        raise ValueError(f"{where}: 'code' has {len(lines)} lines; the slide holds at most {MAX_CODE_LINES}")
+        raise SlideSpecError(f"{where}: 'code' has {len(lines)} lines; the slide holds at most {MAX_CODE_LINES}")
     longest = max(len(line) for line in lines)
     px = 38 if len(lines) <= 6 else 32 if len(lines) <= 9 else 27
     # 1500px box minus padding; mono glyphs are ~0.6em wide.
@@ -358,14 +364,14 @@ def page(inner: str, css: str = "") -> str:
 
 
 def build_html(spec: dict, site: str, index: int = 0) -> str:
-    """The full page for one slide. Raises ValueError on a malformed spec."""
+    """The full page for one slide. Raises SlideSpecError on a malformed spec."""
     where = f"slide {index + 1}"
     if not isinstance(spec, dict):
-        raise ValueError(f"{where}: must be an object or null")
+        raise SlideSpecError(f"{where}: must be an object or null")
     if "html" in spec and "layout" not in spec:
         fragment = spec.get("html")
         if not isinstance(fragment, str) or not fragment.strip():
-            raise ValueError(f"{where}: 'html' must be a non-empty string")
+            raise SlideSpecError(f"{where}: 'html' must be a non-empty string")
         # The agent's own design: theme variables and fonts, nothing imposed.
         return page(
             '<div id="slide" style="position:absolute;left:0;top:0;width:1920px;height:1080px;overflow:hidden">'
@@ -375,7 +381,7 @@ def build_html(spec: dict, site: str, index: int = 0) -> str:
     if layout is None:
         layout = "bullets"  # legacy {title, rows, note}
     if layout not in BUILDERS:
-        raise ValueError(f"{where}: unknown layout '{layout}' (use one of {', '.join(LAYOUTS)})")
+        raise SlideSpecError(f"{where}: unknown layout '{layout}' (use one of {', '.join(LAYOUTS)})")
     inner = BUILDERS[layout](spec, where)
     chrome = f'<div class="bar"></div>{inner}'
     if site:
