@@ -3,10 +3,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const mailbox = vi.hoisted(() => ({
   box: null as Record<string, unknown> | null,
   all: [] as Array<Record<string, unknown>>,
+  /** Listed by listMailboxes, but gone by the time the secrets are read. */
+  vanished: new Set<string>(),
 }));
 vi.mock("@/lib/outreach/mailbox", () => ({
   getMailboxWithSecrets: async (_c: unknown, id: string | null) =>
-    (id ? mailbox.all.find((b) => b.id === id) : null) ?? mailbox.box,
+    id && mailbox.vanished.has(id)
+      ? null
+      : ((id ? mailbox.all.find((b) => b.id === id) : null) ?? mailbox.box),
   listMailboxes: async () => mailbox.all,
   ensureFreshAccessToken: async (_c: unknown, box: { id?: string }) => `tok-${box.id ?? "default"}`,
 }));
@@ -194,6 +198,15 @@ describe("searchGmailMailboxes", () => {
     ]);
     expect(out.searched).toEqual(["a@kodus.io", "b@kodus.io"]);
     expect(out.skipped).toEqual(["c@kodus.io: no email read access — reconnect the mailbox in Settings to include it"]);
+  });
+
+  it("reports a mailbox that vanished before the search instead of dropping it", async () => {
+    mailbox.all = [box(GMAIL_READONLY_SCOPE, true, { id: "gone", fromEmail: "gone@kodus.io" })];
+    mailbox.vanished.add("gone");
+    const out = await searchGmailMailboxes(client, "x", 5);
+    mailbox.vanished.clear();
+    expect(out.searched).toEqual([]);
+    expect(out.skipped).toEqual(["gone@kodus.io: mailbox not found — its connection may have been removed"]);
   });
 });
 

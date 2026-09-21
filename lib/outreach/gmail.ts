@@ -198,27 +198,41 @@ export async function searchGmailMailboxes(
   maxResults: number,
 ): Promise<{ messages: GmailSearchHit[]; searched: string[]; skipped: string[] }> {
   const boxes = (await listMailboxes(client)).filter((b) => b.enabled && b.connected);
+  // Mailboxes are independent (separate Gmail accounts and quotas), so they
+  // run at once; order of searched/skipped still follows the mailbox list.
+  const perBox = await Promise.all(
+    boxes.map(async (box): Promise<{ skip: string } | { hits: GmailSearchHit[] }> => {
+      if (!box.inboxSyncReady) {
+        return { skip: "no email read access — reconnect the mailbox in Settings to include it" };
+      }
+      try {
+        const secrets = await getMailboxWithSecrets(client, box.id);
+        if (!secrets) {
+          return { skip: "mailbox not found — its connection may have been removed" };
+        }
+        const accessToken = await ensureFreshAccessToken(client, secrets);
+        const found = await searchGmailMessages(accessToken, query, maxResults);
+        return {
+          hits: found.map((m) => ({ ...m, mailbox: box.fromEmail, mailbox_id: box.id })),
+        };
+      } catch (err) {
+        return { skip: err instanceof Error ? err.message : "search failed" };
+      }
+    }),
+  );
+
   const messages: GmailSearchHit[] = [];
   const searched: string[] = [];
   const skipped: string[] = [];
-  for (const box of boxes) {
-    if (!box.inboxSyncReady) {
-      skipped.push(`${box.fromEmail}: no email read access — reconnect the mailbox in Settings to include it`);
-      continue;
+  perBox.forEach((result, i) => {
+    const email = boxes[i].fromEmail;
+    if ("skip" in result) {
+      skipped.push(`${email}: ${result.skip}`);
+    } else {
+      searched.push(email);
+      messages.push(...result.hits);
     }
-    try {
-      const secrets = await getMailboxWithSecrets(client, box.id);
-      if (!secrets) continue;
-      const accessToken = await ensureFreshAccessToken(client, secrets);
-      const found = await searchGmailMessages(accessToken, query, maxResults);
-      messages.push(
-        ...found.map((m) => ({ ...m, mailbox: box.fromEmail, mailbox_id: box.id })),
-      );
-      searched.push(box.fromEmail);
-    } catch (err) {
-      skipped.push(`${box.fromEmail}: ${err instanceof Error ? err.message : "search failed"}`);
-    }
-  }
+  });
   messages.sort((a, b) => (b.date ?? "").localeCompare(a.date ?? ""));
   return { messages: messages.slice(0, maxResults), searched, skipped };
 }
