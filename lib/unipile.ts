@@ -1073,6 +1073,60 @@ export async function defaultLinkedInAccountId(): Promise<string | null> {
   return (await linkedInAccountIdentity()).accountId;
 }
 
+/** One 1st-degree connection of the connected account. */
+export type UnipileRelation = {
+  publicIdentifier: string | null;
+  /** LinkedIn member id as Unipile returns it on a relation. */
+  memberId: string | null;
+  profileUrl: string | null;
+  /** When the connection was made, in epoch ms; null when unreadable. */
+  createdAt: number | null;
+};
+
+/**
+ * One page of the account's relations (GET /api/v1/users/relations), newest
+ * connection first according to Unipile's guide on detecting accepted
+ * invitations. Callers must not rely on that order blindly: see
+ * lib/outreach/linkedin-relations.ts, which checks it before stopping early.
+ *
+ * Through the harvest gate: a relations read hits the connected account like
+ * any other read, and Unipile asks for it to be rare and irregular.
+ */
+export async function listLinkedInRelations(opts: {
+  accountId: string;
+  limit?: number;
+  cursor?: string | null;
+}): Promise<{ items: UnipileRelation[]; cursor: string | null }> {
+  const params = new URLSearchParams({
+    account_id: opts.accountId,
+    limit: String(Math.min(1000, Math.max(1, opts.limit ?? 100))),
+  });
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  const data = await harvestFetch<{
+    items?: Record<string, unknown>[];
+    cursor?: unknown;
+  }>(`/api/v1/users/relations?${params.toString()}`);
+  const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  const items = (data.items ?? []).map((r) => {
+    // The schema only says "number". Seconds and milliseconds are both in use
+    // across Unipile, so anything too small to be milliseconds is taken as
+    // seconds.
+    const raw = typeof r.created_at === "number" ? r.created_at : Number(r.created_at);
+    const createdAt =
+      Number.isFinite(raw) && raw > 0 ? (raw < 1e12 ? raw * 1000 : raw) : null;
+    return {
+      publicIdentifier: text(r.public_identifier),
+      memberId: text(r.member_id),
+      profileUrl: text(r.public_profile_url),
+      createdAt,
+    };
+  });
+  return {
+    items,
+    cursor: typeof data.cursor === "string" && data.cursor ? data.cursor : null,
+  };
+}
+
 /**
  * The account list, cached briefly.
  *
@@ -1456,9 +1510,18 @@ export function normalizeLinkedInIdentity(
   const raw = urlOrId.trim();
   // ACoAA… provider ids
   if (/^ACoAA/i.test(raw)) return raw.toLowerCase();
+  // A LinkedIn URL typed without its scheme ("linkedin.com/in/jane",
+  // "br.linkedin.com/in/jane") is still a URL. Read as a bare slug, it came
+  // back as its host, "linkedin.com".
+  const hasScheme = /^https?:\/\//i.test(raw);
+  const isUrl = hasScheme || /^([a-z0-9-]+\.)*linkedin\.com\//i.test(raw);
   try {
     const u = new URL(
-      raw.startsWith("http") ? raw : `https://www.linkedin.com/in/${raw}`,
+      hasScheme
+        ? raw
+        : isUrl
+          ? `https://${raw}`
+          : `https://www.linkedin.com/in/${raw}`,
     );
     const parts = u.pathname.split("/").filter(Boolean);
     // /in/slug or /in/ACoAA…/
@@ -1469,12 +1532,32 @@ export function normalizeLinkedInIdentity(
   } catch {
     /* fall through */
   }
+  // A URL with no /in/ or /pub/ segment (a company page, another site) names
+  // no person. Splitting it as a bare slug used to return its scheme, "https:",
+  // which then matched every other such URL.
+  if (isUrl) return null;
   // bare slug
   const slug = raw
     .replace(/^https?:\/\/(www\.)?linkedin\.com\/in\//i, "")
     .split(/[/?#]/)[0]
     ?.toLowerCase();
   return slug || null;
+}
+
+/**
+ * normalizeLinkedInIdentity, kept only when it is plausibly one person: a
+ * member id, or a vanity slug (from a bare slug or an /in/ or /pub/ URL).
+ * Null for anything else, such as a name typed into the LinkedIn field, so a
+ * value that can never match is not mistaken for someone who is absent.
+ */
+export function linkedInPersonIdentity(
+  urlOrId: string | null | undefined,
+): string | null {
+  const id = normalizeLinkedInIdentity(urlOrId);
+  if (!id) return null;
+  if (isLinkedInProviderId(id)) return id;
+  // Same shape canonicalProfileUrl (lib/linkedin-harvest.ts) accepts.
+  return /^[\p{L}\p{N}][\p{L}\p{N}_-]{2,}$/u.test(id) ? id : null;
 }
 
 export function identitiesFromWebhook(

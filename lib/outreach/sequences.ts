@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import type { LinkedInRelationsSnapshot } from "@/lib/outreach/linkedin-relations";
 import { findUnresolvedTokens, renderTemplate } from "@/lib/outreach/renderer";
 import type {
   EmailThreadMode,
@@ -705,13 +706,16 @@ async function applySequenceStatusSideEffects(
   const sendingWindow = await getSendingWindow(client);
   if (!isSendingDay(new Date(now), sendingWindow)) return;
 
-  await client
-    .from("outreach_send_tasks")
-    .update({ status: "ready", updated_at: now })
-    .in("enrollment_id", enrollmentIds)
-    .eq("status", "scheduled")
-    .eq("channel", "linkedin")
-    .lte("scheduled_for", now);
+  try {
+    await promoteDueLinkedInExceptDms(client, enrollmentIds, now);
+  } catch (err) {
+    // Best effort, as the bulk update here always was: a failure leaves the
+    // work scheduled for the cron instead of failing the status change.
+    console.warn(
+      "[sequences] releasing due LinkedIn tasks on activate failed:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 
   await client
     .from("outreach_send_tasks")
@@ -898,6 +902,8 @@ async function createTaskForStep(
     sequenceLive &&
     step.channel === "linkedin" &&
     step.mode === "semi" &&
+    // A DM waits for the cron, which first checks the invite was accepted.
+    step.linkedinAction !== "message" &&
     due.getTime() <= Date.now() + 1000
   ) {
     status = "ready";
@@ -1754,6 +1760,497 @@ export async function listReadyQueue(
   return live;
 }
 
+// ---------------------------------------------------------------------------
+// A LinkedIn DM waits for the invite to be accepted
+// ---------------------------------------------------------------------------
+
+/**
+ * How long an invite may go unanswered before the enrollment is dropped. The
+ * clock starts at the invite's sent_at, or at the first check when the
+ * sequence never sent one.
+ */
+const INVITE_ACCEPT_TIMEOUT_MS = 14 * 24 * 60 * 60_000;
+/** Not connected yet: look again in about a day… */
+const CONNECTION_RECHECK_MS = 24 * 60 * 60_000;
+/** …give or take up to three hours, so the rechecks do not bunch up. */
+const CONNECTION_RECHECK_JITTER_MS = 6 * 60 * 60_000;
+const CONNECTION_WAIT_ERROR =
+  "Waiting for the LinkedIn connection request to be accepted";
+
+function isLinkedInAction(v: unknown): v is LinkedinAction {
+  return v === "connect_note" || v === "message";
+}
+
+/**
+ * Batch form of linkedInActionForStep, with the same tolerance: a read that
+ * fails leaves the steps unknown, and an unknown step is not treated as a DM,
+ * which is how every LinkedIn step was released before the connection check.
+ */
+async function linkedInActionsForSteps(
+  client: SupabaseClient,
+  stepIds: readonly string[],
+): Promise<Map<string, LinkedinAction | null>> {
+  const out = new Map<string, LinkedinAction | null>();
+  const ids = [...new Set(stepIds)].filter(Boolean);
+  for (let i = 0; i < ids.length; i += 100) {
+    const { data, error } = await client
+      .from("outreach_sequence_steps")
+      .select("id, linkedin_action")
+      .in("id", ids.slice(i, i + 100));
+    if (error) return out;
+    for (const row of data ?? []) {
+      const action = row.linkedin_action as unknown;
+      out.set(row.id as string, isLinkedInAction(action) ? action : null);
+    }
+  }
+  return out;
+}
+
+/**
+ * Release due LinkedIn tasks to the human queue, except DMs.
+ *
+ * Whether a DM may go depends on a relations read that can page through the
+ * whole network the first time, which has no place on a page load or a status
+ * toggle. DMs stay scheduled here, and the sequence cron (every 15 min)
+ * releases them through releaseDueLinkedInTasks.
+ */
+async function promoteDueLinkedInExceptDms(
+  client: SupabaseClient,
+  enrollmentIds: readonly string[],
+  nowIso: string,
+): Promise<number> {
+  let promoted = 0;
+  for (let i = 0; i < enrollmentIds.length; i += 100) {
+    const { data: due, error } = await client
+      .from("outreach_send_tasks")
+      .select("id, step_id")
+      .eq("status", "scheduled")
+      .eq("channel", "linkedin")
+      .lte("scheduled_for", nowIso)
+      .in("enrollment_id", enrollmentIds.slice(i, i + 100));
+    if (error) throw new Error(error.message);
+    if (!due?.length) continue;
+    const actions = await linkedInActionsForSteps(
+      client,
+      due.map((t) => t.step_id as string),
+    );
+    const ids = due
+      .filter((t) => actions.get(t.step_id as string) !== "message")
+      .map((t) => t.id as string);
+    if (ids.length === 0) continue;
+    const { data, error: uErr } = await client
+      .from("outreach_send_tasks")
+      .update({ status: "ready", updated_at: nowIso })
+      .in("id", ids)
+      .eq("status", "scheduled")
+      .select("id");
+    if (uErr) throw new Error(uErr.message);
+    promoted += data?.length ?? 0;
+  }
+  return promoted;
+}
+
+type DmConnectionContext = {
+  /** Plausible slug and member ids this person may appear under. */
+  candidates: string[];
+  /** When the sequence's connection request went out (epoch ms), if it did. */
+  invitedAt: number | null;
+  sequenceId: string;
+};
+
+/**
+ * Who each DM is for, as the relations list would show them, and when their
+ * invite went out.
+ *
+ * The slug comes from the enrollment. Member ids come from any LinkedIn task
+ * Unipile already sent on it. An invite sent by hand has none, which is why the
+ * slug is the match that has to work.
+ */
+async function loadDmConnectionContext(
+  client: SupabaseClient,
+  tasks: readonly OutreachSendTask[],
+): Promise<Map<string, DmConnectionContext>> {
+  const { linkedInPersonIdentity } = await import("@/lib/unipile");
+  const enrollmentIds = [...new Set(tasks.map((t) => t.enrollmentId))];
+  const enrollments = new Map<string, OutreachEnrollment>();
+  const sentByEnrollment = new Map<string, OutreachSendTask[]>();
+  for (let i = 0; i < enrollmentIds.length; i += 100) {
+    const slice = enrollmentIds.slice(i, i + 100);
+    const { data: enrs, error } = await client
+      .from("outreach_enrollments")
+      .select("*")
+      .in("id", slice);
+    if (error) throw new Error(error.message);
+    for (const raw of enrs ?? []) {
+      const enrollment = mapEnrollment(raw as Record<string, unknown>);
+      enrollments.set(enrollment.id, enrollment);
+    }
+    const { data: sent, error: sErr } = await client
+      .from("outreach_send_tasks")
+      .select("*")
+      .in("enrollment_id", slice)
+      .eq("channel", "linkedin")
+      .eq("status", "sent");
+    if (sErr) throw new Error(sErr.message);
+    for (const raw of sent ?? []) {
+      const t = mapTask(raw as Record<string, unknown>);
+      const list = sentByEnrollment.get(t.enrollmentId) ?? [];
+      list.push(t);
+      sentByEnrollment.set(t.enrollmentId, list);
+    }
+  }
+
+  // meta.linkedin_action records what a sent task went out as; a row without
+  // it falls back to its step.
+  const unlabelled = [...sentByEnrollment.values()]
+    .flat()
+    .filter((t) => !isLinkedInAction(t.meta?.linkedin_action))
+    .map((t) => t.stepId);
+  const stepActions = unlabelled.length
+    ? await linkedInActionsForSteps(client, unlabelled)
+    : new Map<string, LinkedinAction | null>();
+
+  const out = new Map<string, DmConnectionContext>();
+  for (const task of tasks) {
+    const enrollment = enrollments.get(task.enrollmentId);
+    if (!enrollment) continue;
+    const sent = sentByEnrollment.get(task.enrollmentId) ?? [];
+    let invitedAt: number | null = null;
+    for (const t of sent) {
+      const action = isLinkedInAction(t.meta?.linkedin_action)
+        ? t.meta.linkedin_action
+        : (stepActions.get(t.stepId) ?? null);
+      const at = t.sentAt ? Date.parse(t.sentAt) : NaN;
+      if (action !== "connect_note" || !Number.isFinite(at)) continue;
+      invitedAt = invitedAt === null ? at : Math.max(invitedAt, at);
+    }
+    // Only values that can name a person. A company page or a name typed into
+    // the field can never match a relation, and must not read as "absent".
+    const candidates = new Set<string>();
+    for (const value of [
+      enrollment.contactLinkedin,
+      ...[task, ...sent].map((t) => t.meta?.linkedin_provider_id),
+    ]) {
+      const id = typeof value === "string" ? linkedInPersonIdentity(value) : null;
+      if (id) candidates.add(id);
+    }
+    out.set(task.id, {
+      candidates: [...candidates],
+      invitedAt,
+      sequenceId: enrollment.sequenceId,
+    });
+  }
+  return out;
+}
+
+/** Put a due DM on the queue, recording what the connection check found. */
+async function releaseDmTask(
+  client: SupabaseClient,
+  task: OutreachSendTask,
+  nowIso: string,
+  check: string,
+  extraMeta: Record<string, unknown> = {},
+): Promise<number> {
+  const { data, error } = await client
+    .from("outreach_send_tasks")
+    .update({
+      status: "ready",
+      // Drop the waiting note, and only that: any other error still stands.
+      ...(task.error === CONNECTION_WAIT_ERROR ? { error: null } : {}),
+      meta: {
+        ...(task.meta ?? {}),
+        waiting_on_connection: false,
+        connection_check: check,
+        connection_checked_at: nowIso,
+        ...extraMeta,
+      },
+      updated_at: nowIso,
+    })
+    .eq("id", task.id)
+    .eq("status", "scheduled")
+    .select("id");
+  if (error) throw new Error(error.message);
+  return data?.length ?? 0;
+}
+
+/**
+ * Keep a DM scheduled (off the queue) and move it, and the enrollment's next
+ * run, forward by `delayMs`, landing on a sending day.
+ */
+async function rescheduleDmTask(
+  client: SupabaseClient,
+  task: OutreachSendTask,
+  opts: {
+    nowIso: string;
+    delayMs: number;
+    fromStatuses: readonly string[];
+    meta: Record<string, unknown>;
+    error?: string;
+  },
+): Promise<boolean> {
+  const now = new Date(opts.nowIso);
+  const sendingWindow = await getSendingWindow(client);
+  const due = nextSendingSlotAfter(
+    new Date(now.getTime() + opts.delayMs),
+    now,
+    sendingWindow,
+  ).toISOString();
+  const { data, error } = await client
+    .from("outreach_send_tasks")
+    .update({
+      status: "scheduled",
+      scheduled_for: due,
+      ...(opts.error !== undefined ? { error: opts.error } : {}),
+      meta: { ...(task.meta ?? {}), ...opts.meta },
+      updated_at: opts.nowIso,
+    })
+    .eq("id", task.id)
+    .in("status", opts.fromStatuses)
+    .select("id");
+  if (error) throw new Error(error.message);
+  if (!data?.length) return false;
+  const { error: eErr } = await client
+    .from("outreach_enrollments")
+    .update({ next_run_at: due, updated_at: opts.nowIso })
+    .eq("id", task.enrollmentId);
+  if (eErr) throw new Error(eErr.message);
+  return true;
+}
+
+/**
+ * The person has not accepted yet: look again in about a day. Once the invite
+ * is 14 days old, drop the enrollment through unenrollFromSequence, the same
+ * cancel a person would do, so its history stays.
+ */
+async function holdDmsNotConnected(
+  client: SupabaseClient,
+  held: ReadonlyArray<{ task: OutreachSendTask; ctx: DmConnectionContext }>,
+  nowIso: string,
+  fromStatuses: readonly string[],
+): Promise<{ waiting: number; cancelled: number }> {
+  const nowMs = Date.parse(nowIso);
+  let waiting = 0;
+  const expired = new Map<
+    string,
+    { sequenceId: string; reason: string; enrollmentIds: string[] }
+  >();
+
+  for (const { task, ctx } of held) {
+    const waitingSince =
+      typeof task.meta?.waiting_on_connection_since === "string"
+        ? task.meta.waiting_on_connection_since
+        : nowIso;
+    const since = ctx.invitedAt ?? Date.parse(waitingSince);
+    if (Number.isFinite(since) && nowMs - since >= INVITE_ACCEPT_TIMEOUT_MS) {
+      const reason =
+        ctx.invitedAt !== null
+          ? "Invite not accepted after 14 days"
+          : "Not a LinkedIn connection after 14 days";
+      const key = `${ctx.sequenceId}:${reason}`;
+      const group = expired.get(key) ?? {
+        sequenceId: ctx.sequenceId,
+        reason,
+        enrollmentIds: [],
+      };
+      group.enrollmentIds.push(task.enrollmentId);
+      expired.set(key, group);
+      continue;
+    }
+
+    const moved = await rescheduleDmTask(client, task, {
+      nowIso,
+      delayMs:
+        CONNECTION_RECHECK_MS -
+        CONNECTION_RECHECK_JITTER_MS / 2 +
+        Math.random() * CONNECTION_RECHECK_JITTER_MS,
+      fromStatuses,
+      error: CONNECTION_WAIT_ERROR,
+      meta: {
+        waiting_on_connection: true,
+        waiting_on_connection_since: waitingSince,
+        connection_check: "not_connected",
+        connection_checked_at: nowIso,
+        invite_sent_at:
+          ctx.invitedAt !== null ? new Date(ctx.invitedAt).toISOString() : null,
+      },
+    });
+    if (moved) waiting += 1;
+  }
+
+  let cancelled = 0;
+  for (const group of expired.values()) {
+    try {
+      const res = await unenrollFromSequence(client, {
+        sequenceId: group.sequenceId,
+        enrollmentIds: group.enrollmentIds,
+        reason: group.reason,
+      });
+      cancelled += res.cancelled;
+    } catch (err) {
+      // Left scheduled and due, so the next tick tries again.
+      console.warn(
+        `[sequences] could not cancel ${group.enrollmentIds.length} enrollment(s) (${group.reason}):`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+  return { waiting, cancelled };
+}
+
+/**
+ * Release due LinkedIn tasks to the human queue.
+ *
+ * Connection requests, and steps whose action cannot be read, go as they always
+ * did. A DM goes only once the person is a 1st-degree connection of the
+ * sending account: LinkedIn refuses a DM to anyone else, and the step's delay
+ * counts from the invite, not from the acceptance. Not connected yet, it waits
+ * about a day and is checked again; after 14 days the enrollment is cancelled.
+ *
+ * Connections come from the account's relations list, cached and refreshed a
+ * few times a day (lib/outreach/linkedin-relations.ts). Holding a DM, and
+ * above all cancelling an enrollment, needs a complete and recent read that
+ * does not list the person. Anything less goes as before, flagged in
+ * meta.connection_check: no usable LinkedIn on the enrollment, no Unipile
+ * account, a read or cache that fails, or a partial read.
+ */
+async function releaseDueLinkedInTasks(
+  client: SupabaseClient,
+  tasks: readonly OutreachSendTask[],
+  nowIso: string,
+): Promise<{ promoted: number; waiting: number; cancelled: number }> {
+  const out = { promoted: 0, waiting: 0, cancelled: 0 };
+  if (tasks.length === 0) return out;
+
+  const actions = await linkedInActionsForSteps(
+    client,
+    tasks.map((t) => t.stepId),
+  );
+  const dms: OutreachSendTask[] = [];
+  for (const task of tasks) {
+    if (actions.get(task.stepId) === "message") {
+      dms.push(task);
+      continue;
+    }
+    const { data, error } = await client
+      .from("outreach_send_tasks")
+      .update({ status: "ready", updated_at: nowIso })
+      .eq("id", task.id)
+      .eq("status", "scheduled")
+      .select("id");
+    if (error) throw new Error(error.message);
+    out.promoted += data?.length ?? 0;
+  }
+  if (dms.length === 0) return out;
+
+  const contexts = await loadDmConnectionContext(client, dms);
+  const toCheck: Array<{ task: OutreachSendTask; ctx: DmConnectionContext }> = [];
+  for (const task of dms) {
+    const ctx = contexts.get(task.id);
+    if (!ctx || ctx.candidates.length === 0) {
+      out.promoted += await releaseDmTask(client, task, nowIso, "no_linkedin_identity");
+      continue;
+    }
+    toCheck.push({ task, ctx });
+  }
+  if (toCheck.length === 0) return out;
+
+  const { isUnipileConfigured, listLinkedInAccounts } = await import(
+    "@/lib/unipile"
+  );
+  const { getLinkedInRelations, connectionState } = await import(
+    "@/lib/outreach/linkedin-relations"
+  );
+  let snapshot: LinkedInRelationsSnapshot | null = null;
+  let failure: string | null = null;
+  if (isUnipileConfigured()) {
+    try {
+      // The account the send path uses: its relations are the ones that count.
+      const accountId = (await listLinkedInAccounts())[0]?.id ?? null;
+      if (accountId) {
+        snapshot = await getLinkedInRelations(client, accountId);
+      }
+    } catch (err) {
+      failure = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  if (failure !== null) {
+    // Unipile or the cache could not be read, so nothing is known about the
+    // person. Holding needs evidence; without it the DM goes as before.
+    console.warn(
+      `[sequences] LinkedIn relations unavailable, releasing ${toCheck.length} DM(s) unchecked: ${failure}`,
+    );
+    for (const { task } of toCheck) {
+      out.promoted += await releaseDmTask(client, task, nowIso, "error", {
+        connection_check_error: failure.slice(0, 200),
+      });
+    }
+    return out;
+  }
+
+  if (!snapshot) {
+    // No Unipile or no connected account: DMs are sent by hand, as before.
+    for (const { task } of toCheck) {
+      out.promoted += await releaseDmTask(client, task, nowIso, "no_linkedin_account");
+    }
+    return out;
+  }
+
+  const notConnected: Array<{ task: OutreachSendTask; ctx: DmConnectionContext }> = [];
+  for (const entry of toCheck) {
+    const state = connectionState(snapshot, entry.ctx.candidates);
+    if (state === "not_connected") {
+      notConnected.push(entry);
+      continue;
+    }
+    // "unknown" is a partial or old relations read: absence proves nothing,
+    // so the DM goes as before, flagged.
+    out.promoted += await releaseDmTask(client, entry.task, nowIso, state);
+  }
+  const held = await holdDmsNotConnected(client, notConnected, nowIso, ["scheduled"]);
+  out.waiting += held.waiting;
+  out.cancelled += held.cancelled;
+  return out;
+}
+
+/**
+ * The send path's check before a DM: true when the task was put back to wait
+ * (or its enrollment cancelled) because the person is known not to be
+ * connected. It reads only what the cron stored and never calls Unipile, so
+ * a click in the queue costs the LinkedIn account nothing. With nothing
+ * stored, a stored read that is partial or older than 8 hours, or a cache
+ * that cannot be read, the send goes ahead as it did before.
+ */
+async function holdDmUntilConnected(
+  client: SupabaseClient,
+  task: OutreachSendTask,
+  accountId: string,
+  nowIso: string,
+  fromStatuses: readonly string[],
+): Promise<boolean> {
+  let ctx: DmConnectionContext | undefined;
+  try {
+    const { readStoredLinkedInRelations, connectionState } = await import(
+      "@/lib/outreach/linkedin-relations"
+    );
+    const snapshot = await readStoredLinkedInRelations(client, accountId);
+    if (!snapshot) return false;
+    ctx = (await loadDmConnectionContext(client, [task])).get(task.id);
+    if (!ctx || ctx.candidates.length === 0) return false;
+    if (connectionState(snapshot, ctx.candidates) !== "not_connected") {
+      return false;
+    }
+  } catch (err) {
+    console.warn(
+      "[sequences] connection check before a LinkedIn DM failed, sending anyway:",
+      err instanceof Error ? err.message : String(err),
+    );
+    return false;
+  }
+  await holdDmsNotConnected(client, [{ task, ctx }], nowIso, fromStatuses);
+  return true;
+}
+
 /**
  * Fast path for the Today UI: promote due *human* work to ready only.
  * Does NOT send auto email (that stays on the cron / processDueSequenceTasks).
@@ -1784,23 +2281,10 @@ export async function promoteDueHumanQueue(
   const enrollmentIds = (activeEnrs ?? []).map((e) => e.id as string);
   if (enrollmentIds.length === 0) return { promoted: 0 };
 
-  let promoted = 0;
   const chunkSize = 100;
 
-  // LinkedIn semi (always human)
-  for (let i = 0; i < enrollmentIds.length; i += chunkSize) {
-    const slice = enrollmentIds.slice(i, i + chunkSize);
-    const { data, error } = await client
-      .from("outreach_send_tasks")
-      .update({ status: "ready", updated_at: now })
-      .eq("status", "scheduled")
-      .eq("channel", "linkedin")
-      .lte("scheduled_for", now)
-      .in("enrollment_id", slice)
-      .select("id");
-    if (error) throw new Error(error.message);
-    promoted += data?.length ?? 0;
-  }
+  // LinkedIn semi (always human). DMs are left to the cron's connection check.
+  let promoted = await promoteDueLinkedInExceptDms(client, enrollmentIds, now);
 
   // Email that is already semi, or auto-send disabled → human queue
   const { isEmailAutoSendEnabled } = await import("@/lib/outreach/mailbox");
@@ -2284,6 +2768,16 @@ async function sendDueLinkedInTask(
     return "failed";
   }
 
+  // LinkedIn refuses a DM to someone who has not accepted the invite. When the
+  // cached relations say so, the step goes back to wait instead of being spent
+  // on a send that cannot land. Before the claim, so nothing is in flight.
+  if (
+    sendAs === "message" &&
+    (await holdDmUntilConnected(client, task, accountId, now, claimFrom))
+  ) {
+    return "skipped";
+  }
+
   // Claim before the network call, from the exact status we were told to take
   // it from. Claiming from the wrong one silently no-ops the guard and the
   // send still fires — with nothing stopping a second.
@@ -2759,7 +3253,7 @@ async function advanceEnrollment(
 
 /**
  * Promote due scheduled tasks:
- * - linkedin semi → ready (human queue)
+ * - linkedin semi → ready (human queue); a DM only once the invite is accepted
  * - email auto → send via product-configured mailbox (Settings → Outreach email)
  */
 export async function processDueSequenceTasks(
@@ -2772,6 +3266,10 @@ export async function processDueSequenceTasks(
   emailsSkipped: number;
   deferred: number;
   reseeded: number;
+  /** DMs held back because the invite has not been accepted yet. */
+  linkedinWaiting: number;
+  /** Enrollments cancelled because the invite went 14 days unaccepted. */
+  linkedinCancelled: number;
 }> {
   // Optional repair: enrollments can outlive tasks when steps are rewritten
   // (CASCADE). Default off on the HTTP queue path — too slow for a page load.
@@ -2805,6 +3303,8 @@ export async function processDueSequenceTasks(
       emailsSkipped: 0,
       deferred: 0,
       reseeded,
+      linkedinWaiting: 0,
+      linkedinCancelled: 0,
     };
   }
   const mailboxBySeq = new Map(
@@ -2838,6 +3338,8 @@ export async function processDueSequenceTasks(
       emailsSkipped: 0,
       deferred: 0,
       reseeded,
+      linkedinWaiting: 0,
+      linkedinCancelled: 0,
     };
   }
 
@@ -2868,6 +3370,7 @@ export async function processDueSequenceTasks(
   let emailsFailed = 0;
   let emailsSkipped = 0;
   let deferred = 0;
+  const linkedinDue: OutreachSendTask[] = [];
 
   for (const raw of dueTasks) {
     const task = mapTask(raw);
@@ -2902,12 +3405,9 @@ export async function processDueSequenceTasks(
     }
 
     if (task.channel === "linkedin") {
-      await client
-        .from("outreach_send_tasks")
-        .update({ status: "ready", updated_at: now })
-        .eq("id", task.id)
-        .eq("status", "scheduled");
-      promoted += 1;
+      // Released together after the loop: a DM needs one relations read for
+      // the whole batch, not one per task.
+      linkedinDue.push(task);
       continue;
     }
 
@@ -2948,6 +3448,22 @@ export async function processDueSequenceTasks(
     }
   }
 
+  // After the email sends, so a LinkedIn problem cannot hold mail back, and
+  // caught for the same reason: the tasks stay scheduled for the next tick.
+  let linkedinWaiting = 0;
+  let linkedinCancelled = 0;
+  try {
+    const released = await releaseDueLinkedInTasks(client, linkedinDue, now);
+    promoted += released.promoted;
+    linkedinWaiting = released.waiting;
+    linkedinCancelled = released.cancelled;
+  } catch (err) {
+    console.error(
+      "[sequences] releasing due LinkedIn tasks failed:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
   return {
     promoted,
     emailsSent,
@@ -2955,6 +3471,8 @@ export async function processDueSequenceTasks(
     emailsSkipped,
     deferred,
     reseeded,
+    linkedinWaiting,
+    linkedinCancelled,
   };
 }
 
@@ -3336,6 +3854,8 @@ export async function unenrollFromSequence(
     enrollmentIds?: string[];
     researchPersonIds?: string[];
     researchRowIds?: string[];
+    /** Why, on the cancelled tasks and the enrollment. Defaults to a removal. */
+    reason?: string;
   },
 ): Promise<{
   cancelled: number;
@@ -3406,7 +3926,7 @@ export async function unenrollFromSequence(
     .from("outreach_send_tasks")
     .update({
       status: "cancelled",
-      error: "Enrollment removed from sequence",
+      error: input.reason ?? "Enrollment removed from sequence",
       updated_at: now,
     })
     .in("enrollment_id", activeIds)
@@ -3419,7 +3939,7 @@ export async function unenrollFromSequence(
     .update({
       status: "cancelled",
       next_run_at: null,
-      last_error: "Removed from sequence",
+      last_error: input.reason ?? "Removed from sequence",
       updated_at: now,
     })
     .in("id", activeIds);

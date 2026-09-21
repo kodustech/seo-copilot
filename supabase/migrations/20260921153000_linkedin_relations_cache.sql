@@ -1,0 +1,51 @@
+-- ---------------------------------------------------------------------------
+-- Who the connected LinkedIn account is connected to, cached per Unipile
+-- account (lib/outreach/linkedin-relations.ts).
+--
+-- A sequence DM is only released once the person has accepted the invite.
+-- Unipile asks for the relations list to be read rarely and at irregular
+-- times, so one read serves every DM check until next_fetch_after, which
+-- carries its own random jitter. Only the sequence cron reads Unipile; the
+-- send path reads this row and nothing else. Identities are normalized
+-- (lowercased) slugs and member ids, never names.
+--
+-- The app tolerates this table being absent (it falls back to an in-process
+-- cache), so the code may deploy before or after this migration.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS public.linkedin_relations_cache (
+  account_id       TEXT PRIMARY KEY,
+  identities       TEXT[] NOT NULL DEFAULT '{}',
+  -- The whole list was read, and every refresh since met the read before
+  -- it: someone missing from it is not a connection. An incomplete read only
+  -- proves who is connected.
+  complete         BOOLEAN NOT NULL DEFAULT false,
+  fetched_at       TIMESTAMPTZ NOT NULL,
+  next_fetch_after TIMESTAMPTZ NOT NULL,
+  -- When the last full read started. An incomplete one is retried at most
+  -- once a day, and never automatically once the list outgrew the page cap
+  -- (full_sync_capped); deleting the row forces a new full read.
+  full_sync_at     TIMESTAMPTZ NOT NULL,
+  full_sync_capped BOOLEAN NOT NULL DEFAULT false,
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.linkedin_relations_cache ENABLE ROW LEVEL SECURITY;
+
+DO $$
+DECLARE
+  t TEXT := 'linkedin_relations_cache';
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = t || '_select') THEN
+    EXECUTE format('CREATE POLICY %I ON %I FOR SELECT TO authenticated USING (true)', t || '_select', t);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = t || '_insert') THEN
+    EXECUTE format('CREATE POLICY %I ON %I FOR INSERT TO authenticated WITH CHECK (true)', t || '_insert', t);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = t || '_update') THEN
+    EXECUTE format('CREATE POLICY %I ON %I FOR UPDATE TO authenticated USING (true)', t || '_update', t);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = t || '_delete') THEN
+    EXECUTE format('CREATE POLICY %I ON %I FOR DELETE TO authenticated USING (true)', t || '_delete', t);
+  END IF;
+END $$;
