@@ -159,14 +159,24 @@ export type GmailThread = {
   messages: GmailThreadMessage[];
 };
 
+/**
+ * One call for the whole thread. `bodies: false` fetches headers only — what a
+ * reply draft needs to thread itself — instead of every body in the thread.
+ */
 export async function getGmailThread(
   accessToken: string,
   threadId: string,
+  opts: { bodies?: boolean } = {},
 ): Promise<GmailThread> {
+  const headersOnly = ["From", "To", "Cc", "Subject", "Message-ID", "References"]
+    .map((h) => `metadataHeaders=${h}`)
+    .join("&");
+  const format =
+    opts.bodies === false ? `format=metadata&${headersOnly}` : "format=full";
   const thread = await gmailGetJson<{
     id?: string;
     messages?: GmailMessage[];
-  }>(accessToken, `users/me/threads/${encodeURIComponent(threadId)}?format=full`);
+  }>(accessToken, `users/me/threads/${encodeURIComponent(threadId)}?${format}`);
 
   const all = (thread.messages ?? []).filter((m) => m.id);
   const kept = all.slice(-THREAD_MESSAGES_MAX);

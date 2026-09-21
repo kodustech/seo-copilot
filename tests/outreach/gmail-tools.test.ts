@@ -161,6 +161,18 @@ describe("getGmailThread", () => {
     expect(t.messages[14].message_id).toBe("<m19@x>");
     expect(t.subject).toBe("Proposta");
   });
+
+  it("asks Gmail for headers only when bodies are not needed", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: "t1", messages: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await getGmailThread("tok", "t1", { bodies: false });
+    const url = String((fetchMock.mock.calls[0] as unknown as [string])[0]);
+    expect(url).toContain("format=metadata&metadataHeaders=From");
+    expect(url).toContain("metadataHeaders=Message-ID&metadataHeaders=References");
+    expect(url).not.toContain("format=full");
+    await getGmailThread("tok", "t1");
+    expect(String((fetchMock.mock.calls[1] as unknown as [string])[0])).toContain("format=full");
+  });
 });
 
 describe("buildRawGmailMessage", () => {

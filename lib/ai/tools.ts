@@ -6226,7 +6226,7 @@ export const gmailCreateDraft = tool({
 
       let headers = { subject: subject?.trim() ?? "", inReplyTo: null as string | null, references: null as string | null };
       if (threadId) {
-        const thread = await getGmailThread(access.accessToken, threadId);
+        const thread = await getGmailThread(access.accessToken, threadId, { bodies: false });
         headers = replyHeadersFor(thread, subject);
       }
 
