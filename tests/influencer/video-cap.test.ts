@@ -6,7 +6,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/influencer/activities", () => ({ updateActivity: vi.fn() }));
+vi.mock("@/lib/influencer/activities", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/influencer/activities")>()),
+  updateActivity: vi.fn(),
+}));
 vi.mock("@/lib/influencer/heygen", () => ({
   createHeyGenVideo: vi.fn(async () => "new-id"),
   getHeyGenVideo: vi.fn(async () => ({ status: "completed", videoUrl: "https://clip/3.mp4", durationSeconds: 20 })),
@@ -17,7 +20,13 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { updateActivity } from "../../lib/influencer/activities";
 import { createHeyGenVideo, getHeyGenVideo } from "../../lib/influencer/heygen";
-import { renderVideoClips, videoUsageThisWeek, YoutubeDeferred } from "../../lib/influencer/video-pipeline";
+import {
+  renderRequestedPreviews,
+  renderVideoClips,
+  VideoBudgetDeferred,
+  videoUsageThisWeek,
+  YoutubeDeferred,
+} from "../../lib/influencer/video-pipeline";
 
 type Row = { id: string; content_meta: Record<string, unknown> };
 
@@ -190,5 +199,76 @@ describe("renderVideoClips in parallel", () => {
     const out = await renderVideoClips(fakeClient([]), activity({}), channel, now);
     expect(out.videoUrls).toEqual(["https://clip/id-1.mp4", "https://clip/id-2.mp4", "https://clip/id-3.mp4"]);
     expect(lastMeta()).toMatchObject({ stage: "clips_ready", heygen_video_ids: ["id-1", "id-2", "id-3"] });
+  });
+});
+
+describe("preview renders", () => {
+  beforeEach(() => vi.mocked(updateActivity).mockReset());
+
+  /** Drafts to scan, plus the usage query and the fresh read the pass makes. */
+  function previewClient(rows: Record<string, unknown>[]): SupabaseClient {
+    const query = () => {
+      const filters: Record<string, unknown> = {};
+      const b = {
+        select: () => b,
+        eq: (col: string, v: unknown) => ((filters[col] = v), b),
+        gte: () => b,
+        neq: () => b,
+        maybeSingle: () => Promise.resolve({ data: rows.find((r) => r.id === filters.id) ?? null, error: null }),
+        then: (resolve: (v: { data: unknown[]; error: null }) => unknown) =>
+          resolve({
+            data: filters.status === "draft" ? rows.filter((r) => r.status === "draft") : [],
+            error: null,
+          }),
+      };
+      return b;
+    };
+    return { from: query } as unknown as SupabaseClient;
+  }
+  const draftRow = (id: string, meta: Record<string, unknown>) => ({
+    id,
+    persona_id: "p",
+    channel_id: "ch",
+    kind: "video",
+    status: "draft",
+    title: "Test video",
+    content: "spoken script",
+    content_meta: {
+      blocks: ["First spoken thought here.", "Second spoken thought here.", "Third spoken thought here."],
+      visuals: [null, { layout: "bullets", title: "Two", rows: ["a"] }, null],
+      test_run: true,
+      ...meta,
+    },
+    created_at: now.toISOString(),
+    updated_at: now.toISOString(),
+  });
+
+  it("renders a requested preview and leaves the draft a draft", async () => {
+    const channels = new Map([["ch", channelWith({ youtube_max_videos_per_week: 5 })]]);
+    const handled = await renderRequestedPreviews(
+      previewClient([draftRow("a", { render_requested: true }), draftRow("b", {})]),
+      now,
+      channels,
+    );
+    expect(handled).toBe(1);
+    const patches = vi.mocked(updateActivity).mock.calls.map((c) => c[2] as Record<string, unknown>);
+    expect(patches.every((p) => !("status" in p))).toBe(true);
+    expect(patches.at(-1)!.content_meta).toMatchObject({ stage: "clips_ready" });
+  });
+
+  it("writes a spent budget on the draft instead of retrying it every run", async () => {
+    const channels = new Map([["ch", channelWith({ youtube_max_videos_per_week: 0 })]]);
+    await renderRequestedPreviews(previewClient([draftRow("a", { render_requested: true })]), now, channels);
+    const last = vi.mocked(updateActivity).mock.calls.at(-1)![2] as { status?: string; content_meta: Record<string, unknown> };
+    expect(last.status).toBeUndefined();
+    expect(last.content_meta).toMatchObject({ render_requested: false, render_error: expect.stringMatching(/video limit/) });
+  });
+
+  it("parks a capped approved render for next week, but only reports it for a preview", async () => {
+    const channel = channelWith({ youtube_max_videos_per_week: 0 });
+    await expect(renderVideoClips(fakeClient([]), activity({}), channel, now, { keepStatus: true })).rejects.toBeInstanceOf(
+      VideoBudgetDeferred,
+    );
+    expect(updateActivity).not.toHaveBeenCalled();
   });
 });

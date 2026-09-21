@@ -1,13 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, ExternalLink, Loader2, Pencil, RefreshCw, Trash2 } from "lucide-react";
+import { Check, Clapperboard, ExternalLink, Loader2, Pencil, RefreshCw, Trash2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { YOUTUBE_WORDS_PER_SECOND } from "@/lib/influencer/youtube";
+import { estimateVideoCost, YOUTUBE_WORDS_PER_SECOND } from "@/lib/influencer/youtube";
 
 import {
   Counter,
@@ -24,7 +24,7 @@ import {
   type Persona,
 } from "./shared";
 
-type ReviewAction = "approve" | "discard" | "published" | "save_draft";
+type ReviewAction = "approve" | "discard" | "published" | "save_draft" | "render_preview";
 
 /**
  * The review queue across the fleet. A draft reads as text first; the
@@ -82,7 +82,8 @@ export function ReviewQueue({
       throw new Error(body.error || `Failed to ${action} (${res.status})`);
     }
     const body = await res.json().catch(() => ({}));
-    if (action === "save_draft") {
+    // Both keep the draft in the queue: a saved edit, or a video now rendering.
+    if (action === "save_draft" || action === "render_preview") {
       const updated = body.activity as Partial<Activity> | undefined;
       setActivities((prev) => prev.map((a) => (a.id === id ? { ...a, ...(updated ?? {}) } : a)));
     } else {
@@ -172,6 +173,7 @@ function QueueItem({
   const edited = content.trim() !== activity.content;
   const handPosted = channel ? isHandPosted(channel) : false;
   const testRun = activity.content_meta.test_run === true;
+  const video = activity.kind === "video" ? videoState(activity) : null;
   const isX = channel?.platform === "x";
   const targetUrl = typeof activity.content_meta.target_url === "string" ? activity.content_meta.target_url : null;
   const canonicalUrl =
@@ -264,6 +266,12 @@ function QueueItem({
             Save draft
           </button>
         ) : null}
+        {video?.canRender ? (
+          <button type="button" disabled={busy !== null || edited} onClick={() => act("render_preview")} className={cls.outline}>
+            {busy === "render_preview" ? <Loader2 className="size-3.5 animate-spin" /> : <Clapperboard className="size-3.5" />}
+            {video.retry ? "Retry render" : `Render preview (~${video.estimatedCredits} credits)`}
+          </button>
+        ) : null}
         {testRun ? (
           <Status tone="muted">Review only · cannot publish or schedule</Status>
         ) : handPosted ? (
@@ -274,12 +282,14 @@ function QueueItem({
         ) : (
           <button type="button" disabled={busy !== null || !content.trim()} onClick={() => act("approve")} className={cls.primary}>
             {busy === "approve" ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
-            {edited ? "Save and approve" : "Approve"}
+            {video ? (video.finalUrl ? "Approve and upload" : "Approve script") : edited ? "Save and approve" : "Approve"}
           </button>
         )}
-        <button type="button" onClick={() => setEditing((v) => !v)} className={cls.ghost}>
-          <Pencil className="size-3.5" /> {editing ? "Done editing" : "Edit"}
-        </button>
+        {video?.renderStarted ? null : (
+          <button type="button" onClick={() => setEditing((v) => !v)} className={cls.ghost}>
+            <Pencil className="size-3.5" /> {editing ? "Done editing" : "Edit"}
+          </button>
+        )}
         <button type="button" disabled={busy !== null} onClick={() => act("discard")} className={cn(cls.ghost, "hover:text-red-300")}>
           {busy === "discard" ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
           Discard
@@ -314,8 +324,20 @@ function VideoStoryboard({ activity, content }: { activity: Activity; content: s
   const minutes = words / YOUTUBE_WORDS_PER_SECOND / 60;
   const slideCount = visuals ? visuals.filter((v) => v !== null).length : 0;
   const unpaired = visuals !== null && visuals.length !== blocks.length;
+  const state = videoState(activity);
+  const testRun = meta.test_run === true;
   return (
     <div className="space-y-2">
+      {state.finalUrl ? (
+        <div className="space-y-1">
+          <video src={state.finalUrl} controls preload="metadata" className="w-full max-w-3xl rounded-md border border-white/[0.06] bg-black" />
+          <p className="text-xs text-neutral-500">
+            {testRun ? "Test render: watch it here; it cannot be published." : "The finished video. Approving it is what uploads it to YouTube."}
+          </p>
+        </div>
+      ) : null}
+      {state.progress ? <p className="text-xs text-amber-300">{state.progress}</p> : null}
+      {state.renderError ? <p className={cls.errorText}>Render stopped: {state.renderError}</p> : null}
       <p className="text-xs text-neutral-500">
         ~{minutes.toFixed(1)} min · {blocks.length} screens · {slideCount} slides
         {visuals && !meta.slide_previews_for ? " · slide previews rendering" : ""}
@@ -354,4 +376,33 @@ function VideoStoryboard({ activity, content }: { activity: Activity; content: s
       </ol>
     </div>
   );
+}
+
+/**
+ * Where a video draft stands between script and finished file, read off its
+ * content_meta: what the reviewer can do next and what is still running.
+ */
+function videoState(activity: Activity) {
+  const meta = activity.content_meta;
+  const blocks = Array.isArray(meta.blocks) ? (meta.blocks as unknown[]).filter((b) => typeof b === "string") : [];
+  const words = (blocks as string[]).reduce((n, b) => n + b.split(/\s+/).filter(Boolean).length, 0);
+  const finalUrl = typeof meta.final_url === "string" && meta.final_url ? meta.final_url : null;
+  const ids = Array.isArray(meta.heygen_video_ids) ? (meta.heygen_video_ids as unknown[]).filter(Boolean) : [];
+  const clips = Array.isArray(meta.video_urls) ? (meta.video_urls as unknown[]).filter(Boolean).length : 0;
+  const renderError = typeof meta.render_error === "string" ? meta.render_error : null;
+  const rendering = meta.render_requested === true && !finalUrl;
+  let progress: string | null = null;
+  if (!finalUrl && meta.stage === "clips_ready") progress = "Clips ready · composing the video (a few minutes)";
+  else if (rendering && ids.length) progress = `Rendering the avatar · ${clips} of ${blocks.length} clips ready`;
+  else if (rendering) progress = "Queued to render on the next publish run (within 15 minutes)";
+  return {
+    finalUrl,
+    renderError,
+    progress,
+    renderStarted: ids.length > 0 || Boolean(finalUrl),
+    // A fresh draft, or a retry after a render or composite that stopped.
+    canRender: !finalUrl && !rendering && (ids.length === 0 || Boolean(renderError) || activity.status === "failed"),
+    retry: ids.length > 0,
+    estimatedCredits: estimateVideoCost(words / YOUTUBE_WORDS_PER_SECOND),
+  };
 }

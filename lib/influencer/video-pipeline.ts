@@ -12,7 +12,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createHeyGenVideo, getHeyGenVideo, resolveHeyGenKey } from "@/lib/influencer/heygen";
-import { updateActivity } from "@/lib/influencer/activities";
+import { rowToActivity, updateActivity } from "@/lib/influencer/activities";
 import {
   estimateSpeechSeconds,
   estimateVideoCost,
@@ -38,6 +38,14 @@ export class YoutubeDeferred extends Error {
   constructor(reason: string) {
     super(reason);
     this.name = "YoutubeDeferred";
+  }
+}
+
+/** Deferred because the week's video budget or video count is spent. */
+export class VideoBudgetDeferred extends YoutubeDeferred {
+  constructor(reason: string) {
+    super(reason);
+    this.name = "VideoBudgetDeferred";
   }
 }
 
@@ -175,6 +183,9 @@ export async function renderVideoClips(
   activity: PersonaActivity,
   channel: PersonaChannel,
   now: Date,
+  // A preview renders a draft that stays a draft: parking must not reschedule
+  // it into the publish queue.
+  options: { keepStatus?: boolean } = {},
 ): Promise<{ videoUrls: string[]; renderCost: number }> {
   const plan = planVideoRender(activity, channel);
   // Positional by block: ids[i] and videoUrls[i] belong to block i, and a null
@@ -208,12 +219,14 @@ export async function renderVideoClips(
   if (limit) {
     // Park until the week rolls over, releasing the cron's claim: failing
     // would strand clips already paid for on a resumed render.
-    const nextWeek = new Date(Date.parse(weekStartUtcIso(now)) + 7 * 24 * 60 * 60 * 1000);
-    await updateActivity(client, activity.id, {
-      status: "scheduled",
-      scheduled_at: nextWeek.toISOString(),
-    });
-    throw new YoutubeDeferred(`${limit} This render waits for next week.`);
+    if (!options.keepStatus) {
+      const nextWeek = new Date(Date.parse(weekStartUtcIso(now)) + 7 * 24 * 60 * 60 * 1000);
+      await updateActivity(client, activity.id, {
+        status: "scheduled",
+        scheduled_at: nextWeek.toISOString(),
+      });
+    }
+    throw new VideoBudgetDeferred(`${limit} This render waits for next week.`);
   }
   const apiKey = await resolveHeyGenKey(client, activity.persona_id);
   let burnSeconds = 0;
@@ -227,8 +240,9 @@ export async function renderVideoClips(
     typeof activity.content_meta.render_started_week === "string" ? activity.content_meta.render_started_week : week;
   const persistPartial = () =>
     updateActivity(client, activity.id, {
-      status: "scheduled",
-      scheduled_at: new Date(now.getTime() + 30 * 60 * 1000).toISOString(),
+      ...(options.keepStatus
+        ? {}
+        : { status: "scheduled" as const, scheduled_at: new Date(now.getTime() + 30 * 60 * 1000).toISOString() }),
       content_meta: {
         ...activity.content_meta,
         heygen_video_ids: ids,
@@ -279,6 +293,9 @@ export async function renderVideoClips(
         videoUrls[i] = job.videoUrl;
         burnSeconds += job.durationSeconds ?? estimateSpeechSeconds([plan.blocks[i]]);
       } else if (job.status === "failed") {
+        // Free the slot: a retry must submit this block again, not re-read
+        // the same failed job forever.
+        ids[i] = null;
         await persistPartial();
         throw new Error(`HeyGen block ${i + 1} failed: ${job.failureMessage ?? "unknown"}. Fix the script and retry.`);
       }
@@ -304,4 +321,52 @@ export async function renderVideoClips(
     },
   });
   return { videoUrls: clips, renderCost: final.render_cost };
+}
+
+/** Merge keys into an activity's content_meta on a fresh read, not a snapshot. */
+async function mergeContentMeta(client: SupabaseClient, id: string, patch: Record<string, unknown>): Promise<void> {
+  const { data, error } = await client.from("persona_activities").select("content_meta").eq("id", id).maybeSingle();
+  if (error) throw new Error(error.message);
+  const current = (data?.content_meta ?? {}) as Record<string, unknown>;
+  await updateActivity(client, id, { content_meta: { ...current, ...patch } });
+}
+
+/**
+ * Drafts someone asked to see as a finished video ("Render preview"). Renders
+ * the avatar clips the same way an approved video does, spending the same
+ * weekly budget, but the draft stays a draft: the worker composites it and it
+ * comes back to the review queue to be watched. Nothing here publishes. A
+ * failure or a spent budget is written on the draft and the request cleared,
+ * so the next run does not retry what a person has to fix.
+ */
+export async function renderRequestedPreviews(
+  client: SupabaseClient,
+  now: Date,
+  channelById: Map<string, PersonaChannel>,
+): Promise<number> {
+  const { data, error } = await client
+    .from("persona_activities")
+    .select("*")
+    .eq("kind", "video")
+    .eq("status", "draft");
+  if (error) throw new Error(error.message);
+  let handled = 0;
+  for (const row of data ?? []) {
+    const activity = rowToActivity(row as Record<string, unknown>);
+    const meta = activity.content_meta;
+    if (meta.render_requested !== true || meta.stage === "clips_ready" || meta.final_url) continue;
+    const channel = channelById.get(activity.channel_id);
+    if (!channel) continue;
+    handled += 1;
+    try {
+      await renderVideoClips(client, activity, channel, now, { keepStatus: true });
+    } catch (err) {
+      if (err instanceof YoutubeDeferred && !(err instanceof VideoBudgetDeferred)) continue; // still rendering
+      await mergeContentMeta(client, activity.id, {
+        render_requested: false,
+        render_error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return handled;
 }

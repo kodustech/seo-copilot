@@ -225,9 +225,10 @@ def claim_job(client, table=None):
         .select("id,persona_id,channel_id,title,content_meta")
         .eq("kind", "video")
         # "publishing" rows carrying finished HeyGen clips are the publish
-        # cron's parked leftovers; the stage == "clips_ready" + no-final_url
+        # cron's parked leftovers; "draft" rows with clips are previews
+        # someone asked to watch. The stage == "clips_ready" + no-final_url
         # gate below keeps the worker away from anything still in flight.
-        .in_("status", ["approved", "scheduled", "publishing"])
+        .in_("status", ["approved", "scheduled", "publishing", "draft"])
         .execute()
     )
     now = datetime.now(timezone.utc)
@@ -396,9 +397,13 @@ def run_job(client, model, job: dict, bucket: str, render_script: str, work_root
         meta["stage"] = "ready"
         meta.pop("worker_claim_at", None)
         meta.pop("worker_error", None)
+        meta.pop("render_requested", None)
+        # Back to the review queue as a finished video: a person watches it,
+        # and approving it there is what uploads it. Nothing reaches YouTube
+        # unseen.
         client.table("persona_activities").update({
             "content_meta": meta,
-            "status": "approved",
+            "status": "draft",
         }).eq("id", aid).execute()
         log("job done", aid, public_url)
     except Exception as exc:

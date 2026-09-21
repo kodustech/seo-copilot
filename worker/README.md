@@ -5,8 +5,12 @@ ready (`content_meta.stage = clips_ready`) and no finished file, then builds
 the mp4: on-camera blocks full frame, slide blocks with the avatar in a
 corner bubble (slides from `worker/slides.py`, headless Chromium: a layout
 template, or the agent's own HTML), Whisper captions, karaoke burn, music
-bed. Uploads to the `persona-videos` Storage bucket and points the activity
-at `final_url`; the publish cron uploads it to YouTube from there.
+bed. Uploads to the `persona-videos` Storage bucket, points the activity at
+`final_url` and sends it back to the review queue as a draft: a person
+watches it there, and approving it is what the publish cron uploads.
+
+Previews ("Render preview" on a draft, test drafts included) go through the
+same path and simply stay drafts.
 
 ## Run locally
 

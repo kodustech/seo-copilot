@@ -39,13 +39,14 @@ export async function PATCH(
       body.action === "edit" ||
       body.action === "published" ||
       body.action === "save_draft" ||
-      body.action === "cancel_schedule"
+      body.action === "cancel_schedule" ||
+      body.action === "render_preview"
         ? body.action
         : null;
 
     if (!action) {
       return NextResponse.json(
-        { error: "action must be approve, discard, edit, published, save_draft or cancel_schedule." },
+        { error: "action must be approve, discard, edit, published, save_draft, cancel_schedule or render_preview." },
         { status: 400 },
       );
     }
@@ -106,6 +107,19 @@ export async function PATCH(
     if (typeof body.content === "string" && body.content.trim()) {
       patch.content = body.content.trim();
     }
+    // Once HeyGen has clips for a script, new words would not change them:
+    // the render would silently film the old text.
+    const renderStarted =
+      current.kind === "video" &&
+      ((Array.isArray(current.content_meta.heygen_video_ids) &&
+        current.content_meta.heygen_video_ids.some(Boolean)) ||
+        Boolean(current.content_meta.final_url));
+    if (renderStarted && patch.content !== undefined && patch.content !== current.content) {
+      return NextResponse.json(
+        { error: "This video is already rendered or rendering, so a text edit would not reach it. Discard it and queue a new one." },
+        { status: 409 },
+      );
+    }
     if (typeof body.title === "string") {
       patch.title = body.title.trim() || null;
     }
@@ -113,7 +127,22 @@ export async function PATCH(
       patch.scheduled_at = body.scheduled_at;
     }
 
-    if (action === "approve") {
+    if (action === "render_preview") {
+      // Render the full video and bring it back here to watch. Test drafts
+      // too: the draft stays a draft, so it still cannot publish. Doubles as
+      // the retry after a failed render or composite.
+      if (current.kind !== "video") {
+        return NextResponse.json({ error: "Only videos have a preview to render." }, { status: 400 });
+      }
+      if (current.content_meta.final_url) {
+        return NextResponse.json({ error: "This video is already rendered. Watch it in the queue." }, { status: 400 });
+      }
+      const meta: Record<string, unknown> = { ...current.content_meta, render_requested: true };
+      for (const key of ["render_error", "worker_failed_at", "worker_attempts", "worker_error", "worker_retry_at"]) delete meta[key];
+      patch.content_meta = meta;
+      patch.status = "draft";
+      patch.error = null;
+    } else if (action === "approve") {
       patch.status = "approved";
       patch.approved_by = userEmail;
       patch.error = null;
