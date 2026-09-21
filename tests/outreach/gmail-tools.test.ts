@@ -379,4 +379,15 @@ describe("gmailDeleteDraft tool", () => {
     expect((out as { message: string }).message).toContain("confirm=true");
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("treats a truthy non-boolean confirm as a refusal (HTTP MCP passes raw JSON)", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await gmailDeleteDraft.execute?.(
+      { draft_id: "r-123", confirm: "false" as unknown as boolean },
+      { toolCallId: "t", messages: [] },
+    );
+    expect(out).toMatchObject({ success: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

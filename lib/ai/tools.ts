@@ -6287,7 +6287,8 @@ export const gmailDeleteDraft = tool({
   }),
   execute: async ({ draft_id, message_id, mailbox_id, confirm }) => {
     try {
-      if (!confirm) {
+      // Strict: the HTTP MCP route hands execute raw JSON, so "false" would pass a truthiness check.
+      if (confirm !== true) {
         return { success: false as const, message: "Pass confirm=true to permanently delete this draft. It skips the trash and cannot be restored." };
       }
       const { openGmailMailbox, findGmailDraftIdByMessage, deleteGmailDraft } = await import("@/lib/outreach/gmail");
