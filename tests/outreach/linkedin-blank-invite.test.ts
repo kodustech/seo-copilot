@@ -43,14 +43,20 @@ type Row = Record<string, unknown>;
  * In-memory tables behind the handful of query-builder calls the send path
  * makes. Filters apply when the chain resolves, so an update narrowed by
  * `.in("status", claimFrom)` only touches rows still in that status, which is
- * what makes the claim assertions below mean something.
+ * what makes the claim assertions below mean something. Reads from a table in
+ * `failReads` come back as a Supabase error, the way a dropped connection does.
  */
-function fakeSupabase(tables: Record<string, Row[]>) {
+function fakeSupabase(
+  tables: Record<string, Row[]>,
+  failReads: ReadonlySet<string> = new Set(),
+) {
   const writes: { table: string; patch: Row }[] = [];
   const client = {
     from(table: string) {
       const filters: Array<(r: Row) => boolean> = [];
       let patch: Row | null = null;
+      const readError = () =>
+        !patch && failReads.has(table) ? { message: "read failed" } : null;
       const run = () => {
         const rows = (tables[table] ?? []).filter((r) => filters.every((f) => f(r)));
         if (patch) {
@@ -74,10 +80,17 @@ function fakeSupabase(tables: Record<string, Row[]>) {
           patch = p;
           return builder;
         },
-        maybeSingle: async () => ({ data: run()[0] ?? null, error: null }),
+        maybeSingle: async () =>
+          readError()
+            ? { data: null, error: readError() }
+            : { data: run()[0] ?? null, error: null },
         single: async () => ({ data: run()[0] ?? null, error: null }),
-        then: (resolve: (v: { data: Row[]; error: null }) => unknown) =>
-          resolve({ data: run(), error: null }),
+        then: (resolve: (v: { data: Row[] | null; error: unknown }) => unknown) =>
+          resolve(
+            readError()
+              ? { data: null, error: readError() }
+              : { data: run(), error: null },
+          ),
       };
       return builder;
     },
@@ -86,8 +99,15 @@ function fakeSupabase(tables: Record<string, Row[]>) {
   return { client: client as never, tables, writes };
 }
 
-function linkedInTask(opts: { action: "connect_note" | "message"; body: string }) {
-  return fakeSupabase({
+function linkedInTask(opts: {
+  action: "connect_note" | "message" | null;
+  body: string;
+  /** How the step read goes: the row is there, gone, or the read errors. */
+  step?: "present" | "missing" | "unreadable";
+}) {
+  const step = opts.step ?? "present";
+  return fakeSupabase(
+    {
     outreach_send_tasks: [
       {
         id: "task-1",
@@ -116,19 +136,24 @@ function linkedInTask(opts: { action: "connect_note" | "message"; body: string }
         current_step_position: 1,
       },
     ],
-    outreach_sequence_steps: [
-      {
-        id: "step-1",
-        sequence_id: "seq-1",
-        position: 1,
-        channel: "linkedin",
-        mode: "semi",
-        delay_hours: 0,
-        linkedin_action: opts.action,
-        body_template: opts.body,
-      },
-    ],
-  });
+    outreach_sequence_steps:
+      step === "missing"
+        ? []
+        : [
+            {
+              id: "step-1",
+              sequence_id: "seq-1",
+              position: 1,
+              channel: "linkedin",
+              mode: "semi",
+              delay_hours: 0,
+              linkedin_action: opts.action,
+              body_template: opts.body,
+            },
+          ],
+    },
+    new Set(step === "unreadable" ? ["outreach_sequence_steps"] : []),
+  );
 }
 
 const task = (tables: Record<string, Row[]>) => tables.outreach_send_tasks[0];
@@ -168,6 +193,38 @@ describe("sendTaskNow on a LinkedIn step with an empty body", () => {
     expect(unipile.startUnipileChat).not.toHaveBeenCalled();
   });
 
+  // Only an explicit connect_note makes a blank invite deliberate. Anything the
+  // step does not say keeps the old refusal, because guessing wrong sends a
+  // connection request in place of a DM and cannot be taken back.
+  it.each([
+    ["an unset action", { action: null }],
+    ["a missing step", { action: "connect_note", step: "missing" }],
+    ["a step read that fails", { action: "connect_note", step: "unreadable" }],
+  ] as const)("fails with %s instead of sending a blank invite", async (_label, setup) => {
+    const { client, tables, writes } = linkedInTask({ ...setup, body: "" });
+
+    const result = await sendTaskNow(client, "task-1");
+
+    expect(result).toMatchObject({ ok: false, status: "failed", error: "Empty message body" });
+    expect(task(tables).status).toBe("failed");
+    expect(claimed(writes)).toBe(false);
+    expect(unipile.sendLinkedInInvitation).not.toHaveBeenCalled();
+  });
+
+  it("still sends a note as a connection request when the action is unset", async () => {
+    // Backward compatibility with the send path before the action could be
+    // unknown: a body and no readable action went out as an invite.
+    const { client, tables } = linkedInTask({ action: null, body: "Hi Jane" });
+
+    const result = await sendTaskNow(client, "task-1");
+
+    expect(result).toEqual({ ok: true, status: "sent" });
+    expect(unipile.sendLinkedInInvitation).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Hi Jane" }),
+    );
+    expect(task(tables).meta).toMatchObject({ linkedin_action: "connect_note" });
+  });
+
   it("sends a connect_note blank when the edit clears its note, and records the blank", async () => {
     const { client, tables } = linkedInTask({ action: "connect_note", body: "Hi Jane" });
 
@@ -181,8 +238,12 @@ describe("sendTaskNow on a LinkedIn step with an empty body", () => {
     expect(task(tables).rendered_body).toBe("");
   });
 
-  it("refuses an edit that clears a DM and leaves the task as it was", async () => {
-    const { client, tables, writes } = linkedInTask({ action: "message", body: "Hi Jane" });
+  it.each([
+    ["a DM", { action: "message" }],
+    ["a step with an unset action", { action: null }],
+    ["a step that cannot be read", { action: "connect_note", step: "unreadable" }],
+  ] as const)("refuses an edit that clears %s and leaves the task as it was", async (_label, setup) => {
+    const { client, tables, writes } = linkedInTask({ ...setup, body: "Hi Jane" });
 
     await expect(sendTaskNow(client, "task-1", { body: "" })).rejects.toThrow(
       "The message body is empty",
@@ -223,15 +284,19 @@ describe("outreachSendQueuedTask preview", () => {
     expect(out.preview).toMatchObject({ linkedin_action: "connect_note", body: "" });
   });
 
-  it("says a real send would refuse an empty-body DM", async () => {
-    db.client = linkedInTask({ action: "message", body: "" }).client;
+  it.each([
+    ["a DM", { action: "message" }],
+    ["a step with an unset action", { action: null }],
+    ["a step that cannot be read", { action: "connect_note", step: "unreadable" }],
+  ] as const)("says a real send would refuse an empty body on %s", async (_label, setup) => {
+    db.client = linkedInTask({ ...setup, body: "" }).client;
 
     const out = await run(outreachSendQueuedTask, { task_id: "task-1" });
 
     expect(out).toMatchObject({
       success: true,
       would_send: false,
-      refusal: "a LinkedIn message needs a body",
+      refusal: "the body is empty, and only a connect_note step can send without one",
     });
   });
 });
