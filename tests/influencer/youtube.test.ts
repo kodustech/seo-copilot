@@ -101,6 +101,10 @@ describe("validateVideoVoice", () => {
     // Two sentences, though the first trips two patterns ("Here is the", "worth stealing").
     expect(issues).toMatch(/sounds_generated_signposts: 2 sentences/);
   });
+  it("splits sentences after a closing quote", () => {
+    const quoted = ['Here is the rule she wrote down: "tests first." It is worth sitting with.'];
+    expect(validateVideoVoice(quoted).join()).toMatch(/sounds_generated_signposts: 2 sentences/);
+  });
   it("lets one of each through, the way a person talks", () => {
     expect(
       validateVideoVoice([

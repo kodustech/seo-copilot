@@ -136,7 +136,8 @@ const VOICE_ALLOWANCE = 1;
  */
 function voiceHits(blocks: string[], patterns: RegExp[]): string[] {
   return blocks.flatMap((block, i) => {
-    const starts = [0, ...[...block.matchAll(/[.!?]\s+/g)].map((m) => (m.index ?? 0) + m[0].length)];
+    // A sentence ends at .!? plus any closing quote or bracket right after it.
+    const starts = [0, ...[...block.matchAll(/[.!?]+["'”’)\]]*\s+/g)].map((m) => (m.index ?? 0) + m[0].length)];
     const sentenceOf = (at: number) => starts.filter((start) => start <= at).length - 1;
     const bySentence = new Map<number, string>();
     for (const re of patterns) {
