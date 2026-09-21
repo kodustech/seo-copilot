@@ -253,52 +253,70 @@ export async function renderVideoClips(
     });
   // Submit every block first, so HeyGen renders them side by side. One at a
   // time, a 12-block video would advance one clip per cron run.
-  for (let i = 0; i < plan.blocks.length; i += 1) {
-    if (ids[i] || videoUrls[i]) continue;
-    try {
-      ids[i] = await createHeyGenVideo(apiKey, {
-        avatarId: plan.cfg.avatarId!,
-        script: plan.blocks[i],
-        voiceId: plan.cfg.voiceId!,
-        // On-camera blocks keep the avatar's setting (full frame); slide
-        // blocks come back on a matte the compositor crops into the bubble.
-        removeBackground: plan.visuals[i] !== null,
-        resolution: plan.cfg.resolution,
-        expressiveness: plan.cfg.expressiveness,
-        motionPrompt: plan.cfg.motionPrompt,
-        voiceSpeed: plan.cfg.voiceSpeed,
-        title: `${activity.title ?? "persona video"} block ${i + 1}`,
-      });
-    } catch (err) {
-      // HeyGen caps concurrent renders per plan: over the cap is a wait, not a failure.
-      if (err instanceof Error && /HTTP 429/.test(err.message)) {
-        await persistPartial();
-        throw new YoutubeDeferred(`HeyGen is at its concurrency limit after ${ids.filter(Boolean).length} of ${ids.length} blocks; submitting the rest next run.`);
+  const submitMissing = async () => {
+    for (let i = 0; i < plan.blocks.length; i += 1) {
+      if (ids[i] || videoUrls[i]) continue;
+      try {
+        ids[i] = await createHeyGenVideo(apiKey, {
+          avatarId: plan.cfg.avatarId!,
+          script: plan.blocks[i],
+          voiceId: plan.cfg.voiceId!,
+          // On-camera blocks keep the avatar's setting (full frame); slide
+          // blocks come back on a matte the compositor crops into the bubble.
+          removeBackground: plan.visuals[i] !== null,
+          resolution: plan.cfg.resolution,
+          expressiveness: plan.cfg.expressiveness,
+          motionPrompt: plan.cfg.motionPrompt,
+          voiceSpeed: plan.cfg.voiceSpeed,
+          title: `${activity.title ?? "persona video"} block ${i + 1}`,
+        });
+      } catch (err) {
+        // HeyGen caps concurrent renders per plan: over the cap is a wait, not a failure.
+        if (err instanceof Error && /HTTP 429/.test(err.message)) {
+          await persistPartial();
+          throw new YoutubeDeferred(`HeyGen is at its concurrency limit after ${ids.filter(Boolean).length} of ${ids.length} blocks; submitting the rest next run.`);
+        }
+        throw err;
       }
-      throw err;
+      // Persisted as each one is created: a crash here must not re-bill a block.
+      await updateActivity(client, activity.id, {
+        content_meta: { ...activity.content_meta, heygen_video_ids: ids, video_urls: videoUrls, render_started_week: startedWeek },
+      });
     }
-    // Persisted as each one is created: a crash here must not re-bill a block.
-    await updateActivity(client, activity.id, {
-      content_meta: { ...activity.content_meta, heygen_video_ids: ids, video_urls: videoUrls, render_started_week: startedWeek },
-    });
-  }
+  };
+  await submitMissing();
   // One look round per run: finished clips land by index, anything still
   // cooking parks for the next run instead of holding the publish loop.
   const deadline = Date.now() + 45 * 1000;
+  let resubmitted = false;
   for (;;) {
+    const failed: string[] = [];
     for (let i = 0; i < plan.blocks.length; i += 1) {
-      if (videoUrls[i]) continue;
+      if (videoUrls[i] || !ids[i]) continue;
       const job = await getHeyGenVideo(apiKey, ids[i]!);
       if (job.status === "completed" && job.videoUrl) {
         videoUrls[i] = job.videoUrl;
         burnSeconds += job.durationSeconds ?? estimateSpeechSeconds([plan.blocks[i]]);
       } else if (job.status === "failed") {
-        // Free the slot: a retry must submit this block again, not re-read
-        // the same failed job forever.
+        // Free every failed slot in the same pass, so one retry resubmits
+        // them all instead of one per run.
         ids[i] = null;
-        await persistPartial();
-        throw new Error(`HeyGen block ${i + 1} failed: ${job.failureMessage ?? "unknown"}. Fix the script and retry.`);
+        failed.push(`block ${i + 1}: ${job.failureMessage ?? "unknown"}`);
       }
+    }
+    // A failed job from an earlier run (out of credit, say) gets one fresh
+    // submission in this run; failing again stops the render with the reason.
+    if (failed.length && !resubmitted) {
+      resubmitted = true;
+      await submitMissing();
+      continue;
+    }
+    if (failed.length) {
+      await persistPartial();
+      const reasons = [...new Set(failed.map((f) => f.replace(/^block \d+: /, "")))].join("; ");
+      throw new Error(
+        `HeyGen failed ${failed.length} block(s) (${failed.map((f) => f.split(":")[0]).join(", ")}): ${reasons}. Retry render submits them again.`,
+      );
     }
     const done = videoUrls.filter(Boolean).length;
     if (done === plan.blocks.length) break;
