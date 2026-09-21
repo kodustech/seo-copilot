@@ -15,10 +15,10 @@
 CREATE TABLE IF NOT EXISTS public.linkedin_relations_cache (
   account_id       TEXT PRIMARY KEY,
   identities       TEXT[] NOT NULL DEFAULT '{}',
-  -- The whole list was read: someone missing from it is not a connection.
+  -- The whole list was read (or a complete read was refreshed without a
+  -- gap): someone missing from it is not a connection. A partial read only
+  -- proves who is connected.
   complete         BOOLEAN NOT NULL DEFAULT false,
-  -- On a partial read: every connection made after this is in identities.
-  covered_since    TIMESTAMPTZ,
   fetched_at       TIMESTAMPTZ NOT NULL,
   next_fetch_after TIMESTAMPTZ NOT NULL,
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()

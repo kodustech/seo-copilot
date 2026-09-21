@@ -711,7 +711,10 @@ async function applySequenceStatusSideEffects(
   } catch (err) {
     // Best effort, as the bulk update here always was: a failure leaves the
     // work scheduled for the cron instead of failing the status change.
-    console.warn("[sequences] releasing due LinkedIn tasks on activate failed:", err);
+    console.warn(
+      "[sequences] releasing due LinkedIn tasks on activate failed:",
+      err instanceof Error ? err.message : String(err),
+    );
   }
 
   await client
@@ -1771,8 +1774,6 @@ const INVITE_ACCEPT_TIMEOUT_MS = 14 * 24 * 60 * 60_000;
 const CONNECTION_RECHECK_MS = 24 * 60 * 60_000;
 /** …give or take up to three hours, so the rechecks do not bunch up. */
 const CONNECTION_RECHECK_JITTER_MS = 6 * 60 * 60_000;
-/** The relations read failed: try again in about an hour, not every tick. */
-const CONNECTION_RETRY_MS = 60 * 60_000;
 const CONNECTION_WAIT_ERROR =
   "Waiting for the LinkedIn connection request to be accepted";
 
@@ -1850,7 +1851,7 @@ async function promoteDueLinkedInExceptDms(
 }
 
 type DmConnectionContext = {
-  /** Normalized slug and member ids this person may appear under. */
+  /** Plausible slug and member ids this person may appear under. */
   candidates: string[];
   /** When the sequence's connection request went out (epoch ms), if it did. */
   invitedAt: number | null;
@@ -1869,7 +1870,7 @@ async function loadDmConnectionContext(
   client: SupabaseClient,
   tasks: readonly OutreachSendTask[],
 ): Promise<Map<string, DmConnectionContext>> {
-  const { normalizeLinkedInIdentity } = await import("@/lib/unipile");
+  const { linkedInPersonIdentity } = await import("@/lib/unipile");
   const enrollmentIds = [...new Set(tasks.map((t) => t.enrollmentId))];
   const enrollments = new Map<string, OutreachEnrollment>();
   const sentByEnrollment = new Map<string, OutreachSendTask[]>();
@@ -1923,13 +1924,14 @@ async function loadDmConnectionContext(
       if (action !== "connect_note" || !Number.isFinite(at)) continue;
       invitedAt = invitedAt === null ? at : Math.max(invitedAt, at);
     }
+    // Only values that can name a person. A company page or a name typed into
+    // the field can never match a relation, and must not read as "absent".
     const candidates = new Set<string>();
     for (const value of [
       enrollment.contactLinkedin,
       ...[task, ...sent].map((t) => t.meta?.linkedin_provider_id),
     ]) {
-      const id =
-        typeof value === "string" ? normalizeLinkedInIdentity(value) : null;
+      const id = typeof value === "string" ? linkedInPersonIdentity(value) : null;
       if (id) candidates.add(id);
     }
     out.set(task.id, {
@@ -1947,6 +1949,7 @@ async function releaseDmTask(
   task: OutreachSendTask,
   nowIso: string,
   check: string,
+  extraMeta: Record<string, unknown> = {},
 ): Promise<number> {
   const { data, error } = await client
     .from("outreach_send_tasks")
@@ -1959,6 +1962,7 @@ async function releaseDmTask(
         waiting_on_connection: false,
         connection_check: check,
         connection_checked_at: nowIso,
+        ...extraMeta,
       },
       updated_at: nowIso,
     })
@@ -2086,7 +2090,7 @@ async function holdDmsNotConnected(
       // Left scheduled and due, so the next tick tries again.
       console.warn(
         `[sequences] could not cancel ${group.enrollmentIds.length} enrollment(s) (${group.reason}):`,
-        err,
+        err instanceof Error ? err.message : String(err),
       );
     }
   }
@@ -2103,10 +2107,11 @@ async function holdDmsNotConnected(
  * about a day and is checked again; after 14 days the enrollment is cancelled.
  *
  * Connections come from the account's relations list, cached and refreshed a
- * few times a day (lib/outreach/linkedin-relations.ts). A DM whose person
- * cannot be matched at all (no LinkedIn on the enrollment), or whose account
- * has no Unipile connection, goes as before, flagged in meta, rather than
- * waiting on an answer that can never come.
+ * few times a day (lib/outreach/linkedin-relations.ts). Holding a DM, and
+ * above all cancelling an enrollment, needs a complete and recent read that
+ * does not list the person. Anything less goes as before, flagged in
+ * meta.connection_check: no usable LinkedIn on the enrollment, no Unipile
+ * account, a read or cache that fails, or a partial read.
  */
 async function releaseDueLinkedInTasks(
   client: SupabaseClient,
@@ -2172,24 +2177,15 @@ async function releaseDueLinkedInTasks(
   }
 
   if (failure !== null) {
-    // Hold the DMs about an hour rather than queue a send that may be refused.
-    // A failed read proves nothing about the person, so it does not count
-    // toward the 14 days.
+    // Unipile or the cache could not be read, so nothing is known about the
+    // person. Holding needs evidence; without it the DM goes as before.
     console.warn(
-      `[sequences] LinkedIn relations read failed, holding ${toCheck.length} DM(s): ${failure}`,
+      `[sequences] LinkedIn relations unavailable, releasing ${toCheck.length} DM(s) unchecked: ${failure}`,
     );
     for (const { task } of toCheck) {
-      const moved = await rescheduleDmTask(client, task, {
-        nowIso,
-        delayMs: CONNECTION_RETRY_MS + Math.random() * 15 * 60_000,
-        fromStatuses: ["scheduled"],
-        meta: {
-          connection_check: "error",
-          connection_check_error: failure.slice(0, 200),
-          connection_checked_at: nowIso,
-        },
+      out.promoted += await releaseDmTask(client, task, nowIso, "error", {
+        connection_check_error: failure.slice(0, 200),
       });
-      if (moved) out.waiting += 1;
     }
     return out;
   }
@@ -2204,13 +2200,13 @@ async function releaseDueLinkedInTasks(
 
   const notConnected: Array<{ task: OutreachSendTask; ctx: DmConnectionContext }> = [];
   for (const entry of toCheck) {
-    const state = connectionState(snapshot, entry.ctx.candidates, entry.ctx.invitedAt);
+    const state = connectionState(snapshot, entry.ctx.candidates);
     if (state === "not_connected") {
       notConnected.push(entry);
       continue;
     }
-    // "unknown" is a partial relations list that does not reach back to the
-    // invite: absence proves nothing, so the DM goes as before, flagged.
+    // "unknown" is a partial or old relations read: absence proves nothing,
+    // so the DM goes as before, flagged.
     out.promoted += await releaseDmTask(client, entry.task, nowIso, state);
   }
   const held = await holdDmsNotConnected(client, notConnected, nowIso, ["scheduled"]);
@@ -2222,9 +2218,9 @@ async function releaseDueLinkedInTasks(
 /**
  * The send path's check before a DM: true when the task was put back to wait
  * (or its enrollment cancelled) because the person is known not to be
- * connected. Reads the same cached relations as the release and never starts
- * the full first read; with no read stored, or a read that fails, the send
- * goes ahead as it did before.
+ * connected. Reads the same cached relations as the release, never starts
+ * the full first read and reads at most one page; with no read stored, a read
+ * that fails or a partial read, the send goes ahead as it did before.
  */
 async function holdDmUntilConnected(
   client: SupabaseClient,
@@ -2238,19 +2234,23 @@ async function holdDmUntilConnected(
     const { getLinkedInRelations, connectionState } = await import(
       "@/lib/outreach/linkedin-relations"
     );
+    // One page at most: this runs inside a click in the queue. A refresh that
+    // cannot catch up in one page leaves the read partial, which proves
+    // nothing, so the send goes ahead.
     const snapshot = await getLinkedInRelations(client, accountId, {
       initialSync: false,
+      maxPages: 1,
     });
     if (!snapshot) return false;
     ctx = (await loadDmConnectionContext(client, [task])).get(task.id);
     if (!ctx || ctx.candidates.length === 0) return false;
-    if (connectionState(snapshot, ctx.candidates, ctx.invitedAt) !== "not_connected") {
+    if (connectionState(snapshot, ctx.candidates) !== "not_connected") {
       return false;
     }
   } catch (err) {
     console.warn(
       "[sequences] connection check before a LinkedIn DM failed, sending anyway:",
-      err instanceof Error ? err.message : err,
+      err instanceof Error ? err.message : String(err),
     );
     return false;
   }
@@ -3465,7 +3465,10 @@ export async function processDueSequenceTasks(
     linkedinWaiting = released.waiting;
     linkedinCancelled = released.cancelled;
   } catch (err) {
-    console.error("[sequences] releasing due LinkedIn tasks failed:", err);
+    console.error(
+      "[sequences] releasing due LinkedIn tasks failed:",
+      err instanceof Error ? err.message : String(err),
+    );
   }
 
   return {

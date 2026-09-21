@@ -1510,9 +1510,18 @@ export function normalizeLinkedInIdentity(
   const raw = urlOrId.trim();
   // ACoAA… provider ids
   if (/^ACoAA/i.test(raw)) return raw.toLowerCase();
+  // A LinkedIn URL typed without its scheme ("linkedin.com/in/jane",
+  // "br.linkedin.com/in/jane") is still a URL. Read as a bare slug, it came
+  // back as its host, "linkedin.com".
+  const hasScheme = /^https?:\/\//i.test(raw);
+  const isUrl = hasScheme || /^([a-z0-9-]+\.)*linkedin\.com\//i.test(raw);
   try {
     const u = new URL(
-      raw.startsWith("http") ? raw : `https://www.linkedin.com/in/${raw}`,
+      hasScheme
+        ? raw
+        : isUrl
+          ? `https://${raw}`
+          : `https://www.linkedin.com/in/${raw}`,
     );
     const parts = u.pathname.split("/").filter(Boolean);
     // /in/slug or /in/ACoAA…/
@@ -1523,12 +1532,32 @@ export function normalizeLinkedInIdentity(
   } catch {
     /* fall through */
   }
+  // A URL with no /in/ or /pub/ segment (a company page, another site) names
+  // no person. Splitting it as a bare slug used to return its scheme, "https:",
+  // which then matched every other such URL.
+  if (isUrl) return null;
   // bare slug
   const slug = raw
     .replace(/^https?:\/\/(www\.)?linkedin\.com\/in\//i, "")
     .split(/[/?#]/)[0]
     ?.toLowerCase();
   return slug || null;
+}
+
+/**
+ * normalizeLinkedInIdentity, kept only when it is plausibly one person: a
+ * member id, or a vanity slug (from a bare slug or an /in/ or /pub/ URL).
+ * Null for anything else, such as a name typed into the LinkedIn field, so a
+ * value that can never match is not mistaken for someone who is absent.
+ */
+export function linkedInPersonIdentity(
+  urlOrId: string | null | undefined,
+): string | null {
+  const id = normalizeLinkedInIdentity(urlOrId);
+  if (!id) return null;
+  if (isLinkedInProviderId(id)) return id;
+  // Same shape canonicalProfileUrl (lib/linkedin-harvest.ts) accepts.
+  return /^[\p{L}\p{N}][\p{L}\p{N}_-]{2,}$/u.test(id) ? id : null;
 }
 
 export function identitiesFromWebhook(

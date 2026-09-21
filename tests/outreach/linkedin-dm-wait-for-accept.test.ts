@@ -35,12 +35,16 @@ vi.mock("@/lib/unipile", async (importOriginal) => ({
   ...unipile,
 }));
 
-import { resetLinkedInRelationsMemo } from "@/lib/outreach/linkedin-relations";
+import {
+  connectionState,
+  resetLinkedInRelationsMemo,
+} from "@/lib/outreach/linkedin-relations";
 import {
   processDueSequenceTasks,
   promoteDueHumanQueue,
   sendTaskNow,
 } from "@/lib/outreach/sequences";
+import { normalizeLinkedInIdentity } from "@/lib/unipile";
 
 type Row = Record<string, unknown>;
 
@@ -50,16 +54,23 @@ const HOUR = 60 * 60_000;
 const DAY = 24 * HOUR;
 const ago = (ms: number) => new Date(Date.parse(NOW) - ms).toISOString();
 
+type DbError = { code?: string; message: string };
+
 /**
  * In-memory tables behind the query-builder calls the sequence engine makes.
  * Filters apply when the chain resolves, so an update narrowed by status only
- * touches rows still in that status.
+ * touches rows still in that status. A table in `failing` answers every call
+ * with that error, the way a missing table or a denied grant does.
  */
-function fakeSupabase(tables: Record<string, Row[]>) {
+function fakeSupabase(
+  tables: Record<string, Row[]>,
+  failing: Record<string, DbError> = {},
+) {
   let nextId = 1;
   const client = {
     from(table: string) {
       tables[table] ??= [];
+      const failure = failing[table] ?? null;
       const filters: Array<(r: Row) => boolean> = [];
       let patch: Row | null = null;
       let inserted: Row[] | null = null;
@@ -99,21 +110,24 @@ function fakeSupabase(tables: Record<string, Row[]>) {
             id: `row-${nextId++}`,
             ...r,
           }));
-          tables[table].push(...inserted);
+          if (!failure) tables[table].push(...inserted);
           return builder;
         },
         upsert: (p: Row, opts: { onConflict: string }) => {
+          inserted = [p];
+          if (failure) return builder;
           const key = opts.onConflict;
           const existing = tables[table].find((r) => r[key] === p[key]);
           if (existing) Object.assign(existing, p);
           else tables[table].push({ ...p });
-          inserted = [p];
           return builder;
         },
-        maybeSingle: async () => ({ data: run()[0] ?? null, error: null }),
-        single: async () => ({ data: run()[0] ?? null, error: null }),
-        then: (resolve: (v: { data: Row[]; error: null }) => unknown) =>
-          resolve({ data: run(), error: null }),
+        maybeSingle: async () =>
+          failure ? { data: null, error: failure } : { data: run()[0] ?? null, error: null },
+        single: async () =>
+          failure ? { data: null, error: failure } : { data: run()[0] ?? null, error: null },
+        then: (resolve: (v: { data: Row[] | null; error: DbError | null }) => unknown) =>
+          resolve(failure ? { data: null, error: failure } : { data: run(), error: null }),
       };
       return builder;
     },
@@ -180,15 +194,19 @@ function world(opts: {
   enrollments: Row[];
   tasks: Row[];
   relationsCache?: Row[];
+  failing?: Record<string, DbError>;
 }) {
-  return fakeSupabase({
-    outreach_sequences: [{ id: "seq-1", name: "Job signal", status: "active", mailbox_id: null }],
-    outreach_sequence_steps: STEPS.map((s) => ({ ...s })),
-    outreach_enrollments: opts.enrollments,
-    outreach_send_tasks: opts.tasks,
-    outreach_sequence_snapshots: [],
-    linkedin_relations_cache: opts.relationsCache ?? [],
-  });
+  return fakeSupabase(
+    {
+      outreach_sequences: [{ id: "seq-1", name: "Job signal", status: "active", mailbox_id: null }],
+      outreach_sequence_steps: STEPS.map((s) => ({ ...s })),
+      outreach_enrollments: opts.enrollments,
+      outreach_send_tasks: opts.tasks,
+      outreach_sequence_snapshots: [],
+      linkedin_relations_cache: opts.relationsCache ?? [],
+    },
+    opts.failing,
+  );
 }
 
 function relation(publicIdentifier: string, createdAt: string, memberId = "ACoAAother") {
@@ -325,22 +343,21 @@ describe("releasing a due LinkedIn DM", () => {
     expect(unipile.listLinkedInRelations).not.toHaveBeenCalled();
   });
 
-  it("holds DMs about an hour when the relations read fails, without counting toward the 14 days", async () => {
+  it("releases DMs as before, flagged, when the relations read fails: no evidence, no hold", async () => {
     const { client, tables } = world({
       enrollments: [enrollment("enr-1", "jane-doe")],
-      tasks: [sentInvite("enr-1", ago(3 * DAY)), dueTask("dm-1", "enr-1", "step-dm")],
+      tasks: [sentInvite("enr-1", ago(15 * DAY)), dueTask("dm-1", "enr-1", "step-dm")],
     });
     unipile.listLinkedInRelations.mockRejectedValue(new Error("Unipile 503"));
 
-    await processDueSequenceTasks(client);
+    const res = await processDueSequenceTasks(client);
 
     const dm = find(tables.outreach_send_tasks, "dm-1");
-    expect(dm.status).toBe("scheduled");
-    const pushedBy = Date.parse(dm.scheduled_for as string) - Date.parse(NOW);
-    expect(pushedBy).toBeGreaterThanOrEqual(HOUR);
-    expect(pushedBy).toBeLessThan(2 * HOUR);
-    expect(dm.meta).toMatchObject({ connection_check: "error" });
-    expect((dm.meta as Row).waiting_on_connection_since).toBeUndefined();
+    expect(dm.status).toBe("ready");
+    expect(dm.meta).toMatchObject({ connection_check: "error", connection_check_error: "Unipile 503" });
+    // Even with a 15-day-old invite: a failed read never cancels anyone.
+    expect(find(tables.outreach_enrollments, "enr-1").status).toBe("active");
+    expect(res).toMatchObject({ promoted: 1, linkedinWaiting: 0, linkedinCancelled: 0 });
   });
 });
 
@@ -503,5 +520,233 @@ describe("sending a DM from the queue", () => {
 
     expect(result).toEqual({ ok: true, status: "sent" });
     expect(unipile.listLinkedInRelations).not.toHaveBeenCalled();
+  });
+});
+
+// Review follow-ups. The rule under all of them: holding a DM, and above all
+// cancelling an enrollment, needs a complete and recent read that does not
+// list the person. Anything less releases the DM as before, flagged.
+
+/** A stored read that is complete but due for a refresh. */
+const staleCompleteRead = (identities: string[]) => [
+  {
+    account_id: "acc-1",
+    identities,
+    complete: true,
+    fetched_at: ago(7 * HOUR),
+    next_fetch_after: ago(HOUR),
+  },
+];
+
+/** A full page of connections all newer than the stored read: never catches up. */
+const pageNewerThanStoredRead = () => ({
+  items: [relation("new-connection", ago(2 * HOUR))],
+  cursor: "more",
+});
+
+describe("a partial relations read", () => {
+  it("treats an empty page that still has a cursor as partial, not as the end of the list", async () => {
+    const { client, tables } = world({
+      enrollments: [enrollment("enr-1", "jane-doe")],
+      tasks: [sentInvite("enr-1", ago(15 * DAY)), dueTask("dm-1", "enr-1", "step-dm")],
+    });
+    unipile.listLinkedInRelations.mockResolvedValue({ items: [], cursor: "more" });
+
+    const res = await processDueSequenceTasks(client);
+
+    expect(tables.linkedin_relations_cache[0].complete).toBe(false);
+    const dm = find(tables.outreach_send_tasks, "dm-1");
+    expect(dm.status).toBe("ready");
+    expect(dm.meta).toMatchObject({ connection_check: "unknown" });
+    expect(find(tables.outreach_enrollments, "enr-1").status).toBe("active");
+    expect(res).toMatchObject({ linkedinWaiting: 0, linkedinCancelled: 0 });
+  });
+
+  it("bounds a cron refresh to a few pages, then releases unchecked instead of holding", async () => {
+    const { client, tables } = world({
+      enrollments: [enrollment("enr-1", "jane-doe")],
+      tasks: [sentInvite("enr-1", ago(3 * DAY)), dueTask("dm-1", "enr-1", "step-dm")],
+      relationsCache: staleCompleteRead(["old-friend"]),
+    });
+    unipile.listLinkedInRelations.mockImplementation(async () => pageNewerThanStoredRead());
+
+    await processDueSequenceTasks(client);
+
+    expect(unipile.listLinkedInRelations).toHaveBeenCalledTimes(3);
+    expect(tables.linkedin_relations_cache[0].complete).toBe(false);
+    const dm = find(tables.outreach_send_tasks, "dm-1");
+    expect(dm.status).toBe("ready");
+    expect(dm.meta).toMatchObject({ connection_check: "unknown" });
+  });
+
+  it("only trusts absence on a recent read", () => {
+    const snap = {
+      accountId: "acc-1",
+      identities: new Set(["someone-else"]),
+      complete: true,
+      fetchedAt: Date.parse(NOW) - 9 * HOUR,
+      nextFetchAfter: Date.parse(NOW) + HOUR,
+    };
+    expect(connectionState(snap, ["jane-doe"], Date.parse(NOW))).toBe("unknown");
+    expect(connectionState({ ...snap, fetchedAt: Date.parse(NOW) - HOUR }, ["jane-doe"], Date.parse(NOW))).toBe(
+      "not_connected",
+    );
+    expect(connectionState({ ...snap, complete: false }, ["jane-doe"], Date.parse(NOW))).toBe("unknown");
+    expect(connectionState({ ...snap, complete: false }, ["someone-else"], Date.parse(NOW))).toBe("connected");
+  });
+});
+
+describe("the relations cache table", () => {
+  it("releases unchecked, and never holds, when the cache cannot be read for a reason other than a missing table", async () => {
+    const { client, tables } = world({
+      enrollments: [enrollment("enr-1", "jane-doe")],
+      tasks: [sentInvite("enr-1", ago(15 * DAY)), dueTask("dm-1", "enr-1", "step-dm")],
+      failing: {
+        linkedin_relations_cache: {
+          code: "42501",
+          message: 'permission denied for table linkedin_relations_cache',
+        },
+      },
+    });
+
+    await processDueSequenceTasks(client);
+
+    const dm = find(tables.outreach_send_tasks, "dm-1");
+    expect(dm.status).toBe("ready");
+    expect(dm.meta).toMatchObject({ connection_check: "error" });
+    expect(find(tables.outreach_enrollments, "enr-1").status).toBe("active");
+    // Not mistaken for "not migrated": no read went out to be kept in memory.
+    expect(unipile.listLinkedInRelations).not.toHaveBeenCalled();
+  });
+
+  it("falls back to memory when the table is not migrated yet", async () => {
+    const { client, tables } = world({
+      enrollments: [enrollment("enr-1", "jane-doe"), enrollment("enr-2", "john-roe")],
+      tasks: [sentInvite("enr-1", ago(3 * DAY)), dueTask("dm-1", "enr-1", "step-dm")],
+      failing: {
+        linkedin_relations_cache: {
+          code: "PGRST205",
+          message: "Could not find the table 'public.linkedin_relations_cache' in the schema cache",
+        },
+      },
+    });
+    unipile.listLinkedInRelations.mockResolvedValue({
+      items: [relation("someone-else", ago(DAY))],
+      cursor: null,
+    });
+
+    await processDueSequenceTasks(client);
+    expect(find(tables.outreach_send_tasks, "dm-1").meta).toMatchObject({
+      connection_check: "not_connected",
+    });
+
+    tables.outreach_send_tasks.push(sentInvite("enr-2", ago(3 * DAY)), dueTask("dm-2", "enr-2", "step-dm"));
+    await processDueSequenceTasks(client);
+
+    // The second check was answered from memory.
+    expect(unipile.listLinkedInRelations).toHaveBeenCalledTimes(1);
+    expect(find(tables.outreach_send_tasks, "dm-2").meta).toMatchObject({
+      connection_check: "not_connected",
+    });
+  });
+});
+
+describe("which LinkedIn values count as a person", () => {
+  it.each([
+    ["linkedin.com/in/jane-doe", "jane-doe"],
+    ["www.linkedin.com/in/Jane-Doe/", "jane-doe"],
+    ["br.linkedin.com/in/jane-doe?trk=x", "jane-doe"],
+    ["https://www.linkedin.com/in/jane-doe", "jane-doe"],
+    ["jane-doe", "jane-doe"],
+    ["ACoAAjane", "acoaajane"],
+    ["https://www.linkedin.com/company/acme", null],
+    ["linkedin.com/company/acme", null],
+    ["https://example.com/jane", null],
+  ] as const)("normalizeLinkedInIdentity(%j) is %j", (input, expected) => {
+    expect(normalizeLinkedInIdentity(input)).toBe(expected);
+  });
+
+  it("matches a scheme-less /in/ URL on the enrollment", async () => {
+    const { client, tables } = world({
+      enrollments: [enrollment("enr-1", "linkedin.com/in/jane-doe")],
+      tasks: [sentInvite("enr-1", ago(3 * DAY)), dueTask("dm-1", "enr-1", "step-dm")],
+    });
+    unipile.listLinkedInRelations.mockResolvedValue({
+      items: [relation("jane-doe", ago(DAY))],
+      cursor: null,
+    });
+
+    await processDueSequenceTasks(client);
+
+    expect(find(tables.outreach_send_tasks, "dm-1").meta).toMatchObject({
+      connection_check: "connected",
+    });
+  });
+
+  it.each([
+    ["a company page", "https://www.linkedin.com/company/acme"],
+    ["a name typed into the field", "Jane Doe"],
+  ])("releases, flagged, a DM whose LinkedIn is %s, even after 14 days", async (_label, value) => {
+    const { client, tables } = world({
+      enrollments: [enrollment("enr-1", value)],
+      tasks: [sentInvite("enr-1", ago(15 * DAY)), dueTask("dm-1", "enr-1", "step-dm")],
+    });
+    unipile.listLinkedInRelations.mockResolvedValue({
+      items: [relation("someone-else", ago(DAY))],
+      cursor: null,
+    });
+
+    await processDueSequenceTasks(client);
+
+    const dm = find(tables.outreach_send_tasks, "dm-1");
+    expect(dm.status).toBe("ready");
+    expect(dm.meta).toMatchObject({ connection_check: "no_linkedin_identity" });
+    expect(find(tables.outreach_enrollments, "enr-1").status).toBe("active");
+  });
+});
+
+describe("the send path's relations read", () => {
+  it("reads at most one page inside a click, and a partial read lets the send go", async () => {
+    const { client, tables } = world({
+      enrollments: [enrollment("enr-1", "jane-doe")],
+      tasks: [sentInvite("enr-1", ago(3 * DAY)), dueTask("dm-1", "enr-1", "step-dm", { status: "ready" })],
+      relationsCache: staleCompleteRead(["old-friend"]),
+    });
+    unipile.listLinkedInRelations.mockImplementation(async () => pageNewerThanStoredRead());
+
+    const result = await sendTaskNow(client, "dm-1");
+
+    expect(unipile.listLinkedInRelations).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ ok: true, status: "sent" });
+    expect(tables.linkedin_relations_cache[0].complete).toBe(false);
+  });
+});
+
+describe("logging", () => {
+  it("logs error messages, never error objects that can carry request headers", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { client } = world({
+        enrollments: [enrollment("enr-1", "jane-doe")],
+        tasks: [sentInvite("enr-1", ago(15 * DAY)), dueTask("dm-1", "enr-1", "step-dm")],
+        // The cancel snapshots the sequence first; make that fail.
+        failing: { outreach_sequence_snapshots: { message: "insert failed" } },
+      });
+      unipile.listLinkedInRelations.mockResolvedValue({
+        items: [relation("someone-else", ago(DAY))],
+        cursor: null,
+      });
+
+      await processDueSequenceTasks(client);
+
+      expect(warn).toHaveBeenCalled();
+      for (const call of [...warn.mock.calls, ...error.mock.calls]) {
+        for (const arg of call) expect(typeof arg).toBe("string");
+      }
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
   });
 });
