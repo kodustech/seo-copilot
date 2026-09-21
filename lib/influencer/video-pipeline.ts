@@ -367,6 +367,9 @@ export async function renderRequestedPreviews(
     handled += 1;
     try {
       await renderVideoClips(client, activity, channel, now, { keepStatus: true });
+      // Clips done: the worker takes it from here. Clearing the request frees
+      // this run's slots for drafts still waiting on HeyGen.
+      await mergeContentMeta(client, activity.id, { render_requested: false });
     } catch (err) {
       if (err instanceof YoutubeDeferred && !(err instanceof VideoBudgetDeferred)) continue; // still rendering
       await mergeContentMeta(client, activity.id, {

@@ -385,17 +385,23 @@ function VideoStoryboard({ activity, content }: { activity: Activity; content: s
 function videoState(activity: Activity) {
   const meta = activity.content_meta;
   const blocks = Array.isArray(meta.blocks) ? (meta.blocks as unknown[]).filter((b) => typeof b === "string") : [];
-  // Price what will be filmed: the saved text wins over the stored blocks, as it does in the render.
-  const spoken = activity.content?.trim() ? activity.content : (blocks as string[]).join(" ");
+  // Price what will be filmed, by the render's own rule: the saved text wins
+  // only when it splits into more than one block.
+  const fromContent = (activity.content ?? "")
+    .split(/\n\s*\n/)
+    .map((b) => b.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const spoken = fromContent.length > 1 ? fromContent.join(" ") : (blocks as string[]).join(" ");
   const words = spoken.split(/\s+/).filter(Boolean).length;
   const finalUrl = typeof meta.final_url === "string" && meta.final_url ? meta.final_url : null;
   const ids = Array.isArray(meta.heygen_video_ids) ? (meta.heygen_video_ids as unknown[]).filter(Boolean) : [];
   const clips = Array.isArray(meta.video_urls) ? (meta.video_urls as unknown[]).filter(Boolean).length : 0;
   const renderError = typeof meta.render_error === "string" ? meta.render_error : null;
   // A composite the worker gave up on is not still rendering: it needs a retry.
-  const rendering = meta.render_requested === true && !finalUrl && !meta.worker_failed_at;
+  const gaveUp = Boolean(meta.worker_failed_at);
+  const rendering = meta.render_requested === true && !finalUrl && !gaveUp;
   let progress: string | null = null;
-  if (!finalUrl && meta.stage === "clips_ready") progress = "Clips ready · composing the video (a few minutes)";
+  if (!finalUrl && meta.stage === "clips_ready" && !gaveUp) progress = "Clips ready · composing the video (a few minutes)";
   else if (rendering && ids.length) progress = `Rendering the avatar · ${clips} of ${blocks.length} clips ready`;
   else if (rendering) progress = "Queued to render on the next publish run (within 15 minutes)";
   return {

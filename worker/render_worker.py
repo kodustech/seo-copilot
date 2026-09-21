@@ -289,7 +289,17 @@ def fail_job(client, job: dict, message: str) -> None:
         patch["error"] = f"Video composite failed {attempts} times: {message}"[:500]
     else:
         meta["worker_retry_at"] = (now + timedelta(minutes=RETRY_MINUTES * attempts)).isoformat()
-    client.table("persona_activities").update(patch).eq("id", job["id"]).execute()
+    # Same guard as finish_job: a row discarded mid-composite keeps its status
+    # and only gets the error recorded.
+    moved = (
+        client.table("persona_activities")
+        .update(patch)
+        .eq("id", job["id"])
+        .in_("status", CLAIMABLE_STATUSES)
+        .execute()
+    )
+    if not moved.data:
+        client.table("persona_activities").update({"content_meta": meta}).eq("id", job["id"]).execute()
 
 
 def finish_job(client, aid, meta: dict) -> bool:

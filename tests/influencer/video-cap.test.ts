@@ -263,7 +263,9 @@ describe("preview renders", () => {
     expect(handled).toBe(1);
     const patches = vi.mocked(updateActivity).mock.calls.map((c) => c[2] as Record<string, unknown>);
     expect(patches.every((p) => !("status" in p))).toBe(true);
-    expect(patches.at(-1)!.content_meta).toMatchObject({ stage: "clips_ready" });
+    expect(patches.some((p) => (p.content_meta as Record<string, unknown>)?.stage === "clips_ready")).toBe(true);
+    // Clips done, request cleared: the slot goes to drafts still waiting on HeyGen.
+    expect(patches.at(-1)!.content_meta).toMatchObject({ render_requested: false });
   });
 
   it("writes a spent budget on the draft instead of retrying it every run", async () => {
