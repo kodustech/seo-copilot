@@ -2092,6 +2092,54 @@ export async function getActivityStats(
 }
 
 /**
+ * The action a LinkedIn step is set to: a connection request or a DM.
+ *
+ * The step decides connect-note vs message; a stored task has no copy of it.
+ * Null when the step does not say: an unset action, a missing step, or a read
+ * that failed. A failed read returns null instead of throwing, so a step that
+ * has a body sends exactly as it did before this helper existed.
+ *
+ * This is the step's setting, not what goes out. resolveLinkedInSendAction
+ * turns it into that.
+ */
+export async function linkedInActionForStep(
+  client: SupabaseClient,
+  stepId: string,
+): Promise<LinkedinAction | null> {
+  const { data: stepRow, error } = await client
+    .from("outreach_sequence_steps")
+    .select("linkedin_action")
+    .eq("id", stepId)
+    .maybeSingle();
+  if (error) return null;
+  const action = stepRow?.linkedin_action as string | null | undefined;
+  return action === "connect_note" || action === "message" ? action : null;
+}
+
+/**
+ * What a LinkedIn send actually does with this step's action and this body,
+ * or null when the send must be refused.
+ *
+ * The send path and the send preview both call this, so the action a preview
+ * shows is the one the send uses and records.
+ */
+export function resolveLinkedInSendAction(
+  action: LinkedinAction | null,
+  body: string | null | undefined,
+): LinkedinAction | null {
+  // A connection request with no note is a deliberate choice (sequences often
+  // open with a blank invite), so it goes out as a plain invitation. A DM with
+  // no text has nothing to send, and neither does a step whose action is
+  // unknown: guessing wrong sends a connection request in place of a DM, which
+  // cannot be taken back.
+  if (!body?.trim()) return action === "connect_note" ? "connect_note" : null;
+  // Backward compatibility: before the action could be unknown, anything that
+  // was not "message" was sent as a connection request. A step with a body and
+  // no readable action keeps going out that way.
+  return action ?? "connect_note";
+}
+
+/**
  * Send a queued LinkedIn step through Unipile.
  *
  * Mirrors sendDueEmailTask's discipline — same token guard, same checked
@@ -2144,8 +2192,14 @@ async function sendDueLinkedInTask(
     return "skipped";
   }
 
+  // Resolved before the other guards, because an empty body means something
+  // different for each action. Only an explicit connect_note sends blank.
   const body = (opts?.override?.body ?? task.renderedBody ?? "").trim();
-  if (!body) {
+  const sendAs = resolveLinkedInSendAction(
+    await linkedInActionForStep(client, task.stepId),
+    body,
+  );
+  if (!sendAs) {
     await fail("Empty message body");
     return "failed";
   }
@@ -2230,17 +2284,6 @@ async function sendDueLinkedInTask(
     return "failed";
   }
 
-  // The step decides connect-note vs message; a stored task has no copy of it.
-  const { data: stepRow } = await client
-    .from("outreach_sequence_steps")
-    .select("linkedin_action")
-    .eq("id", task.stepId)
-    .maybeSingle();
-  const action =
-    (stepRow?.linkedin_action as string | null) === "message"
-      ? "message"
-      : "connect_note";
-
   // Claim before the network call, from the exact status we were told to take
   // it from. Claiming from the wrong one silently no-ops the guard and the
   // send still fires — with nothing stopping a second.
@@ -2268,7 +2311,7 @@ async function sendDueLinkedInTask(
     let messageId: string | null = null;
     let chatId: string | null = null;
 
-    if (action === "connect_note") {
+    if (sendAs === "connect_note") {
       const invite = await sendLinkedInInvitation({
         accountId,
         providerId,
@@ -2296,8 +2339,9 @@ async function sendDueLinkedInTask(
       .update({
         status: "sent",
         // Only on an edit, and only on success — same rule as email: this row
-        // is the app's record of what actually left.
-        ...(opts?.override?.body ? { rendered_body: body } : {}),
+        // is the app's record of what actually left. An edit that cleared the
+        // note counts: the invite went out blank, and the row must say so.
+        ...(opts?.override?.body !== undefined ? { rendered_body: body } : {}),
         sent_at: now,
         sent_by_email: opts?.actorEmail ?? null,
         provider: "linkedin",
@@ -2307,7 +2351,7 @@ async function sendDueLinkedInTask(
         meta: {
           ...(task.meta ?? {}),
           unipile_account_id: accountId,
-          linkedin_action: action,
+          linkedin_action: sendAs,
           linkedin_provider_id: providerId,
           // The reply inbox keys LinkedIn threads on chat_id, so recording it
           // is what lets an answer land back on this enrollment.
@@ -2391,7 +2435,18 @@ export async function sendTaskNow(
   if (task.channel === "linkedin") {
     const editedBody =
       typeof input.body === "string" ? input.body.trim() : undefined;
-    if (editedBody !== undefined && !editedBody) {
+    // Clearing the note on a connection request means "send it without one",
+    // which is a valid send. Clearing anything else (a DM, or a step whose
+    // action cannot be read) is a mistake, and refusing here leaves the task
+    // untouched instead of failing it further down.
+    if (
+      editedBody !== undefined &&
+      !editedBody &&
+      !resolveLinkedInSendAction(
+        await linkedInActionForStep(client, task.stepId),
+        editedBody,
+      )
+    ) {
       throw new Error("The message body is empty — nothing to send.");
     }
     const result = await sendDueLinkedInTask(client, task, {
