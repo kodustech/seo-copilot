@@ -388,6 +388,8 @@ describe("gmailDeleteDraft tool", () => {
       { toolCallId: "t", messages: [] },
     );
     expect(out).toMatchObject({ success: false });
+    // The message, not just success:false — any thrown error has that shape too.
+    expect((out as { message: string }).message).toContain("confirm=true");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
