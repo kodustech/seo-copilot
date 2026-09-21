@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -128,8 +129,14 @@ def channel_site(client, channel_id) -> str:
     )
     # maybe_single() can hand back None instead of an empty result.
     data = (chan.data if chan else None) or {}
-    cfg = data.get("channel_config") or {}
-    return str(cfg.get("youtube_site_url") or "agentwrotethis.dev")
+    return site_label(data.get("channel_config") or {})
+
+
+def site_label(cfg: dict) -> str:
+    """The slide footer: the channel's site as a bare domain, or nothing. Never
+    another persona's site: an empty setting leaves the footer off."""
+    raw = str(cfg.get("youtube_site_url") or "").strip()
+    return re.sub(r"^https?://(www\.)?", "", raw).rstrip("/")
 
 
 def preview_pass(client, bucket: str, work_root: Path, render=None) -> int:
@@ -305,7 +312,7 @@ def run_job(client, model, job: dict, bucket: str, render_script: str, work_root
             .execute()
         )
         cfg = ((chan.data or {}).get("channel_config")) or {}
-        site = str(cfg.get("youtube_site_url") or "agentwrotethis.dev")
+        site = site_label(cfg)
         music = cfg.get("youtube_music_url")
 
         clip_paths = []

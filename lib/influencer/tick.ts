@@ -562,9 +562,10 @@ export async function runPersonaTick({
   }
 
   if (testRun) {
+    const piece = open.length === 1 && open[0] === "youtube" ? "video" : "article";
     const note = run.drafts
-      ? "Test article saved to the Review queue."
-      : "Test shift finished without creating an article.";
+      ? `Test ${piece} saved to the Review queue.`
+      : `Test shift finished without creating ${piece === "video" ? "a video" : "an article"}.`;
     return {
       ...base,
       acted: true,

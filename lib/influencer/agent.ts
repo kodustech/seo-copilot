@@ -49,6 +49,7 @@ import {
   VIDEO_SLIDE_INPUT_SCHEMA,
   validateVideoLength,
   validateVideoScript,
+  validateVideoVoice,
   youtubeChannelConfig,
   YOUTUBE_MAX_BLOCKS,
   YOUTUBE_MIN_BLOCKS,
@@ -1007,10 +1008,10 @@ export async function runInfluencerAgentSession({
           }
           const ytCfg = youtubeChannelConfig(channel);
           const spoken = parseVideoBlocks(blocks)!;
-          const lengthIssues = validateVideoLength(spoken, ytCfg.targetMinutes);
+          const lengthIssues = [...validateVideoLength(spoken, ytCfg.targetMinutes), ...validateVideoVoice(spoken)];
           if (lengthIssues.length) {
-            await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "video_length", issues: lengthIssues } });
-            return `This video is the wrong length:\n${lengthIssues.join("\n")}\nRework the blocks and queue again.`;
+            await step({ kind: "tool_result", tool: "queue_draft", payload: { error: "video_script_quality", issues: lengthIssues } });
+            return `This video is not ready:\n${lengthIssues.join("\n")}\nRework the blocks and queue again.`;
           }
           const { visuals, issues: visualIssues } = parseVideoVisuals(slides, spoken.length, ytCfg.slideMode);
           if (visualIssues.length) {
