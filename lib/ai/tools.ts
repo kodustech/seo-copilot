@@ -6278,14 +6278,18 @@ export const gmailCreateDraft = tool({
 
 export const gmailDeleteDraft = tool({
   description:
-    "Permanently delete a Gmail DRAFT (it skips the trash and cannot be restored). Pass the draft_id returned by gmailCreateDraft, or, for a draft from an earlier conversation, the message id of a gmailSearch 'in:draft' hit as message_id. Use the same mailbox_id the draft lives in. Only drafts can be deleted, never sent or received mail. Deleting a draft you created in this conversation (e.g. to replace it with a corrected one) needs no confirmation; for any other draft, show the user its recipient and subject and get a yes first — it may be one they wrote by hand.",
+    "Permanently delete a Gmail DRAFT (it skips the trash and cannot be restored). Pass the draft_id returned by gmailCreateDraft, or, for a draft from an earlier conversation, the message id of a gmailSearch 'in:draft' hit as message_id. Use the same mailbox_id the draft lives in. Only drafts can be deleted, never sent or received mail. Requires confirm=true. A draft you created in this conversation (e.g. to replace it with a corrected one) can be confirmed on your own; for any other draft, show the user its recipient and subject and get a yes first — it may be one they wrote by hand.",
   inputSchema: z.object({
     draft_id: z.string().optional().describe("Draft id from gmailCreateDraft. Pass this or message_id."),
     message_id: z.string().optional().describe("Message id of the draft, from a gmailSearch 'in:draft' hit. Used when the draft_id is not known."),
     mailbox_id: z.string().optional().describe("Mailbox that holds the draft. Defaults to the default mailbox."),
+    confirm: z.boolean().describe("Must be true to actually delete — safety guard for agents"),
   }),
-  execute: async ({ draft_id, message_id, mailbox_id }) => {
+  execute: async ({ draft_id, message_id, mailbox_id, confirm }) => {
     try {
+      if (!confirm) {
+        return { success: false as const, message: "Pass confirm=true to permanently delete this draft. It skips the trash and cannot be restored." };
+      }
       const { openGmailMailbox, findGmailDraftIdByMessage, deleteGmailDraft } = await import("@/lib/outreach/gmail");
       const messageId = message_id?.trim() || null;
       if (!draft_id?.trim() && !messageId) {

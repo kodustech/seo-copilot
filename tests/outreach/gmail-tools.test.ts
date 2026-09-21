@@ -15,6 +15,7 @@ vi.mock("@/lib/outreach/mailbox", () => ({
   ensureFreshAccessToken: async (_c: unknown, box: { id?: string }) => `tok-${box.id ?? "default"}`,
 }));
 
+import { gmailDeleteDraft } from "@/lib/ai/tools";
 import { buildMcpTools } from "@/lib/mcp/server";
 import {
   createGmailDraft,
@@ -82,10 +83,10 @@ describe("Gmail MCP wiring", () => {
     );
   });
 
-  it("registers gmailDeleteDraft with draft_id or message_id, neither required by schema", () => {
+  it("registers gmailDeleteDraft with confirm as the only required field", () => {
     const schema = schemaOf("gmailDeleteDraft");
-    expect(schema.required ?? []).toEqual([]);
-    expect(Object.keys(schema.properties ?? {}).sort()).toEqual(["draft_id", "mailbox_id", "message_id"]);
+    expect(schema.required).toEqual(["confirm"]);
+    expect(Object.keys(schema.properties ?? {}).sort()).toEqual(["confirm", "draft_id", "mailbox_id", "message_id"]);
   });
 });
 
@@ -361,5 +362,21 @@ describe("findGmailDraftIdByMessage", () => {
     vi.stubGlobal("fetch", fetchMock);
     expect(await findGmailDraftIdByMessage("tok", "m2")).toBe("d2");
     expect(await findGmailDraftIdByMessage("tok", "nope")).toBeNull();
+  });
+});
+
+describe("gmailDeleteDraft tool", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("refuses without confirm=true before touching Gmail", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await gmailDeleteDraft.execute?.(
+      { draft_id: "r-123", confirm: false },
+      { toolCallId: "t", messages: [] },
+    );
+    expect(out).toMatchObject({ success: false });
+    expect((out as { message: string }).message).toContain("confirm=true");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
