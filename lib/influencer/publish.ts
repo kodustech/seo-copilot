@@ -141,6 +141,9 @@ export function resolvePublishDecision({
   publishedToday: number;
   now: Date;
 }): PublishDecision {
+  if (activity.content_meta.test_run === true) {
+    return { action: "reject", reason: "Test drafts can never be published." };
+  }
   if (!persona) return { action: "reject", reason: "Persona no longer exists." };
   if (!channel) return { action: "reject", reason: "Channel no longer exists." };
 

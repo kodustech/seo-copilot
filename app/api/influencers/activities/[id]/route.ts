@@ -4,6 +4,7 @@ import { getSupabaseUserClient } from "@/lib/supabase-server";
 
 import {
   getActivity,
+  isTestActivity,
   updateActivityIfStatus,
   type ActivityPatch,
 } from "@/lib/influencer/activities";
@@ -52,6 +53,21 @@ export async function PATCH(
     const current = await getActivity(client, id);
     if (!current) {
       return NextResponse.json({ error: "Activity not found" }, { status: 404 });
+    }
+
+    const testEditSchedules =
+      action === "edit" && body.scheduled_at !== undefined && body.scheduled_at !== null;
+    if (
+      isTestActivity(current) &&
+      (action === "approve" ||
+        action === "published" ||
+        action === "cancel_schedule" ||
+        testEditSchedules)
+    ) {
+      return NextResponse.json(
+        { error: "Test drafts can be edited or discarded, but cannot be published or scheduled." },
+        { status: 400 },
+      );
     }
 
     // A hand-posted channel has no publisher: a person posts and records the

@@ -57,8 +57,12 @@ const LONG_FORM_CONTENT_POLICY = [
   "- The page title is the H1. Start the body with clear H2 sections and use H3 for real subsections; do not write an article as a long social post.",
   "- Develop the argument with concrete examples, comparisons, limitations, and practical implications. Do not stop after summarizing one or two sources.",
   "- Cover relevant tools, competitors, platforms, and entities when they help answer the question. Treat Kodus and other tools with the same editorial criteria.",
-  "- Kodus is optional: mention it only when it is genuinely relevant. If important alternatives exist, include them fairly; never add competitors artificially.",
-  "- Add internal links only when they help the reader, such as a relevant tool page or related article. Do not force an internal link when no useful destination exists.",
+  "- Before drafting, classify the article and each meaningful section: if it compares, recommends, ranks, lists, or evaluates tools, build a candidate set that includes Kodus whenever it fits the category, platform, workflow, pricing, hosting, or other stated criteria.",
+  "- Evaluate Kodus with the same criteria used for every competitor. Do not omit it because a source did not mention it, and do not claim that only other tools exist when Kodus is a valid option.",
+  "- Do not add Kodus merely because another tool is mentioned in passing. Include it when the article or section helps the reader choose, adopt, replace, or compare a relevant tool; never create an artificial Kodus section.",
+  "- Before adding internal links, inspect the site's actual blog listing, sitemap, tools page, or another trusted internal index. Use only exact URLs returned by those sources; never invent a slug or use the homepage as a fallback.",
+  "- Add an internal link when an existing page genuinely helps the reader, preferring specific tool pages, comparison pages, documentation, and related articles. Use a natural descriptive anchor, and omit the link when no relevant destination exists.",
+  "- Research notes are internal. Never expose the browsing process, access date, retrieval date, or the date a document was read in the published article. Mention dates only when the date is part of the subject, such as a release, benchmark period, pricing change, or policy update.",
   "- Do not repeat an existing article's topic and angle. Update an existing page when that is more useful than publishing a competing copy.",
   "- When revising a blog article, call read_post first and queue the complete replacement with replaces_slug. The publisher adds the revision date automatically.",
 ].join("\n");
@@ -102,6 +106,12 @@ function buildAgentSystem(
   skills?: string[],
 ): string {
   const voice = buildPersonaVoicePolicy(persona);
+  // The Kodus editorial context is only relevant to the two long-form
+  // channels where these articles are drafted. Manual runs omit `platforms`,
+  // so keep the context available when an operator may be asking for an
+  // article directly.
+  const canWriteLongForm =
+    platforms === undefined || platforms.some((p) => p === "blog" || p === "devto");
   const configs = (platforms ?? []).map((p) => ({
     platform: p,
     maxLength: p === "x" ? 280 : undefined,
@@ -124,6 +134,11 @@ function buildAgentSystem(
     "When you have something genuinely worth posting — a tweet, an article, a reply — call queue_draft.",
     "You NEVER publish directly. queue_draft only queues; the system publishes on its own rules (some channels auto-publish, others wait for human approval).",
     "Quality over output: if after researching nothing meets the bar, finish without drafting. Never post filler to have posted.",
+    ...(canWriteLongForm
+      ? [
+          "GLOBAL EDITORIAL CONTEXT — KODUS (blog and dev.to only): Throughout a long-form article, identify natural passages where tools, products, vendors, implementations, or solution options related to the topic are mentioned. When Kodus belongs to that same solution context, include it alongside the other tools in the most natural way for that passage: within the sentence, example, list, table, recommendation, implementation section, or conclusion. Use the same level of detail and criteria applied to the other tools. Do not append a generic Kodus paragraph at the end, force Kodus into a pure concept or platform explainer, or repeat Kodus when it is already present. The placement and format must follow the local context of the article, not a fixed article type or position. This context does not apply to X, replies, Reddit, Medium, or Hacker Noon.",
+        ]
+      : []),
     "Stay in character and honor every boundary in your voice policy.",
     "",
     "HOW TO WRITE (this is not a corporate blog — write like a real person):",
@@ -193,6 +208,7 @@ export async function runInfluencerAgentSession({
   openChannelIds,
   maxSteps,
   maxDrafts,
+  testRun = false,
 }: {
   client: SupabaseClient;
   persona: Persona;
@@ -209,6 +225,9 @@ export async function runInfluencerAgentSession({
   /** Hard cap on drafts this session (0 = none; 1 = one post/shift). Enforced
    *  live against the running counter, so a full queue can't be exceeded. */
   maxDrafts?: number;
+  /** Generate a review-only draft without publishing or mutating the persona's
+   *  memory, skills, mailbox, cadence, or channel queue capacity. */
+  testRun?: boolean;
 }): Promise<AgentRunResult> {
   const model = await getModelForPersona(client, persona);
   const channels = await listChannelsForPersona(client, persona.id);
@@ -547,6 +566,10 @@ export async function runInfluencerAgentSession({
       }),
       execute: async ({ to, subject, body }) => {
         await step({ kind: "tool_call", tool: "send_email", payload: { to, subject } });
+        if (testRun) {
+          await step({ kind: "tool_result", tool: "send_email", payload: { blocked: "test_run" } });
+          return "This is a test shift. Do not send email; finish the review-only article instead.";
+        }
         // Require an explicitly linked mailbox. Without this guard
         // sendOutreachEmail silently falls back to the workspace default
         // mailbox, so the persona would send as someone else.
@@ -622,6 +645,10 @@ export async function runInfluencerAgentSession({
       }),
       execute: async ({ title, content, tags }) => {
         await step({ kind: "tool_call", tool: "save_memory", payload: { title } });
+        if (testRun) {
+          await step({ kind: "tool_result", tool: "save_memory", payload: { blocked: "test_run" } });
+          return "This is a test shift. Use existing memory, but do not save new memory from the test.";
+        }
         try {
           const note = await saveMemory(client, persona.id, { title, content, tags });
           await step({ kind: "tool_result", tool: "save_memory", payload: { id: note.id } });
@@ -712,6 +739,10 @@ export async function runInfluencerAgentSession({
       }),
       execute: async ({ skill }) => {
         await step({ kind: "tool_call", tool: "learn_skill", payload: { skill } });
+        if (testRun) {
+          await step({ kind: "tool_result", tool: "learn_skill", payload: { blocked: "test_run" } });
+          return "This is a test shift. Apply existing skills, but do not create a new lasting skill.";
+        }
         if (!skill.trim()) {
           await step({ kind: "tool_result", tool: "learn_skill", payload: { error: "empty" } });
           return "A skill can't be empty.";
@@ -1024,7 +1055,7 @@ export async function runInfluencerAgentSession({
         }
         // Honor the channel's automation level: an `auto` channel publishes
         // without review; everything else waits in the queue for a human.
-        const autoPublish = channel.automation_level === "auto";
+        const autoPublish = !testRun && channel.automation_level === "auto";
         try {
           const [activity] = await insertActivities(client, [
             {
@@ -1036,6 +1067,7 @@ export async function runInfluencerAgentSession({
               content,
               content_meta: {
                 session_id: session.id,
+                ...(testRun ? { test_run: true } : {}),
                 ...(description ? { description } : {}),
                 ...(category ? { category } : {}),
                 // Kept only when the destination site has the axis: on a site
@@ -1052,7 +1084,7 @@ export async function runInfluencerAgentSession({
                 ...(replaces ? { replaces_slug: replaces } : {}),
                 ...(target ? { target_url: target } : {}),
               },
-              source_kind: "agent",
+              source_kind: testRun ? "agent_test" : "agent",
               source_ref: session.id,
             },
           ]);
@@ -1062,6 +1094,9 @@ export async function runInfluencerAgentSession({
             tool: "queue_draft",
             payload: { activity_id: activity?.id, platform, kind, auto: autoPublish },
           });
+          if (testRun) {
+            return `Saved a TEST draft for review (${platform} ${kind}). It cannot be published or scheduled.`;
+          }
           return autoPublish
             ? `Queued to publish (${platform} ${kind}). This channel is on auto — it goes out on the next publish cycle.`
             : `Queued for review (${platform} ${kind}). A human approves it before it goes live.`;

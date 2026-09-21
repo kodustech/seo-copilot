@@ -65,6 +65,136 @@ describe("validateLongFormContent", () => {
 
     expect(issues.map((issue) => issue.code)).toContain("long_form_weak_anchor");
   });
+
+  it("rejects research access dates and process narration", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "Everything here was read from a vendor page on 2026-09-21.",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_research_process_note");
+  });
+
+  it("allows dates that are part of the subject", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "The project released this capability on 2026-09-21.",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_research_process_note");
+  });
+
+  it("does not flag ordinary subject sentences that contain review verbs and dates", () => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: [
+        "## Context",
+        body(270),
+        "## Evidence",
+        body(270),
+        "## Decision",
+        body(270),
+        "The release was reviewed in the changelog and shipped on 2026-03-01.",
+        "The read-only replica was enabled on 2026-01-01.",
+      ].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_research_process_note");
+  });
+
+  it.each([
+    "Accessed on 2026-09-21.",
+    "Retrieved on 2026-09-21.",
+    "(accessed on 2026-09-21)",
+    "Consultado em 21/09/2026.",
+    "Acessado no dia 21/09/2026.",
+    "consultado no site em 21/09/2026.",
+    "- Accessed on 2026-03-01",
+    "* Retrieved on 2026-05-01",
+    "1. Consultado em 21/09/2026",
+    "> Acessado no dia 21/09/2026",
+    "**Accessed on 2026-03-01**",
+    "Sources: accessed on 2026-03-01",
+    "> - **Retrieved on 2026-05-01**",
+    "  __Consultado em 21/09/2026__",
+    "Fonte: consultado em 21/09/2026",
+    "### Accessed on 2026-05-01",
+    "***Accessed on 2026-03-01***",
+    "Sources consulted on 2026-03-01",
+    "Reference: accessed on 2026-03-01",
+    "> ### Accessed on 2026-05-01",
+    "**Sources**: consulted on 2026-03-01",
+  ])("rejects a bare access-date stamp: %s", (stamp) => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: ["## Context", body(270), "## Evidence", body(270), "## Decision", body(270), stamp].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_research_process_note");
+  });
+
+  it.each([
+    "We accessed the official documentation on 2026-03-01.",
+    "I retrieved the repository snapshot on 2026-01-15.",
+    "Acessado no site oficial do projeto em 21/09/2026.",
+    "Acessado no site oficial do projeto Kodus em 21/09/2026.",
+    "> We accessed the vendor documentation\n> on 2026-03-01.",
+    "Accessed the documentation\n**on 2026-03-01**.",
+    "We accessed the documentation for the official Kodus project on 2026-03-01.",
+    "Acessado no site oficial\nem 21/09/2026.",
+    "Accessed the documentation\non 2026-03-01.",
+    "Acessado no site oficial do\nprojeto Kodus em 21/09/2026.",
+  ])("rejects a noun-based research access note: %s", (note) => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: ["## Context", body(270), "## Evidence", body(270), "## Decision", body(270), note].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain("long_form_research_process_note");
+  });
+
+  it.each([
+    "The report was consulted on 2026-02-10.",
+    "Files retrieved on 2026-05-01 were audited.",
+    "O arquivo acessado em 21/09/2026 foi removido.",
+    "- Files retrieved on 2026-05-01 were audited.",
+    "> O arquivo acessado em 21/09/2026 foi removido.",
+    "**The report was consulted on 2026-02-10.**",
+    "We read the vendor docs\n\nThe rewrite landed on 2026-05-01.",
+    "We read the vendor docs\n\n- The rewrite landed on 2026-05-01.",
+    "We read the vendor docs\n\n- The rewrite landed on 2026-05-01.",
+    "We read the vendor docs\n- The rewrite landed on 2026-05-01.",
+    "Acessado no site oficial do projeto\nO redesign foi lançado em 21/09/2026.",
+    "Acessado no site oficial do projeto\n- O redesign foi lançado em 21/09/2026.",
+    "Acessado no site oficial do projeto\n  - O redesign foi lançado em 21/09/2026.",
+    "We read the vendor docs\n  1) The rewrite landed on 2026-05-01.",
+    "We read the vendor docs\n* As of 2026-05-01, the API is read-only.",
+    "Acessado no site oficial do projeto\n* Em 21/09/2026, o redesign foi lançado.",
+    "We read the vendor docs\n  - The rewrite landed on 2026-05-01.",
+  ])("allows subject dates in ordinary prose: %s", (sentence) => {
+    const issues = validateLongFormContent({
+      platform: "blog",
+      content: ["## Context", body(270), "## Evidence", body(270), "## Decision", body(270), sentence].join("\n\n"),
+    });
+
+    expect(issues.map((issue) => issue.code)).not.toContain("long_form_research_process_note");
+  });
   it("does not count images as research links", () => {
     const issues = validateLongFormContent({
       platform: "blog",

@@ -128,6 +128,16 @@ describe("resolvePublishDecision", () => {
     expect(decide({})).toEqual({ action: "publish" });
   });
 
+  it("never publishes a test draft even if its status was changed", () => {
+    const decision = decide({
+      activity: { content_meta: { test_run: true }, status: "approved" },
+    });
+    expect(decision).toEqual({
+      action: "reject",
+      reason: "Test drafts can never be published.",
+    });
+  });
+
   it("skips when the persona is paused", () => {
     const decision = decide({ persona: { status: "paused" } });
     expect(decision.action).toBe("skip");

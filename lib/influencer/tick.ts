@@ -44,6 +44,7 @@ const MIN_WAIT_MIN = 15;
 const MAX_WAIT_MIN = 8 * 60;
 const NO_CHANNEL_WAIT_MIN = 6 * 60;
 const FAILURE_WAIT_MIN = 60;
+const TEST_PLATFORMS = new Set(["blog", "devto"]);
 // The unpublished buffer is held PER CHANNEL: a channel has room while it holds
 // less than one day of its own cap. A single global ceiling looks tidier but
 // starves the slow channels — X fills 8 a day, so a week of queued tweets froze
@@ -188,6 +189,7 @@ function buildShiftGoal(
   feedback: Feedback[],
   failureCount: number,
   recentPosts: string[],
+  testRun = false,
 ): string {
   // Never inline the raw external API error into the prompt (injection). Just
   // signal that failures exist; the persona pulls the details through the
@@ -209,8 +211,10 @@ function buildShiftGoal(
         .map((t) => `"${t}"`)
         .join(", ")}. The exception is a deliberate CROSSPOST: an article of yours that already went live on one of our own sites can run again on another channel, as long as you pass canonical_url with that exact URL so the original keeps the credit.`
     : "";
-  const postBeat = postingAllowed
-    ? `4) WRITE and queue ONE self-contained piece with queue_draft, for one of: ${open.join(", ")}. For X, a single standalone tweet that stands on its own — never a thread. A shift with no draft is wasted unless nothing is genuinely worth posting.`
+  const postBeat = testRun
+    ? `4) WRITE and save ONE complete long-form article with queue_draft, for one of: ${open.join(", ")}. This is a review-only TEST draft: finish the same article you would create in a real automatic shift.`
+    : postingAllowed
+      ? `4) WRITE and queue ONE self-contained piece with queue_draft, for one of: ${open.join(", ")}. For X, a single standalone tweet that stands on its own — never a thread. A shift with no draft is wasted unless nothing is genuinely worth posting.`
     : "4) Every one of your channels is backed up right now — do NOT queue a new post. Instead go deeper: read more, save what you learn to memory, and engage (read your inbox / reply if you have email).";
   // Naming the backed-up channels matters: without it the persona keeps writing
   // for the channel it always writes for and the draft is rejected downstream.
@@ -234,7 +238,9 @@ function buildShiftGoal(
     ? "YOUTUBE is script-only — never write an article for it. Queue kind 'video' for platform 'youtube' with 3-8 short spoken blocks (one idea each, 20-600 chars, contractions, opinion, hook first) plus one slide outline per body block (block 1 is the intro and needs none). The worker renders the avatar, the slides, and uploads unlisted; a person confirms the AI-content checkbox before anything goes public."
     : "";
   return [
-    `This is your shift as ${persona.display_name} (@${persona.handle}). You are a relentless operator: your job is to HIT YOUR GOALS, and you do whatever it takes and never stop working to get there.`,
+    testRun
+      ? `This is a TEST shift as ${persona.display_name} (@${persona.handle}). Choose the topic exactly as you would in an automatic shift, then produce one complete review-only long-form article.`
+      : `This is your shift as ${persona.display_name} (@${persona.handle}). You are a relentless operator: your job is to HIT YOUR GOALS, and you do whatever it takes and never stop working to get there.`,
     `Your beat: ${persona.beat}.`,
     postingAllowed
       ? `Channels you can post to right now: ${open.join(", ")}.`
@@ -294,12 +300,17 @@ async function countPendingByChannel(
 ): Promise<Map<string, number>> {
   const { data, error } = await client
     .from("persona_activities")
-    .select("channel_id")
+    .select("channel_id,content_meta")
     .eq("persona_id", personaId)
     .in("status", ["draft", "approved", "scheduled"]);
   if (error) throw new Error(error.message);
   const counts = new Map<string, number>();
   for (const row of data ?? []) {
+    const meta =
+      row.content_meta && typeof row.content_meta === "object" && !Array.isArray(row.content_meta)
+        ? (row.content_meta as Record<string, unknown>)
+        : {};
+    if (meta.test_run === true) continue;
     const id = typeof row.channel_id === "string" ? row.channel_id : null;
     if (!id) continue;
     counts.set(id, (counts.get(id) ?? 0) + 1);
@@ -346,19 +357,27 @@ export type TickResult = {
   wait_minutes: number;
   note: string;
   error?: string;
+  failed?: boolean;
 };
 
 export async function runPersonaTick({
   client,
   persona,
   now,
+  testRun = false,
 }: {
   client: SupabaseClient;
   persona: Persona;
   now: Date;
+  testRun?: boolean;
 }): Promise<TickResult> {
   const channels = await listChannelsForPersona(client, persona.id);
-  const actionable = channels.filter(isActionable);
+  const actionable = testRun
+    ? channels.filter(
+        (channel) =>
+          channel.status === "active" && TEST_PLATFORMS.has(channel.platform),
+      )
+    : channels.filter(isActionable);
   const allowed = Array.from(new Set(actionable.map((c) => c.platform)));
 
   const base: TickResult = {
@@ -372,7 +391,10 @@ export async function runPersonaTick({
 
   // Nothing it can publish on its own — wait and ask for a connected channel.
   if (allowed.length === 0) {
-    const note = "No connected channel I can publish to on my own — waiting for one to be linked.";
+    const note = testRun
+      ? "Run test needs an active blog or dev.to channel."
+      : "No connected channel I can publish to on my own — waiting for one to be linked.";
+    if (testRun) return { ...base, note, error: note };
     const next = new Date(now.getTime() + NO_CHANNEL_WAIT_MIN * 60_000);
     await setTickState(client, persona, {
       next_action_at: next.toISOString(),
@@ -385,7 +407,9 @@ export async function runPersonaTick({
   // Backpressure, per channel: a channel holding a full buffer is off the table
   // this shift, but the others stay open. With nothing open at all the persona
   // still works the shift — it just researches and engages instead of posting.
-  const pendingByChannel = await countPendingByChannel(client, persona.id);
+  const pendingByChannel = testRun
+    ? new Map<string, number>()
+    : await countPendingByChannel(client, persona.id);
   const { open, backedUp, openChannelIds } = splitPlatformsByQueueRoom(
     actionable,
     pendingByChannel,
@@ -400,13 +424,15 @@ export async function runPersonaTick({
   // A channel that has published nothing all week is invisible from the inside:
   // the persona is busy every hour and the feed looks healthy. Say it out loud,
   // once per channel per week (the dedupe key carries the week).
-  for (const silent of silentChannels(progress, now)) {
-    await alertOperator(client, {
-      userEmail: persona.created_by,
-      title: `@${persona.handle}: nothing published on ${silent.channel} this week`,
-      body: `The weekly quota is ${silent.target} and it is still at 0. Check whether the channel is connected, whether its queue is backed up, and whether the shift is being spent elsewhere.`,
-      dedupeKey: `silent-${persona.id}-${silent.channel}-${startOfIsoWeek(now).toISOString().slice(0, 10)}`,
-    }).catch(() => {});
+  if (!testRun) {
+    for (const silent of silentChannels(progress, now)) {
+      await alertOperator(client, {
+        userEmail: persona.created_by,
+        title: `@${persona.handle}: nothing published on ${silent.channel} this week`,
+        body: `The weekly quota is ${silent.target} and it is still at 0. Check whether the channel is connected, whether its queue is backed up, and whether the shift is being spent elsewhere.`,
+        dedupeKey: `silent-${persona.id}-${silent.channel}-${startOfIsoWeek(now).toISOString().slice(0, 10)}`,
+      }).catch(() => {});
+    }
   }
   // Best-effort: a shift is still worth running without the scoreboard.
   const visibilityBrief = await getVisibilitySummary(client)
@@ -442,8 +468,9 @@ export async function runPersonaTick({
       feedback,
       failures.length,
       recentPosts,
+      testRun,
     ),
-    trigger: "scheduled",
+    trigger: testRun ? "manual" : "scheduled",
     // Only the channels with room: a draft for a backed-up channel would just be
     // rejected by queue_draft, wasting the shift's one post.
     allowedPlatforms: open,
@@ -453,11 +480,12 @@ export async function runPersonaTick({
     // One post per shift; 0 when every channel is backed up. Deterministic — the
     // running counter can't overshoot a channel's buffer across shifts.
     maxDrafts: postingAllowed ? 1 : 0,
+    testRun,
   });
 
   // The shift was told to act on the operator's feedback — mark it applied so it
   // isn't re-injected. Keep it 'new' if the shift failed, so a retry still sees it.
-  if (feedback.length && run.status === "completed") {
+  if (!testRun && feedback.length && run.status === "completed") {
     await markFeedbackApplied(
       client,
       feedback.map((f) => f.id),
@@ -466,6 +494,19 @@ export async function runPersonaTick({
 
   if (run.status === "failed") {
     const note = `Shift failed: ${run.error ?? "unknown error"}`;
+    if (testRun) {
+      const testNote = run.drafts
+        ? `Test draft saved, then the shift failed: ${run.error ?? "unknown error"}`
+        : note;
+      return {
+        ...base,
+        acted: true,
+        note: testNote,
+        drafts: run.drafts,
+        failed: true,
+        ...(run.drafts ? {} : { error: run.error }),
+      };
+    }
     const next = new Date(now.getTime() + FAILURE_WAIT_MIN * 60_000);
     await setTickState(client, persona, {
       next_action_at: next.toISOString(),
@@ -480,6 +521,19 @@ export async function runPersonaTick({
       dedupeKey: `tick-fail-${persona.id}-${now.toISOString().slice(0, 13)}`,
     });
     return { ...base, wait_minutes: FAILURE_WAIT_MIN, note, error: run.error, drafts: run.drafts };
+  }
+
+  if (testRun) {
+    const note = run.drafts
+      ? "Test article saved to the Review queue."
+      : "Test shift finished without creating an article.";
+    return {
+      ...base,
+      acted: true,
+      drafts: run.drafts,
+      note,
+      ...(run.drafts ? {} : { error: note }),
+    };
   }
 
   // Let the persona pace itself: decide when to come back and why.
