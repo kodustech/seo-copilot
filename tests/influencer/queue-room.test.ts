@@ -196,6 +196,6 @@ describe("testShiftChannels", () => {
     expect(testShiftChannels([x])).toEqual([]);
   });
   it("keeps articles to active blog and dev.to channels", () => {
-    expect(testShiftChannels([{ ...blog, status: "pending_setup" }, devto]).map((c) => c.id)).toEqual(["d1"]);
+    expect(testShiftChannels([{ ...blog, status: "pending_setup" }, devto, youtube], "article").map((c) => c.id)).toEqual(["d1"]);
   });
 });

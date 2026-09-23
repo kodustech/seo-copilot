@@ -57,14 +57,14 @@ const TEST_PLATFORMS = new Set(["blog", "devto", "youtube"]);
  * The channels a review-only test shift may write for. A test draft never
  * publishes, so YouTube needs no linked account yet: testing the persona's
  * video before paying for the channel setup is the point. `platform` narrows
- * the shift to one channel, or the persona writes where it always writes.
+ * the shift to one channel, or to written channels for an article test.
  */
 export function testShiftChannels(channels: PersonaChannel[], platform?: string): PersonaChannel[] {
   return channels.filter(
     (c) =>
       TEST_PLATFORMS.has(c.platform) &&
       (c.platform === "youtube" ? c.status !== "paused" : c.status === "active") &&
-      (!platform || c.platform === platform),
+      (platform === "article" ? c.platform !== "youtube" : !platform || c.platform === platform),
   );
 }
 // The unpublished buffer is held PER CHANNEL: a channel has room while it holds

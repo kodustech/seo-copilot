@@ -167,8 +167,11 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
   }
 
   const hasYoutube = persona.channels.some((c) => c.platform === "youtube" && c.status !== "paused");
+  const hasArticle = persona.channels.some(
+    (c) => (c.platform === "blog" || c.platform === "devto") && c.status === "active",
+  );
 
-  async function runTest(platform?: "youtube") {
+  async function runTest(platform: "article" | "youtube") {
     setTesting(true);
     setTestResult(null);
     setTestFailed(false);
@@ -225,10 +228,12 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
               ]}
             />
             <div className="ml-auto flex items-center gap-2">
-              <button type="button" onClick={() => runTest()} disabled={acting || testing} className={cls.outline}>
-                {testing ? <Loader2 className="size-3.5 animate-spin" /> : <FlaskConical className="size-3.5" />}
-                Run test
-              </button>
+              {hasArticle ? (
+                <button type="button" onClick={() => runTest("article")} disabled={acting || testing} className={cls.outline}>
+                  {testing ? <Loader2 className="size-3.5 animate-spin" /> : <FlaskConical className="size-3.5" />}
+                  Run test
+                </button>
+              ) : null}
               {hasYoutube ? (
                 <button type="button" onClick={() => runTest("youtube")} disabled={acting || testing} className={cls.outline}>
                   {testing ? <Loader2 className="size-3.5 animate-spin" /> : <FlaskConical className="size-3.5" />}
