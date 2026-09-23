@@ -60,11 +60,12 @@ const TEST_PLATFORMS = new Set(["blog", "devto", "youtube"]);
  * the shift to one channel, or to written channels for an article test.
  */
 export function testShiftChannels(channels: PersonaChannel[], platform?: string): PersonaChannel[] {
+  const requested = platform?.trim().toLowerCase();
   return channels.filter(
     (c) =>
       TEST_PLATFORMS.has(c.platform) &&
       (c.platform === "youtube" ? c.status !== "paused" : c.status === "active") &&
-      (platform === "article" ? c.platform !== "youtube" : !platform || c.platform === platform),
+      (requested === "article" ? c.platform !== "youtube" : !requested || c.platform === requested),
   );
 }
 // The unpublished buffer is held PER CHANNEL: a channel has room while it holds
@@ -409,7 +410,7 @@ export async function runPersonaTick({
   // Nothing it can publish on its own — wait and ask for a connected channel.
   if (allowed.length === 0) {
     const note = testRun
-      ? testPlatform === "youtube"
+      ? testPlatform?.trim().toLowerCase() === "youtube"
         ? "A video test needs a YouTube channel on this persona."
         : "Run test needs an active blog or dev.to channel."
       : "No connected channel I can publish to on my own — waiting for one to be linked.";

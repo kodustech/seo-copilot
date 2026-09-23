@@ -102,6 +102,7 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [testingPlatform, setTestingPlatform] = useState<"article" | "youtube" | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testFailed, setTestFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -173,6 +174,7 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
 
   async function runTest(platform: "article" | "youtube") {
     setTesting(true);
+    setTestingPlatform(platform);
     setTestResult(null);
     setTestFailed(false);
     setError(null);
@@ -196,6 +198,7 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
       setError(err instanceof Error ? err.message : "The test shift failed");
     } finally {
       setTesting(false);
+      setTestingPlatform(null);
     }
   }
 
@@ -230,13 +233,13 @@ export function PlanTab({ token, persona }: { token: string; persona: Persona })
             <div className="ml-auto flex items-center gap-2">
               {hasArticle ? (
                 <button type="button" onClick={() => runTest("article")} disabled={acting || testing} className={cls.outline}>
-                  {testing ? <Loader2 className="size-3.5 animate-spin" /> : <FlaskConical className="size-3.5" />}
+                  {testingPlatform === "article" ? <Loader2 className="size-3.5 animate-spin" /> : <FlaskConical className="size-3.5" />}
                   Run test
                 </button>
               ) : null}
               {hasYoutube ? (
                 <button type="button" onClick={() => runTest("youtube")} disabled={acting || testing} className={cls.outline}>
-                  {testing ? <Loader2 className="size-3.5 animate-spin" /> : <FlaskConical className="size-3.5" />}
+                  {testingPlatform === "youtube" ? <Loader2 className="size-3.5 animate-spin" /> : <FlaskConical className="size-3.5" />}
                   Test video
                 </button>
               ) : null}
