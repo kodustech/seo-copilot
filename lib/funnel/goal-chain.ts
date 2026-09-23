@@ -33,8 +33,16 @@ export const CHAIN_LANES: ChainLane[] = FUNNEL_LANES.map((lane) => ({
   stages: lane.stages.filter((s) => GOAL_STAGES.has(s)).map((s) => ({ id: s, label: stageLabel(s) })),
 })).filter((lane) => lane.stages.length > 0);
 
+// Adjacency built once; every walk below reads from these.
+const CHILDREN = new Map<string, string[]>();
+const PARENTS = new Map<string, string[]>();
+for (const e of FUNNEL_EDGES) {
+  CHILDREN.set(e.from, [...(CHILDREN.get(e.from) ?? []), e.to]);
+  PARENTS.set(e.to, [...(PARENTS.get(e.to) ?? []), e.from]);
+}
+
 export function hasEdge(from: string, to: string): boolean {
-  return FUNNEL_EDGES.some((e) => e.from === from && e.to === to);
+  return CHILDREN.get(from)?.includes(to) ?? false;
 }
 
 const depthCache = new Map<string, number>();
@@ -45,7 +53,7 @@ export function stageDepth(stage: string, seen: Set<string> = new Set()): number
   if (cached != null) return cached;
   if (seen.has(stage)) return 0;
   seen.add(stage);
-  const parents = FUNNEL_EDGES.filter((e) => e.to === stage).map((e) => e.from);
+  const parents = PARENTS.get(stage) ?? [];
   const depth = parents.length === 0 ? 0 : 1 + Math.max(...parents.map((p) => stageDepth(p, seen)));
   depthCache.set(stage, depth);
   return depth;
@@ -75,9 +83,7 @@ function nearest(goal: Goal, goals: Goal[], direction: "down" | "up"): Goal[] {
   while (frontier.length > 0) {
     const next: string[] = [];
     for (const stage of frontier) {
-      const neighbours = FUNNEL_EDGES.filter((e) => (direction === "down" ? e.from : e.to) === stage).map((e) =>
-        direction === "down" ? e.to : e.from,
-      );
+      const neighbours = (direction === "down" ? CHILDREN : PARENTS).get(stage) ?? [];
       for (const n of neighbours) {
         if (seen.has(n)) continue;
         seen.add(n);
@@ -109,11 +115,15 @@ export type GoalChain = {
 };
 
 export function buildGoalChain(goals: Goal[]): GoalChain {
+  const byStage = new Map<string, Goal[]>();
+  for (const g of goals) {
+    if (g.funnelMetric) byStage.set(g.funnelMetric, [...(byStage.get(g.funnelMetric) ?? []), g]);
+  }
   const lanes = CHAIN_LANES.map((lane) => {
     const goalsByStage: Record<string, Goal[]> = {};
     let goalCount = 0;
     for (const s of lane.stages) {
-      const here = goals.filter((g) => g.funnelMetric === s.id);
+      const here = byStage.get(s.id) ?? [];
       goalsByStage[s.id] = here;
       goalCount += here.length;
     }
@@ -125,6 +135,23 @@ export function buildGoalChain(goals: Goal[]): GoalChain {
   const placed = goals.filter((g) => g.funnelMetric && drawn.has(g.funnelMetric));
   const endIds = new Set(placed.filter((g) => feedsGoals(g, goals).length === 0 && fedByGoals(g, goals).length > 0).map((g) => g.id));
   return { lanes, unplaced: goals.filter((g) => !g.funnelMetric || !drawn.has(g.funnelMetric)), endIds };
+}
+
+function shortDate(iso: string): string {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+/**
+ * Name a goal by its stage, adding its period when another goal in the list
+ * sits on the same stage. Recurring goals share a title, so the period is
+ * what tells two weekly "Meetings" apart.
+ */
+export function goalLabel(goal: Goal, among: Goal[]): string {
+  if (!goal.funnelMetric) return goal.title;
+  const label = stageLabel(goal.funnelMetric);
+  const twins = among.filter((g) => g.funnelMetric === goal.funnelMetric);
+  if (twins.length < 2) return label;
+  return `${label} · ${shortDate(goal.periodStart)}–${shortDate(goal.periodEnd)}`;
 }
 
 /** Share of the period elapsed today, or null when the period is not running. */

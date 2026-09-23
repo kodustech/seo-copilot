@@ -26,6 +26,7 @@ import {
   buildGoalChain,
   fedByGoals,
   feedsGoals,
+  goalLabel,
   stageLabel,
 } from "@/lib/funnel/goal-chain";
 import {
@@ -931,7 +932,7 @@ function GoalLinks({ goals }: { goals: Goal[] }) {
             }}
             className="text-neutral-300 underline decoration-white/20 underline-offset-2 hover:decoration-white/60"
           >
-            {g.funnelMetric ? stageLabel(g.funnelMetric) : g.title}
+            {goalLabel(g, goals)}
           </a>
         </span>
       ))}

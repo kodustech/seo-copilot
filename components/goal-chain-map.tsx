@@ -5,11 +5,11 @@
  * stages left to right; arrows are funnel edges, "+" joins stages that meet further down.
  */
 
-import { ArrowDown, ArrowRight, Plus } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowRight, Plus } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { Goal } from "@/lib/goals";
-import { BAND_LANE_ID, elapsedShare, hasEdge, type GoalChain } from "@/lib/funnel/goal-chain";
+import { BAND_LANE_ID, elapsedShare, goalLabel, hasEdge, type GoalChain } from "@/lib/funnel/goal-chain";
 
 export function scrollToGoal(id: string) {
   const el = document.getElementById(`goal-${id}`);
@@ -74,11 +74,10 @@ function GoalNode({ goal, label, isEnd }: { goal: Goal; label: string; isEnd: bo
 }
 
 function Connector({ from, to }: { from: string; to: string }) {
-  return hasEdge(from, to) ? (
-    <ArrowRight aria-label="feeds" className="size-3.5 shrink-0 text-neutral-600" />
-  ) : (
-    <Plus aria-label="and" className="size-3 shrink-0 text-neutral-700" />
-  );
+  if (hasEdge(from, to)) return <ArrowRight aria-label="feeds" className="size-3.5 shrink-0 text-neutral-600" />;
+  // The lane can list a stage after the one it feeds (self-serve → closed).
+  if (hasEdge(to, from)) return <ArrowLeft aria-label="fed by" className="size-3.5 shrink-0 text-neutral-600" />;
+  return <Plus aria-label="and" className="size-3 shrink-0 text-neutral-700" />;
 }
 
 function LaneRow({ lane, endIds }: { lane: GoalChain["lanes"][number]; endIds: Set<string> }) {
@@ -101,7 +100,7 @@ function LaneRow({ lane, endIds }: { lane: GoalChain["lanes"][number]; endIds: S
               ) : (
                 <span className="flex flex-col gap-1.5">
                   {goals.map((g) => (
-                    <GoalNode key={g.id} goal={g} label={stage.label} isEnd={endIds.has(g.id)} />
+                    <GoalNode key={g.id} goal={g} label={goalLabel(g, goals)} isEnd={endIds.has(g.id)} />
                   ))}
                 </span>
               )}

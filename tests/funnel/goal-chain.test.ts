@@ -8,6 +8,8 @@ import {
   elapsedShare,
   fedByGoals,
   feedsGoals,
+  goalLabel,
+  hasEdge,
   stageDepth,
   stageLabel,
 } from "@/lib/funnel/goal-chain";
@@ -95,6 +97,18 @@ describe("goal chain", () => {
     expect(stageDepth("opportunities")).toBeGreaterThan(stageDepth("meetings"));
     expect(stageLabel("sh_trial")).toBe("Trial requests");
     expect(stageLabel("icp")).toBe("ICP");
+  });
+
+  it("tells two goals on one stage apart by period", () => {
+    const w1 = goal("w1", "meetings", ["2026-09-07", "2026-09-13"]);
+    const w2 = goal("w2", "meetings", ["2026-09-14", "2026-09-20"]);
+    expect(goalLabel(w1, [w1, w2])).toBe("Meetings · Sep 7–Sep 13");
+    expect(goalLabel(w1, [w1])).toBe("Meetings");
+  });
+
+  it("knows self-serve feeds closed, not the other way", () => {
+    expect(hasEdge("self_serve", "closed")).toBe(true);
+    expect(hasEdge("closed", "self_serve")).toBe(false);
   });
 
   it("measures how much of a running period has passed", () => {
