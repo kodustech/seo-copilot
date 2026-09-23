@@ -80,7 +80,7 @@ function Connector({ from, to }: { from: string; to: string }) {
   return <Plus aria-label="and" className="size-3 shrink-0 text-neutral-700" />;
 }
 
-function LaneRow({ lane, endIds }: { lane: GoalChain["lanes"][number]; endIds: Set<string> }) {
+function LaneRow({ lane, endIds, allGoals }: { lane: GoalChain["lanes"][number]; endIds: Set<string>; allGoals: Goal[] }) {
   return (
     <div className="grid grid-cols-1 gap-x-4 gap-y-2 py-3 sm:grid-cols-[7rem_minmax(0,1fr)]">
       <h3 className={cn("pt-1 text-xs font-medium", lane.goalCount > 0 ? "text-neutral-300" : "text-neutral-600")}>
@@ -100,7 +100,7 @@ function LaneRow({ lane, endIds }: { lane: GoalChain["lanes"][number]; endIds: S
               ) : (
                 <span className="flex flex-col gap-1.5">
                   {goals.map((g) => (
-                    <GoalNode key={g.id} goal={g} label={goalLabel(g, goals)} isEnd={endIds.has(g.id)} />
+                    <GoalNode key={g.id} goal={g} label={goalLabel(g, allGoals)} isEnd={endIds.has(g.id)} />
                   ))}
                 </span>
               )}
@@ -112,7 +112,7 @@ function LaneRow({ lane, endIds }: { lane: GoalChain["lanes"][number]; endIds: S
   );
 }
 
-export function GoalChainMap({ chain }: { chain: GoalChain }) {
+export function GoalChainMap({ chain, allGoals }: { chain: GoalChain; allGoals: Goal[] }) {
   const entries = chain.lanes.filter((l) => l.id !== BAND_LANE_ID);
   const band = chain.lanes.find((l) => l.id === BAND_LANE_ID);
   return (
@@ -127,7 +127,7 @@ export function GoalChainMap({ chain }: { chain: GoalChain }) {
       </div>
       <div className="mt-2 divide-y divide-white/[0.04]">
         {entries.map((lane) => (
-          <LaneRow key={lane.id} lane={lane} endIds={chain.endIds} />
+          <LaneRow key={lane.id} lane={lane} endIds={chain.endIds} allGoals={allGoals} />
         ))}
       </div>
       {band && (
@@ -137,7 +137,7 @@ export function GoalChainMap({ chain }: { chain: GoalChain }) {
             the entry lanes feed the commercial band
           </div>
           <div className="rounded-lg bg-white/[0.02] px-3">
-            <LaneRow lane={band} endIds={chain.endIds} />
+            <LaneRow lane={band} endIds={chain.endIds} allGoals={allGoals} />
           </div>
         </>
       )}

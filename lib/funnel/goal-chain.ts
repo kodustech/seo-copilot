@@ -142,15 +142,20 @@ function shortDate(iso: string): string {
 }
 
 /**
- * Name a goal by its stage, adding its period when another goal in the list
+ * Name a goal by its stage, adding its period when another goal on the page
  * sits on the same stage. Recurring goals share a title, so the period is
- * what tells two weekly "Meetings" apart.
+ * what tells two weekly "Meetings" apart. Pass the page's goals, not a
+ * subset, so a goal carries one name everywhere on the page.
  */
 export function goalLabel(goal: Goal, among: Goal[]): string {
   if (!goal.funnelMetric) return goal.title;
   const label = stageLabel(goal.funnelMetric);
   const twins = among.filter((g) => g.funnelMetric === goal.funnelMetric);
   if (twins.length < 2) return label;
+  // Same stage AND same period (two monthly goals on one metric): only the
+  // title is left to tell them apart.
+  const samePeriod = twins.filter((g) => g.periodStart === goal.periodStart && g.periodEnd === goal.periodEnd);
+  if (samePeriod.length > 1) return `${label} · ${goal.title}`;
   return `${label} · ${shortDate(goal.periodStart)}–${shortDate(goal.periodEnd)}`;
 }
 

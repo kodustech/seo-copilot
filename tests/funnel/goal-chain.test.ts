@@ -104,6 +104,9 @@ describe("goal chain", () => {
     const w2 = goal("w2", "meetings", ["2026-09-14", "2026-09-20"]);
     expect(goalLabel(w1, [w1, w2])).toBe("Meetings · Sep 7–Sep 13");
     expect(goalLabel(w1, [w1])).toBe("Meetings");
+    const a = { ...goal("a", "meetings"), title: "Meetings from outbound" };
+    const b = { ...goal("b", "meetings"), title: "Meetings from inbound" };
+    expect(goalLabel(a, [a, b])).toBe("Meetings · Meetings from outbound");
   });
 
   it("knows self-serve feeds closed, not the other way", () => {

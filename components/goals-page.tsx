@@ -337,6 +337,7 @@ export function GoalsPage() {
     <GoalCard
       key={g.id}
       goal={g}
+      allGoals={goals}
       feeds={feedsGoals(g, goals)}
       fedBy={fedByGoals(g, goals)}
       isEnd={chain.endIds.has(g.id)}
@@ -489,7 +490,7 @@ export function GoalsPage() {
         </div>
       ) : (
         <>
-          {placedCount > 0 && <GoalChainMap chain={chain} />}
+          {placedCount > 0 && <GoalChainMap chain={chain} allGoals={goals} />}
           <div className="space-y-8">
             {groups.map((group) => (
               <section key={group.id} aria-label={group.title ?? "Goals"}>
@@ -560,6 +561,7 @@ type WorkItemSummary = {
 
 function GoalCard({
   goal,
+  allGoals,
   feeds,
   fedBy,
   isEnd,
@@ -572,6 +574,7 @@ function GoalCard({
   onLinksChanged,
 }: {
   goal: Goal;
+  allGoals: Goal[];
   feeds: Goal[];
   fedBy: Goal[];
   isEnd: boolean;
@@ -748,12 +751,12 @@ function GoalCard({
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-neutral-500">
               {fedBy.length > 0 && (
                 <span>
-                  Fed by <GoalLinks goals={fedBy} />
+                  Fed by <GoalLinks goals={fedBy} allGoals={allGoals} />
                 </span>
               )}
               {feeds.length > 0 && (
                 <span>
-                  Feeds <GoalLinks goals={feeds} />
+                  Feeds <GoalLinks goals={feeds} allGoals={allGoals} />
                 </span>
               )}
             </div>
@@ -917,7 +920,7 @@ function GoalCard({
   );
 }
 
-function GoalLinks({ goals }: { goals: Goal[] }) {
+function GoalLinks({ goals, allGoals }: { goals: Goal[]; allGoals: Goal[] }) {
   return (
     <>
       {goals.map((g, i) => (
@@ -932,7 +935,7 @@ function GoalLinks({ goals }: { goals: Goal[] }) {
             }}
             className="text-neutral-300 underline decoration-white/20 underline-offset-2 hover:decoration-white/60"
           >
-            {goalLabel(g, goals)}
+            {goalLabel(g, allGoals)}
           </a>
         </span>
       ))}
