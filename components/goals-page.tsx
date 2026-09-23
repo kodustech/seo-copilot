@@ -23,6 +23,18 @@ import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { cn } from "@/lib/utils";
 import { FUNNEL_METRICS } from "@/lib/funnel/goals";
 import {
+  buildGoalChain,
+  fedByGoals,
+  feedsGoals,
+  goalLabel,
+  stageLabel,
+} from "@/lib/funnel/goal-chain";
+import {
+  GoalChainMap,
+  ProgressLine,
+  scrollToGoal,
+} from "@/components/goal-chain-map";
+import {
   GOAL_KINDS,
   GOAL_PRIORITIES,
   GOAL_STATUSES,
@@ -116,7 +128,9 @@ const CADENCE_LABELS: Record<GoalCadence, string> = {
 type TeamMember = { email: string; label: string };
 
 function fmtDate(iso: string): string {
-  const d = new Date(iso);
+  // A bare YYYY-MM-DD parses as UTC midnight, which is the day before in
+  // Brazil: Sep 1 showed as Aug 31. Read it as a local date.
+  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso}T00:00:00` : iso);
   return d.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -130,7 +144,7 @@ function fmtRange(start: string, end: string): string {
 function daysLeft(end: string): number {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const e = new Date(end);
+  const e = new Date(`${end}T00:00:00`);
   e.setHours(0, 0, 0, 0);
   return Math.ceil((e.getTime() - today.getTime()) / 86_400_000);
 }
@@ -290,13 +304,56 @@ export function GoalsPage() {
     }
   };
 
-  // Header summary based on what's loaded
-  const totalProgress = goals.reduce(
-    (acc, g) => acc + Math.min(g.currentCount, g.targetCount),
-    0,
-  );
-  const totalTarget = goals.reduce((acc, g) => acc + g.targetCount, 0);
+  // Header summary based on what's loaded. No unit total: clicks and
+  // accounts don't add up to anything.
   const completed = goals.filter((g) => g.status === "completed").length;
+  const chain = useMemo(() => buildGoalChain(goals), [goals]);
+  const placedCount = goals.length - chain.unplaced.length;
+  // Card groups in funnel order; goals with no stage close the list.
+  const groups: { id: string; title: string | null; note?: string; goals: Goal[] }[] =
+    placedCount === 0
+      ? [{ id: "all", title: null, goals }]
+      : [
+          ...chain.lanes
+            .filter((l) => l.goalCount > 0)
+            .map((l) => ({
+              id: l.id,
+              title: l.title,
+              goals: l.stages.flatMap((s) => l.goalsByStage[s.id] ?? []),
+            })),
+          ...(chain.unplaced.length > 0
+            ? [
+                {
+                  id: "unplaced",
+                  title: "Off the funnel",
+                  note: "No funnel stage, so nothing places these in the chain. Progress is typed by hand or comes from linked tasks.",
+                  goals: chain.unplaced,
+                },
+              ]
+            : []),
+        ];
+
+  const renderCard = (g: Goal) => (
+    <GoalCard
+      key={g.id}
+      goal={g}
+      allGoals={goals}
+      feeds={feedsGoals(g, goals)}
+      fedBy={fedByGoals(g, goals)}
+      isEnd={chain.endIds.has(g.id)}
+      teamMembers={teamMembers}
+      token={token}
+      onIncrement={(delta) => incrementGoal(g.id, delta)}
+      onUpdate={(updates) => updateInline(g.id, updates)}
+      onEdit={() => setEditing(g)}
+      onDelete={() => removeGoal(g.id)}
+      onLinksChanged={(updated) =>
+        setGoals((prev) =>
+          prev.map((it) => (it.id === updated.id ? updated : it)),
+        )
+      }
+    />
+  );
 
   return (
     <div className="mx-auto w-full max-w-5xl px-6 py-6">
@@ -310,7 +367,7 @@ export function GoalsPage() {
           <p className="mt-1 text-sm text-neutral-500">
             {goals.length === 0
               ? "No goals in this period — click Add goal to start"
-              : `${completed} of ${goals.length} hit · ${totalProgress} / ${totalTarget} units delivered`}
+              : `${completed} of ${goals.length} hit · ${placedCount} on the funnel${chain.unplaced.length > 0 ? `, ${chain.unplaced.length} off it` : ""}`}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -432,25 +489,28 @@ export function GoalsPage() {
           </button>
         </div>
       ) : (
-        <div className="space-y-3">
-          {goals.map((g) => (
-            <GoalCard
-              key={g.id}
-              goal={g}
-              teamMembers={teamMembers}
-              token={token}
-              onIncrement={(delta) => incrementGoal(g.id, delta)}
-              onUpdate={(updates) => updateInline(g.id, updates)}
-              onEdit={() => setEditing(g)}
-              onDelete={() => removeGoal(g.id)}
-              onLinksChanged={(updated) =>
-                setGoals((prev) =>
-                  prev.map((it) => (it.id === updated.id ? updated : it)),
-                )
-              }
-            />
-          ))}
-        </div>
+        <>
+          {placedCount > 0 && <GoalChainMap chain={chain} allGoals={goals} />}
+          <div className="space-y-8">
+            {groups.map((group) => (
+              <section key={group.id} aria-label={group.title ?? "Goals"}>
+                {group.title && (
+                  <div className="mb-3">
+                    <h2 className="text-sm font-medium text-neutral-200">
+                      {group.title}
+                    </h2>
+                    {group.note && (
+                      <p className="mt-0.5 text-[11px] text-neutral-500">
+                        {group.note}
+                      </p>
+                    )}
+                  </div>
+                )}
+                <div className="space-y-3">{group.goals.map(renderCard)}</div>
+              </section>
+            ))}
+          </div>
+        </>
       )}
 
       {/* Dialogs */}
@@ -501,6 +561,10 @@ type WorkItemSummary = {
 
 function GoalCard({
   goal,
+  allGoals,
+  feeds,
+  fedBy,
+  isEnd,
   teamMembers,
   token,
   onIncrement,
@@ -510,6 +574,10 @@ function GoalCard({
   onLinksChanged,
 }: {
   goal: Goal;
+  allGoals: Goal[];
+  feeds: Goal[];
+  fedBy: Goal[];
+  isEnd: boolean;
   teamMembers: TeamMember[];
   token: string | null;
   onIncrement: (delta: number) => void;
@@ -523,18 +591,7 @@ function GoalCard({
     Math.round((goal.currentCount / goal.targetCount) * 100),
   );
   const status = STATUS_LABELS[goal.status];
-  const priority = PRIORITY_BADGE[goal.priority];
   const remaining = daysLeft(goal.periodEnd);
-  const progressColor =
-    goal.status === "completed"
-      ? "bg-emerald-500"
-      : goal.status === "missed"
-        ? "bg-red-500"
-        : pct >= 75
-          ? "bg-emerald-400"
-          : pct >= 40
-            ? "bg-violet-400"
-            : "bg-violet-500/60";
 
   const [links, setLinks] = useState<LinkedWorkItem[]>([]);
   const [linksLoaded, setLinksLoaded] = useState(false);
@@ -604,70 +661,52 @@ function GoalCard({
   };
 
   return (
-    <div className="rounded-xl border border-white/[0.06] bg-neutral-900/60 p-4 transition hover:border-white/10">
+    <article
+      id={`goal-${goal.id}`}
+      tabIndex={-1}
+      className={cn(
+        "scroll-mt-24 rounded-xl border bg-neutral-900/60 p-4 transition-colors hover:border-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400",
+        isEnd ? "border-violet-400/30" : "border-white/[0.06]",
+      )}
+    >
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={cn(
-                "rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide",
-                priority,
-              )}
-            >
-              {goal.priority}
-            </span>
-            <span
-              className={cn(
-                "rounded-full px-2 py-0.5 text-[10px] font-medium",
-                status.className,
-              )}
-            >
-              {status.label}
-            </span>
-            <span
-              className={cn(
-                "rounded-full border px-2 py-0.5 text-[10px] font-medium",
-                KIND_BADGE[goal.kind].className,
-              )}
-              title={KIND_HINT[goal.kind]}
-            >
-              {KIND_BADGE[goal.kind].label}
-            </span>
+          <button
+            type="button"
+            onClick={onEdit}
+            className="text-left text-[15px] font-medium leading-snug text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+          >
+            {goal.title}
+          </button>
+          {/* One quiet meta line; colour only where it says something. */}
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-neutral-500">
+            {goal.funnelMetric && (
+              <span className="text-neutral-300">{stageLabel(goal.funnelMetric)}</span>
+            )}
+            {goal.status !== "active" && (
+              <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", status.className)}>
+                {status.label}
+              </span>
+            )}
+            {goal.priority !== "medium" && (
+              <span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-medium", PRIORITY_BADGE[goal.priority])}>
+                {goal.priority} priority
+              </span>
+            )}
+            <span title={KIND_HINT[goal.kind]}>{KIND_BADGE[goal.kind].label}</span>
             {goal.recurrenceId && (
-              <span
-                className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-300"
-                title="Auto-created from a recurring rule"
-              >
+              <span className="inline-flex items-center gap-1 text-amber-300/80" title="Auto-created from a recurring rule">
                 <Repeat className="size-2.5" />
                 Recurring
               </span>
             )}
             {isAuto && (
-              <span
-                className="rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-300"
-                title="Progress is auto-computed from linked tasks"
-              >
-                Auto · {linkedDone}/{links.length} done
+              <span className="text-sky-300/80" title="Progress is auto-computed from linked tasks">
+                Auto · {linkedDone}/{links.length} tasks done
               </span>
             )}
-            <h3
-              className="cursor-pointer text-sm font-semibold leading-snug text-white hover:underline"
-              onClick={onEdit}
-            >
-              {goal.title}
-            </h3>
-            {goal.unit && (
-              <span className="text-[11px] text-neutral-500">
-                · {goal.unit}
-              </span>
-            )}
-          </div>
-          {goal.description && (
-            <p className="mt-1 text-xs text-neutral-400">{goal.description}</p>
-          )}
-          <div className="mt-2 flex flex-wrap items-center gap-3 text-[10px] text-neutral-500">
+            <span aria-hidden>·</span>
             <span>{fmtRange(goal.periodStart, goal.periodEnd)}</span>
-            <span>·</span>
             <span
               className={cn(
                 remaining < 0 && goal.status === "active" && "text-red-400",
@@ -681,38 +720,47 @@ function GoalCard({
                   : `${remaining}d left`}
             </span>
             {goal.responsibleEmail && (
-              <>
-                <span>·</span>
-                <Select
-                  value={goal.responsibleEmail}
-                  onValueChange={(v) =>
-                    onUpdate({
-                      responsibleEmail:
-                        v === "__unassigned__" ? null : (v as string),
-                    })
-                  }
-                >
-                  <SelectTrigger className="h-5 border-none bg-transparent px-1 text-[10px] text-neutral-300 hover:bg-white/5 focus:ring-0">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
-                    <SelectItem value="__unassigned__">Unassigned</SelectItem>
-                    {teamMembers.map((m) => (
-                      <SelectItem key={m.email} value={m.email}>
-                        {m.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </>
+              <Select
+                value={goal.responsibleEmail}
+                onValueChange={(v) =>
+                  onUpdate({
+                    responsibleEmail:
+                      v === "__unassigned__" ? null : (v as string),
+                  })
+                }
+              >
+                <SelectTrigger className="h-5 border-none bg-transparent px-1 py-0 text-[11px] text-neutral-300 shadow-none hover:bg-white/5 focus:ring-0 data-[size=default]:h-5 dark:bg-transparent dark:hover:bg-white/5 [&_svg:not([class*='size-'])]:size-3">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="border-white/10 bg-neutral-950 text-neutral-200">
+                  <SelectItem value="__unassigned__">Unassigned</SelectItem>
+                  {teamMembers.map((m) => (
+                    <SelectItem key={m.email} value={m.email}>
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             )}
-            {goal.projectRef && (
-              <>
-                <span>·</span>
-                <span className="text-neutral-500">{goal.projectRef}</span>
-              </>
-            )}
+            {goal.projectRef && <span>{goal.projectRef}</span>}
           </div>
+          {goal.description && (
+            <p className="mt-2 text-xs text-neutral-400">{goal.description}</p>
+          )}
+          {(fedBy.length > 0 || feeds.length > 0) && (
+            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-neutral-500">
+              {fedBy.length > 0 && (
+                <span>
+                  Fed by <GoalLinks goals={fedBy} allGoals={allGoals} />
+                </span>
+              )}
+              {feeds.length > 0 && (
+                <span>
+                  Feeds <GoalLinks goals={feeds} allGoals={allGoals} />
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Progress + counter — manual when no links, auto-display when linked */}
@@ -736,11 +784,14 @@ function GoalCard({
             <Minus className="size-3.5" />
           </button>
           <div className="min-w-[72px] text-center">
-            <div className="text-lg font-semibold text-white">
+            <div className="text-lg font-semibold tabular-nums text-white">
               {goal.currentCount}
-              <span className="text-neutral-500"> / {goal.targetCount}</span>
+              <span className="font-normal text-neutral-500"> / {goal.targetCount}</span>
             </div>
-            <div className="text-[10px] text-neutral-600">{pct}%</div>
+            <div className="max-w-[7rem] truncate text-[10px] text-neutral-500" title={goal.unit ?? undefined}>
+              {goal.unit ? `${goal.unit} · ` : ""}
+              {pct}%
+            </div>
           </div>
           <button
             onClick={() => !isAuto && onIncrement(1)}
@@ -759,7 +810,7 @@ function GoalCard({
             title="Edit"
             aria-label="Edit goal"
           >
-            <Check className="size-3.5" />
+            <Pencil className="size-3.5" />
           </button>
           <button
             onClick={onDelete}
@@ -772,13 +823,7 @@ function GoalCard({
         </div>
       </div>
 
-      {/* Progress bar */}
-      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/[0.04]">
-        <div
-          className={cn("h-full transition-all duration-300", progressColor)}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
+      <ProgressLine goal={goal} className="mt-3" />
 
       {/* Linked tasks */}
       <div className="mt-3 border-t border-white/[0.04] pt-2">
@@ -871,7 +916,30 @@ function GoalCard({
           }}
         />
       )}
-    </div>
+    </article>
+  );
+}
+
+function GoalLinks({ goals, allGoals }: { goals: Goal[]; allGoals: Goal[] }) {
+  return (
+    <>
+      {goals.map((g, i) => (
+        <span key={g.id}>
+          {i > 0 && ", "}
+          <a
+            href={`#goal-${g.id}`}
+            title={g.title}
+            onClick={(e) => {
+              e.preventDefault();
+              scrollToGoal(g.id);
+            }}
+            className="text-neutral-300 underline decoration-white/20 underline-offset-2 hover:decoration-white/60"
+          >
+            {goalLabel(g, allGoals)}
+          </a>
+        </span>
+      ))}
+    </>
   );
 }
 
