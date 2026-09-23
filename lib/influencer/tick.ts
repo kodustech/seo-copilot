@@ -60,11 +60,12 @@ const TEST_PLATFORMS = new Set(["blog", "devto", "youtube"]);
  * the shift to one channel, or to written channels for an article test.
  */
 export function testShiftChannels(channels: PersonaChannel[], platform?: string): PersonaChannel[] {
+  const requested = platform?.trim().toLowerCase();
   return channels.filter(
     (c) =>
       TEST_PLATFORMS.has(c.platform) &&
       (c.platform === "youtube" ? c.status !== "paused" : c.status === "active") &&
-      (platform === "article" ? c.platform !== "youtube" : !platform || c.platform === platform),
+      (requested === "article" ? c.platform !== "youtube" : !requested || c.platform === requested),
   );
 }
 // The unpublished buffer is held PER CHANNEL: a channel has room while it holds
