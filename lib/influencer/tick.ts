@@ -410,7 +410,7 @@ export async function runPersonaTick({
   // Nothing it can publish on its own — wait and ask for a connected channel.
   if (allowed.length === 0) {
     const note = testRun
-      ? testPlatform === "youtube"
+      ? testPlatform?.trim().toLowerCase() === "youtube"
         ? "A video test needs a YouTube channel on this persona."
         : "Run test needs an active blog or dev.to channel."
       : "No connected channel I can publish to on my own — waiting for one to be linked.";
