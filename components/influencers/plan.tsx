@@ -623,7 +623,7 @@ function FeedbackPanel({ token, persona }: { token: string; persona: Persona }) 
   }
 
   return (
-    <div className="space-y-4">
+    <>
       <section className={cn(cls.panel, "space-y-2 p-4")}>
         <SectionLabel hint="It reads new notes on its next shift and turns lasting lessons into rules it always applies.">Talk to it</SectionLabel>
         <Textarea
@@ -653,13 +653,17 @@ function FeedbackPanel({ token, persona }: { token: string; persona: Persona }) 
         ) : null}
       </section>
 
-      <SkillsPanel token={token} persona={persona} skills={skills} onChange={setSkills} />
-    </div>
+      <div className="lg:col-span-2">
+        <SkillsPanel token={token} persona={persona} skills={skills} onChange={setSkills} />
+      </div>
+    </>
   );
 }
 
-type Skill = { id: string; content: string };
+type Skill = { id: string; content: string; source: "operator" | "agent" | "legacy" };
+type SkillFilter = "all" | Skill["source"];
 
+/* Hallmark · component: skills panel · genre: modern-minimal · theme: existing dark tokens */
 /**
  * Skills: the rules the persona applies on every shift.
  *
@@ -683,6 +687,15 @@ function SkillsPanel({
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<SkillFilter>("all");
+  const [page, setPage] = useState(0);
+  const [adding, setAdding] = useState(false);
+  const pageSize = 30;
+  const visibleSkills = filter === "all" ? skills : skills.filter((skill) => skill.source === filter);
+  const pageCount = Math.max(1, Math.ceil(visibleSkills.length / pageSize));
+  const pageSkills = visibleSkills.slice(page * pageSize, (page + 1) * pageSize);
+  const rangeStart = visibleSkills.length ? page * pageSize + 1 : 0;
+  const rangeEnd = Math.min((page + 1) * pageSize, visibleSkills.length);
 
   async function add() {
     const skill = text.trim();
@@ -699,6 +712,9 @@ function SkillsPanel({
       if (!res.ok) throw new Error(body.error || "Could not save");
       onChange(body.skills ?? []);
       setText("");
+      setAdding(false);
+      setFilter("all");
+      setPage(0);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save");
     } finally {
@@ -717,6 +733,7 @@ function SkillsPanel({
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "Could not remove");
       onChange(body.skills ?? []);
+      setPage((current) => Math.min(current, Math.max(0, Math.ceil((skills.length - 1) / pageSize) - 1)));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not remove");
     } finally {
@@ -727,19 +744,90 @@ function SkillsPanel({
   return (
     <section className={cn(cls.panel, "p-4")}>
       <SectionLabel hint="Rules it applies on every shift. It writes most of these itself, from your feedback.">
-        Skills
+        <span className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+          <span className="flex items-center gap-2">
+            <span>Skills</span>
+            <span className="rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-medium text-neutral-400">{skills.length}</span>
+          </span>
+          <span className="text-[11px] font-normal normal-case tracking-normal text-neutral-600">
+            {visibleSkills.length ? `${rangeStart}–${rangeEnd} of ${visibleSkills.length}` : "No rules"}
+          </span>
+        </span>
       </SectionLabel>
+
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] pb-3">
+        <div aria-label="Filter skills" className="flex flex-wrap items-center gap-1 rounded-md bg-white/[0.025] p-1">
+          {(["all", "operator", "agent", "legacy"] as SkillFilter[]).map((value) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={filter === value}
+              onClick={() => {
+                setFilter(value);
+                setPage(0);
+              }}
+              className={cn(
+                "min-h-8 rounded px-2.5 py-1 text-[11px] capitalize transition-colors",
+                filter === value ? "bg-white/[0.1] text-neutral-100 shadow-sm" : "text-neutral-500 hover:text-neutral-300",
+              )}
+            >
+              {value}
+            </button>
+          ))}
+        </div>
+        <button type="button" onClick={() => setAdding((open) => !open)} className={cn(cls.outline, "shrink-0")}>
+          <Plus className="size-3.5" />
+          Add rule
+        </button>
+      </div>
+
+      {adding ? (
+        <div className="mt-3 rounded-lg border border-white/[0.08] bg-white/[0.025] p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="text-xs font-medium text-neutral-300">Operator rule</span>
+            <span className="text-[11px] text-neutral-600">Cmd/Ctrl + Enter to save</span>
+          </div>
+          <div className="flex items-end gap-2">
+            <Textarea
+              autoFocus
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void add();
+              }}
+              placeholder="Write a rule this influencer should always follow..."
+              aria-label="Operator rule"
+              rows={2}
+              className={cn(cls.textarea, "min-h-0 flex-1 py-2 text-xs")}
+            />
+            <button type="button" onClick={add} disabled={busy || text.trim().length < 3} className={cn(cls.outline, "shrink-0")}>
+              {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
+              Save
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {skills.length === 0 ? (
         <p className="pb-2 text-sm text-neutral-500">
           None yet. It writes its own once it has shifts to learn from; add one here if it needs a rule before then.
         </p>
       ) : (
-        <ol className="list-decimal space-y-1 pl-5 text-sm leading-relaxed text-neutral-300 marker:text-neutral-600">
-          {skills.map((s) => (
-            <li key={s.id} className="group">
-              <span className="flex items-start gap-2">
-                <span className="min-w-0 flex-1">{s.content}</span>
+        <ol start={rangeStart} className="mt-3 list-decimal space-y-0 pl-5 text-sm leading-relaxed text-neutral-300 marker:text-neutral-600">
+          {pageSkills.map((s) => (
+            <li key={s.id} className="group border-b border-white/[0.045] py-2.5 first:pt-0 last:border-b-0">
+              <span className="flex items-start gap-3">
+                <span className="min-w-0 max-w-5xl flex-1">{s.content}</span>
+                <span className={cn(
+                  "shrink-0 rounded border px-1.5 py-0.5 text-[10px] capitalize",
+                  s.source === "operator"
+                    ? "border-violet-400/20 text-violet-300"
+                    : s.source === "agent"
+                      ? "border-sky-400/20 text-sky-300"
+                      : "border-white/[0.08] text-neutral-500",
+                )}>
+                  {s.source}
+                </span>
                 <button
                   type="button"
                   aria-label="Remove this rule"
@@ -759,27 +847,19 @@ function SkillsPanel({
         </ol>
       )}
 
-      <div className="mt-2 flex items-start gap-2">
-        <Textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void add();
-          }}
-          placeholder="A rule it should always follow, e.g. Keep blog titles under 60 characters."
-          rows={text ? 2 : 1}
-          className={cls.textarea}
-        />
-        <button
-          type="button"
-          onClick={add}
-          disabled={busy || text.trim().length < 3}
-          className={cn(cls.outline, "shrink-0")}
-        >
-          {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
-          Add rule
-        </button>
-      </div>
+      {pageCount > 1 ? (
+        <div className="mt-3 flex items-center justify-between text-[11px] text-neutral-500">
+          <span>Page {page + 1} of {pageCount}</span>
+          <div className="flex gap-1">
+            <button type="button" onClick={() => setPage((current) => Math.max(0, current - 1))} disabled={page === 0} className={cls.ghost}>
+              Previous
+            </button>
+            <button type="button" onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))} disabled={page >= pageCount - 1} className={cls.ghost}>
+              Next
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {error ? <p className={cn(cls.errorText, "mt-2")}>{error}</p> : null}
     </section>

@@ -69,7 +69,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
           { status: 400 },
         );
       }
-      await addSkill(client, id, skill.slice(0, 1000));
+      await addSkill(client, id, skill.slice(0, 1000), "operator");
       const skills = await listSkillNotes(client, id);
       return NextResponse.json({ skills });
     }

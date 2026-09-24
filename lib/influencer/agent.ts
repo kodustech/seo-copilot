@@ -760,7 +760,7 @@ export async function runInfluencerAgentSession({
           return "A skill can't be empty.";
         }
         try {
-          await addSkill(client, persona.id, skill.trim());
+          await addSkill(client, persona.id, skill.trim(), "agent");
           await step({ kind: "tool_result", tool: "learn_skill", payload: { ok: true } });
           return `Learned: "${skill}". I'll apply it every shift from now on.`;
         } catch (err) {
