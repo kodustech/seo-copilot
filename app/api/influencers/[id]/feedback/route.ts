@@ -8,6 +8,9 @@ import {
   listFeedback,
   listSkillNotes,
   removeSkill,
+  SkillValidationError,
+  updateSkill,
+  type SkillSource,
 } from "@/lib/influencer/feedback";
 import { getPersona } from "@/lib/influencer/personas";
 import { influencerTableMissingMessage } from "@/lib/influencer/types";
@@ -16,6 +19,9 @@ export const maxDuration = 30;
 
 function errorResponse(error: unknown) {
   const message = error instanceof Error ? error.message : "Internal error";
+  if (error instanceof SkillValidationError) {
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
   const missing = influencerTableMissingMessage(error);
   if (missing) return NextResponse.json({ error: missing }, { status: 500 });
   if (message === "Unauthorized" || message.toLowerCase().includes("token")) {
@@ -69,7 +75,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
           { status: 400 },
         );
       }
-      await addSkill(client, id, skill.slice(0, 1000));
+      await addSkill(client, id, skill.slice(0, 1000), "operator");
       const skills = await listSkillNotes(client, id);
       return NextResponse.json({ skills });
     }
@@ -102,6 +108,38 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
     }
 
     await removeSkill(client, id, skillId);
+    const skills = await listSkillNotes(client, id);
+    return NextResponse.json({ skills });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+/** Edit a rule and/or change whether it is operator-owned or agent-learned. */
+export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  try {
+    const { client } = await getSupabaseUserClient(req.headers.get("authorization"));
+    const { id } = await ctx.params;
+    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+    const skillId = typeof body.skill_id === "string" ? body.skill_id : "";
+    const skill = typeof body.skill === "string" ? body.skill : "";
+    const source = body.source;
+    if (!skillId || !skill.trim()) {
+      return NextResponse.json({ error: "skill_id and skill are required." }, { status: 400 });
+    }
+    if (skill.trim().length < 3) {
+      return NextResponse.json(
+        { error: "A rule needs at least a few words." },
+        { status: 400 },
+      );
+    }
+    if (source !== "operator" && source !== "agent" && source !== "legacy") {
+      return NextResponse.json({ error: "Invalid skill source." }, { status: 400 });
+    }
+
+    const persona = await getPersona(client, id);
+    if (!persona) return NextResponse.json({ error: "Persona not found" }, { status: 404 });
+    await updateSkill(client, id, skillId, skill, source as SkillSource);
     const skills = await listSkillNotes(client, id);
     return NextResponse.json({ skills });
   } catch (error) {

@@ -88,6 +88,19 @@ export async function markFeedbackApplied(
 }
 
 const SKILL_TAG = "skill";
+const OPERATOR_TAG = "operator";
+const AGENT_TAG = "agent";
+export const MAX_SKILL_LENGTH = 1000;
+
+export type SkillSource = "operator" | "agent" | "legacy";
+
+export class SkillValidationError extends Error {}
+
+function skillSource(tags: unknown): SkillSource {
+  if (Array.isArray(tags) && tags.includes(OPERATOR_TAG)) return "operator";
+  if (Array.isArray(tags) && tags.includes(AGENT_TAG)) return "agent";
+  return "legacy";
+}
 
 /** Durable learnings the persona always applies (memory notes tagged "skill"). */
 export async function listSkills(
@@ -95,19 +108,42 @@ export async function listSkills(
   personaId: string,
   limit = 30,
 ): Promise<string[]> {
-  // Newest first + capped, so once there are more than `limit` skills the most
-  // recent ones are the ones that survive (not silently dropped).
-  const { data, error } = await client
-    .from("persona_memory")
-    .select("content,created_at")
-    .eq("persona_id", personaId)
-    .contains("tags", [SKILL_TAG])
-    .order("created_at", { ascending: false })
-    .limit(limit);
-  if (error) throw new Error(error.message);
-  return (data ?? [])
-    .map((r) => (typeof r.content === "string" ? r.content : ""))
-    .filter(Boolean);
+  const [operatorResult, agentResult, legacyResult] = await Promise.all([
+    client
+      .from("persona_memory")
+      .select("content,tags,created_at")
+      .eq("persona_id", personaId)
+      .contains("tags", [SKILL_TAG, OPERATOR_TAG])
+      .order("created_at", { ascending: false }),
+    client
+      .from("persona_memory")
+      .select("content,tags,created_at")
+      .eq("persona_id", personaId)
+      .contains("tags", [SKILL_TAG, AGENT_TAG])
+      .not("tags", "cs", `{${OPERATOR_TAG}}`)
+      .order("created_at", { ascending: false })
+      .limit(limit),
+    client
+      .from("persona_memory")
+      .select("content,tags,created_at")
+      .eq("persona_id", personaId)
+      .contains("tags", [SKILL_TAG])
+      .not("tags", "cs", `{${OPERATOR_TAG}}`)
+      .not("tags", "cs", `{${AGENT_TAG}}`)
+      .order("created_at", { ascending: false })
+      .limit(limit),
+  ]);
+  if (operatorResult.error) throw new Error(operatorResult.error.message);
+  if (agentResult.error) throw new Error(agentResult.error.message);
+  if (legacyResult.error) throw new Error(legacyResult.error.message);
+  const content = (rows: { content: unknown }[]) => rows
+    .filter((row) => typeof row.content === "string" && row.content.trim())
+    .map((row) => String(row.content));
+  return [
+    ...content(operatorResult.data ?? []),
+    ...content(legacyResult.data ?? []),
+    ...content(agentResult.data ?? []),
+  ];
 }
 
 /** The same skills, with ids, for anything that needs to remove one. The agent
@@ -115,11 +151,11 @@ export async function listSkills(
 export async function listSkillNotes(
   client: SupabaseClient,
   personaId: string,
-  limit = 30,
-): Promise<{ id: string; content: string }[]> {
+  limit = 1000,
+): Promise<{ id: string; content: string; source: SkillSource }[]> {
   const { data, error } = await client
     .from("persona_memory")
-    .select("id,content,created_at")
+    .select("id,content,tags,created_at")
     .eq("persona_id", personaId)
     .contains("tags", [SKILL_TAG])
     .order("created_at", { ascending: false })
@@ -127,7 +163,7 @@ export async function listSkillNotes(
   if (error) throw new Error(error.message);
   return (data ?? [])
     .filter((r) => typeof r.content === "string" && r.content.trim())
-    .map((r) => ({ id: String(r.id), content: String(r.content) }));
+    .map((r) => ({ id: String(r.id), content: String(r.content), source: skillSource(r.tags) }));
 }
 
 /** Remove one skill. Scoped by persona as well as id, so a stale id from another
@@ -146,14 +182,61 @@ export async function removeSkill(
   if (error) throw new Error(error.message);
 }
 
+/** Update one existing skill without changing its identity. */
+export async function updateSkill(
+  client: SupabaseClient,
+  personaId: string,
+  skillId: string,
+  skill: string,
+  source: SkillSource,
+): Promise<void> {
+  const trimmed = skill.trim();
+  if (trimmed.length < 3) throw new SkillValidationError("A rule needs at least a few words.");
+  if (trimmed.length > MAX_SKILL_LENGTH) {
+    const { data, error } = await client
+      .from("persona_memory")
+      .select("content")
+      .eq("id", skillId)
+      .eq("persona_id", personaId)
+      .contains("tags", [SKILL_TAG])
+      .single();
+    if (error?.code === "PGRST116") return;
+    if (error) throw new Error(error.message);
+    if (typeof data?.content !== "string" || data.content.trim() !== trimmed) {
+      throw new SkillValidationError(`A rule cannot exceed ${MAX_SKILL_LENGTH} characters.`);
+    }
+    const { error: tagError } = await client
+      .from("persona_memory")
+      .update({ tags: [SKILL_TAG, source] })
+      .eq("id", skillId)
+      .eq("persona_id", personaId)
+      .contains("tags", [SKILL_TAG]);
+    if (tagError) throw new Error(tagError.message);
+    return;
+  }
+  const { error } = await client
+    .from("persona_memory")
+    .update({
+      title: trimmed.slice(0, 80),
+      content: trimmed,
+      tags: [SKILL_TAG, source],
+    })
+    .eq("id", skillId)
+    .eq("persona_id", personaId)
+    .contains("tags", [SKILL_TAG]);
+  if (error) throw new Error(error.message);
+}
+
 export async function addSkill(
   client: SupabaseClient,
   personaId: string,
   skill: string,
+  source: Exclude<SkillSource, "legacy"> = "agent",
 ): Promise<MemoryNote> {
+  const trimmed = skill.trim().slice(0, MAX_SKILL_LENGTH);
   return saveMemory(client, personaId, {
-    title: skill.slice(0, 80),
-    content: skill,
-    tags: [SKILL_TAG],
+    title: trimmed.slice(0, 80),
+    content: trimmed,
+    tags: [SKILL_TAG, source],
   });
 }

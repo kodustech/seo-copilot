@@ -662,7 +662,10 @@ export async function runInfluencerAgentSession({
           return "This is a test shift. Use existing memory, but do not save new memory from the test.";
         }
         try {
-          const note = await saveMemory(client, persona.id, { title, content, tags });
+          const safeTags = tags?.filter(
+            (tag) => !["skill", "operator", "agent"].includes(tag.trim().toLowerCase()),
+          );
+          const note = await saveMemory(client, persona.id, { title, content, tags: safeTags });
           await step({ kind: "tool_result", tool: "save_memory", payload: { id: note.id } });
           return `Saved "${note.title}" to memory.`;
         } catch (err) {
@@ -760,7 +763,7 @@ export async function runInfluencerAgentSession({
           return "A skill can't be empty.";
         }
         try {
-          await addSkill(client, persona.id, skill.trim());
+          await addSkill(client, persona.id, skill.trim(), "agent");
           await step({ kind: "tool_result", tool: "learn_skill", payload: { ok: true } });
           return `Learned: "${skill}". I'll apply it every shift from now on.`;
         } catch (err) {
