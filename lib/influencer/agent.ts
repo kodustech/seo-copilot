@@ -1137,9 +1137,8 @@ export async function runInfluencerAgentSession({
 
   // Durable skills the persona has learned (from operator feedback / experience)
   // are always-on rules injected into the system prompt.
-  const skills = await listSkills(client, persona.id).catch(() => []);
-
   try {
+    const skills = await listSkills(client, persona.id);
     const result = await generateText({
       model,
       system: buildAgentSystem(persona, allowedPlatforms, skills),
