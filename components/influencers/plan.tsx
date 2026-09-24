@@ -663,7 +663,6 @@ function FeedbackPanel({ token, persona }: { token: string; persona: Persona }) 
 
 type Skill = { id: string; content: string; source: "operator" | "agent" | "legacy" };
 type SkillFilter = "all" | Skill["source"];
-const MAX_SKILL_LENGTH = 1000;
 
 /* Hallmark · component: skills panel · genre: modern-minimal · theme: existing dark tokens */
 /**
@@ -824,7 +823,6 @@ function SkillsPanel({
             <Textarea
               autoFocus
               value={text}
-              maxLength={MAX_SKILL_LENGTH}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void add();
@@ -871,7 +869,6 @@ function SkillsPanel({
                   <Textarea
                     autoFocus
                     value={editing.content}
-                    maxLength={MAX_SKILL_LENGTH}
                     onChange={(e) => setEditing((current) => current ? { ...current, content: e.target.value } : current)}
                     rows={3}
                     className={cn(cls.textarea, "mt-2 min-h-0 py-2 text-xs")}

@@ -90,7 +90,6 @@ export async function markFeedbackApplied(
 const SKILL_TAG = "skill";
 const OPERATOR_TAG = "operator";
 const AGENT_TAG = "agent";
-export const MAX_SKILL_LENGTH = 1000;
 
 export type SkillSource = "operator" | "agent" | "legacy";
 
@@ -192,28 +191,6 @@ export async function updateSkill(
 ): Promise<void> {
   const trimmed = skill.trim();
   if (trimmed.length < 3) throw new SkillValidationError("A rule needs at least a few words.");
-  if (trimmed.length > MAX_SKILL_LENGTH) {
-    const { data, error } = await client
-      .from("persona_memory")
-      .select("content")
-      .eq("id", skillId)
-      .eq("persona_id", personaId)
-      .contains("tags", [SKILL_TAG])
-      .single();
-    if (error?.code === "PGRST116") return;
-    if (error) throw new Error(error.message);
-    if (typeof data?.content !== "string" || data.content.trim() !== trimmed) {
-      throw new SkillValidationError(`A rule cannot exceed ${MAX_SKILL_LENGTH} characters.`);
-    }
-    const { error: tagError } = await client
-      .from("persona_memory")
-      .update({ tags: [SKILL_TAG, source] })
-      .eq("id", skillId)
-      .eq("persona_id", personaId)
-      .contains("tags", [SKILL_TAG]);
-    if (tagError) throw new Error(tagError.message);
-    return;
-  }
   const { error } = await client
     .from("persona_memory")
     .update({
@@ -233,7 +210,7 @@ export async function addSkill(
   skill: string,
   source: Exclude<SkillSource, "legacy"> = "agent",
 ): Promise<MemoryNote> {
-  const trimmed = skill.trim().slice(0, MAX_SKILL_LENGTH);
+  const trimmed = skill.trim();
   return saveMemory(client, personaId, {
     title: trimmed.slice(0, 80),
     content: trimmed,
