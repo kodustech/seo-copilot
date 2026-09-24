@@ -7,8 +7,8 @@ import {
   addSkill,
   listFeedback,
   listSkillNotes,
-  MAX_SKILL_LENGTH,
   removeSkill,
+  SkillValidationError,
   updateSkill,
   type SkillSource,
 } from "@/lib/influencer/feedback";
@@ -19,6 +19,9 @@ export const maxDuration = 30;
 
 function errorResponse(error: unknown) {
   const message = error instanceof Error ? error.message : "Internal error";
+  if (error instanceof SkillValidationError) {
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
   const missing = influencerTableMissingMessage(error);
   if (missing) return NextResponse.json({ error: missing }, { status: 500 });
   if (message === "Unauthorized" || message.toLowerCase().includes("token")) {
@@ -127,12 +130,6 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     if (skill.trim().length < 3) {
       return NextResponse.json(
         { error: "A rule needs at least a few words." },
-        { status: 400 },
-      );
-    }
-    if (skill.trim().length > MAX_SKILL_LENGTH) {
-      return NextResponse.json(
-        { error: `A rule cannot exceed ${MAX_SKILL_LENGTH} characters.` },
         { status: 400 },
       );
     }

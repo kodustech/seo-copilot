@@ -94,6 +94,8 @@ export const MAX_SKILL_LENGTH = 1000;
 
 export type SkillSource = "operator" | "agent" | "legacy";
 
+export class SkillValidationError extends Error {}
+
 function skillSource(tags: unknown): SkillSource {
   if (Array.isArray(tags) && tags.includes(OPERATOR_TAG)) return "operator";
   if (Array.isArray(tags) && tags.includes(AGENT_TAG)) return "agent";
@@ -106,7 +108,7 @@ export async function listSkills(
   personaId: string,
   limit = 30,
 ): Promise<string[]> {
-  const [operatorResult, automaticResult] = await Promise.all([
+  const [operatorResult, agentResult, legacyResult] = await Promise.all([
     client
       .from("persona_memory")
       .select("content,tags,created_at")
@@ -117,23 +119,31 @@ export async function listSkills(
       .from("persona_memory")
       .select("content,tags,created_at")
       .eq("persona_id", personaId)
-      .contains("tags", [SKILL_TAG])
+      .contains("tags", [SKILL_TAG, AGENT_TAG])
       .not("tags", "cs", `{${OPERATOR_TAG}}`)
       .order("created_at", { ascending: false })
-      // Keep the automatic read bounded without capping operator rules.
-      .limit(Math.max(limit * 4, 200)),
+      .limit(limit),
+    client
+      .from("persona_memory")
+      .select("content,tags,created_at")
+      .eq("persona_id", personaId)
+      .contains("tags", [SKILL_TAG])
+      .not("tags", "cs", `{${OPERATOR_TAG}}`)
+      .not("tags", "cs", `{${AGENT_TAG}}`)
+      .order("created_at", { ascending: false })
+      .limit(limit),
   ]);
   if (operatorResult.error) throw new Error(operatorResult.error.message);
-  if (automaticResult.error) throw new Error(automaticResult.error.message);
-  const operatorRows = (operatorResult.data ?? []).filter((r) => typeof r.content === "string" && r.content.trim());
-  const automaticRows = (automaticResult.data ?? [])
-    .filter((r) => skillSource(r.tags) !== "operator")
-    .filter((r) => typeof r.content === "string" && r.content.trim());
-  const rows = [...operatorRows, ...automaticRows];
-  const protectedSkills = rows.filter((r) => skillSource(r.tags) === "operator");
-  const legacySkills = rows.filter((r) => skillSource(r.tags) === "legacy").slice(0, limit);
-  const learnedSkills = rows.filter((r) => skillSource(r.tags) === "agent").slice(0, limit);
-  return [...protectedSkills, ...legacySkills, ...learnedSkills].map((r) => String(r.content));
+  if (agentResult.error) throw new Error(agentResult.error.message);
+  if (legacyResult.error) throw new Error(legacyResult.error.message);
+  const content = (rows: { content: unknown }[]) => rows
+    .filter((row) => typeof row.content === "string" && row.content.trim())
+    .map((row) => String(row.content));
+  return [
+    ...content(operatorResult.data ?? []),
+    ...content(legacyResult.data ?? []),
+    ...content(agentResult.data ?? []),
+  ];
 }
 
 /** The same skills, with ids, for anything that needs to remove one. The agent
@@ -181,9 +191,27 @@ export async function updateSkill(
   source: SkillSource,
 ): Promise<void> {
   const trimmed = skill.trim();
-  if (trimmed.length < 3) throw new Error("A rule needs at least a few words.");
+  if (trimmed.length < 3) throw new SkillValidationError("A rule needs at least a few words.");
   if (trimmed.length > MAX_SKILL_LENGTH) {
-    throw new Error(`A rule cannot exceed ${MAX_SKILL_LENGTH} characters.`);
+    const { data, error } = await client
+      .from("persona_memory")
+      .select("content")
+      .eq("id", skillId)
+      .eq("persona_id", personaId)
+      .contains("tags", [SKILL_TAG])
+      .single();
+    if (error) throw new Error(error.message);
+    if (typeof data?.content !== "string" || data.content.trim() !== trimmed) {
+      throw new SkillValidationError(`A rule cannot exceed ${MAX_SKILL_LENGTH} characters.`);
+    }
+    const { error: tagError } = await client
+      .from("persona_memory")
+      .update({ tags: [SKILL_TAG, source] })
+      .eq("id", skillId)
+      .eq("persona_id", personaId)
+      .contains("tags", [SKILL_TAG]);
+    if (tagError) throw new Error(tagError.message);
+    return;
   }
   const { error } = await client
     .from("persona_memory")

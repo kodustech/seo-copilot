@@ -663,7 +663,7 @@ export async function runInfluencerAgentSession({
         }
         try {
           const safeTags = tags?.filter(
-            (tag) => !["operator", "agent"].includes(tag.trim().toLowerCase()),
+            (tag) => !["skill", "operator", "agent"].includes(tag.trim().toLowerCase()),
           );
           const note = await saveMemory(client, persona.id, { title, content, tags: safeTags });
           await step({ kind: "tool_result", tool: "save_memory", payload: { id: note.id } });
