@@ -663,6 +663,7 @@ function FeedbackPanel({ token, persona }: { token: string; persona: Persona }) 
 
 type Skill = { id: string; content: string; source: "operator" | "agent" | "legacy" };
 type SkillFilter = "all" | Skill["source"];
+const MAX_SKILL_LENGTH = 1000;
 
 /* Hallmark · component: skills panel · genre: modern-minimal · theme: existing dark tokens */
 /**
@@ -761,7 +762,10 @@ function SkillsPanel({
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "Could not update");
-      onChange(body.skills ?? []);
+      const next: Skill[] = body.skills ?? [];
+      onChange(next);
+      const nextVisible = filter === "all" ? next : next.filter((skill) => skill.source === filter);
+      setPage((current) => Math.min(current, Math.max(0, Math.ceil(nextVisible.length / pageSize) - 1)));
       setEditing(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not update");
@@ -820,6 +824,7 @@ function SkillsPanel({
             <Textarea
               autoFocus
               value={text}
+              maxLength={MAX_SKILL_LENGTH}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void add();
@@ -866,6 +871,7 @@ function SkillsPanel({
                   <Textarea
                     autoFocus
                     value={editing.content}
+                    maxLength={MAX_SKILL_LENGTH}
                     onChange={(e) => setEditing((current) => current ? { ...current, content: e.target.value } : current)}
                     rows={3}
                     className={cn(cls.textarea, "mt-2 min-h-0 py-2 text-xs")}

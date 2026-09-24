@@ -662,7 +662,9 @@ export async function runInfluencerAgentSession({
           return "This is a test shift. Use existing memory, but do not save new memory from the test.";
         }
         try {
-          const safeTags = tags?.filter((tag) => tag !== "operator" && tag !== "agent");
+          const safeTags = tags?.filter(
+            (tag) => !["operator", "agent"].includes(tag.trim().toLowerCase()),
+          );
           const note = await saveMemory(client, persona.id, { title, content, tags: safeTags });
           await step({ kind: "tool_result", tool: "save_memory", payload: { id: note.id } });
           return `Saved "${note.title}" to memory.`;

@@ -7,6 +7,7 @@ import {
   addSkill,
   listFeedback,
   listSkillNotes,
+  MAX_SKILL_LENGTH,
   removeSkill,
   updateSkill,
   type SkillSource,
@@ -122,6 +123,18 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     const source = body.source;
     if (!skillId || !skill.trim()) {
       return NextResponse.json({ error: "skill_id and skill are required." }, { status: 400 });
+    }
+    if (skill.trim().length < 3) {
+      return NextResponse.json(
+        { error: "A rule needs at least a few words." },
+        { status: 400 },
+      );
+    }
+    if (skill.trim().length > MAX_SKILL_LENGTH) {
+      return NextResponse.json(
+        { error: `A rule cannot exceed ${MAX_SKILL_LENGTH} characters.` },
+        { status: 400 },
+      );
     }
     if (source !== "operator" && source !== "agent" && source !== "legacy") {
       return NextResponse.json({ error: "Invalid skill source." }, { status: 400 });

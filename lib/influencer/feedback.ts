@@ -90,6 +90,7 @@ export async function markFeedbackApplied(
 const SKILL_TAG = "skill";
 const OPERATOR_TAG = "operator";
 const AGENT_TAG = "agent";
+export const MAX_SKILL_LENGTH = 1000;
 
 export type SkillSource = "operator" | "agent" | "legacy";
 
@@ -117,6 +118,7 @@ export async function listSkills(
       .select("content,tags,created_at")
       .eq("persona_id", personaId)
       .contains("tags", [SKILL_TAG])
+      .not("tags", "cs", `{${OPERATOR_TAG}}`)
       .order("created_at", { ascending: false })
       // Keep the automatic read bounded without capping operator rules.
       .limit(Math.max(limit * 4, 200)),
@@ -180,11 +182,14 @@ export async function updateSkill(
 ): Promise<void> {
   const trimmed = skill.trim();
   if (trimmed.length < 3) throw new Error("A rule needs at least a few words.");
+  if (trimmed.length > MAX_SKILL_LENGTH) {
+    throw new Error(`A rule cannot exceed ${MAX_SKILL_LENGTH} characters.`);
+  }
   const { error } = await client
     .from("persona_memory")
     .update({
       title: trimmed.slice(0, 80),
-      content: trimmed.slice(0, 1000),
+      content: trimmed,
       tags: [SKILL_TAG, source],
     })
     .eq("id", skillId)
@@ -199,9 +204,10 @@ export async function addSkill(
   skill: string,
   source: Exclude<SkillSource, "legacy"> = "agent",
 ): Promise<MemoryNote> {
+  const trimmed = skill.trim().slice(0, MAX_SKILL_LENGTH);
   return saveMemory(client, personaId, {
-    title: skill.slice(0, 80),
-    content: skill,
+    title: trimmed.slice(0, 80),
+    content: trimmed,
     tags: [SKILL_TAG, source],
   });
 }
