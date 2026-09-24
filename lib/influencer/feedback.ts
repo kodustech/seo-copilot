@@ -200,6 +200,7 @@ export async function updateSkill(
       .eq("persona_id", personaId)
       .contains("tags", [SKILL_TAG])
       .single();
+    if (error?.code === "PGRST116") return;
     if (error) throw new Error(error.message);
     if (typeof data?.content !== "string" || data.content.trim() !== trimmed) {
       throw new SkillValidationError(`A rule cannot exceed ${MAX_SKILL_LENGTH} characters.`);
