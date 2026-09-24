@@ -8,6 +8,7 @@ import {
   listFeedback,
   listSkillNotes,
   removeSkill,
+  SkillNotFoundError,
   SkillValidationError,
   updateSkill,
   type SkillSource,
@@ -21,6 +22,9 @@ function errorResponse(error: unknown) {
   const message = error instanceof Error ? error.message : "Internal error";
   if (error instanceof SkillValidationError) {
     return NextResponse.json({ error: message }, { status: 400 });
+  }
+  if (error instanceof SkillNotFoundError) {
+    return NextResponse.json({ error: message }, { status: 404 });
   }
   const missing = influencerTableMissingMessage(error);
   if (missing) return NextResponse.json({ error: missing }, { status: 500 });

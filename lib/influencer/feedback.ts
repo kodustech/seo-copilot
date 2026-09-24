@@ -90,10 +90,12 @@ export async function markFeedbackApplied(
 const SKILL_TAG = "skill";
 const OPERATOR_TAG = "operator";
 const AGENT_TAG = "agent";
+const OPERATOR_SKILL_PAGE_SIZE = 200;
 
 export type SkillSource = "operator" | "agent" | "legacy";
 
 export class SkillValidationError extends Error {}
+export class SkillNotFoundError extends Error {}
 
 function skillSource(tags: unknown): SkillSource {
   if (Array.isArray(tags) && tags.includes(OPERATOR_TAG)) return "operator";
@@ -107,13 +109,25 @@ export async function listSkills(
   personaId: string,
   limit = 30,
 ): Promise<string[]> {
-  const [operatorResult, agentResult, legacyResult] = await Promise.all([
-    client
-      .from("persona_memory")
-      .select("content,tags,created_at")
-      .eq("persona_id", personaId)
-      .contains("tags", [SKILL_TAG, OPERATOR_TAG])
-      .order("created_at", { ascending: false }),
+  const operatorSkillsPromise = (async () => {
+    const skills: string[] = [];
+    for (let from = 0; ; from += OPERATOR_SKILL_PAGE_SIZE) {
+      const { data, error } = await client
+        .from("persona_memory")
+        .select("id,content")
+        .eq("persona_id", personaId)
+        .contains("tags", [SKILL_TAG, OPERATOR_TAG])
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, from + OPERATOR_SKILL_PAGE_SIZE - 1);
+      if (error) throw new Error(error.message);
+      const rows = data ?? [];
+      skills.push(...rows.filter((row) => typeof row.content === "string" && row.content.trim()).map((row) => row.content));
+      if (rows.length < OPERATOR_SKILL_PAGE_SIZE) return skills;
+    }
+  })();
+  const [operatorSkills, agentResult, legacyResult] = await Promise.all([
+    operatorSkillsPromise,
     client
       .from("persona_memory")
       .select("content,tags,created_at")
@@ -132,14 +146,13 @@ export async function listSkills(
       .order("created_at", { ascending: false })
       .limit(limit),
   ]);
-  if (operatorResult.error) throw new Error(operatorResult.error.message);
   if (agentResult.error) throw new Error(agentResult.error.message);
   if (legacyResult.error) throw new Error(legacyResult.error.message);
   const content = (rows: { content: unknown }[]) => rows
     .filter((row) => typeof row.content === "string" && row.content.trim())
     .map((row) => String(row.content));
   return [
-    ...content(operatorResult.data ?? []),
+    ...operatorSkills,
     ...content(legacyResult.data ?? []),
     ...content(agentResult.data ?? []),
   ];
@@ -191,7 +204,7 @@ export async function updateSkill(
 ): Promise<void> {
   const trimmed = skill.trim();
   if (trimmed.length < 3) throw new SkillValidationError("A rule needs at least a few words.");
-  const { error } = await client
+  const { data, error } = await client
     .from("persona_memory")
     .update({
       title: trimmed.slice(0, 80),
@@ -200,8 +213,10 @@ export async function updateSkill(
     })
     .eq("id", skillId)
     .eq("persona_id", personaId)
-    .contains("tags", [SKILL_TAG]);
+    .contains("tags", [SKILL_TAG])
+    .select("id");
   if (error) throw new Error(error.message);
+  if (!data?.length) throw new SkillNotFoundError("This rule no longer exists. Refresh and try again.");
 }
 
 export async function addSkill(
