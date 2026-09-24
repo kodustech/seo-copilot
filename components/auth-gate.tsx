@@ -461,8 +461,8 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
             </button>
           ) : (
             <div className="flex w-full items-center gap-2 px-3">
-              <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-violet-500 to-fuchsia-600 text-[11px] font-bold text-white">
-                K
+              <div className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-md bg-[#f8b76d]">
+                <img src="/kody.png" alt="" aria-hidden="true" className="size-full object-contain" />
               </div>
               <div className="min-w-0 flex-1 leading-tight">
                 <p className="truncate text-sm font-semibold text-white">Kodus</p>

@@ -105,15 +105,29 @@ export async function listSkills(
   personaId: string,
   limit = 30,
 ): Promise<string[]> {
-  const { data, error } = await client
-    .from("persona_memory")
-    .select("content,tags,created_at")
-    .eq("persona_id", personaId)
-    .contains("tags", [SKILL_TAG])
-    .order("created_at", { ascending: false })
-    ;
-  if (error) throw new Error(error.message);
-  const rows = (data ?? []).filter((r) => typeof r.content === "string" && r.content.trim());
+  const [operatorResult, automaticResult] = await Promise.all([
+    client
+      .from("persona_memory")
+      .select("content,tags,created_at")
+      .eq("persona_id", personaId)
+      .contains("tags", [SKILL_TAG, OPERATOR_TAG])
+      .order("created_at", { ascending: false }),
+    client
+      .from("persona_memory")
+      .select("content,tags,created_at")
+      .eq("persona_id", personaId)
+      .contains("tags", [SKILL_TAG])
+      .order("created_at", { ascending: false })
+      // Keep the automatic read bounded without capping operator rules.
+      .limit(Math.max(limit * 4, 200)),
+  ]);
+  if (operatorResult.error) throw new Error(operatorResult.error.message);
+  if (automaticResult.error) throw new Error(automaticResult.error.message);
+  const operatorRows = (operatorResult.data ?? []).filter((r) => typeof r.content === "string" && r.content.trim());
+  const automaticRows = (automaticResult.data ?? [])
+    .filter((r) => skillSource(r.tags) !== "operator")
+    .filter((r) => typeof r.content === "string" && r.content.trim());
+  const rows = [...operatorRows, ...automaticRows];
   const protectedSkills = rows.filter((r) => skillSource(r.tags) === "operator");
   const legacySkills = rows.filter((r) => skillSource(r.tags) === "legacy").slice(0, limit);
   const learnedSkills = rows.filter((r) => skillSource(r.tags) === "agent").slice(0, limit);
@@ -150,6 +164,29 @@ export async function removeSkill(
   const { error } = await client
     .from("persona_memory")
     .delete()
+    .eq("id", skillId)
+    .eq("persona_id", personaId)
+    .contains("tags", [SKILL_TAG]);
+  if (error) throw new Error(error.message);
+}
+
+/** Update one existing skill without changing its identity. */
+export async function updateSkill(
+  client: SupabaseClient,
+  personaId: string,
+  skillId: string,
+  skill: string,
+  source: SkillSource,
+): Promise<void> {
+  const trimmed = skill.trim();
+  if (trimmed.length < 3) throw new Error("A rule needs at least a few words.");
+  const { error } = await client
+    .from("persona_memory")
+    .update({
+      title: trimmed.slice(0, 80),
+      content: trimmed.slice(0, 1000),
+      tags: [SKILL_TAG, source],
+    })
     .eq("id", skillId)
     .eq("persona_id", personaId)
     .contains("tags", [SKILL_TAG]);

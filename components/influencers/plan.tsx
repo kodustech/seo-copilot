@@ -15,6 +15,7 @@ import { Check, FlaskConical, Loader2, Pencil, Play, Plus, X } from "lucide-reac
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
 import { SectionLabel, Segmented, Status, authHeaders, cls, fmtRelative, fmtWhen, type Persona } from "./shared";
@@ -690,6 +691,7 @@ function SkillsPanel({
   const [filter, setFilter] = useState<SkillFilter>("all");
   const [page, setPage] = useState(0);
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<{ id: string; content: string; source: Skill["source"] } | null>(null);
   const pageSize = 30;
   const visibleSkills = filter === "all" ? skills : skills.filter((skill) => skill.source === filter);
   const pageCount = Math.max(1, Math.ceil(visibleSkills.length / pageSize));
@@ -732,10 +734,37 @@ function SkillsPanel({
       );
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "Could not remove");
-      onChange(body.skills ?? []);
-      setPage((current) => Math.min(current, Math.max(0, Math.ceil((skills.length - 1) / pageSize) - 1)));
+      const next: Skill[] = body.skills ?? [];
+      onChange(next);
+      const nextVisible = filter === "all" ? next : next.filter((skill) => skill.source === filter);
+      setPage((current) => Math.min(current, Math.max(0, Math.ceil(nextVisible.length / pageSize) - 1)));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not remove");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveEdit() {
+    if (!editing || editing.content.trim().length < 3) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/influencers/${persona.id}/feedback`, {
+        method: "PATCH",
+        headers: authHeaders(token),
+        body: JSON.stringify({
+          skill_id: editing.id,
+          skill: editing.content,
+          source: editing.source,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Could not update");
+      onChange(body.skills ?? []);
+      setEditing(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update");
     } finally {
       setBusy(false);
     }
@@ -816,32 +845,63 @@ function SkillsPanel({
         <ol start={rangeStart} className="mt-3 list-decimal space-y-0 pl-5 text-sm leading-relaxed text-neutral-300 marker:text-neutral-600">
           {pageSkills.map((s) => (
             <li key={s.id} className="group border-b border-white/[0.045] py-2.5 first:pt-0 last:border-b-0">
-              <span className="flex items-start gap-3">
-                <span className="min-w-0 max-w-5xl flex-1">{s.content}</span>
-                <span className={cn(
-                  "shrink-0 rounded border px-1.5 py-0.5 text-[10px] capitalize",
-                  s.source === "operator"
-                    ? "border-violet-400/20 text-violet-300"
-                    : s.source === "agent"
-                      ? "border-sky-400/20 text-sky-300"
-                      : "border-white/[0.08] text-neutral-500",
-                )}>
-                  {s.source}
+              {editing?.id === s.id ? (
+                <div className="rounded-lg border border-white/[0.08] bg-white/[0.025] p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-neutral-300">Edit rule</span>
+                    <Select
+                      value={editing.source}
+                      onValueChange={(source: Skill["source"]) => setEditing((current) => current ? { ...current, source } : current)}
+                    >
+                      <SelectTrigger className={cn(cls.select, "h-8 w-28 text-[11px]", editing.source === "operator" ? "text-violet-300" : editing.source === "agent" ? "text-sky-300" : "text-neutral-400")}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent className={cls.menu}>
+                        <SelectItem value="operator">Operator</SelectItem>
+                        <SelectItem value="agent">Agent</SelectItem>
+                        <SelectItem value="legacy">Legacy</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Textarea
+                    autoFocus
+                    value={editing.content}
+                    onChange={(e) => setEditing((current) => current ? { ...current, content: e.target.value } : current)}
+                    rows={3}
+                    className={cn(cls.textarea, "mt-2 min-h-0 py-2 text-xs")}
+                    aria-label="Edit skill rule"
+                  />
+                  <div className="mt-2 flex justify-end gap-2">
+                    <button type="button" onClick={() => setEditing(null)} disabled={busy} className={cls.ghost}>Cancel</button>
+                    <button type="button" onClick={() => void saveEdit()} disabled={busy || editing.content.trim().length < 3} className={cls.primary}>
+                      {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
+                      Save
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <span className="flex items-start gap-3">
+                  <span className="min-w-0 max-w-5xl flex-1">{s.content}</span>
+                  <span className={cn(
+                    "shrink-0 rounded border px-1.5 py-0.5 text-[10px] capitalize",
+                    s.source === "operator"
+                      ? "border-violet-400/20 text-violet-300"
+                      : s.source === "agent"
+                        ? "border-sky-400/20 text-sky-300"
+                        : "border-white/[0.08] text-neutral-500",
+                  )}>
+                    {s.source}
+                  </span>
+                  <div className="flex shrink-0 gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+                    <button type="button" aria-label="Edit this rule" disabled={busy} onClick={() => setEditing({ id: s.id, content: s.content, source: s.source })} className={cn(cls.ghost, "size-7 justify-center px-0")}>
+                      <Pencil className="size-3.5" />
+                    </button>
+                    <button type="button" aria-label="Remove this rule" disabled={busy} onClick={() => drop(s.id)} className={cn(cls.ghost, "size-7 justify-center px-0 hover:text-red-300")}>
+                      <X className="size-3.5" />
+                    </button>
+                  </div>
                 </span>
-                <button
-                  type="button"
-                  aria-label="Remove this rule"
-                  disabled={busy}
-                  onClick={() => drop(s.id)}
-                  className={cn(
-                    cls.ghost,
-                    "size-7 shrink-0 justify-center px-0 opacity-0 transition-opacity duration-150",
-                    "group-hover:opacity-100 group-focus-within:opacity-100 hover:text-red-300",
-                  )}
-                >
-                  <X className="size-3.5" />
-                </button>
-              </span>
+              )}
             </li>
           ))}
         </ol>
