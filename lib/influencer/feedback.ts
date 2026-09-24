@@ -111,6 +111,7 @@ export async function listSkills(
 ): Promise<string[]> {
   const operatorSkillsPromise = (async () => {
     const skills: string[] = [];
+    const seenPageEnds = new Set<string>();
     for (let from = 0; ; from += OPERATOR_SKILL_PAGE_SIZE) {
       const { data, error } = await client
         .from("persona_memory")
@@ -122,6 +123,12 @@ export async function listSkills(
         .range(from, from + OPERATOR_SKILL_PAGE_SIZE - 1);
       if (error) throw new Error(error.message);
       const rows = data ?? [];
+      // A broken offset must not turn the shift into an endless read or duplicate rules.
+      const lastId = rows.at(-1)?.id;
+      if (lastId && seenPageEnds.has(lastId)) {
+        throw new Error("Operator skill pagination did not advance.");
+      }
+      if (lastId) seenPageEnds.add(lastId);
       skills.push(...rows.filter((row) => typeof row.content === "string" && row.content.trim()).map((row) => row.content));
       if (rows.length < OPERATOR_SKILL_PAGE_SIZE) return skills;
     }
