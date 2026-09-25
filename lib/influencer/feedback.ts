@@ -118,32 +118,24 @@ export async function listSkills(
   // a hard ceiling so a large persona cannot exhaust its model context.
   const operatorSkillsPromise = (async () => {
     const skills: string[] = [];
-    let cursor: { createdAt: string; id: string } | null = null;
+    let lastId: string | null = null;
     while (true) {
       let query = client
         .from("persona_memory")
-        .select("id,content,created_at")
+        .select("id,content")
         .eq("persona_id", personaId)
         .contains("tags", [SKILL_TAG, OPERATOR_TAG])
-        .order("created_at", { ascending: false })
-        .order("id", { ascending: false })
+        .order("id", { ascending: true })
         .limit(OPERATOR_SKILL_PAGE_SIZE);
-      if (cursor) {
-        query = query.or(
-          `created_at.lt.${cursor.createdAt},and(created_at.eq.${cursor.createdAt},id.lt.${cursor.id})`,
-        );
-      }
+      if (lastId) query = query.gt("id", lastId);
       const { data, error } = await query;
       if (error) throw new Error(error.message);
       const rows = data ?? [];
       if (!rows.length) return skills;
 
       // Guard against a broken/mocked query that ignores the keyset filter.
-      const last = rows.at(-1);
-      const nextCursor = last
-        ? { createdAt: String(last.created_at), id: String(last.id) }
-        : null;
-      if (!nextCursor || (cursor && nextCursor.id === cursor.id && nextCursor.createdAt === cursor.createdAt)) {
+      const nextId = String(rows.at(-1)?.id ?? "");
+      if (!nextId || (lastId && nextId <= lastId)) {
         throw new Error("Operator skill pagination did not advance.");
       }
       skills.push(
@@ -155,7 +147,7 @@ export async function listSkills(
         return skills.slice(0, MAX_OPERATOR_SKILLS);
       }
       if (rows.length < OPERATOR_SKILL_PAGE_SIZE) return skills;
-      cursor = nextCursor;
+      lastId = nextId;
     }
   })();
 

@@ -5,32 +5,29 @@ import { listSkills } from "../../lib/influencer/feedback";
 
 function skillClient(operatorCount: number, repeatFirstPage = false) {
   const rows = Array.from({ length: operatorCount }, (_, i) => ({
-    id: `skill-${String(i).padStart(4, "0")}`,
+    id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
     content: `Rule ${i}`,
-    created_at: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(),
-  })).reverse();
-  const cursors: string[] = [];
+  }));
+  const cursors: (string | null)[] = [];
   const client = {
     from: () => {
-      let cursor: { created_at: string; id: string } | null = null;
+      let cursor: string | null = null;
       const query = {
         select: () => query,
         eq: () => query,
         contains: () => query,
         not: () => query,
         order: () => query,
-        limit: () => Promise.resolve({ data: [], error: null }),
-        or: (filter: string) => {
-          const match = filter.match(/created_at\.lt\.([^,]+),and\(created_at\.eq\.([^,]+),id\.lt\.([^)]+)\)/);
-          if (match) cursor = { created_at: match[2], id: match[3] };
-          cursors.push(filter);
+        limit: () => query,
+        gt: (_column: string, value: string) => {
+          cursor = value;
+          cursors.push(value);
           return query;
         },
         then: (resolve: (value: { data: typeof rows; error: null }) => unknown) => {
           const eligible = repeatFirstPage || !cursor
             ? rows
-            : rows.filter((row) => row.created_at < cursor!.created_at ||
-              (row.created_at === cursor!.created_at && row.id < cursor!.id));
+            : rows.filter((row) => row.id > cursor!);
           return Promise.resolve({
             data: eligible.slice(0, 200),
             error: null,
@@ -48,7 +45,7 @@ describe("operator skill pagination", () => {
     const { client, cursors } = skillClient(205);
     const skills = await listSkills(client, "persona-1");
     expect(skills.operator).toHaveLength(205);
-    expect(skills.operator.at(-1)).toBe("Rule 0");
+    expect(skills.operator.at(-1)).toBe("Rule 204");
     expect(cursors).toHaveLength(1);
   });
 
