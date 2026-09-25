@@ -118,29 +118,58 @@ export async function listSkills(
   // a hard ceiling so a large persona cannot exhaust its model context.
   const operatorSkillsPromise = (async () => {
     const skills: { id: string; content: string; createdAt: string }[] = [];
-    let lastId: string | null = null;
+    let cursor: { id: string; createdAt: string } | null = null;
     const result = () =>
       skills
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
         .slice(0, MAX_OPERATOR_SKILLS)
         .map((skill) => skill.content);
     while (true) {
-      let query = client
-        .from("persona_memory")
-        .select("id,content,created_at")
-        .eq("persona_id", personaId)
-        .contains("tags", [SKILL_TAG, OPERATOR_TAG])
-        .order("id", { ascending: true })
-        .limit(OPERATOR_SKILL_PAGE_SIZE);
-      if (lastId) query = query.gt("id", lastId);
-      const { data, error } = await query;
-      if (error) throw new Error(error.message);
-      const rows = data ?? [];
+      const baseQuery = () =>
+        client
+          .from("persona_memory")
+          .select("id,content,created_at")
+          .eq("persona_id", personaId)
+          .contains("tags", [SKILL_TAG, OPERATOR_TAG]);
+      let rows: { id: string; content: string; created_at: string }[];
+      if (!cursor) {
+        const { data, error } = await baseQuery()
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: false })
+          .limit(OPERATOR_SKILL_PAGE_SIZE);
+        if (error) throw new Error(error.message);
+        rows = data ?? [];
+      } else {
+        // Use separate parameterized filters instead of interpolating a
+        // timestamptz into PostgREST's raw .or() expression. Fetch ties first,
+        // then fill the rest of the page with older timestamps.
+        const { data: sameTimestamp, error: sameError } = await baseQuery()
+          .eq("created_at", cursor.createdAt)
+          .lt("id", cursor.id)
+          .order("id", { ascending: false })
+          .limit(OPERATOR_SKILL_PAGE_SIZE);
+        if (sameError) throw new Error(sameError.message);
+        rows = sameTimestamp ?? [];
+        if (rows.length < OPERATOR_SKILL_PAGE_SIZE) {
+          const { data: older, error: olderError } = await baseQuery()
+            .lt("created_at", cursor.createdAt)
+            .order("created_at", { ascending: false })
+            .order("id", { ascending: false })
+            .limit(OPERATOR_SKILL_PAGE_SIZE - rows.length);
+          if (olderError) throw new Error(olderError.message);
+          rows = [...rows, ...(older ?? [])];
+        }
+      }
       if (!rows.length) return result();
 
       // Guard against a broken/mocked query that ignores the keyset filter.
-      const nextId = String(rows.at(-1)?.id ?? "");
-      if (!nextId || (lastId && nextId <= lastId)) {
+      const last = rows.at(-1);
+      const nextCursor = last
+        ? { id: String(last.id), createdAt: String(last.created_at) }
+        : null;
+      if (!nextCursor || (cursor && (
+        nextCursor.createdAt > cursor.createdAt ||
+        (nextCursor.createdAt === cursor.createdAt && nextCursor.id >= cursor.id)
+      ))) {
         throw new Error("Operator skill pagination did not advance.");
       }
       skills.push(
@@ -152,8 +181,11 @@ export async function listSkills(
             createdAt: String(row.created_at),
           })),
       );
+      // Pages arrive newest first, so once we have the prompt cap we can stop
+      // without scanning the persona's remaining memory rows.
+      if (skills.length >= MAX_OPERATOR_SKILLS) return result();
       if (rows.length < OPERATOR_SKILL_PAGE_SIZE) return result();
-      lastId = nextId;
+      cursor = nextCursor;
     }
   })();
 

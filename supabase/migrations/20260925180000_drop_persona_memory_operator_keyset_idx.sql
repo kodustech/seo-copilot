@@ -1,0 +1,1 @@
+drop index concurrently if exists public.persona_memory_operator_skill_keyset_idx;
