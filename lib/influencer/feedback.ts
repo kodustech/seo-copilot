@@ -90,11 +90,12 @@ export async function markFeedbackApplied(
 const SKILL_TAG = "skill";
 const OPERATOR_TAG = "operator";
 const AGENT_TAG = "agent";
-export const MAX_SKILL_LENGTH = 1000;
+const OPERATOR_SKILL_PAGE_SIZE = 200;
 
 export type SkillSource = "operator" | "agent" | "legacy";
 
 export class SkillValidationError extends Error {}
+export class SkillNotFoundError extends Error {}
 
 function skillSource(tags: unknown): SkillSource {
   if (Array.isArray(tags) && tags.includes(OPERATOR_TAG)) return "operator";
@@ -108,13 +109,32 @@ export async function listSkills(
   personaId: string,
   limit = 30,
 ): Promise<string[]> {
-  const [operatorResult, agentResult, legacyResult] = await Promise.all([
-    client
-      .from("persona_memory")
-      .select("content,tags,created_at")
-      .eq("persona_id", personaId)
-      .contains("tags", [SKILL_TAG, OPERATOR_TAG])
-      .order("created_at", { ascending: false }),
+  const operatorSkillsPromise = (async () => {
+    const skills: string[] = [];
+    const seenPageEnds = new Set<string>();
+    for (let from = 0; ; from += OPERATOR_SKILL_PAGE_SIZE) {
+      const { data, error } = await client
+        .from("persona_memory")
+        .select("id,content")
+        .eq("persona_id", personaId)
+        .contains("tags", [SKILL_TAG, OPERATOR_TAG])
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, from + OPERATOR_SKILL_PAGE_SIZE - 1);
+      if (error) throw new Error(error.message);
+      const rows = data ?? [];
+      // A broken offset must not turn the shift into an endless read or duplicate rules.
+      const lastId = rows.at(-1)?.id;
+      if (lastId && seenPageEnds.has(lastId)) {
+        throw new Error("Operator skill pagination did not advance.");
+      }
+      if (lastId) seenPageEnds.add(lastId);
+      skills.push(...rows.filter((row) => typeof row.content === "string" && row.content.trim()).map((row) => row.content));
+      if (rows.length < OPERATOR_SKILL_PAGE_SIZE) return skills;
+    }
+  })();
+  const [operatorSkills, agentResult, legacyResult] = await Promise.all([
+    operatorSkillsPromise,
     client
       .from("persona_memory")
       .select("content,tags,created_at")
@@ -133,14 +153,13 @@ export async function listSkills(
       .order("created_at", { ascending: false })
       .limit(limit),
   ]);
-  if (operatorResult.error) throw new Error(operatorResult.error.message);
   if (agentResult.error) throw new Error(agentResult.error.message);
   if (legacyResult.error) throw new Error(legacyResult.error.message);
   const content = (rows: { content: unknown }[]) => rows
     .filter((row) => typeof row.content === "string" && row.content.trim())
     .map((row) => String(row.content));
   return [
-    ...content(operatorResult.data ?? []),
+    ...operatorSkills,
     ...content(legacyResult.data ?? []),
     ...content(agentResult.data ?? []),
   ];
@@ -192,29 +211,7 @@ export async function updateSkill(
 ): Promise<void> {
   const trimmed = skill.trim();
   if (trimmed.length < 3) throw new SkillValidationError("A rule needs at least a few words.");
-  if (trimmed.length > MAX_SKILL_LENGTH) {
-    const { data, error } = await client
-      .from("persona_memory")
-      .select("content")
-      .eq("id", skillId)
-      .eq("persona_id", personaId)
-      .contains("tags", [SKILL_TAG])
-      .single();
-    if (error?.code === "PGRST116") return;
-    if (error) throw new Error(error.message);
-    if (typeof data?.content !== "string" || data.content.trim() !== trimmed) {
-      throw new SkillValidationError(`A rule cannot exceed ${MAX_SKILL_LENGTH} characters.`);
-    }
-    const { error: tagError } = await client
-      .from("persona_memory")
-      .update({ tags: [SKILL_TAG, source] })
-      .eq("id", skillId)
-      .eq("persona_id", personaId)
-      .contains("tags", [SKILL_TAG]);
-    if (tagError) throw new Error(tagError.message);
-    return;
-  }
-  const { error } = await client
+  const { data, error } = await client
     .from("persona_memory")
     .update({
       title: trimmed.slice(0, 80),
@@ -223,8 +220,10 @@ export async function updateSkill(
     })
     .eq("id", skillId)
     .eq("persona_id", personaId)
-    .contains("tags", [SKILL_TAG]);
+    .contains("tags", [SKILL_TAG])
+    .select("id");
   if (error) throw new Error(error.message);
+  if (!data?.length) throw new SkillNotFoundError("This rule no longer exists. Refresh and try again.");
 }
 
 export async function addSkill(
@@ -233,7 +232,7 @@ export async function addSkill(
   skill: string,
   source: Exclude<SkillSource, "legacy"> = "agent",
 ): Promise<MemoryNote> {
-  const trimmed = skill.trim().slice(0, MAX_SKILL_LENGTH);
+  const trimmed = skill.trim();
   return saveMemory(client, personaId, {
     title: trimmed.slice(0, 80),
     content: trimmed,

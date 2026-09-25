@@ -8,6 +8,7 @@ import {
   listFeedback,
   listSkillNotes,
   removeSkill,
+  SkillNotFoundError,
   SkillValidationError,
   updateSkill,
   type SkillSource,
@@ -21,6 +22,9 @@ function errorResponse(error: unknown) {
   const message = error instanceof Error ? error.message : "Internal error";
   if (error instanceof SkillValidationError) {
     return NextResponse.json({ error: message }, { status: 400 });
+  }
+  if (error instanceof SkillNotFoundError) {
+    return NextResponse.json({ error: message }, { status: 404 });
   }
   const missing = influencerTableMissingMessage(error);
   if (missing) return NextResponse.json({ error: missing }, { status: 500 });
@@ -75,7 +79,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
           { status: 400 },
         );
       }
-      await addSkill(client, id, skill.slice(0, 1000), "operator");
+      await addSkill(client, id, skill, "operator");
       const skills = await listSkillNotes(client, id);
       return NextResponse.json({ skills });
     }

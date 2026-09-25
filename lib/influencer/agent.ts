@@ -1137,9 +1137,8 @@ export async function runInfluencerAgentSession({
 
   // Durable skills the persona has learned (from operator feedback / experience)
   // are always-on rules injected into the system prompt.
-  const skills = await listSkills(client, persona.id).catch(() => []);
-
   try {
+    const skills = await listSkills(client, persona.id);
     const result = await generateText({
       model,
       system: buildAgentSystem(persona, allowedPlatforms, skills),
@@ -1156,7 +1155,9 @@ export async function runInfluencerAgentSession({
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await step({ kind: "error", payload: { message } });
-    await finishSession(client, session.id, { status: "failed", error: message });
+    // The session may have failed because the database is unavailable; keep
+    // the failure return observable to the scheduler even if this write fails.
+    await finishSession(client, session.id, { status: "failed", error: message }).catch(() => {});
     return { session_id: session.id, status: "failed", drafts, error: message };
   }
 }
