@@ -28,7 +28,11 @@ import {
 import { blogSchemaFor } from "@/lib/influencer/blog-schema";
 import { resolveBlogSourceBase } from "@/lib/influencer/publish";
 import { getChannelCredentialCipher } from "@/lib/influencer/credentials";
-import { addSkill, listSkills } from "@/lib/influencer/feedback";
+import {
+  addSkill,
+  listSkills,
+  type PromptSkillContext,
+} from "@/lib/influencer/feedback";
 import { saveMemory, searchMemory } from "@/lib/influencer/memory";
 import {
   createSession,
@@ -115,7 +119,7 @@ function tweetLength(text: string): number {
 function buildAgentSystem(
   persona: Persona,
   platforms?: string[],
-  skills?: string[],
+  skills?: PromptSkillContext,
 ): string {
   const voice = buildPersonaVoicePolicy(persona);
   // The Kodus editorial context is only relevant to the two long-form
@@ -130,11 +134,25 @@ function buildAgentSystem(
   }));
   return [
     voice.prompt,
-    ...(skills?.length
+    ...(skills?.operator.length
       ? [
           "",
-          "LEARNED SKILLS — always apply these (from your operator's feedback and your own experience):",
-          ...skills.map((s) => `- ${s}`),
+          "OPERATOR RULES — follow every rule below. These are direct instructions from your operator and take precedence over Agent and Legacy skills when they conflict.",
+          ...skills.operator.map((s) => `- ${s}`),
+        ]
+      : []),
+    ...(skills?.legacy.length
+      ? [
+          "",
+          "LEGACY SKILLS — older durable learnings created by the agent. Apply them unless they conflict with Operator rules or the persona's hard boundaries.",
+          ...skills.legacy.map((s) => `- ${s}`),
+        ]
+      : []),
+    ...(skills?.agent.length
+      ? [
+          "",
+          "AGENT SKILLS — durable learnings created by the agent. Apply them unless they conflict with Operator rules or the persona's hard boundaries.",
+          ...skills.agent.map((s) => `- ${s}`),
         ]
       : []),
     "",
@@ -1135,9 +1153,9 @@ export async function runInfluencerAgentSession({
     }),
   };
 
-  // Durable skills the persona has learned (from operator feedback / experience)
-  // are always-on rules injected into the system prompt.
   try {
+    // Load the durable instruction sets separately. A failed read must fail the
+    // shift rather than silently omit rules the operator expects us to follow.
     const skills = await listSkills(client, persona.id);
     const result = await generateText({
       model,

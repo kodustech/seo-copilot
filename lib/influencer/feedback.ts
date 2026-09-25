@@ -93,6 +93,7 @@ const AGENT_TAG = "agent";
 const OPERATOR_SKILL_PAGE_SIZE = 200;
 
 export type SkillSource = "operator" | "agent" | "legacy";
+export type PromptSkillContext = Record<SkillSource, string[]>;
 
 export class SkillValidationError extends Error {}
 export class SkillNotFoundError extends Error {}
@@ -108,7 +109,9 @@ export async function listSkills(
   client: SupabaseClient,
   personaId: string,
   limit = 30,
-): Promise<string[]> {
+): Promise<PromptSkillContext> {
+  // Operator rules are authoritative and must not be truncated by the
+  // learned-skill cap or PostgREST's default page size.
   const operatorSkillsPromise = (async () => {
     const skills: string[] = [];
     const seenPageEnds = new Set<string>();
@@ -129,11 +132,16 @@ export async function listSkills(
         throw new Error("Operator skill pagination did not advance.");
       }
       if (lastId) seenPageEnds.add(lastId);
-      skills.push(...rows.filter((row) => typeof row.content === "string" && row.content.trim()).map((row) => row.content));
+      skills.push(
+        ...rows
+          .filter((row) => typeof row.content === "string" && row.content.trim())
+          .map((row) => String(row.content)),
+      );
       if (rows.length < OPERATOR_SKILL_PAGE_SIZE) return skills;
     }
   })();
-  const [operatorSkills, agentResult, legacyResult] = await Promise.all([
+
+  const [operator, agentResult, legacyResult] = await Promise.all([
     operatorSkillsPromise,
     client
       .from("persona_memory")
@@ -155,14 +163,15 @@ export async function listSkills(
   ]);
   if (agentResult.error) throw new Error(agentResult.error.message);
   if (legacyResult.error) throw new Error(legacyResult.error.message);
-  const content = (rows: { content: unknown }[]) => rows
-    .filter((row) => typeof row.content === "string" && row.content.trim())
-    .map((row) => String(row.content));
-  return [
-    ...operatorSkills,
-    ...content(legacyResult.data ?? []),
-    ...content(agentResult.data ?? []),
-  ];
+  const content = (rows: { content: unknown }[]) =>
+    rows
+      .filter((row) => typeof row.content === "string" && row.content.trim())
+      .map((row) => String(row.content));
+  return {
+    operator,
+    legacy: content(legacyResult.data ?? []),
+    agent: content(agentResult.data ?? []),
+  };
 }
 
 /** The same skills, with ids, for anything that needs to remove one. The agent
