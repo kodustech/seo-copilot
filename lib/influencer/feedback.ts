@@ -118,40 +118,44 @@ export async function listSkills(
   // a hard ceiling so a large persona cannot exhaust its model context.
   const operatorSkillsPromise = (async () => {
     const skills: string[] = [];
-    const seenPageEnds = new Set<string>();
-    const seenIds = new Set<string>();
-    for (let from = 0; ; from += OPERATOR_SKILL_PAGE_SIZE) {
-      const { data, error } = await client
+    let cursor: { createdAt: string; id: string } | null = null;
+    while (true) {
+      let query = client
         .from("persona_memory")
-        .select("id,content")
+        .select("id,content,created_at")
         .eq("persona_id", personaId)
         .contains("tags", [SKILL_TAG, OPERATOR_TAG])
         .order("created_at", { ascending: false })
         .order("id", { ascending: false })
-        .range(from, from + OPERATOR_SKILL_PAGE_SIZE - 1);
+        .limit(OPERATOR_SKILL_PAGE_SIZE);
+      if (cursor) {
+        query = query.or(
+          `created_at.lt.${cursor.createdAt},and(created_at.eq.${cursor.createdAt},id.lt.${cursor.id})`,
+        );
+      }
+      const { data, error } = await query;
       if (error) throw new Error(error.message);
       const rows = data ?? [];
-      // A broken offset must not turn the shift into an endless read or duplicate rules.
-      const lastId = rows.at(-1)?.id;
-      if (lastId && seenPageEnds.has(lastId)) {
+      if (!rows.length) return skills;
+
+      // Guard against a broken/mocked query that ignores the keyset filter.
+      const last = rows.at(-1);
+      const nextCursor = last
+        ? { createdAt: String(last.created_at), id: String(last.id) }
+        : null;
+      if (!nextCursor || (cursor && nextCursor.id === cursor.id && nextCursor.createdAt === cursor.createdAt)) {
         throw new Error("Operator skill pagination did not advance.");
       }
-      if (lastId) seenPageEnds.add(lastId);
       skills.push(
         ...rows
-          .filter((row) => {
-            if (typeof row.content !== "string" || !row.content.trim()) return false;
-            const id = String(row.id);
-            if (seenIds.has(id)) return false;
-            seenIds.add(id);
-            return true;
-          })
+          .filter((row) => typeof row.content === "string" && row.content.trim())
           .map((row) => String(row.content)),
       );
       if (skills.length >= MAX_OPERATOR_SKILLS) {
         return skills.slice(0, MAX_OPERATOR_SKILLS);
       }
       if (rows.length < OPERATOR_SKILL_PAGE_SIZE) return skills;
+      cursor = nextCursor;
     }
   })();
 
