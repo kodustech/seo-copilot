@@ -117,45 +117,43 @@ export async function listSkills(
   // learned-skill cap or PostgREST's default page size. The prompt still needs
   // a hard ceiling so a large persona cannot exhaust its model context.
   const operatorSkillsPromise = (async () => {
-    const skills: string[] = [];
-    let cursor: { createdAt: string; id: string } | null = null;
+    const skills: { id: string; content: string; createdAt: string }[] = [];
+    let lastId: string | null = null;
+    const result = () =>
+      skills
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+        .slice(0, MAX_OPERATOR_SKILLS)
+        .map((skill) => skill.content);
     while (true) {
       let query = client
         .from("persona_memory")
         .select("id,content,created_at")
         .eq("persona_id", personaId)
         .contains("tags", [SKILL_TAG, OPERATOR_TAG])
-        .order("created_at", { ascending: false })
-        .order("id", { ascending: false })
+        .order("id", { ascending: true })
         .limit(OPERATOR_SKILL_PAGE_SIZE);
-      if (cursor) {
-        query = query.or(
-          `created_at.lt."${cursor.createdAt}",and(created_at.eq."${cursor.createdAt}",id.lt.${cursor.id})`,
-        );
-      }
+      if (lastId) query = query.gt("id", lastId);
       const { data, error } = await query;
       if (error) throw new Error(error.message);
       const rows = data ?? [];
-      if (!rows.length) return skills;
+      if (!rows.length) return result();
 
       // Guard against a broken/mocked query that ignores the keyset filter.
-      const last = rows.at(-1);
-      const nextCursor = last
-        ? { createdAt: String(last.created_at), id: String(last.id) }
-        : null;
-      if (!nextCursor || (cursor && nextCursor.id === cursor.id && nextCursor.createdAt === cursor.createdAt)) {
+      const nextId = String(rows.at(-1)?.id ?? "");
+      if (!nextId || (lastId && nextId <= lastId)) {
         throw new Error("Operator skill pagination did not advance.");
       }
       skills.push(
         ...rows
           .filter((row) => typeof row.content === "string" && row.content.trim())
-          .map((row) => String(row.content)),
+          .map((row) => ({
+            id: String(row.id),
+            content: String(row.content),
+            createdAt: String(row.created_at),
+          })),
       );
-      if (skills.length >= MAX_OPERATOR_SKILLS) {
-        return skills.slice(0, MAX_OPERATOR_SKILLS);
-      }
-      if (rows.length < OPERATOR_SKILL_PAGE_SIZE) return skills;
-      cursor = nextCursor;
+      if (rows.length < OPERATOR_SKILL_PAGE_SIZE) return result();
+      lastId = nextId;
     }
   })();
 
