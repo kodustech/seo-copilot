@@ -91,6 +91,9 @@ const SKILL_TAG = "skill";
 const OPERATOR_TAG = "operator";
 const AGENT_TAG = "agent";
 const OPERATOR_SKILL_PAGE_SIZE = 200;
+// Keep authoritative operator rules complete in their source of truth while
+// bounding the amount of operator context sent to each model call.
+const MAX_OPERATOR_SKILLS = 500;
 
 export type SkillSource = "operator" | "agent" | "legacy";
 export type PromptSkillContext = Record<SkillSource, string[]>;
@@ -111,10 +114,12 @@ export async function listSkills(
   limit = 30,
 ): Promise<PromptSkillContext> {
   // Operator rules are authoritative and must not be truncated by the
-  // learned-skill cap or PostgREST's default page size.
+  // learned-skill cap or PostgREST's default page size. The prompt still needs
+  // a hard ceiling so a large persona cannot exhaust its model context.
   const operatorSkillsPromise = (async () => {
     const skills: string[] = [];
     const seenPageEnds = new Set<string>();
+    const seenIds = new Set<string>();
     for (let from = 0; ; from += OPERATOR_SKILL_PAGE_SIZE) {
       const { data, error } = await client
         .from("persona_memory")
@@ -134,9 +139,18 @@ export async function listSkills(
       if (lastId) seenPageEnds.add(lastId);
       skills.push(
         ...rows
-          .filter((row) => typeof row.content === "string" && row.content.trim())
+          .filter((row) => {
+            if (typeof row.content !== "string" || !row.content.trim()) return false;
+            const id = String(row.id);
+            if (seenIds.has(id)) return false;
+            seenIds.add(id);
+            return true;
+          })
           .map((row) => String(row.content)),
       );
+      if (skills.length >= MAX_OPERATOR_SKILLS) {
+        return skills.slice(0, MAX_OPERATOR_SKILLS);
+      }
       if (rows.length < OPERATOR_SKILL_PAGE_SIZE) return skills;
     }
   })();
