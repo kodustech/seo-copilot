@@ -91,8 +91,12 @@ const SKILL_TAG = "skill";
 const OPERATOR_TAG = "operator";
 const AGENT_TAG = "agent";
 const OPERATOR_SKILL_PAGE_SIZE = 200;
+// Keep authoritative operator rules complete in their source of truth while
+// bounding the amount of operator context sent to each model call.
+const MAX_OPERATOR_SKILLS = 500;
 
 export type SkillSource = "operator" | "agent" | "legacy";
+export type PromptSkillContext = Record<SkillSource, string[]>;
 
 export class SkillValidationError extends Error {}
 export class SkillNotFoundError extends Error {}
@@ -108,32 +112,84 @@ export async function listSkills(
   client: SupabaseClient,
   personaId: string,
   limit = 30,
-): Promise<string[]> {
+): Promise<PromptSkillContext> {
+  // Operator rules are authoritative and must not be truncated by the
+  // learned-skill cap or PostgREST's default page size. The prompt still needs
+  // a hard ceiling so a large persona cannot exhaust its model context.
   const operatorSkillsPromise = (async () => {
-    const skills: string[] = [];
-    const seenPageEnds = new Set<string>();
-    for (let from = 0; ; from += OPERATOR_SKILL_PAGE_SIZE) {
-      const { data, error } = await client
-        .from("persona_memory")
-        .select("id,content")
-        .eq("persona_id", personaId)
-        .contains("tags", [SKILL_TAG, OPERATOR_TAG])
-        .order("created_at", { ascending: false })
-        .order("id", { ascending: false })
-        .range(from, from + OPERATOR_SKILL_PAGE_SIZE - 1);
-      if (error) throw new Error(error.message);
-      const rows = data ?? [];
-      // A broken offset must not turn the shift into an endless read or duplicate rules.
-      const lastId = rows.at(-1)?.id;
-      if (lastId && seenPageEnds.has(lastId)) {
+    const skills: { id: string; content: string; createdAt: string }[] = [];
+    let cursor: { id: string; createdAt: string } | null = null;
+    const result = () =>
+      skills
+        .slice(0, MAX_OPERATOR_SKILLS)
+        .map((skill) => skill.content);
+    while (true) {
+      const baseQuery = () =>
+        client
+          .from("persona_memory")
+          .select("id,content,created_at")
+          .eq("persona_id", personaId)
+          .contains("tags", [SKILL_TAG, OPERATOR_TAG]);
+      let rows: { id: string; content: string; created_at: string }[];
+      if (!cursor) {
+        const { data, error } = await baseQuery()
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: false })
+          .limit(OPERATOR_SKILL_PAGE_SIZE);
+        if (error) throw new Error(error.message);
+        rows = data ?? [];
+      } else {
+        // Use separate parameterized filters instead of interpolating a
+        // timestamptz into PostgREST's raw .or() expression. Fetch ties first,
+        // then fill the rest of the page with older timestamps.
+        const { data: sameTimestamp, error: sameError } = await baseQuery()
+          .eq("created_at", cursor.createdAt)
+          .lt("id", cursor.id)
+          .order("id", { ascending: false })
+          .limit(OPERATOR_SKILL_PAGE_SIZE);
+        if (sameError) throw new Error(sameError.message);
+        rows = sameTimestamp ?? [];
+        if (rows.length < OPERATOR_SKILL_PAGE_SIZE) {
+          const { data: older, error: olderError } = await baseQuery()
+            .lt("created_at", cursor.createdAt)
+            .order("created_at", { ascending: false })
+            .order("id", { ascending: false })
+            .limit(OPERATOR_SKILL_PAGE_SIZE - rows.length);
+          if (olderError) throw new Error(olderError.message);
+          rows = [...rows, ...(older ?? [])];
+        }
+      }
+      if (!rows.length) return result();
+
+      // Guard against a broken/mocked query that ignores the keyset filter.
+      const last = rows.at(-1);
+      const nextCursor = last
+        ? { id: String(last.id), createdAt: String(last.created_at) }
+        : null;
+      if (!nextCursor || (cursor && (
+        nextCursor.createdAt > cursor.createdAt ||
+        (nextCursor.createdAt === cursor.createdAt && nextCursor.id >= cursor.id)
+      ))) {
         throw new Error("Operator skill pagination did not advance.");
       }
-      if (lastId) seenPageEnds.add(lastId);
-      skills.push(...rows.filter((row) => typeof row.content === "string" && row.content.trim()).map((row) => row.content));
-      if (rows.length < OPERATOR_SKILL_PAGE_SIZE) return skills;
+      skills.push(
+        ...rows
+          .filter((row) => typeof row.content === "string" && row.content.trim())
+          .map((row) => ({
+            id: String(row.id),
+            content: String(row.content),
+            createdAt: String(row.created_at),
+          })),
+      );
+      // Pages arrive newest first, so once we have the prompt cap we can stop
+      // without scanning the persona's remaining memory rows.
+      if (skills.length >= MAX_OPERATOR_SKILLS) return result();
+      if (rows.length < OPERATOR_SKILL_PAGE_SIZE) return result();
+      cursor = nextCursor;
     }
   })();
-  const [operatorSkills, agentResult, legacyResult] = await Promise.all([
+
+  const [operator, agentResult, legacyResult] = await Promise.all([
     operatorSkillsPromise,
     client
       .from("persona_memory")
@@ -155,14 +211,15 @@ export async function listSkills(
   ]);
   if (agentResult.error) throw new Error(agentResult.error.message);
   if (legacyResult.error) throw new Error(legacyResult.error.message);
-  const content = (rows: { content: unknown }[]) => rows
-    .filter((row) => typeof row.content === "string" && row.content.trim())
-    .map((row) => String(row.content));
-  return [
-    ...operatorSkills,
-    ...content(legacyResult.data ?? []),
-    ...content(agentResult.data ?? []),
-  ];
+  const content = (rows: { content: unknown }[]) =>
+    rows
+      .filter((row) => typeof row.content === "string" && row.content.trim())
+      .map((row) => String(row.content));
+  return {
+    operator,
+    legacy: content(legacyResult.data ?? []),
+    agent: content(agentResult.data ?? []),
+  };
 }
 
 /** The same skills, with ids, for anything that needs to remove one. The agent
