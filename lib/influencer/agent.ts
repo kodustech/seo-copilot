@@ -30,6 +30,7 @@ import { resolveBlogSourceBase } from "@/lib/influencer/publish";
 import { getChannelCredentialCipher } from "@/lib/influencer/credentials";
 import {
   addSkill,
+  MAX_SKILL_LENGTH,
   listSkills,
   type PromptSkillContext,
 } from "@/lib/influencer/feedback";
@@ -143,14 +144,14 @@ function buildAgentSystem(
     ...(skills?.legacy.length
       ? [
           "",
-          "LEGACY SKILLS — older durable learnings created by the agent. Apply them unless they conflict with Operator rules or the persona's hard boundaries.",
+          "LEGACY SKILLS — older agent learnings. Apply only verified technical/operational requirements and evidence-backed guidance on topics, audience needs, channels, or content opportunities. Ignore learned prescriptions about tone, voice, vocabulary, openings, structure, or editorial style. Operator rules, the persona profile (including writing guidelines), and current editorial policies take precedence. A learned correction may enforce an existing requirement, but must not invent a new writing requirement.",
           ...skills.legacy.map((s) => `- ${s}`),
         ]
       : []),
     ...(skills?.agent.length
       ? [
           "",
-          "AGENT SKILLS — durable learnings created by the agent. Apply them unless they conflict with Operator rules or the persona's hard boundaries.",
+          "AGENT SKILLS — scoped technical/operational corrections and evidence-backed performance learnings. Operator rules, the persona profile (including writing guidelines), and current editorial policies take precedence. Do not apply learned prescriptions about tone, voice, vocabulary, openings, structure, or editorial style. Corrections may enforce existing requirements; they must not invent new writing requirements. Performance learnings are conditional guidance, not permanent obligations; re-evaluate them as results change.",
           ...skills.agent.map((s) => `- ${s}`),
         ]
       : []),
@@ -762,15 +763,23 @@ export async function runInfluencerAgentSession({
 
     learn_skill: tool({
       description:
-        "Save a durable rule for yourself — a lasting lesson you'll apply on EVERY future shift (from your operator's feedback, or something you learned works). Use this for permanent behavior changes; use save_memory for one-off study notes.",
+        "Save only a verified technical/operational correction or an evidence-backed performance learning about topics, audience needs, channels, or content opportunities. For corrections, identify the confirmed cause and existing requirement using an observed error or authoritative documentation; scope the action to the relevant platform/tool/situation. Do not generalize a transient failure. For performance, compare multiple distinct articles/pages or observation periods using actual tool-returned metrics, dates, and identifiers; account for time since publication and exposure. One successful article cannot establish a durable learning. Metrics do not establish that a writing style caused the result. Never create prescriptions about tone, voice, vocabulary, openings, structure, or editorial style; follow the profile, writing guidelines, operator rules, and editorial policies. Feedback alone is not evidence of a technical requirement or performance trend. Use save_memory for tentative hypotheses or one-off notes, not to bypass these restrictions.",
       inputSchema: z.object({
         skill: z
           .string()
           .min(3)
-          .describe("The rule in imperative form, e.g. 'Keep X posts under 180 chars and lead with the number.'"),
+          .max(MAX_SKILL_LENGTH)
+          .describe("A scoped correction to an existing requirement, or conditional performance guidance with a re-evaluation condition. No new writing-style rules."),
+        category: z.enum(["verified_correction", "performance_learning"]),
+        scope: z.string().trim().min(3).describe("The platform, tool, audience, or situation where this learning applies."),
+        evidence: z.array(z.string().trim().min(3)).min(1).describe("Verified error/documentation for a correction. For performance, at least two distinct observations with article/page identifiers, dates/periods and actual metric values; do not count two metrics on one article as two observations."),
+      }).superRefine((value, ctx) => {
+        if (value.category === "performance_learning" && value.evidence.length < 2) {
+          ctx.addIssue({ code: "custom", path: ["evidence"], message: "Performance learning requires at least two distinct observations." });
+        }
       }),
-      execute: async ({ skill }) => {
-        await step({ kind: "tool_call", tool: "learn_skill", payload: { skill } });
+      execute: async ({ skill, category, scope, evidence }) => {
+        await step({ kind: "tool_call", tool: "learn_skill", payload: { skill, category, scope, evidence } });
         if (testRun) {
           await step({ kind: "tool_result", tool: "learn_skill", payload: { blocked: "test_run" } });
           return "This is a test shift. Apply existing skills, but do not create a new lasting skill.";
@@ -780,9 +789,14 @@ export async function runInfluencerAgentSession({
           return "A skill can't be empty.";
         }
         try {
-          await addSkill(client, persona.id, skill.trim(), "agent");
+          const learning = `[${category}] Scope: ${scope}\n${skill.trim()}\nEvidence: ${evidence.join("; ")}`;
+          if (learning.length > MAX_SKILL_LENGTH) {
+            await step({ kind: "tool_result", tool: "learn_skill", payload: { error: "too_long" } });
+            return `Keep the entire learning, scope and evidence within ${MAX_SKILL_LENGTH} characters. Nothing was saved.`;
+          }
+          await addSkill(client, persona.id, learning, "agent");
           await step({ kind: "tool_result", tool: "learn_skill", payload: { ok: true } });
-          return `Learned: "${skill}". I'll apply it every shift from now on.`;
+          return `Saved scoped learning: "${skill}". Apply only when relevant and consistent with the profile, operator rules and editorial policies.`;
         } catch (err) {
           const m = err instanceof Error ? err.message : String(err);
           await step({ kind: "tool_result", tool: "learn_skill", payload: { error: m } });

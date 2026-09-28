@@ -220,12 +220,12 @@ function buildShiftGoal(
   // read_failures tool, where they arrive as untrusted tool-result data.
   const failureLine =
     failureCount > 0
-      ? `${failureCount} of your recent posts FAILED to publish. Call read_failures to see the errors, fix the cause, and do NOT repeat it. If it's a recurring rule (a length or format limit), save it with learn_skill so it never happens again.`
+      ? `${failureCount} of your recent posts FAILED to publish. Call read_failures to see the errors, fix the cause, and do NOT repeat it. If the failure confirms an existing technical or operational requirement, use learn_skill to save the verified cause, evidence, and scoped correction. Do not generalize temporary errors or invent writing-style requirements.`
       : "";
   const feedbackLine = feedback.length
     ? `NEW FEEDBACK FROM YOUR OPERATOR — take it seriously and act on it this shift: ${feedback
         .map((f) => `"${f.body}"`)
-        .join(" ")} If it's a lasting rule, save it with learn_skill so you apply it every shift from now on.`
+        .join(" ")} Apply this feedback within its intended scope. Do not turn subjective writing feedback into a new Agent skill. Only use learn_skill for verified corrections to existing requirements or performance learnings supported by actual metrics; follow the profile and operator rules for writing style.`
     : "";
   const memoryLine = memoryTitles.length
     ? `Recent notes in your memory: ${memoryTitles.map((t) => `"${t}"`).join(", ")}. Call search_memory to reuse them — don't re-study what you already know.`
@@ -278,6 +278,7 @@ function buildShiftGoal(
     memoryLine,
     "Work in decisive beats — measure, research, learn, act. Don't linger re-reading:",
     "1) Analytics are for OCCASIONAL calibration, not every shift. If you already checked your stats in a recent shift, SKIP it — the numbers barely move hour to hour, and re-pulling the same search_performance / site_traffic is wasted motion. Only look when you have a real reason (a post has had time to land, or you're deciding what to double down on).",
+    "When learning from analytics, compare multiple distinct articles/pages or periods and record actual metrics, identifiers, dates, and scope. A single successful post is not a durable trend. Use results to guide topics, audience needs, channels, and opportunities; do not infer permanent rules for tone, voice, openings, vocabulary, or structure. Keep tentative conclusions in study notes and re-evaluate trends as results change.",
     "2) Call browse_signals ONCE ('hackernews' is usually enough) and pick the SINGLE most interesting item for your beat.",
     "3b) A page of ours that is already cited is worth more updated than a new one is worth written. If a post of yours has gone stale — a price that moved, a tool that shipped something, a year in the title — read_post it and queue the rewrite with replaces_slug instead of publishing a second page that competes with the first.",
     open.some((platform) => ["blog", "devto", "hackernoon"].includes(platform))
