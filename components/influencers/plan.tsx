@@ -824,7 +824,6 @@ function SkillsPanel({
             <Textarea
               autoFocus
               value={text}
-              maxLength={MAX_SKILL_LENGTH}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void add();
@@ -871,13 +870,13 @@ function SkillsPanel({
                   <Textarea
                     autoFocus
                     value={editing.content}
-                    maxLength={MAX_SKILL_LENGTH}
+                    maxLength={editing.source === "agent" ? MAX_SKILL_LENGTH : undefined}
                     onChange={(e) => setEditing((current) => current ? { ...current, content: e.target.value } : current)}
                     rows={3}
                     className={cn(cls.textarea, "mt-2 min-h-0 py-2 text-xs")}
                     aria-label="Edit skill rule"
                   />
-                  {editing.content.trim().length > MAX_SKILL_LENGTH ? (
+                  {editing.source === "agent" && editing.content.trim().length > MAX_SKILL_LENGTH ? (
                     <p className="mt-2 text-xs text-amber-300">
                       This saved rule is over {MAX_SKILL_LENGTH} characters. You can change its source as is; shorten the text before changing its content.
                     </p>

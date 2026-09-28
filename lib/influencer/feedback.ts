@@ -271,7 +271,7 @@ export async function updateSkill(
 ): Promise<void> {
   const trimmed = skill.trim();
   if (trimmed.length < 3) throw new SkillValidationError("A rule needs at least a few words.");
-  if (trimmed.length > MAX_SKILL_LENGTH) {
+  if (source === "agent" && trimmed.length > MAX_SKILL_LENGTH) {
     const { data, error } = await client
       .from("persona_memory")
       .select("content")
@@ -316,7 +316,7 @@ export async function addSkill(
 ): Promise<MemoryNote> {
   const trimmed = skill.trim();
   if (trimmed.length < 3) throw new SkillValidationError("A rule needs at least a few words.");
-  if (trimmed.length > MAX_SKILL_LENGTH) {
+  if (source === "agent" && trimmed.length > MAX_SKILL_LENGTH) {
     throw new SkillValidationError(`A rule cannot exceed ${MAX_SKILL_LENGTH} characters.`);
   }
   return saveMemory(client, personaId, {
