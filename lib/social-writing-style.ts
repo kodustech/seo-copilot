@@ -41,6 +41,7 @@ export type SocialNarrativeStyle =
 export const SOCIAL_STYLE_GUIDE = `The author's or persona's configured voice, tone, personality, and writing guidelines govern how they express themselves. The shared guidance below sets standards for clarity, content quality, and fidelity to sources. Apply it while preserving differences between authors and personas, without imposing the same personality, strength of opinion, or text structure on everyone.
 
 Voice:
+- When no voice, tone, personality, or writing guidelines are configured, default to a clear, direct technical operator voice with a grounded point of view. Use this fallback only when no such configuration is provided.
 - Be clear and specific while keeping the author's or persona's own style.
 - Express opinions with the intensity appropriate to that personality, and only when they help address the subject. Ground analysis and opinions in evidence.
 - Do not turn third-party material into the author's personal story. Never write as if an external outage, postmortem, bug, benchmark, tool search, or company decision happened to the author or Kodus.

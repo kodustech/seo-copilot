@@ -64,7 +64,7 @@ const MAX_FETCH_CHARS = 8_000;
 const LONG_FORM_CONTENT_POLICY = [
   "LONG-FORM ARTICLE POLICY — applies only to blog, dev.to, and Hacker Noon:",
   "- Before writing, internally identify the reader's question, what they need to understand or decide, and which information meets that need. Use this analysis to guide the article's content and structure. Open with something concrete and relevant to the topic: an explanation, situation, example, criterion, or limitation. Choose the opening to suit the subject, without repeating a formula across all articles. The reader's question and search intent are planning guidance. You do not need to mention them in the text or narrate the reader searching or asking a question. Only make claims about search results, existing content, or reader behavior when verified evidence supports them. Do not invent that context to justify the article.",
-  "- Research at least four relevant sources; if you find more relevant sources, use them too. Prefer official documentation, product pages, repositories, studies, benchmarks, and other primary evidence.",
+  "- Research at least three relevant sources; if you find more relevant sources, use them too. Prefer official documentation, product pages, repositories, studies, benchmarks, and other primary evidence.",
   "- Link the research you actually use inside natural sentences with descriptive markdown anchors, never as a URL dump at the end. Use exact URLs returned by tools.",
   "- The page title is the H1. Start the body with clear H2 sections and use H3 for real subsections.",
   "- Develop the argument with concrete examples, comparisons, limitations, and practical implications. Do not stop after summarizing one or two sources.",
