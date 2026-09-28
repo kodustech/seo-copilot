@@ -7,7 +7,10 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { MAX_SKILL_LENGTH } from "@/lib/influencer/skill-constraints";
 import { saveMemory, type MemoryNote } from "@/lib/influencer/memory";
+
+export { MAX_SKILL_LENGTH } from "@/lib/influencer/skill-constraints";
 
 export type Feedback = {
   id: string;
@@ -91,7 +94,6 @@ const SKILL_TAG = "skill";
 const OPERATOR_TAG = "operator";
 const AGENT_TAG = "agent";
 const OPERATOR_SKILL_PAGE_SIZE = 200;
-export const MAX_SKILL_LENGTH = 1000;
 // Keep authoritative operator rules complete in their source of truth while
 // bounding the amount of operator context sent to each model call.
 const MAX_OPERATOR_SKILLS = 500;
@@ -270,7 +272,26 @@ export async function updateSkill(
   const trimmed = skill.trim();
   if (trimmed.length < 3) throw new SkillValidationError("A rule needs at least a few words.");
   if (trimmed.length > MAX_SKILL_LENGTH) {
-    throw new SkillValidationError(`A rule cannot exceed ${MAX_SKILL_LENGTH} characters.`);
+    const { data, error } = await client
+      .from("persona_memory")
+      .select("content")
+      .eq("id", skillId)
+      .eq("persona_id", personaId)
+      .contains("tags", [SKILL_TAG])
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data) throw new SkillNotFoundError("This rule no longer exists. Refresh and try again.");
+    if (typeof data.content !== "string" || data.content.trim() !== trimmed) {
+      throw new SkillValidationError(`A rule cannot exceed ${MAX_SKILL_LENGTH} characters.`);
+    }
+    const { error: sourceError } = await client
+      .from("persona_memory")
+      .update({ tags: [SKILL_TAG, source] })
+      .eq("id", skillId)
+      .eq("persona_id", personaId)
+      .contains("tags", [SKILL_TAG]);
+    if (sourceError) throw new Error(sourceError.message);
+    return;
   }
   const { data, error } = await client
     .from("persona_memory")
@@ -293,7 +314,11 @@ export async function addSkill(
   skill: string,
   source: Exclude<SkillSource, "legacy"> = "agent",
 ): Promise<MemoryNote> {
-  const trimmed = skill.trim().slice(0, MAX_SKILL_LENGTH);
+  const trimmed = skill.trim();
+  if (trimmed.length < 3) throw new SkillValidationError("A rule needs at least a few words.");
+  if (trimmed.length > MAX_SKILL_LENGTH) {
+    throw new SkillValidationError(`A rule cannot exceed ${MAX_SKILL_LENGTH} characters.`);
+  }
   return saveMemory(client, personaId, {
     title: trimmed.slice(0, 80),
     content: trimmed,
