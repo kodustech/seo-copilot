@@ -284,13 +284,15 @@ export async function updateSkill(
     if (typeof data.content !== "string" || data.content.trim() !== trimmed) {
       throw new SkillValidationError(`A rule cannot exceed ${MAX_SKILL_LENGTH} characters.`);
     }
-    const { error: sourceError } = await client
+    const { data: updated, error: sourceError } = await client
       .from("persona_memory")
       .update({ tags: [SKILL_TAG, source] })
       .eq("id", skillId)
       .eq("persona_id", personaId)
-      .contains("tags", [SKILL_TAG]);
+      .contains("tags", [SKILL_TAG])
+      .select("id");
     if (sourceError) throw new Error(sourceError.message);
+    if (!updated?.length) throw new SkillNotFoundError("This rule no longer exists. Refresh and try again.");
     return;
   }
   const { data, error } = await client

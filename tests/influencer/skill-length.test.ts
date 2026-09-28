@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   addSkill,
   MAX_SKILL_LENGTH,
+  SkillNotFoundError,
   SkillValidationError,
   updateSkill,
 } from "../../lib/influencer/feedback";
@@ -12,13 +13,20 @@ function oversizedRule() {
   return `Rule ${"x".repeat(MAX_SKILL_LENGTH)}`;
 }
 
-class FakeQuery implements PromiseLike<{ data: never[]; error: null }> {
+type QueryResult = { data: { id: string }[] | null; error: null };
+
+class FakeQuery implements PromiseLike<QueryResult> {
   updated: Record<string, unknown> | undefined;
   inserted: Record<string, unknown> | undefined;
 
-  constructor(private readonly content: string) {}
+  private returningIds = false;
 
-  select() { return this; }
+  constructor(private readonly content: string, private readonly rowStillExists = true) {}
+
+  select(columns: string) {
+    this.returningIds = columns === "id";
+    return this;
+  }
   eq() { return this; }
   contains() { return this; }
   maybeSingle() { return Promise.resolve({ data: { content: this.content }, error: null }); }
@@ -36,11 +44,15 @@ class FakeQuery implements PromiseLike<{ data: never[]; error: null }> {
       error: null,
     });
   }
-  then<TResult1 = { data: never[]; error: null }, TResult2 = never>(
-    onfulfilled?: ((value: { data: never[]; error: null }) => TResult1 | PromiseLike<TResult1>) | null,
+  then<TResult1 = QueryResult, TResult2 = never>(
+    onfulfilled?: ((value: QueryResult) => TResult1 | PromiseLike<TResult1>) | null,
     onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
   ): PromiseLike<TResult1 | TResult2> {
-    return Promise.resolve({ data: [{ id: "skill-1" }] as never[], error: null }).then(onfulfilled, onrejected);
+    const result: QueryResult = {
+      data: this.returningIds ? (this.rowStillExists ? [{ id: "skill-1" }] : []) : null,
+      error: null,
+    };
+    return Promise.resolve(result).then(onfulfilled, onrejected);
   }
 }
 
@@ -70,13 +82,22 @@ describe("influencer skill length", () => {
     expect(query.updated?.content).toBe(`${oversizedRule()} changed`);
   });
 
-  it("allows changing the source of a legacy oversized rule without rewriting its text", async () => {
+  it("preserves an existing oversized rule when saving it as an agent rule", async () => {
     const content = oversizedRule();
     const query = new FakeQuery(content);
     const client = { from: () => query } as unknown as SupabaseClient;
 
-    await expect(updateSkill(client, "persona-1", "skill-1", content, "legacy")).resolves.toBeUndefined();
-    expect(query.updated).toEqual({ tags: ["skill", "legacy"] });
+    await expect(updateSkill(client, "persona-1", "skill-1", content, "agent")).resolves.toBeUndefined();
+    expect(query.updated).toEqual({ tags: ["skill", "agent"] });
+  });
+
+  it("reports a missing rule if it disappears between the read and tags-only update", async () => {
+    const content = oversizedRule();
+    const query = new FakeQuery(content, false);
+    const client = { from: () => query } as unknown as SupabaseClient;
+
+    await expect(updateSkill(client, "persona-1", "skill-1", content, "agent"))
+      .rejects.toBeInstanceOf(SkillNotFoundError);
   });
 
   it("rejects editing the content of a legacy oversized rule", async () => {
