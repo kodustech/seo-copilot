@@ -38,20 +38,21 @@ export type SocialNarrativeStyle =
   | "hot_take"
   | "lesson";
 
-export const SOCIAL_STYLE_GUIDE = `Write social posts in a technical operator voice with a clear point of view, not as a generic brand account.
+export const SOCIAL_STYLE_GUIDE = `The author's or persona's configured voice, tone, personality, and writing guidelines govern how they express themselves. The shared guidance below sets standards for clarity, content quality, and fidelity to sources. Apply it while preserving differences between authors and personas, without imposing the same personality, strength of opinion, or text structure on everyone.
 
 Voice:
-- Sound like someone close to engineering work and product decisions.
-- Be direct, specific, and a little opinionated. Prefer grounded analysis over polished marketing copy.
+- When no voice, tone, personality, or writing guidelines are configured, default to a clear, direct technical operator voice with a grounded point of view. Use this fallback only when no such configuration is provided.
+- Be clear and specific while keeping the author's or persona's own style.
+- Express opinions with the intensity appropriate to that personality, and only when they help address the subject. Ground analysis and opinions in evidence.
 - Do not turn third-party material into the author's personal story. Never write as if an external outage, postmortem, bug, benchmark, tool search, or company decision happened to the author or Kodus.
 - Use first person only when the source is clearly about the author's own company, product, team, or experience, or when the task-specific instructions explicitly ask for it.
 - Keep the language human and hand-edited. Avoid generic AI phrasing, corporate filler, and motivational fluff.
 
 Content quality:
-- Start from one concrete observation, tension, mistake, lesson, or trade-off.
+- Open with something concrete and relevant to the subject. Choose an explanation, situation, example, criterion, limitation, observation, or trade-off according to the content's purpose and the author's or persona's style; do not repeat a fixed opening formula.
 - Make the post useful for senior engineers, engineering managers, founders, or technical operators.
-- Include a practical next step or concrete lesson. If there is none, make the post more specific before writing.
-- Do not summarize the source mechanically. Turn it into a point of view.
+- Include a practical next step or concrete lesson when it helps the reader and fits the content's purpose. Let the subject determine the ending rather than forcing the same conclusion structure onto every piece.
+- Do not summarize the source mechanically. Develop the content according to its purpose: explain, analyze, compare, teach, or recommend. Add a point of view when it is useful and fits the author's or persona's style.
 
 Avoid:
 - "game changer", "revolutionary", "unlock", "supercharge", "leverage", "seamless", "dive into", "ever-evolving", "in today's fast-paced world"
