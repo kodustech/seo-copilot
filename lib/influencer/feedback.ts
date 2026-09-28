@@ -91,6 +91,7 @@ const SKILL_TAG = "skill";
 const OPERATOR_TAG = "operator";
 const AGENT_TAG = "agent";
 const OPERATOR_SKILL_PAGE_SIZE = 200;
+export const MAX_SKILL_LENGTH = 1000;
 // Keep authoritative operator rules complete in their source of truth while
 // bounding the amount of operator context sent to each model call.
 const MAX_OPERATOR_SKILLS = 500;
@@ -268,6 +269,9 @@ export async function updateSkill(
 ): Promise<void> {
   const trimmed = skill.trim();
   if (trimmed.length < 3) throw new SkillValidationError("A rule needs at least a few words.");
+  if (trimmed.length > MAX_SKILL_LENGTH) {
+    throw new SkillValidationError(`A rule cannot exceed ${MAX_SKILL_LENGTH} characters.`);
+  }
   const { data, error } = await client
     .from("persona_memory")
     .update({
@@ -289,7 +293,7 @@ export async function addSkill(
   skill: string,
   source: Exclude<SkillSource, "legacy"> = "agent",
 ): Promise<MemoryNote> {
-  const trimmed = skill.trim();
+  const trimmed = skill.trim().slice(0, MAX_SKILL_LENGTH);
   return saveMemory(client, personaId, {
     title: trimmed.slice(0, 80),
     content: trimmed,
