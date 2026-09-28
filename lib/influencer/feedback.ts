@@ -7,7 +7,10 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { MAX_SKILL_LENGTH } from "@/lib/influencer/skill-constraints";
 import { saveMemory, type MemoryNote } from "@/lib/influencer/memory";
+
+export { MAX_SKILL_LENGTH } from "@/lib/influencer/skill-constraints";
 
 export type Feedback = {
   id: string;
@@ -268,6 +271,30 @@ export async function updateSkill(
 ): Promise<void> {
   const trimmed = skill.trim();
   if (trimmed.length < 3) throw new SkillValidationError("A rule needs at least a few words.");
+  if (source === "agent" && trimmed.length > MAX_SKILL_LENGTH) {
+    const { data, error } = await client
+      .from("persona_memory")
+      .select("content")
+      .eq("id", skillId)
+      .eq("persona_id", personaId)
+      .contains("tags", [SKILL_TAG])
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data) throw new SkillNotFoundError("This rule no longer exists. Refresh and try again.");
+    if (typeof data.content !== "string" || data.content.trim() !== trimmed) {
+      throw new SkillValidationError(`A rule cannot exceed ${MAX_SKILL_LENGTH} characters.`);
+    }
+    const { data: updated, error: sourceError } = await client
+      .from("persona_memory")
+      .update({ tags: [SKILL_TAG, source] })
+      .eq("id", skillId)
+      .eq("persona_id", personaId)
+      .contains("tags", [SKILL_TAG])
+      .select("id");
+    if (sourceError) throw new Error(sourceError.message);
+    if (!updated?.length) throw new SkillNotFoundError("This rule no longer exists. Refresh and try again.");
+    return;
+  }
   const { data, error } = await client
     .from("persona_memory")
     .update({
@@ -290,6 +317,10 @@ export async function addSkill(
   source: Exclude<SkillSource, "legacy"> = "agent",
 ): Promise<MemoryNote> {
   const trimmed = skill.trim();
+  if (trimmed.length < 3) throw new SkillValidationError("A rule needs at least a few words.");
+  if (source === "agent" && trimmed.length > MAX_SKILL_LENGTH) {
+    throw new SkillValidationError(`A rule cannot exceed ${MAX_SKILL_LENGTH} characters.`);
+  }
   return saveMemory(client, personaId, {
     title: trimmed.slice(0, 80),
     content: trimmed,

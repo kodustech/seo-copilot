@@ -17,6 +17,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { MAX_SKILL_LENGTH } from "@/lib/influencer/skill-constraints";
 
 import { SectionLabel, Segmented, Status, authHeaders, cls, fmtRelative, fmtWhen, type Persona } from "./shared";
 
@@ -869,11 +870,17 @@ function SkillsPanel({
                   <Textarea
                     autoFocus
                     value={editing.content}
+                    maxLength={editing.source === "agent" ? MAX_SKILL_LENGTH : undefined}
                     onChange={(e) => setEditing((current) => current ? { ...current, content: e.target.value } : current)}
                     rows={3}
                     className={cn(cls.textarea, "mt-2 min-h-0 py-2 text-xs")}
                     aria-label="Edit skill rule"
                   />
+                  {editing.source === "agent" && editing.content.trim().length > MAX_SKILL_LENGTH ? (
+                    <p className="mt-2 text-xs text-amber-300">
+                      This saved rule is over {MAX_SKILL_LENGTH} characters. You can change its source as is; shorten the text before changing its content.
+                    </p>
+                  ) : null}
                   <div className="mt-2 flex justify-end gap-2">
                     <button type="button" onClick={() => setEditing(null)} disabled={busy} className={cls.ghost}>Cancel</button>
                     <button type="button" onClick={() => void saveEdit()} disabled={busy || editing.content.trim().length < 3} className={cls.primary}>
