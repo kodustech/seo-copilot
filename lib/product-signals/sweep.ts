@@ -490,12 +490,15 @@ export async function runProductSignalsSweep(
         // ignores an unusable address like bo@gmail or bo@localhost (both
         // classify "invalid"), and those must not become the primary contact.
         // Nor may a code host's noreply address, which classifies free_mail.
-        for (const contact of org.contacts.slice(0, 3)) {
+        // Filter first, then cap: three noreply addresses up front must not
+        // leave the account with no contact while a person sits fourth.
+        const accepted = org.contacts.filter((contact) => {
           const domain = domainOfEmail(contact.email);
-          const accepted = org.derivedDomain
+          return org.derivedDomain
             ? domain === org.derivedDomain
             : classifyDomain(domain) === "free_mail" && !isCodeHostDomain(domain);
-          if (!accepted) continue;
+        });
+        for (const contact of accepted.slice(0, 3)) {
           await createContact(client, company.id, {
             name: contact.name ?? contact.email.split("@")[0],
             email: contact.email,

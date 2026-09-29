@@ -200,6 +200,26 @@ describe("product-signals sweep — free-mail teams (#260)", () => {
     ]);
   });
 
+  it("filters before capping, so noreply addresses up front do not crowd out a person", async () => {
+    vi.mocked(collectOrgFacts).mockResolvedValue([
+      org({
+        contacts: [
+          { email: "1+a@users.noreply.github.com", name: "A" },
+          { email: "2+b@users.noreply.github.com", name: "B" },
+          { email: "3+c@users.noreply.github.com", name: "C" },
+          { email: "ana@gmail.com", name: "Ana" },
+        ],
+      }),
+    ]);
+    const { client } = fakeClient([]);
+
+    await runProductSignalsSweep(client);
+
+    expect(vi.mocked(createContact).mock.calls.map((c) => c[2])).toEqual([
+      { name: "Ana", email: "ana@gmail.com", isPrimary: true },
+    ]);
+  });
+
   it("still takes only the derived domain's addresses on a corporate account", async () => {
     vi.mocked(collectOrgFacts).mockResolvedValue([
       org({
