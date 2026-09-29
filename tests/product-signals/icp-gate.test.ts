@@ -263,6 +263,19 @@ describe("evaluateOrg — corporate path is unchanged", () => {
     expect(d).toMatchObject({ create: false, reason: "domain_free_mail" });
     expect(enrich).not.toHaveBeenCalled();
   });
+
+  it("does not admit free mail carried in derivedDomain, even as a connected team", async () => {
+    // The free-mail exception is for orgs with no derived domain at all. One
+    // holding "gmail.com" would be created with the mail provider as its CRM
+    // domain, so it keeps failing on the domain whatever its dev count.
+    const d = await evaluateOrg(
+      org({ derivedDomain: "gmail.com", codeHostMemberCount: MIN_DEVS + 5 }),
+      "t0",
+      { enrich: noEnrich() },
+    );
+
+    expect(d).toMatchObject({ create: false, reason: "domain_free_mail" });
+  });
 });
 
 describe("whyNoCorporateDomain", () => {

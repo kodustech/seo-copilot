@@ -288,7 +288,13 @@ export async function evaluateOrg(
   const verdict: DomainVerdict = org.derivedDomain
     ? classifyDomain(org.derivedDomain)
     : (org.noDomainReason ?? "invalid");
+  // derivedDomain must be genuinely absent, not a free-mail domain sitting in
+  // it: the sweep creates "pass_devs_no_domain" accounts with whatever
+  // derivedDomain holds, and a mail provider as the CRM domain would pull
+  // every other org on it into the same account. collect.ts never stores a
+  // non-corporate domain there, so this only guards the invariant.
   const teamOnFreeMail =
+    org.derivedDomain == null &&
     verdict === "free_mail" &&
     org.connectedGit &&
     devCount != null &&

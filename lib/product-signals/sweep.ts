@@ -4,6 +4,7 @@ import { createCompany, createContact, logActivity } from "@/lib/crm";
 
 import { classifyOrg, resolveDevCount, type Classification } from "./classify";
 import { collectOrgFacts, domainOfEmail, type CollectedOrg } from "./collect";
+import { classifyDomain } from "./domains";
 import { evaluateOrg, getEnrichment, getFirmographics } from "./icp-gate";
 
 // ---------------------------------------------------------------------------
@@ -482,13 +483,17 @@ export async function runProductSignalsSweep(
 
         // isPrimary is per company (not sweep-wide) so each new account gets a lead contact.
         let primarySetForCompany = false;
-        // With no derivedDomain every contact is accepted, and that is right:
-        // on a free-mail team the personal addresses are the only ones there
-        // are, and they belong to the people we would be writing to.
+        // With no derivedDomain the personal addresses are the contacts: on a
+        // free-mail team they are the only ones there are, and they belong to
+        // the people we would be writing to. Only real free-mail addresses,
+        // though — the gate admits the org on its members' verdict, which
+        // ignores an unusable address like bo@gmail or bo@localhost (both
+        // classify "invalid"), and those must not become the primary contact.
         for (const contact of org.contacts.slice(0, 3)) {
-          const corporate =
-            !org.derivedDomain || domainOfEmail(contact.email) === org.derivedDomain;
-          if (!corporate) continue;
+          const accepted = org.derivedDomain
+            ? domainOfEmail(contact.email) === org.derivedDomain
+            : classifyDomain(domainOfEmail(contact.email)) === "free_mail";
+          if (!accepted) continue;
           await createContact(client, company.id, {
             name: contact.name ?? contact.email.split("@")[0],
             email: contact.email,

@@ -158,6 +158,52 @@ describe("product-signals sweep — free-mail teams (#260)", () => {
     expect(tierWrites(updates)).toEqual([{ id: "company-new", tier: "t0" }]);
   });
 
+  it("only takes real free-mail addresses as contacts on a domainless account", async () => {
+    // bo@gmail and cy@localhost classify "invalid", so the org is still
+    // admitted on ana's gmail — but neither may become a contact, least of all
+    // the primary one.
+    vi.mocked(collectOrgFacts).mockResolvedValue([
+      org({
+        contacts: [
+          { email: "bo@gmail", name: "Bo" },
+          { email: "cy@localhost", name: "Cy" },
+          { email: "ana@gmail.com", name: "Ana" },
+        ],
+      }),
+    ]);
+    const { client } = fakeClient([]);
+
+    await runProductSignalsSweep(client);
+
+    expect(vi.mocked(createContact).mock.calls.map((c) => c[2])).toEqual([
+      { name: "Ana", email: "ana@gmail.com", isPrimary: true },
+    ]);
+  });
+
+  it("still takes only the derived domain's addresses on a corporate account", async () => {
+    vi.mocked(collectOrgFacts).mockResolvedValue([
+      org({
+        derivedDomain: "acme.com",
+        noDomainReason: null,
+        contacts: [
+          { email: "ana@acme.com", name: "Ana" },
+          { email: "bo@gmail.com", name: "Bo" },
+        ],
+      }),
+    ]);
+    const { client } = fakeClient([]);
+
+    const summary = await runProductSignalsSweep(client);
+
+    expect(summary.gate).toEqual({ pass_devs: 1 });
+    expect(vi.mocked(createCompany).mock.calls[0][1]).toMatchObject({
+      domain: "acme.com",
+    });
+    expect(vi.mocked(createContact).mock.calls.map((c) => c[2])).toEqual([
+      { name: "Ana", email: "ana@acme.com", isPrimary: true },
+    ]);
+  });
+
   it("falls back to the org id when the org has no name", async () => {
     vi.mocked(collectOrgFacts).mockResolvedValue([org({ orgName: "  " })]);
     const { client } = fakeClient([]);
