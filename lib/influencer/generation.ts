@@ -196,7 +196,6 @@ export async function generateDraftsForPersona({
   now?: Date;
 }): Promise<number> {
   const frequency = postingFrequency(channel);
-  if (frequency.posts === 0) return 0;
   let weeklyRoom = frequency.posts;
   if (frequency.period === "weekly") {
     const { data, error } = await client.from("persona_activities")

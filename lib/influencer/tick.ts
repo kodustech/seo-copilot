@@ -75,7 +75,8 @@ export function testShiftChannels(channels: PersonaChannel[], platform?: string)
 // every blog and dev.to draft even though those queues were empty and their
 // weekly quota was behind. The publisher enforces the selected frequency.
 function channelBuffer(channel: PersonaChannel): number {
-  return postingFrequency(channel).posts;
+  const frequency = postingFrequency(channel);
+  return frequency.period === "weekly" ? frequency.posts : Math.max(1, frequency.posts);
 }
 
 /**
