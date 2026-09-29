@@ -790,12 +790,18 @@ export async function runInfluencerAgentSession({
         })).min(1).max(2).describe("One or two concise evidence records. Performance requires two distinct content/period pairs; two metrics for the same content in the same period do not count."),
       }).superRefine((value, ctx) => {
         const observationKey = (item: (typeof value.evidence)[number]) => {
-          let source = flattenLearningField(item.source).toLowerCase();
+          let source = flattenLearningField(item.source);
           try {
             const url = new URL(source);
             url.hash = "";
+            // Paths and query values are case-sensitive; only normalize the origin.
+            url.protocol = url.protocol.toLowerCase();
+            url.hostname = url.hostname.toLowerCase();
             source = url.toString().replace(/\/$/, "");
-          } catch { /* IDs and document identifiers need not be URLs. */ }
+          } catch {
+            // IDs and document identifiers need not be URLs.
+            source = source.toLowerCase();
+          }
           return JSON.stringify([source, flattenLearningField(item.period).toLowerCase()]);
         };
         if (value.category === "performance_learning" && new Set(value.evidence.map(observationKey)).size < 2) {
