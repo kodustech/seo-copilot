@@ -41,17 +41,39 @@ export type OrgFacts = {
   lastSkipAt: string | null;
   topSkipReason: string | null;
   /** Members of the connected git org, persisted by kodus-ai at onboarding.
-   *  Null for every org onboarded before 2026-07-28 (no backfill exists). */
+   *  Null for every org onboarded before 2026-07-28 (no backfill exists).
+   *  Can read 1 when the integration only sees the user who installed it. */
   codeHostMemberCount: number | null;
   codeHostMemberCountAt: string | null;
-  /** Distinct non-bot PR authors Kodus saw. Fallback when the above is null. */
+  /** Distinct non-bot PR authors Kodus saw, all time. Not a fallback: the
+   *  larger of this and the member count is the team size (resolveDevCount). */
   prAuthorCount: number | null;
 };
 
 export type DevCountSource = "code_host" | "pr_authors" | "none";
 
 /**
- * Engineering team size, from the git side only.
+ * Engineering team size, from the git side only: the larger of the connected
+ * git org's member count and the distinct PR authors Kodus has seen. `source`
+ * names whichever one won; on a tie it says code_host, the direct count.
+ *
+ * The larger, not "members first". Members used to win whenever they were
+ * above 0, so an org whose integration exposes one member while 20 or 59
+ * people open PRs was recorded as a team of one and rejected as below_min_devs
+ * (#261). A member count of 1 on a connected org usually means the integration
+ * can only see the user who installed it, not that the team is one person —
+ * and N distinct humans opening PRs is a floor on the team, not a guess. The
+ * funnel's ICP proxy (lib/funnel/metrics.ts, thresholds in
+ * lib/funnel/config.ts) already accepts either signal on its own; this keeps
+ * the gate from reading the same org as smaller than the funnel does. Taking
+ * the max can only raise a count, so nothing that cleared MIN_DEVS before
+ * fails it now.
+ *
+ * Known cost: on public repos, outside contributors open PRs too, so PR
+ * authors overstate the team — an open-source project with a hundred
+ * drive-by contributors reads as a hundred developers. That number is what
+ * the gate compares with MIN_DEVS, what the sweep writes to dev_count, and
+ * what {{dev_count}} renders in sequence copy.
  *
  * Never derived from licenses or user_count: those are Kodus seats (often 1 at
  * signup) and mapping them onto dev_count is the bug 52da752 fixed once already.
@@ -62,13 +84,21 @@ export function resolveDevCount(facts: {
   codeHostMemberCount: number | null;
   prAuthorCount: number | null;
 }): { devCount: number | null; source: DevCountSource } {
-  if (facts.codeHostMemberCount != null && facts.codeHostMemberCount > 0) {
-    return { devCount: facts.codeHostMemberCount, source: "code_host" };
+  // 0 is "unknown" on both sides, not an empty team (same rule as the funnel's
+  // ICP_MIN_MEMBERS), so it never wins over — or ties with — the other signal.
+  const members = known(facts.codeHostMemberCount);
+  const authors = known(facts.prAuthorCount);
+  if (members != null && (authors == null || members >= authors)) {
+    return { devCount: members, source: "code_host" };
   }
-  if (facts.prAuthorCount != null && facts.prAuthorCount > 0) {
-    return { devCount: facts.prAuthorCount, source: "pr_authors" };
+  if (authors != null) {
+    return { devCount: authors, source: "pr_authors" };
   }
   return { devCount: null, source: "none" };
+}
+
+function known(n: number | null): number | null {
+  return n != null && n > 0 ? n : null;
 }
 
 export type Tier = "t0" | "t1" | "t2" | "t3" | "customer" | null;

@@ -417,7 +417,7 @@ export async function runProductSignalsSweep(
       // visible in product_signals_latest for manual promotion; the sweep just
       // does not put them in front of outbound.
       //
-      // dev_count comes from the git side only (code_host_member_count, else
+      // dev_count comes from the git side only (the larger of git members and
       // PR authors). Never from user_count/licenses: those are Kodus seats
       // (often 1 at signup), which is the bug 52da752 fixed once already.
       const decision = !company
