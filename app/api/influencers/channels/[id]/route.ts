@@ -72,6 +72,18 @@ export async function PATCH(
       }
       patch.channel_config = requested;
     }
+    if (body.posting_frequency !== undefined) {
+      const frequency = body.posting_frequency as Record<string, unknown> | null;
+      if (!frequency || !["daily", "weekly"].includes(String(frequency.period)) ||
+          !Number.isSafeInteger(frequency.posts) || Number(frequency.posts) < 0 ||
+          !Array.isArray(frequency.days) || frequency.days.some((day: unknown) => !Number.isInteger(day) || Number(day) < 0 || Number(day) > 6)) {
+        return NextResponse.json({ error: "Use a daily or weekly period, a non-negative whole number, and valid weekdays." }, { status: 400 });
+      }
+      const current = await getChannel(client, id);
+      if (!current) return NextResponse.json({ error: "Channel not found" }, { status: 404 });
+      patch.channel_config = { ...(patch.channel_config ?? current.channel_config), posting_frequency: { period: frequency.period, posts: frequency.posts, days: [...new Set(frequency.days)] } };
+      if (frequency.period === "daily") patch.max_posts_per_day = Number(frequency.posts);
+    }
     const status = normalizeChannelStatus(body.status);
     if (status) patch.status = status;
 

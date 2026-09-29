@@ -3,6 +3,9 @@
 import { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2, Plus } from "lucide-react";
 
+import { postingFrequency, type PostingFrequency } from "@/lib/influencer/posting-frequency";
+import { PostingFrequencyControl } from "./posting-frequency";
+
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -44,7 +47,7 @@ export function ChannelsTab({
 
   return (
     <section>
-      <SectionLabel hint="A channel publishes only within its automation level and daily caps. Open a row to connect it.">
+      <SectionLabel hint="A channel publishes only within its automation level and posting frequency. Open a row to connect it.">
         Channels
       </SectionLabel>
       <div className={cn(cls.panel, "divide-y divide-white/[0.06]")}>
@@ -145,6 +148,8 @@ function ChannelRow({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [handle, setHandle] = useState(channel.external_handle ?? "");
   const handPosted = isHandPosted(channel);
+  const [frequency, setFrequency] = useState<PostingFrequency>(() => postingFrequency(channel));
+  useEffect(() => { setFrequency(postingFrequency(channel)); }, [channel]);
 
   // A cleared field is not a request for zero, and "2e" is not a number.
   // Only a finite, non-negative integer reaches the server.
@@ -206,7 +211,7 @@ function ChannelRow({
           ) : null}
           {!handPosted ? (
             <span className="text-xs tabular-nums text-neutral-500">
-              {channel.max_posts_per_day}/day · {channel.max_replies_per_day} replies
+              {frequency.posts}/{frequency.period === "weekly" ? "week" : "day"} · {channel.max_replies_per_day} replies/day
             </span>
           ) : null}
           {saving ? <Loader2 className="size-3.5 animate-spin text-neutral-500" /> : null}
@@ -260,17 +265,8 @@ function ChannelRow({
                     </SelectContent>
                   </Select>
                 </label>
+                <PostingFrequencyControl channel={channel} token={token} onChanged={onChanged} onFrequencyChange={setFrequency} />
                 <div className="grid grid-cols-2 gap-2">
-                  <label className="block">
-                    <span className={cn(cls.label, "mb-1 block")}>Posts per day</span>
-                    <Input
-                      type="number"
-                      min={0}
-                      defaultValue={channel.max_posts_per_day}
-                      onBlur={(event) => patchCap("max_posts_per_day", event.target.value, channel.max_posts_per_day)}
-                      className={cls.input}
-                    />
-                  </label>
                   <label className="block">
                     <span className={cn(cls.label, "mb-1 block")}>Replies per day</span>
                     <Input
@@ -284,9 +280,12 @@ function ChannelRow({
                 </div>
               </>
             ) : (
+              <>
+              <PostingFrequencyControl channel={channel} token={token} onChanged={onChanged} onFrequencyChange={setFrequency} />
               <p className="text-xs text-neutral-500">
                 Posted by hand: the persona drafts, you post from your own account and mark it published in the queue. No automation level to earn.
               </p>
+              </>
             )}
           </div>
 

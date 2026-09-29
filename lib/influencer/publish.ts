@@ -1,3 +1,4 @@
+import { postingFrequency, postingWeekStart, nextPostingDay } from "./posting-frequency";
 /**
  * persona-publish: the persona's "body". The brain (generation/agent) only
  * writes drafts; every hard wall lives here, outside the model — channel
@@ -133,6 +134,7 @@ export function resolvePublishDecision({
   channel,
   fleetHandles,
   publishedToday,
+  publishedThisWeek = 0,
   now,
 }: {
   activity: PersonaActivity;
@@ -140,6 +142,7 @@ export function resolvePublishDecision({
   channel: PersonaChannel | undefined;
   fleetHandles: Set<string>;
   publishedToday: number;
+  publishedThisWeek?: number;
   now: Date;
 }): PublishDecision {
   if (activity.content_meta.test_run === true) {
@@ -245,15 +248,25 @@ export function resolvePublishDecision({
     }
   }
 
-  const cap = isReplyKind(activity.kind)
-    ? channel.max_replies_per_day
-    : channel.max_posts_per_day;
-  if (publishedToday >= cap) {
-    return {
-      action: "defer",
-      until: nextDayStartUtcIso(now),
-      reason: `Daily cap reached (${cap}/day).`,
-    };
+  const frequency = postingFrequency(channel);
+  const reply = isReplyKind(activity.kind);
+  if (!reply && frequency.period === "weekly") {
+    if (publishedThisWeek >= frequency.posts) {
+      return { action: "defer", until: nextPostingDay(now, frequency.days, true), reason: `Weekly cap reached (${frequency.posts}/week).` };
+    }
+    if (frequency.days.length && !frequency.days.includes(now.getUTCDay())) {
+      return { action: "defer", until: nextPostingDay(now, frequency.days), reason: "Waiting for a selected publishing day (UTC)." };
+    }
+    // Spread the weekly allowance across selected days instead of emptying it on the first day.
+    const dayCap = frequency.days.length ? Math.ceil(frequency.posts / frequency.days.length) : frequency.posts;
+    if (publishedToday >= dayCap) {
+      return { action: "defer", until: nextPostingDay(now, frequency.days), reason: "Selected day's allowance reached." };
+    }
+  } else {
+    const cap = reply ? channel.max_replies_per_day : frequency.posts;
+    if (publishedToday >= cap) {
+      return { action: "defer", until: nextDayStartUtcIso(now), reason: `Daily cap reached (${cap}/day).` };
+    }
   }
 
   return { action: "publish" };
@@ -1050,6 +1063,7 @@ export async function runInfluencerPublishCron(
 
   // Per-channel counts for this run: DB count + what we publish in this loop.
   const todayCount = new Map<string, number>();
+  const weekCount = new Map<string, number>();
   const countKey = (channelId: string, kind: ActivityKind) =>
     `${channelId}:${isReplyKind(kind) ? "reply" : "post"}`;
 
@@ -1071,12 +1085,17 @@ export async function runInfluencerPublishCron(
       );
     }
 
+    if (channel && !isReplyKind(activity.kind) && postingFrequency(channel).period === "weekly" && !weekCount.has(key)) {
+      weekCount.set(key, await countPublishedToday(client, activity.channel_id, ["post", "article", "crosspost", "video"], postingWeekStart(now)));
+    }
+
     const decision = resolvePublishDecision({
       activity,
       persona,
       channel,
       fleetHandles,
       publishedToday: todayCount.get(key) ?? 0,
+      publishedThisWeek: weekCount.get(key) ?? 0,
       now,
     });
 
@@ -1133,6 +1152,7 @@ export async function runInfluencerPublishCron(
         error: null,
       });
       todayCount.set(key, (todayCount.get(key) ?? 0) + 1);
+      if (weekCount.has(key)) weekCount.set(key, (weekCount.get(key) ?? 0) + 1);
       summary.published += 1;
     } catch (error) {
       // A stage that stopped on purpose (parked HeyGen render, composite
