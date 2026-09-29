@@ -1,3 +1,4 @@
+import { postingFrequency, postingWeekStart } from "./posting-frequency";
 /**
  * persona-content: daily draft generation for every active persona.
  *
@@ -184,6 +185,7 @@ export async function generateDraftsForPersona({
   persona,
   channel,
   fleetSignatures,
+  now = new Date(),
 }: {
   client: SupabaseClient;
   persona: Persona;
@@ -191,10 +193,24 @@ export async function generateDraftsForPersona({
   channel: PersonaChannel;
   /** Signatures of recent content across the whole fleet, mutated as we add. */
   fleetSignatures: Set<string>;
+  now?: Date;
 }): Promise<number> {
+  const frequency = postingFrequency(channel);
+  let weeklyRoom = frequency.posts;
+  if (frequency.period === "weekly") {
+    const { data, error } = await client.from("persona_activities")
+      .select("content_meta")
+      .eq("channel_id", channel.id)
+      .in("kind", ["post", "article", "crosspost", "video"])
+      .or(`status.in.(draft,approved,scheduled,publishing),and(status.eq.published,published_at.gte.${postingWeekStart(now)})`);
+    if (error) throw new Error(error.message);
+    const reserved = (data ?? []).filter((row) => row.content_meta?.test_run !== true).length;
+    weeklyRoom = Math.max(0, frequency.posts - reserved);
+    if (!weeklyRoom) return 0;
+  }
   const target = Math.min(
     MAX_DRAFTS,
-    Math.max(MIN_DRAFTS, channel.max_posts_per_day * 2),
+    frequency.period === "weekly" ? weeklyRoom : Math.max(MIN_DRAFTS, frequency.posts * 2),
   );
 
   const plans = await buildLanePlans(persona);
@@ -334,6 +350,7 @@ export async function runInfluencerContentCron(
         persona,
         channel: xChannel,
         fleetSignatures,
+        now,
       });
     } catch (error) {
       base.error = error instanceof Error ? error.message : String(error);

@@ -1,3 +1,4 @@
+import { postingFrequency, postingWeekStart } from "./posting-frequency";
 /**
  * persona-tick: the self-paced autonomous worker.
  *
@@ -69,12 +70,14 @@ export function testShiftChannels(channels: PersonaChannel[], platform?: string)
   );
 }
 // The unpublished buffer is held PER CHANNEL: a channel has room while it holds
-// less than one day of its own cap. A single global ceiling looks tidier but
+// less than its daily or weekly posting allowance. A single global ceiling looks tidier but
 // starves the slow channels — X fills 8 a day, so a week of queued tweets froze
 // every blog and dev.to draft even though those queues were empty and their
-// weekly quota was behind. The per-channel daily caps still do the real pacing.
+// weekly quota was behind. The publisher enforces the selected frequency.
 function channelBuffer(channel: PersonaChannel): number {
-  return Math.max(1, channel.max_posts_per_day);
+  const frequency = postingFrequency(channel);
+  // Keep a queue slot at zero: replies use their separate daily limit.
+  return Math.max(1, frequency.posts);
 }
 
 /**
@@ -318,10 +321,11 @@ async function recentPublishFailures(
 async function countPendingByChannel(
   client: SupabaseClient,
   personaId: string,
+  weeklyIds: Set<string> = new Set(),
 ): Promise<Map<string, number>> {
   const { data, error } = await client
     .from("persona_activities")
-    .select("channel_id,content_meta")
+    .select("channel_id,content_meta,kind")
     .eq("persona_id", personaId)
     .in("status", ["draft", "approved", "scheduled"]);
   if (error) throw new Error(error.message);
@@ -334,6 +338,7 @@ async function countPendingByChannel(
     if (meta.test_run === true) continue;
     const id = typeof row.channel_id === "string" ? row.channel_id : null;
     if (!id) continue;
+    if (weeklyIds.has(id) && (row.kind === "reply" || row.kind === "quote")) continue;
     counts.set(id, (counts.get(id) ?? 0) + 1);
   }
   return counts;
@@ -430,9 +435,24 @@ export async function runPersonaTick({
   // still works the shift — it just researches and engages instead of posting.
   const pendingByChannel = testRun
     ? new Map<string, number>()
-    : await countPendingByChannel(client, persona.id);
+    : await countPendingByChannel(client, persona.id, new Set(actionable.filter((channel) => postingFrequency(channel).period === "weekly").map((channel) => channel.id)));
+  if (!testRun) {
+    const weeklyIds = actionable.filter((channel) => postingFrequency(channel).period === "weekly").map((channel) => channel.id);
+    if (weeklyIds.length) {
+      const { data, error } = await client.from("persona_activities")
+        .select("channel_id,content_meta,status,published_at")
+        .eq("persona_id", persona.id).in("channel_id", weeklyIds)
+        .in("kind", ["post", "article", "crosspost", "video"])
+        .or(`status.eq.publishing,and(status.eq.published,published_at.gte.${postingWeekStart(now)})`);
+      if (error) throw new Error(error.message);
+      for (const row of data ?? []) {
+        if (row.content_meta?.test_run === true) continue;
+        pendingByChannel.set(row.channel_id, (pendingByChannel.get(row.channel_id) ?? 0) + 1);
+      }
+    }
+  }
   const { open, backedUp, openChannelIds } = splitPlatformsByQueueRoom(
-    actionable,
+    testRun ? actionable.map((channel) => ({ ...channel, max_posts_per_day: 1, channel_config: { ...channel.channel_config, posting_frequency: undefined } })) : actionable,
     pendingByChannel,
   );
   // YouTube out of weekly budget closes like a full queue: a script queued now
