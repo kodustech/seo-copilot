@@ -5,6 +5,13 @@ import { fetchOutboundMetrics } from "@/lib/outreach/metrics";
 import { isTelemetryConfigured, runTelemetryQuery } from "@/lib/telemetry-pg";
 
 import { goalOverlay } from "./goals";
+import {
+  createdInPeriod,
+  enteredOpportunity,
+  firstEntries,
+  stageEntries,
+  type StatusChange,
+} from "./stage-entries";
 
 import {
   BOTTLENECK_RATIO,
@@ -490,17 +497,23 @@ async function loadCompanies(client: SupabaseClient): Promise<CrmCompanyLite[]> 
   return out;
 }
 
-type StatusChange = {
-  company_id: string;
-  kind: string;
-  actor: string | null;
-  from: string | null;
-  to: string | null;
-  created_at: string;
-};
-
 /** Kinds that mean a person did something on the account. */
 const HUMAN_KINDS = ["status_change", "comment", "note", "outreach_sent"];
+
+/** PostgREST carries an `in` filter in the URL, so long id lists go in slices. */
+const ID_SLICE = 200;
+
+function toStatusChange(r: Record<string, unknown>): StatusChange {
+  const meta = (r.meta ?? {}) as Record<string, unknown>;
+  return {
+    company_id: r.company_id as string,
+    kind: r.kind as string,
+    actor: (r.actor_email as string | null) ?? null,
+    from: (meta.from as string | undefined) ?? null,
+    to: (meta.to as string | undefined) ?? null,
+    created_at: r.created_at as string,
+  };
+}
 
 async function loadActivities(
   client: SupabaseClient,
@@ -520,17 +533,57 @@ async function loadActivities(
     .order("created_at", { ascending: true })
     .limit(10000);
   if (error) throw new Error(`crm_activities: ${error.message}`);
-  return (data ?? []).map((r) => {
-    const meta = (r.meta ?? {}) as Record<string, unknown>;
-    return {
-      company_id: r.company_id as string,
-      kind: r.kind as string,
-      actor: (r.actor_email as string | null) ?? null,
-      from: (meta.from as string | undefined) ?? null,
-      to: (meta.to as string | undefined) ?? null,
-      created_at: r.created_at as string,
-    };
-  });
+  return (data ?? []).map(toStatusChange);
+}
+
+/**
+ * Every status change of these accounts, at any date. The period window of
+ * loadActivities is not enough to tell the status an account was created in:
+ * its first move can land after the period ends.
+ */
+async function loadStatusHistory(client: SupabaseClient, companyIds: string[]): Promise<StatusChange[]> {
+  const out: StatusChange[] = [];
+  for (let i = 0; i < companyIds.length; i += ID_SLICE) {
+    const { data, error } = await client
+      .from("crm_activities")
+      .select("company_id,kind,actor_email,meta,created_at")
+      .eq("kind", "status_change")
+      .in("company_id", companyIds.slice(i, i + ID_SLICE))
+      .order("created_at", { ascending: true })
+      .limit(10000);
+    if (error) throw new Error(`crm_activities: ${error.message}`);
+    out.push(...(data ?? []).map(toStatusChange));
+  }
+  return out;
+}
+
+type CompanyLabel = { id: string; name: string; domain: string | null; status: string | null };
+
+/**
+ * Name, domain and current status of accounts by id, archived ones included.
+ * loadCompanies leaves archived accounts out, but their status changes still
+ * count, so a counted row would otherwise show a bare id. The status is read
+ * here, not inferred from "missing from the scan": this runs after the scan,
+ * and an account can be missing from it for reasons other than being archived.
+ */
+async function loadCompanyLabels(client: SupabaseClient, ids: string[]): Promise<CompanyLabel[]> {
+  const out: CompanyLabel[] = [];
+  for (let i = 0; i < ids.length; i += ID_SLICE) {
+    const { data, error } = await client
+      .from("crm_companies")
+      .select("id,name,domain,status,archived_at")
+      .in("id", ids.slice(i, i + ID_SLICE));
+    if (error) throw new Error(`crm_companies: ${error.message}`);
+    for (const r of data ?? []) {
+      out.push({
+        id: r.id as string,
+        name: r.name as string,
+        domain: (r.domain as string | null) ?? null,
+        status: r.archived_at ? "archived" : ((r.status as string | null) ?? null),
+      });
+    }
+  }
+  return out;
 }
 
 function isVerified(props: Record<string, unknown> | null): boolean {
@@ -1069,27 +1122,52 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     ),
   );
   const opp = new Set<string>(OPPORTUNITY_STATUSES);
-  const firstTo = (pred: (c: StatusChange) => boolean) => {
-    const seen = new Map<string, StatusChange>();
-    for (const c of ch) if (pred(c) && !seen.has(c.company_id)) seen.set(c.company_id, c);
-    return [...seen.values()];
-  };
-  const convs = firstTo((c) => c.to === "engaged");
-  const opps = firstTo((c) => opp.has(c.to ?? "") && !opp.has(c.from ?? ""));
-  const closed = firstTo((c) => c.to === "customer");
+  // An account created straight into meeting or qualified (inbound, mostly)
+  // has no status_change for it, so creation counts as entering the status it
+  // was created in. Only meetings and opportunities read these entries; the
+  // 48 h touch above stays on activities, since creating a record is not
+  // touching the account.
+  const born = changes ? createdInPeriod(crm, periodStart, nextStart) : [];
+  const history = born.length
+    ? await settle("crm_activities", loadStatusHistory(client, born.map((c) => c.id)))
+    : [];
+  // Without the history the creation status is unknown, so the stages fall
+  // back to status changes alone and the error explains a short count.
+  const entries = history
+    ? stageEntries({ changes: ch, companies: born, history, periodStart, nextStart })
+    : ch;
+  const meetings = firstEntries(entries, (c) => c.to === "meeting");
+  const opps = firstEntries(entries, enteredOpportunity);
+  // Conversations and closed stay on status changes. The accounts created
+  // straight into engaged or customer so far are batches: replies from weeks
+  // earlier promoted in one go, existing customers recorded in one go.
+  // Reading those as entries would put old events in the month they were
+  // typed in.
+  const convs = firstEntries(ch, (c) => c.to === "engaged");
+  const closed = firstEntries(ch, (c) => c.to === "customer");
+  // Status changes are not filtered by archive and crm is, so an account
+  // excluded after it moved still counts but has no name in crm. Whether an
+  // excluded account should count at all is a separate call; this names it.
+  const unnamed = [...new Set([...convs, ...meetings, ...opps, ...closed].map((c) => c.company_id))].filter(
+    (id) => !byId.has(id),
+  );
+  const labels = new Map(
+    (unnamed.length ? ((await settle("crm", loadCompanyLabels(client, unnamed))) ?? []) : []).map((l) => [l.id, l]),
+  );
   const crmRow = (c: StatusChange): FunnelRow => {
     const co = byId.get(c.company_id);
+    const label = labels.get(c.company_id);
     return {
-      company: co?.name ?? c.company_id,
-      domain: co?.domain ?? null,
-      from: c.from,
+      company: co?.name ?? label?.name ?? c.company_id,
+      domain: co?.domain ?? label?.domain ?? null,
+      from: c.kind === "created" ? "(created)" : c.from,
       to: c.to,
       date: c.created_at.slice(0, 10),
       tier: co?.tier ?? null,
       trigger: co?.trigger ?? null,
       deployment: co?.deployment ?? null,
       arr: co?.arr ?? null,
-      status_now: co?.status ?? null,
+      status_now: co?.status ?? label?.status ?? null,
     };
   };
   const crmCols = ["company", "domain", "from", "to", "date", "tier", "trigger", "deployment", "arr", "status_now"];
@@ -1105,16 +1183,15 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
       rows: convs.map(crmRow),
     },
   );
-  const meetings = firstTo((c) => c.to === "meeting");
   nodes.meetings = node(
     "meetings",
     "Meetings",
     changes ? meetings.length : null,
     changes ? `${meetings.length}` : "not measured",
     {
-      source: "CRM (status_change → meeting; the calendar sync moves the account)",
+      source: "CRM (status_change → meeting, or account created in meeting; the calendar sync moves the account)",
       definition:
-        "Accounts that entered meeting in the period: a calendar event with a guest from the account's domain, or moved by hand. Not a mandatory step: inbound can go from conversation straight to opportunity.",
+        "Accounts that entered meeting in the period: a calendar event with a guest from the account's domain, moved by hand, or created in meeting. Not a mandatory step: inbound can go from conversation straight to opportunity.",
       columns: crmCols,
       rows: meetings.map(crmRow),
     },
@@ -1125,8 +1202,9 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     changes ? opps.length : null,
     changes ? `${opps.length}` : "not measured",
     {
-      source: "CRM (status_change → qualified, poc ou negotiation)",
-      definition: "Accounts that entered qualified, poc or negotiation in the period from outside those statuses.",
+      source: "CRM (status_change → qualified, poc ou negotiation, or account created in one of them)",
+      definition:
+        "Accounts that entered qualified, poc or negotiation in the period from outside those statuses. An account created in one of them counts on its creation date.",
       columns: crmCols,
       rows: opps.map(crmRow),
     },
