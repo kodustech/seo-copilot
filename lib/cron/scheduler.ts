@@ -77,11 +77,12 @@ async function runScheduledJobsCron(): Promise<void> {
 /**
  * Daily check, weekly work: the prompt run happens on the weekday saved in
  * ai_visibility_settings (UTC) and once per day, so changing the weekday in
- * the UI is enough; no cron edit, no redeploy.
+ * the UI is enough; no cron edit, no redeploy. The day after, it asks again
+ * whatever failed in that run.
  */
 async function runAiVisibilityCron(): Promise<void> {
   const { getSupabaseServiceClient } = await import("@/lib/supabase-server");
-  const { getSettings, isDueToday, isDataForSeoConfigured, runAiVisibility, WEEKDAY_LABELS } = await import("@/lib/ai-visibility");
+  const { getSettings, isDueToday, isDataForSeoConfigured, retryFailedRun, runAiVisibility, runToRetryToday, WEEKDAY_LABELS } = await import("@/lib/ai-visibility");
   if (!isDataForSeoConfigured()) {
     console.warn("[cron] ai-visibility: DataForSEO not configured, skipping");
     return;
@@ -89,6 +90,17 @@ async function runAiVisibilityCron(): Promise<void> {
   const client = getSupabaseServiceClient();
   const settings = await getSettings(client);
   if (!isDueToday(settings)) {
+    const retryOn = runToRetryToday(settings);
+    if (retryOn) {
+      const res = await retryFailedRun(client, retryOn);
+      console.log(
+        res
+          ? `[cron] ai-visibility: retry of ${retryOn}: asked ${res.asked}, mentioned ${res.mentioned}, failed ${res.failed}, US$ ${res.costUsd}` +
+              (res.errors.length ? `, errors: ${res.errors.slice(0, 3).join("; ")}` : "")
+          : `[cron] ai-visibility: retry of ${retryOn}: nothing failed`,
+      );
+      return;
+    }
     console.log(`[cron] ai-visibility: not due (runs on ${WEEKDAY_LABELS[settings.weekday]}, last ${settings.lastRunOn ?? "never"})`);
     return;
   }
@@ -444,7 +456,8 @@ const JOBS: JobDefinition[] = [
     run: runScheduledJobsCron,
   },
   {
-    // Daily at 07:00 UTC; asks the assistants only on the configured weekday.
+    // Daily at 07:00 UTC; asks the assistants on the configured weekday and
+    // retries that run's failures the day after.
     name: "ai-visibility",
     schedule: "0 7 * * *",
     run: runAiVisibilityCron,
