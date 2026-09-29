@@ -557,24 +557,30 @@ async function loadStatusHistory(client: SupabaseClient, companyIds: string[]): 
   return out;
 }
 
+type CompanyLabel = { id: string; name: string; domain: string | null; status: string | null };
+
 /**
- * Name and domain of accounts by id, archived ones included. loadCompanies
- * leaves archived accounts out, but their status changes still count, so a
- * counted row would otherwise show a bare id.
+ * Name, domain and current status of accounts by id, archived ones included.
+ * loadCompanies leaves archived accounts out, but their status changes still
+ * count, so a counted row would otherwise show a bare id. The status is read
+ * here, not inferred from "missing from the scan": this runs after the scan,
+ * and an account can be missing from it for reasons other than being archived.
  */
-async function loadCompanyLabels(
-  client: SupabaseClient,
-  ids: string[],
-): Promise<{ id: string; name: string; domain: string | null }[]> {
-  const out: { id: string; name: string; domain: string | null }[] = [];
+async function loadCompanyLabels(client: SupabaseClient, ids: string[]): Promise<CompanyLabel[]> {
+  const out: CompanyLabel[] = [];
   for (let i = 0; i < ids.length; i += ID_SLICE) {
     const { data, error } = await client
       .from("crm_companies")
-      .select("id,name,domain")
+      .select("id,name,domain,status,archived_at")
       .in("id", ids.slice(i, i + ID_SLICE));
     if (error) throw new Error(`crm_companies: ${error.message}`);
     for (const r of data ?? []) {
-      out.push({ id: r.id as string, name: r.name as string, domain: (r.domain as string | null) ?? null });
+      out.push({
+        id: r.id as string,
+        name: r.name as string,
+        domain: (r.domain as string | null) ?? null,
+        status: r.archived_at ? "archived" : ((r.status as string | null) ?? null),
+      });
     }
   }
   return out;
@@ -1148,9 +1154,6 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   const labels = new Map(
     (unnamed.length ? ((await settle("crm", loadCompanyLabels(client, unnamed))) ?? []) : []).map((l) => [l.id, l]),
   );
-  // Missing from the scan means archived only when the scan ran. When it
-  // failed, every account is missing and every row would read as archived.
-  const crmLoaded = companies != null;
   const crmRow = (c: StatusChange): FunnelRow => {
     const co = byId.get(c.company_id);
     const label = labels.get(c.company_id);
@@ -1164,7 +1167,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
       trigger: co?.trigger ?? null,
       deployment: co?.deployment ?? null,
       arr: co?.arr ?? null,
-      status_now: co?.status ?? (crmLoaded && label ? "archived" : null),
+      status_now: co?.status ?? label?.status ?? null,
     };
   };
   const crmCols = ["company", "domain", "from", "to", "date", "tier", "trigger", "deployment", "arr", "status_now"];
