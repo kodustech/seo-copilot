@@ -17,6 +17,7 @@ export function PostingFrequencyControl({ channel, token, onChanged, onFrequency
   const [amount, setAmount] = useState(String(frequency.posts));
   const [state, setState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [error, setError] = useState("");
+  const amountDirty = useRef(false);
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const inFlight = useRef(false);
   const confirmed = useRef(frequency);
@@ -28,7 +29,7 @@ export function PostingFrequencyControl({ channel, token, onChanged, onFrequency
     confirmed.current = next;
     desired.current = next;
     setFrequency(next);
-    setAmount(String(next.posts));
+    if (!amountDirty.current) setAmount(String(next.posts));
   }, [channel]);
 
   useEffect(() => { onFrequencyChange?.(frequency); }, [frequency, onFrequencyChange]);
@@ -40,7 +41,8 @@ export function PostingFrequencyControl({ channel, token, onChanged, onFrequency
     desired.current = next;
     queued.current = { key, next };
     setFrequency(next);
-    setAmount(String(next.posts));
+    if (key === "posts") amountDirty.current = false;
+    if (!amountDirty.current) setAmount(String(next.posts));
     setError("");
     if (inFlight.current) return;
     inFlight.current = true;
@@ -67,7 +69,7 @@ export function PostingFrequencyControl({ channel, token, onChanged, onFrequency
       queued.current = null;
       desired.current = confirmed.current;
       setFrequency(confirmed.current);
-      setAmount(String(confirmed.current.posts));
+      if (!amountDirty.current) setAmount(String(confirmed.current.posts));
       setError(err instanceof Error ? err.message : "Could not save frequency. Try again.");
       setState("error");
       onChanged();
@@ -87,10 +89,11 @@ export function PostingFrequencyControl({ channel, token, onChanged, onFrequency
     </div>
     <label className="block">
       <span className={cn(cls.label, "mb-1 block")}>Posts per {frequency.period === "weekly" ? "week" : "day"}</span>
-      <Input disabled={state === "saving"} type="number" min={0} step={1} value={amount} aria-invalid={state === "error"} aria-describedby={`frequency-help-${channel.id}`} className={cn(cls.input, "min-h-11")} onChange={(event) => { setAmount(event.target.value); setState("idle"); }} onBlur={() => {
+      <Input disabled={pendingKey === "posts"} type="number" min={0} step={1} value={amount} aria-invalid={state === "error"} aria-describedby={`frequency-help-${channel.id}`} className={cn(cls.input, "min-h-11")} onChange={(event) => { amountDirty.current = true; setAmount(event.target.value); if (!inFlight.current) setState("idle"); }} onBlur={() => {
         const posts = Number(amount);
         if (!amount.trim() || !Number.isSafeInteger(posts) || posts < 0) { setError("Use a whole number of zero or more."); setState("error"); return; }
-        if (posts !== frequency.posts) save("posts", (current) => ({ ...current, posts }));
+        amountDirty.current = false;
+        if (posts !== desired.current.posts) save("posts", (current) => ({ ...current, posts }));
       }} />
     </label>
     {frequency.period === "weekly" && <div className="space-y-2">
@@ -101,7 +104,7 @@ export function PostingFrequencyControl({ channel, token, onChanged, onFrequency
       <p className="text-xs text-neutral-400">{frequency.days.length ? `Up to ${frequency.posts} posts, only on ${DAYS.filter((d) => frequency.days.includes(d.id)).map((d) => d.label).join(" / ")}.` : `Up to ${frequency.posts} posts across any days.`} Week resets Monday · UTC.</p>
     </div>}
     <p id={`frequency-help-${channel.id}`} role="status" className={cn("min-h-5 text-xs", state === "error" ? cls.errorText : "text-neutral-400")}>
-      {state === "error" ? error : pendingKey === "posts" ? <><Loader2 aria-hidden="true" className="mr-1 inline size-3 animate-spin motion-reduce:animate-none" />Saving posts…</> : state === "saved" ? <><Check className="mr-1 inline size-3" />Saved</> : frequency.period === "weekly" ? "Zero pauses new posts. Replies keep their daily limit." : "Zero prevents automatic publication. Drafts can still be prepared."}
+      {state === "error" ? error : pendingKey === "posts" ? <><Loader2 aria-hidden="true" className="mr-1 inline size-3 animate-spin motion-reduce:animate-none" />Saving posts…</> : state === "saved" ? <><Check className="mr-1 inline size-3" />Saved</> : frequency.period === "weekly" ? "Zero prevents automatic publication. Replies keep their daily limit." : "Zero prevents automatic publication. Drafts can still be prepared."}
     </p>
   </fieldset>;
 }

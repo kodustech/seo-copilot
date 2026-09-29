@@ -76,7 +76,8 @@ export function testShiftChannels(channels: PersonaChannel[], platform?: string)
 // weekly quota was behind. The publisher enforces the selected frequency.
 function channelBuffer(channel: PersonaChannel): number {
   const frequency = postingFrequency(channel);
-  return frequency.period === "weekly" ? frequency.posts : Math.max(1, frequency.posts);
+  // Keep a queue slot at zero: replies use their separate daily limit.
+  return Math.max(1, frequency.posts);
 }
 
 /**
