@@ -15,9 +15,9 @@ import { classifyDomain, type DomainVerdict } from "./domains";
 //
 // Two regimes, because the two populations expose completely different data:
 //
-//   connected git (t0/t1) → we know the real engineering team size
-//                           (code_host_member_count, or PR authors as fallback)
-//                           and gate on MIN_DEVS.
+//   connected git (t0/t1) → we know the real engineering team size (the
+//                           larger of code_host_member_count and PR authors,
+//                           see resolveDevCount) and gate on MIN_DEVS.
 //   never connected (t2)  → no team-size signal exists and none ever will:
 //                           code_host_member_count is written at onboarding,
 //                           which requires connecting git. So we buy
