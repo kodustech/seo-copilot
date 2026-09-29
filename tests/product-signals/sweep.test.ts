@@ -180,6 +180,26 @@ describe("product-signals sweep — free-mail teams (#260)", () => {
     ]);
   });
 
+  it("never takes a code host's noreply address as a contact", async () => {
+    // It classifies free_mail (github.com is never a company), but nobody
+    // reads it, so it must not become the primary contact ahead of a person.
+    vi.mocked(collectOrgFacts).mockResolvedValue([
+      org({
+        contacts: [
+          { email: "12345+dev@users.noreply.github.com", name: "Dev" },
+          { email: "ana@gmail.com", name: "Ana" },
+        ],
+      }),
+    ]);
+    const { client } = fakeClient([]);
+
+    await runProductSignalsSweep(client);
+
+    expect(vi.mocked(createContact).mock.calls.map((c) => c[2])).toEqual([
+      { name: "Ana", email: "ana@gmail.com", isPrimary: true },
+    ]);
+  });
+
   it("still takes only the derived domain's addresses on a corporate account", async () => {
     vi.mocked(collectOrgFacts).mockResolvedValue([
       org({

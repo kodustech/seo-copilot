@@ -4,7 +4,7 @@ import { createCompany, createContact, logActivity } from "@/lib/crm";
 
 import { classifyOrg, resolveDevCount, type Classification } from "./classify";
 import { collectOrgFacts, domainOfEmail, type CollectedOrg } from "./collect";
-import { classifyDomain } from "./domains";
+import { classifyDomain, isCodeHostDomain } from "./domains";
 import { evaluateOrg, getEnrichment, getFirmographics } from "./icp-gate";
 
 // ---------------------------------------------------------------------------
@@ -489,10 +489,12 @@ export async function runProductSignalsSweep(
         // though — the gate admits the org on its members' verdict, which
         // ignores an unusable address like bo@gmail or bo@localhost (both
         // classify "invalid"), and those must not become the primary contact.
+        // Nor may a code host's noreply address, which classifies free_mail.
         for (const contact of org.contacts.slice(0, 3)) {
+          const domain = domainOfEmail(contact.email);
           const accepted = org.derivedDomain
-            ? domainOfEmail(contact.email) === org.derivedDomain
-            : classifyDomain(domainOfEmail(contact.email)) === "free_mail";
+            ? domain === org.derivedDomain
+            : classifyDomain(domain) === "free_mail" && !isCodeHostDomain(domain);
           if (!accepted) continue;
           await createContact(client, company.id, {
             name: contact.name ?? contact.email.split("@")[0],
