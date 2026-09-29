@@ -75,7 +75,9 @@ export const COMPANY_WORKING_STATUSES: CompanyStatus[] = [
 export const COMPANY_PRIORITIES: CompanyPriority[] = ["high", "medium", "low"];
 
 /** How the account runs Kodus. Cloud is set by the product-signals sweep;
- *  self_hosted is set by a human (telemetry has no identity to automate it). */
+ *  self_hosted by the trial-request form (lib/crm-trial-requests.ts) or by a
+ *  human — telemetry has no identity to automate it. The sweep only fills a
+ *  null, so it never flips a self-hosted account back to cloud. */
 export type CompanyDeployment = "cloud" | "self_hosted";
 export const COMPANY_DEPLOYMENTS: CompanyDeployment[] = ["cloud", "self_hosted"];
 
@@ -92,7 +94,11 @@ export type ActivityKind =
   /** A human moved the account through the review gate (not_started → ready etc.). */
   | "prep_change"
   /** An outbound message actually went out — email or LinkedIn. */
-  | "outreach_sent";
+  | "outreach_sent"
+  /** The prospect asked for a self-hosted trial through the Tally form. Their
+   *  hand, not ours: the funnel counts it in sh_trial and never as a touch by
+   *  the team. */
+  | "trial_request";
 
 /**
  * How far an account has come through preparation, which is a different axis
@@ -530,6 +536,9 @@ export async function logActivity(
      *  means the row this call wanted is already there — written moments ago by
      *  the pass that won, which touched last_activity_at on its way. */
     dedupe?: boolean;
+    /** When it happened, if not now. A replayed form submission is dated by
+     *  when it was submitted, which is what the funnel counts by. */
+    createdAt?: string;
   } = {},
 ): Promise<void> {
   const { error } = await client.from("crm_activities").insert({
@@ -538,6 +547,7 @@ export async function logActivity(
     summary: trimOrNull(opts.summary),
     meta: opts.meta ?? {},
     actor_email: trimOrNull(opts.actorEmail),
+    ...(opts.createdAt ? { created_at: opts.createdAt } : {}),
   });
   if (error) {
     if (opts.dedupe && error.code === "23505") return;
@@ -545,10 +555,22 @@ export async function logActivity(
   }
 
   if (opts.touch !== false) {
-    await client
+    // Canonical ISO: `at` goes into a raw or() filter below, where an offset
+    // form ("+00:00") or anything else PostgREST can't read fails the update.
+    const at = new Date(opts.createdAt ?? Date.now()).toISOString();
+    let touch = client
       .from("crm_companies")
-      .update({ last_activity_at: new Date().toISOString() })
+      .update({ last_activity_at: at })
       .eq("id", companyId);
+    // A back-dated activity only moves the idle clock forward: replaying a
+    // September request must not make the account look worked today.
+    if (opts.createdAt) {
+      touch = touch.or(`last_activity_at.is.null,last_activity_at.lt.${at}`);
+    }
+    // Logged, not thrown: the activity is already written, and every caller
+    // has always treated the idle clock as best-effort.
+    const { error: touchError } = await touch;
+    if (touchError) console.error("[crm] last_activity_at not moved:", touchError.message);
   }
 }
 
