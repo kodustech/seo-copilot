@@ -555,10 +555,17 @@ export async function logActivity(
   }
 
   if (opts.touch !== false) {
-    await client
+    const at = opts.createdAt ?? new Date().toISOString();
+    let touch = client
       .from("crm_companies")
-      .update({ last_activity_at: new Date().toISOString() })
+      .update({ last_activity_at: at })
       .eq("id", companyId);
+    // A back-dated activity only moves the idle clock forward: replaying a
+    // September request must not make the account look worked today.
+    if (opts.createdAt) {
+      touch = touch.or(`last_activity_at.is.null,last_activity_at.lt.${at}`);
+    }
+    await touch;
   }
 }
 

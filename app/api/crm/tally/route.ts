@@ -54,7 +54,7 @@ export async function POST(req: Request) {
       { status: outcome.action === "created" ? 201 : 200 },
     );
   } catch (err) {
-    console.error("[crm/tally] error:", err);
+    console.error("[crm/tally] error:", err instanceof Error ? err.message : String(err));
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed to record trial request" },
       { status: 500 },

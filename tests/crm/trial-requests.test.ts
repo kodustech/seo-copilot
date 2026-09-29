@@ -77,6 +77,17 @@ function fakeDb(seed: Record<string, Row[]> = {}) {
         filters.push((r) => String(read(r, col) ?? "").toLowerCase() === want);
         return b;
       },
+      // Only the shapes the code sends: `col.is.null` and `col.lt.<iso>`.
+      or: (expr: string) => {
+        const clauses = expr.split(",").map((c) => c.match(/^(\w+)\.(is|lt)\.(.+)$/)!);
+        filters.push((r) =>
+          clauses.some(([, col, op, v]) => {
+            const cur = read(r, col);
+            return op === "is" ? cur === null : cur != null && String(cur) < v;
+          }),
+        );
+        return b;
+      },
       order: (col: string, o?: { ascending?: boolean }) => ((order = { col, asc: o?.ascending !== false }), b),
       limit: (n: number) => ((limit = n), b),
       insert: (row: Row) => {
@@ -253,6 +264,13 @@ describe("normalizing a submission", () => {
     expect(readTrialAnswers(s!.fields)).toEqual(JANE);
   });
 
+  it("refuses a delivery without submissionId rather than keying it on another id", () => {
+    const payload = webhookPayload();
+    delete (payload.data as Partial<typeof payload.data>).submissionId;
+    expect(payload.data.responseId).toBe("sub-1");
+    expect(fromTallyWebhook(payload)).toBeNull();
+  });
+
   it("marks anything but a FORM_RESPONSE, and an API partial, as not completed", () => {
     expect(submission({ eventType: "FORM_PARTIAL_RESPONSE" }).completed).toBe(false);
     expect(fromTallyApi({ id: "s", formId: "GxED1z", isCompleted: false, responses: [] }, [])?.completed).toBe(false);
@@ -330,6 +348,12 @@ describe("handling a trial request", () => {
       expect(o).toMatchObject({ action: "matched", companyId: "by-domain", matchedBy: "domain" });
     });
 
+    it("matches a stored domain whatever its case", async () => {
+      const db = fakeDb({ crm_companies: [company({ id: "mixed-case", domain: "Acme.COM" })] });
+      const o = await handleTrialSubmission(db.client, submission({ orgId: null }), { apply: false });
+      expect(o).toMatchObject({ action: "matched", companyId: "mixed-case", matchedBy: "domain" });
+    });
+
     it("then a contact with that email, never a free-mail domain", async () => {
       const db = fakeDb(seed());
       const o = await handleTrialSubmission(db.client, submission({ orgId: null, email: "SAM@gmail.com" }), { apply: false });
@@ -398,6 +422,25 @@ describe("handling a trial request", () => {
     for (const piece of ["Jane Roe", "Head of Platform", "11-25", "air-gapped: Yes", "1.8.0", "inst-org-1", "CodeRabbit"]) {
       expect(activity.summary).toContain(piece);
     }
+  });
+
+  describe("the account's idle clock", () => {
+    const lastActivityAfter = async (current: string | null) => {
+      const db = fakeDb({
+        crm_companies: [company({ id: "acme", domain: "acme.com", deployment: "self_hosted", last_activity_at: current })],
+      });
+      await handleTrialSubmission(db.client, submission(), { apply: true });
+      return db.tables.crm_companies[0].last_activity_at;
+    };
+
+    it("moves forward to the submission when that is later", async () => {
+      expect(await lastActivityAfter("2026-08-01T00:00:00.000Z")).toBe("2026-09-18T14:02:11.000Z");
+      expect(await lastActivityAfter(null)).toBe("2026-09-18T14:02:11.000Z");
+    });
+
+    it("stays put when the account was worked after the submission, as on a replay", async () => {
+      expect(await lastActivityAfter("2026-09-25T09:00:00.000Z")).toBe("2026-09-25T09:00:00.000Z");
+    });
   });
 
   it("records the same submission once, however many times it arrives", async () => {

@@ -198,7 +198,9 @@ export function fromTallyWebhook(payload: unknown): TrialSubmission | null {
   const event = asRecord(payload);
   const data = asRecord(event?.data);
   if (!event || !data) return null;
-  const submissionId = str(data.submissionId) ?? str(data.responseId);
+  // submissionId only: it is the id the API lists the same submission under,
+  // which is what lets the webhook and the replay dedupe against each other.
+  const submissionId = str(data.submissionId);
   const formId = str(data.formId);
   if (!submissionId || !formId) return null;
 
@@ -375,36 +377,44 @@ export async function matchTrialAccount(
     if (hit) return hit;
   }
   if (a.domain) {
-    const id = await firstId(
-      client
-        .from("crm_companies")
-        .select("id")
-        .eq("domain", a.domain)
-        .order("created_at", { ascending: true })
-        .limit(1),
-      "id",
-    );
+    const id = await firstIgnoringCase(client, "crm_companies", "domain", a.domain, "id");
     const hit = await found(id, "domain");
     if (hit) return hit;
   }
-  const email = a.email?.trim().toLowerCase();
-  if (email) {
-    // Stored emails keep whatever case they arrived in, hence ilike; the exact
-    // comparison after it keeps a wildcard in the address from matching wide.
-    const { data, error } = await client
-      .from("crm_contacts")
-      .select("company_id,email")
-      .ilike("email", escapeLike(email))
-      .order("created_at", { ascending: true })
-      .limit(20);
-    if (error) throw new Error(`Failed to match trial request: ${error.message}`);
-    const row = (data ?? []).find(
-      (c) => String((c as { email?: unknown }).email ?? "").trim().toLowerCase() === email,
-    ) as { company_id?: string } | undefined;
-    const hit = await found(row?.company_id ?? null, "contact_email");
+  if (a.email) {
+    const id = await firstIgnoringCase(client, "crm_contacts", "email", a.email, "company_id");
+    const hit = await found(id, "contact_email");
     if (hit) return hit;
   }
   return null;
+}
+
+/**
+ * `idColumn` of the oldest row whose `column` equals `value`, ignoring case.
+ * Stored domains and emails keep whatever case they arrived in, hence ilike;
+ * the exact comparison after it keeps a wildcard in the value from matching
+ * wide.
+ */
+async function firstIgnoringCase(
+  client: SupabaseClient,
+  table: string,
+  column: string,
+  value: string,
+  idColumn: string,
+): Promise<string | null> {
+  const want = value.trim().toLowerCase();
+  if (!want) return null;
+  const { data, error } = await client
+    .from(table)
+    .select(`${idColumn},${column}`)
+    .ilike(column, escapeLike(want))
+    .order("created_at", { ascending: true })
+    .limit(20);
+  if (error) throw new Error(`Failed to match trial request: ${error.message}`);
+  const row = (data ?? [])
+    .map((r) => asRecord(r))
+    .find((r) => String(r?.[column] ?? "").trim().toLowerCase() === want);
+  return str(row?.[idColumn]);
 }
 
 /** Merge the requester into the account's people. Never overwrites: an

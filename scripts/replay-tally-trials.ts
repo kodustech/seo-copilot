@@ -44,7 +44,9 @@ async function fetchSubmissions(apiKey: string): Promise<TrialSubmission[]> {
     for (const raw of body.submissions ?? []) {
       const submission = fromTallyApi(raw, body.questions);
       if (submission) out.push(submission);
-      else console.warn("Unreadable submission, skipped:", JSON.stringify(raw).slice(0, 200));
+      // The id only: a raw submission carries signed preview/PDF URLs whose
+      // access tokens never expire.
+      else console.warn("Unreadable submission, skipped:", String((raw as { id?: unknown })?.id ?? "?"));
     }
     if (!body.hasMore) break;
   }
@@ -93,6 +95,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error(err instanceof Error ? err.message : String(err));
   process.exit(1);
 });
