@@ -171,9 +171,12 @@ export async function collectOrgFacts(): Promise<CollectedOrg[]> {
       GROUP BY 1
     ),
     pr_authors AS (
-      -- Distinct humans who opened a PR Kodus processed. Fallback team size for
-      -- orgs onboarded before code_host_member_count existed (2026-07-28).
-      -- Undercounts by construction: only devs whose PRs we actually saw.
+      -- Distinct humans who opened a PR Kodus processed. One of two team-size
+      -- signals: resolveDevCount takes the larger of this and
+      -- code_host_member_count, and for orgs onboarded before that column
+      -- existed (2026-07-28) this is the only one. Undercounts by construction
+      -- (only devs whose PRs we actually saw), except on public repos, where
+      -- outside contributors count too.
       SELECT organizationId AS org_id,
              COUNT(DISTINCT author) AS pr_author_count
       FROM (
