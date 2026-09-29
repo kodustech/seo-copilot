@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { analyzeAnswer } from "../lib/ai-visibility";
+import { analyzeAnswer, runToRetryToday, type AiVisibilitySettings } from "../lib/ai-visibility";
 
 describe("AI visibility answer analysis", () => {
   it("does not count a cited bare domain as a brand mention", () => {
@@ -35,5 +35,33 @@ describe("AI visibility answer analysis", () => {
     );
 
     expect(result.mentioned).toBe(true);
+  });
+});
+
+describe("AI visibility retry day", () => {
+  const settings = (lastRunOn: string | null): AiVisibilitySettings => ({
+    weekday: 1,
+    engines: [],
+    brandTerms: [],
+    competitorTerms: [],
+    lastRunOn,
+    updatedAt: "2026-09-28T07:14:41Z",
+  });
+
+  it("retries the run on the day after it", () => {
+    expect(runToRetryToday(settings("2026-09-28"), new Date("2026-09-29T07:00:00Z"))).toBe("2026-09-28");
+  });
+
+  it("does not retry on the run day or two days after", () => {
+    expect(runToRetryToday(settings("2026-09-28"), new Date("2026-09-28T07:00:00Z"))).toBeNull();
+    expect(runToRetryToday(settings("2026-09-28"), new Date("2026-09-30T07:00:00Z"))).toBeNull();
+  });
+
+  it("crosses a month boundary", () => {
+    expect(runToRetryToday(settings("2026-09-30"), new Date("2026-10-01T00:30:00Z"))).toBe("2026-09-30");
+  });
+
+  it("does nothing before the first run", () => {
+    expect(runToRetryToday(settings(null), new Date("2026-09-29T07:00:00Z"))).toBeNull();
   });
 });

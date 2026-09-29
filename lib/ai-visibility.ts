@@ -844,6 +844,34 @@ export function isDueToday(settings: AiVisibilitySettings, now = new Date()): bo
 }
 
 /**
+ * The run whose failures the cron asks again today, or null. Only the day
+ * after the run (UTC): an assistant can be down for a whole run — ChatGPT
+ * answered 50301 rate_limit_exceeded to all 81 asks on 2026-09-28 and was
+ * back by the next afternoon — so the retry waits a day rather than seconds.
+ * An error that survives that one retry is left on the page to be seen.
+ */
+export function runToRetryToday(settings: AiVisibilitySettings, now = new Date()): string | null {
+  if (!settings.lastRunOn) return null;
+  const dayAfter = new Date(`${settings.lastRunOn}T00:00:00Z`);
+  dayAfter.setUTCDate(dayAfter.getUTCDate() + 1);
+  return dayAfter.toISOString().slice(0, 10) === now.toISOString().slice(0, 10) ? settings.lastRunOn : null;
+}
+
+/**
+ * Ask again, under the run's own date, the prompts that have a failed answer
+ * in it. runAiVisibility skips the answers that succeeded, so only the failed
+ * samples are paid for; scoping by prompt keeps a prompt created after the
+ * run out of it, and makes this a subset run, so last_run_on is untouched.
+ */
+export async function retryFailedRun(client: SupabaseClient, runOn: string): Promise<RunSummary | null> {
+  const { data, error } = await client.from("ai_prompt_runs").select("prompt_id").eq("run_on", runOn).not("error", "is", null);
+  if (error) throw new Error(`ai_prompt_runs: ${error.message}`);
+  const promptIds = [...new Set((data ?? []).map((r) => r.prompt_id as string))];
+  if (promptIds.length === 0) return null;
+  return runAiVisibility(client, { runOn, promptIds });
+}
+
+/**
  * Recompute mentioned / position / competitors from the stored answer and
  * citations, so a better parser applies to past runs without asking (and
  * paying) again.
