@@ -794,10 +794,9 @@ export async function runInfluencerAgentSession({
           try {
             const url = new URL(source);
             url.hash = "";
-            // Paths and query values are case-sensitive; only normalize the origin.
-            url.protocol = url.protocol.toLowerCase();
-            url.hostname = url.hostname.toLowerCase();
-            source = url.toString().replace(/\/$/, "");
+            // Our article publishers return lowercase URLs. Case variants of
+            // the same URL must not count as separate performance observations.
+            source = url.toString().replace(/\/$/, "").toLowerCase();
           } catch {
             // IDs and document identifiers need not be URLs.
             source = source.toLowerCase();
