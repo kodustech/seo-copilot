@@ -4,6 +4,7 @@ import { createCompany, createContact, logActivity } from "@/lib/crm";
 
 import { classifyOrg, resolveDevCount, type Classification } from "./classify";
 import { collectOrgFacts, domainOfEmail, type CollectedOrg } from "./collect";
+import { classifyDomain, isCodeHostDomain } from "./domains";
 import { evaluateOrg, getEnrichment, getFirmographics } from "./icp-gate";
 
 // ---------------------------------------------------------------------------
@@ -293,11 +294,25 @@ export async function runProductSignalsSweep(
   // (signals-only, outside CRM_CREATE_TIERS) would take the account from a
   // fresh t2 sibling and drop a real lead out of outbound, which is the same
   // mistake pointing the other way.
+  //
+  // The key must name the account the org will actually write to, which is
+  // the one linked by org_id when there is one (see `company` below). A linked
+  // account with no domain is therefore keyed by its id, never by the org's
+  // derivedDomain: the sweep creates those for free-mail teams (icp-gate.ts),
+  // and once such an org gains a member on a corporate domain that another
+  // org's account already holds, keying both on that domain would make them
+  // compete for an election over two different accounts — and the loser's
+  // account would silently stop receiving its tier.
   const accountKeyFor = (org: CollectedOrg): string => {
     const linked = companyByOrg.get(org.orgId);
-    const domain = linked?.domain ?? org.derivedDomain;
-    if (domain) return `domain:${domain.toLowerCase()}`;
-    return linked ? `company:${linked.id}` : `org:${org.orgId}`;
+    if (linked) {
+      return linked.domain
+        ? `domain:${linked.domain.toLowerCase()}`
+        : `company:${linked.id}`;
+    }
+    return org.derivedDomain
+      ? `domain:${org.derivedDomain.toLowerCase()}`
+      : `org:${org.orgId}`;
   };
   type Owner = {
     orgId: string;
@@ -425,9 +440,15 @@ export async function runProductSignalsSweep(
         : null;
       if (decision) gate[decision.reason] = (gate[decision.reason] ?? 0) + 1;
 
-      if (!company && decision?.create && org.derivedDomain) {
+      // derivedDomain is null on "pass_devs_no_domain": a free-mail team,
+      // created without a domain and named after its product org. It cannot be
+      // matched by domain, so org_id is its only identity — which is why
+      // companyByOrg is consulted first above, and why an account a human made
+      // for the same company without linking the org would be duplicated here.
+      if (!company && decision?.create) {
         const created = await createCompany(client, {
-          name: org.orgName?.trim() || org.derivedDomain,
+          name:
+            org.orgName?.trim() || org.derivedDomain || `Org ${org.orgId}`,
           domain: org.derivedDomain,
           orgId: org.orgId,
           status: "lead",
@@ -453,7 +474,7 @@ export async function runProductSignalsSweep(
           archived_at: null,
         };
         companyByOrg.set(org.orgId, company);
-        companyByDomain.set(org.derivedDomain, company);
+        if (org.derivedDomain) companyByDomain.set(org.derivedDomain, company);
         companiesCreated += 1;
 
         // No getFirmographics call here any more: "pass_employees" now means
@@ -462,10 +483,22 @@ export async function runProductSignalsSweep(
 
         // isPrimary is per company (not sweep-wide) so each new account gets a lead contact.
         let primarySetForCompany = false;
-        for (const contact of org.contacts.slice(0, 3)) {
-          const corporate =
-            !org.derivedDomain || domainOfEmail(contact.email) === org.derivedDomain;
-          if (!corporate) continue;
+        // With no derivedDomain the personal addresses are the contacts: on a
+        // free-mail team they are the only ones there are, and they belong to
+        // the people we would be writing to. Only real free-mail addresses,
+        // though — the gate admits the org on its members' verdict, which
+        // ignores an unusable address like bo@gmail or bo@localhost (both
+        // classify "invalid"), and those must not become the primary contact.
+        // Nor may a code host's noreply address, which classifies free_mail.
+        // Filter first, then cap: three noreply addresses up front must not
+        // leave the account with no contact while a person sits fourth.
+        const accepted = org.contacts.filter((contact) => {
+          const domain = domainOfEmail(contact.email);
+          return org.derivedDomain
+            ? domain === org.derivedDomain
+            : classifyDomain(domain) === "free_mail" && !isCodeHostDomain(domain);
+        });
+        for (const contact of accepted.slice(0, 3)) {
           await createContact(client, company.id, {
             name: contact.name ?? contact.email.split("@")[0],
             email: contact.email,

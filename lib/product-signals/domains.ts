@@ -11,6 +11,16 @@
 // provider.
 // ---------------------------------------------------------------------------
 
+/** Code hosts. They show up via noreply addresses, so they are never a company
+ *  (listed in FREE_MAIL_EXACT below) and never a person's inbox either (see
+ *  isCodeHostDomain). */
+const CODE_HOST_DOMAINS = [
+  "github.com",
+  "users.noreply.github.com",
+  "gitlab.com",
+  "bitbucket.org",
+];
+
 /** Free/personal mail providers. Matched as the domain itself or a subdomain,
  *  plus country variants of the big providers (see FREE_MAIL_ROOTS). */
 const FREE_MAIL_EXACT = new Set([
@@ -64,11 +74,7 @@ const FREE_MAIL_EXACT = new Set([
   "simplelogin.com",
   "anonaddy.com",
   "relay.firefox.com",
-  // Code hosts: shows up via noreply addresses.
-  "github.com",
-  "users.noreply.github.com",
-  "gitlab.com",
-  "bitbucket.org",
+  ...CODE_HOST_DOMAINS,
 ]);
 
 /** Providers with many country/product variants. Any domain whose first label
@@ -158,6 +164,13 @@ export function isFreeMailDomain(domain: string): boolean {
     if (suffixIsPublic) return true;
   }
   return false;
+}
+
+/** A code host's noreply mailbox (12345+dev@users.noreply.github.com): it
+ *  classifies free_mail, but nobody reads it, so it must not become a contact. */
+export function isCodeHostDomain(domain: string | null): boolean {
+  const d = domain?.trim().toLowerCase() ?? "";
+  return CODE_HOST_DOMAINS.some((h) => d === h || d.endsWith(`.${h}`));
 }
 
 export function isAcademicDomain(domain: string): boolean {

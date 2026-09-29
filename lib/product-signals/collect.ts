@@ -1,7 +1,7 @@
 import { queryBigQuery } from "@/lib/bigquery";
 
 import type { OrgFacts } from "./classify";
-import { classifyDomain } from "./domains";
+import { classifyDomain, type DomainVerdict } from "./domains";
 
 // ---------------------------------------------------------------------------
 // Bulk collector: one BigQuery round-trip returning the raw facts for every
@@ -19,9 +19,16 @@ export type OrgContact = {
   name: string | null;
 };
 
+/** What the member emails were on when none of them was corporate. */
+export type NoDomainReason = Exclude<DomainVerdict, "corporate">;
+
 export type CollectedOrg = OrgFacts & {
   /** Corporate domain derived from member emails (free-mail excluded). */
   derivedDomain: string | null;
+  /** Why derivedDomain is null, when it is; null whenever it is set. See
+   *  whyNoCorporateDomain — the gate needs to tell a gmail team from a
+   *  university, and derivedDomain alone collapses both into null. */
+  noDomainReason: NoDomainReason | null;
   /** Up to 5 member emails (corporate first) for CRM contact creation. */
   contacts: OrgContact[];
   /** Distinct PRs with at least one delivered review in the last 30d.
@@ -91,6 +98,28 @@ export function deriveCompanyDomain(emails: string[]): string | null {
     }
   }
   return best;
+}
+
+/**
+ * What the members were on instead, for an org deriveCompanyDomain found no
+ * corporate domain for. Reads the same emails, so it sees the same members.
+ *
+ * The most disqualifying verdict wins: internal over academic over free_mail.
+ * icp-gate.ts lets a free-mail org through on its git dev count, and that
+ * exception must not reach a student who signed up on gmail next to a classmate
+ * on the university address, nor one of our own test orgs with a personal
+ * inbox in it. "invalid" when no member has a usable address at all.
+ */
+export function whyNoCorporateDomain(emails: string[]): NoDomainReason {
+  const seen = new Set<DomainVerdict>();
+  for (const email of emails) {
+    const domain = domainOfEmail(email);
+    if (domain) seen.add(classifyDomain(domain));
+  }
+  if (seen.has("internal")) return "internal";
+  if (seen.has("academic")) return "academic";
+  if (seen.has("free_mail")) return "free_mail";
+  return "invalid";
 }
 
 export async function collectOrgFacts(): Promise<CollectedOrg[]> {
@@ -317,6 +346,7 @@ export async function collectOrgFacts(): Promise<CollectedOrg[]> {
       suggestionsImplemented30d: asNumber(r.suggestions_implemented_30d),
       suggestionsPartial30d: asNumber(r.suggestions_partial_30d),
       derivedDomain,
+      noDomainReason: derivedDomain ? null : whyNoCorporateDomain(emails),
       contacts: contacts.slice(0, 5),
     };
   });
