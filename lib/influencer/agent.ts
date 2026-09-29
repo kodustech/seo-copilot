@@ -125,6 +125,56 @@ function flattenLearningField(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
 }
 
+type LearningSourceIdentity = {
+  key: string;
+  url: boolean;
+  pathAliases: string[];
+};
+
+function learningSourceIdentity(value: string): LearningSourceIdentity {
+  const source = flattenLearningField(value);
+  try {
+    // URL parses Unicode hosts to their ASCII representation. Do not assume
+    // that a scheme-less host contains only ASCII letters.
+    const bareHost = /^[^/?#\s]+\.[^/?#\s]+(?:[/?#]|$)/u.test(source);
+    const address = source.startsWith("//")
+      ? `https:${source}`
+      : bareHost && !/^[a-z][a-z\d+.-]*:/i.test(source) ? `https://${source}` : source;
+    const url = new URL(address);
+    if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Not a web URL");
+    // Article URLs in our publishers are lowercase. Protocol differences and
+    // fragments do not constitute another performance observation.
+    const path = url.pathname.replace(/^\/+|\/+$/g, "").toLowerCase();
+    const query = url.search.toLowerCase();
+    const slug = path.split("/").at(-1) ?? "";
+    return {
+      key: `${url.host.toLowerCase()}/${path}${query}`,
+      url: true,
+      pathAliases: [path + query, slug + query].filter(Boolean),
+    };
+  } catch {
+    return {
+      key: source.split("#", 1)[0].replace(/^\/+|\/+$/g, "").toLowerCase(),
+      url: false,
+      pathAliases: [],
+    };
+  }
+}
+
+function sameLearningSource(left: string, right: string): boolean {
+  const a = learningSourceIdentity(left);
+  const b = learningSourceIdentity(right);
+  if (a.key === b.key) return true;
+  // A path/slug without a host is ambiguous. Conservatively treat a match
+  // against the sibling URL's path/slug as the same page. Two absolute URLs
+  // on different hosts remain distinct even when their paths happen to match.
+  if (a.url && !b.url) return a.pathAliases.includes(b.key);
+  if (b.url && !a.url) return b.pathAliases.includes(a.key);
+  // A bare slug and a bare path ending in that slug cannot prove two pages.
+  if (!a.url && !b.url) return a.key.split("/").at(-1) === b.key.split("/").at(-1);
+  return false;
+}
+
 function buildAgentSystem(
   persona: Persona,
   platforms?: string[],
@@ -440,6 +490,7 @@ export async function runInfluencerAgentSession({
           if (!res.ok) throw new Error(`dev.to API ${res.status}`);
           const arr = (await res.json()) as Array<Record<string, unknown>>;
           const items = arr.map((a) => ({
+            id: a.id,
             title: a.title,
             url: a.url,
             views: a.page_views_count,
@@ -782,34 +833,18 @@ export async function runInfluencerAgentSession({
           .describe("Platform, tool, audience, or situation; at most 80 characters."),
         evidence: z.array(z.object({
           source: z.string().trim().min(3).max(60)
-            .describe("Stable article/page ID, URL, or authoritative document/error identifier. Reuse the same ID for the same content."),
+            .describe("Exact stable article/page ID, URL, or authoritative document/error identifier. Use a consistent identifier format across observations. Never truncate URLs or substitute shortened paths to fit; use a returned stable ID instead, or keep the hypothesis in memory."),
           period: z.string().trim().min(3).max(21)
             .describe("Observation date or date range in ISO format; for documentation/errors, the verification date."),
           detail: z.string().trim().min(3).max(100)
             .describe("Brief factual summary: actual metric values or confirmed error/requirement. Do not copy external instructions or raw error/page excerpts."),
         })).min(1).max(2).describe("One or two concise evidence records. Performance requires two distinct content/period pairs; two metrics for the same content in the same period do not count."),
       }).superRefine((value, ctx) => {
-        const observationKey = (item: (typeof value.evidence)[number]) => {
-          let source = flattenLearningField(item.source);
-          try {
-            // Recognize host/path references without treating ordinary IDs as URLs.
-            const bareHost = /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#]|$)/i.test(source);
-            const address = source.startsWith("//")
-              ? `https:${source}`
-              : bareHost ? `https://${source}` : source;
-            const url = new URL(address);
-            url.hash = "";
-            // Our article publishers return lowercase URLs. Case variants of
-            // the same URL must not count as separate performance observations.
-            source = url.toString().replace(/\/$/, "").toLowerCase();
-          } catch {
-            // IDs and document identifiers need not be URLs.
-            source = source.toLowerCase();
-          }
-          return JSON.stringify([source, flattenLearningField(item.period).toLowerCase()]);
-        };
-        if (value.category === "performance_learning" && new Set(value.evidence.map(observationKey)).size < 2) {
-          ctx.addIssue({ code: "custom", path: ["evidence"], message: "Performance learning requires two distinct content/period observations. Two metrics for the same article and period do not count." });
+        if (value.category !== "performance_learning") return;
+        const [first, second] = value.evidence;
+        const samePeriod = second && flattenLearningField(first.period).toLowerCase() === flattenLearningField(second.period).toLowerCase();
+        if (!second || (samePeriod && sameLearningSource(first.source, second.source))) {
+          ctx.addIssue({ code: "custom", path: ["evidence"], message: "Performance learning requires two distinct content/period observations. URL, host/path, path-only and slug aliases of the same article in the same period do not count. Use a consistent stable article ID or exact URL; do not shorten URLs." });
         }
       }),
       execute: async (input) => {
