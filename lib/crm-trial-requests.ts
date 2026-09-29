@@ -149,6 +149,19 @@ function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }
 
+/** First value that parses as a date, as canonical UTC ISO; now otherwise.
+ *  The timestamp ends up inside a PostgREST filter (logActivity's touch), so
+ *  it must never reach there in whatever form the payload spelled it. */
+function isoOrNow(...values: unknown[]): string {
+  for (const v of values) {
+    const s = str(v);
+    if (!s) continue;
+    const t = new Date(s).getTime();
+    if (!Number.isNaN(t)) return new Date(t).toISOString();
+  }
+  return new Date().toISOString();
+}
+
 /** An answer as text. Choice questions answer with option ids; `options` maps
  *  them back to what the respondent actually picked. */
 function answerText(value: unknown, options: Map<string, string>): string | null {
@@ -223,7 +236,7 @@ export function fromTallyWebhook(payload: unknown): TrialSubmission | null {
   return {
     submissionId,
     formId,
-    submittedAt: str(data.createdAt) ?? str(event.createdAt) ?? new Date().toISOString(),
+    submittedAt: isoOrNow(data.createdAt, event.createdAt),
     // Tally posts FORM_RESPONSE when a respondent finishes the form. Anything
     // else, or a payload that says outright it isn't complete, is a partial.
     completed: event.eventType === "FORM_RESPONSE" && data.isCompleted !== false,
@@ -291,7 +304,7 @@ export function fromTallyApi(submission: unknown, questions: unknown): TrialSubm
   return {
     submissionId,
     formId,
-    submittedAt: str(s.submittedAt) ?? str(s.createdAt) ?? new Date().toISOString(),
+    submittedAt: isoOrNow(s.submittedAt, s.createdAt),
     completed: s.isCompleted !== false,
     fields,
   };

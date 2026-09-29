@@ -27,15 +27,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Signed but unreadable (not JSON, or no submissionId/formId to key it on)
+  // answers a skip, not a 4xx: Tally retries anything but 2xx, and a retry
+  // re-sends the same body, which can never parse differently.
   let payload: unknown;
   try {
     payload = JSON.parse(rawBody);
   } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    payload = null;
   }
-  const submission = fromTallyWebhook(payload);
+  const submission = payload == null ? null : fromTallyWebhook(payload);
   if (!submission) {
-    return NextResponse.json({ error: "Not a Tally form response" }, { status: 400 });
+    console.warn("[crm/tally] skipped a signed delivery that is not a keyable form response");
+    return NextResponse.json({ ok: true, action: "skipped", reason: "unkeyable" }, { status: 200 });
   }
 
   try {

@@ -555,7 +555,9 @@ export async function logActivity(
   }
 
   if (opts.touch !== false) {
-    const at = opts.createdAt ?? new Date().toISOString();
+    // Canonical ISO: `at` goes into a raw or() filter below, where an offset
+    // form ("+00:00") or anything else PostgREST can't read fails the update.
+    const at = new Date(opts.createdAt ?? Date.now()).toISOString();
     let touch = client
       .from("crm_companies")
       .update({ last_activity_at: at })
@@ -565,7 +567,10 @@ export async function logActivity(
     if (opts.createdAt) {
       touch = touch.or(`last_activity_at.is.null,last_activity_at.lt.${at}`);
     }
-    await touch;
+    // Logged, not thrown: the activity is already written, and every caller
+    // has always treated the idle clock as best-effort.
+    const { error: touchError } = await touch;
+    if (touchError) console.error("[crm] last_activity_at not moved:", touchError.message);
   }
 }
 

@@ -523,4 +523,33 @@ describe("POST /api/crm/tally", () => {
     expect(await (await post(other, sign(other))).json()).toMatchObject({ action: "skipped", reason: "other_form" });
     expect(db.tables.crm_activities.filter((a) => a.kind === "trial_request")).toHaveLength(1);
   });
+
+  it("answers a signed but unkeyable delivery with a 200 skip, so Tally stops retrying it", async () => {
+    const payload = webhookPayload();
+    const data: Record<string, unknown> = { ...payload.data };
+    delete data.submissionId;
+    delete data.responseId;
+    const body = JSON.stringify({ ...payload, data });
+    const res = await post(body, sign(body));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, action: "skipped", reason: "unkeyable" });
+
+    const notJson = "not json";
+    expect((await post(notJson, sign(notJson))).status).toBe(200);
+    expect(db.writes).toEqual([]);
+  });
+});
+
+describe("the submission timestamp", () => {
+  it("is canonical UTC ISO whatever form the payload used", () => {
+    const payload = webhookPayload();
+    const s = fromTallyWebhook({ ...payload, data: { ...payload.data, createdAt: "2026-09-18T11:02:11-03:00" } });
+    expect(s?.submittedAt).toBe("2026-09-18T14:02:11.000Z");
+  });
+
+  it("falls back to the event time when the submission time does not parse", () => {
+    const payload = webhookPayload();
+    const s = fromTallyWebhook({ ...payload, data: { ...payload.data, createdAt: "yesterday-ish" } });
+    expect(s?.submittedAt).toBe("2026-09-18T14:02:11.889Z");
+  });
 });
