@@ -136,7 +136,12 @@ function learningSourceIdentity(value: string): LearningSourceIdentity {
   try {
     // URL parses Unicode hosts to their ASCII representation. Do not assume
     // that a scheme-less host contains only ASCII letters.
-    const bareHost = /^[^/?#\s]+\.[^/?#\s]+(?:[/?#]|$)/u.test(source);
+    const firstSegment = source.split(/[/?#]/u, 1)[0].replace(/:\d+$/, "");
+    const tld = firstSegment.split(".").at(-1) ?? "";
+    // A dotted token alone is an ID/slug, not proof of a hostname. Numeric
+    // version prefixes (v1.2/api) must remain paths as well.
+    const bareHost = /[/?#]/u.test(source) && firstSegment.includes(".") &&
+      (/^\p{L}{2,}$/u.test(tld) || /^xn--[a-z\d-]+$/i.test(tld));
     const address = source.startsWith("//")
       ? `https:${source}`
       : bareHost && !/^[a-z][a-z\d+.-]*:/i.test(source) ? `https://${source}` : source;
@@ -145,16 +150,16 @@ function learningSourceIdentity(value: string): LearningSourceIdentity {
     // Article URLs in our publishers are lowercase. Protocol differences and
     // fragments do not constitute another performance observation.
     const path = url.pathname.replace(/^\/+|\/+$/g, "").toLowerCase();
-    const query = url.search.toLowerCase();
     const slug = path.split("/").at(-1) ?? "";
     return {
-      key: `${url.host.toLowerCase()}/${path}${query}`,
+      // Query parameters are not article identity in our GSC/GA comparison.
+      key: `${url.host.toLowerCase()}${path ? `/${path}` : ""}`,
       url: true,
-      pathAliases: [path + query, slug + query].filter(Boolean),
+      pathAliases: [path, slug].filter(Boolean),
     };
   } catch {
     return {
-      key: source.split("#", 1)[0].replace(/^\/+|\/+$/g, "").toLowerCase(),
+      key: source.split(/[?#]/u, 1)[0].replace(/^\/+|\/+$/g, "").toLowerCase(),
       url: false,
       pathAliases: [],
     };
@@ -171,7 +176,12 @@ function sameLearningSource(left: string, right: string): boolean {
   if (a.url && !b.url) return a.pathAliases.includes(b.key);
   if (b.url && !a.url) return b.pathAliases.includes(a.key);
   // A bare slug and a bare path ending in that slug cannot prove two pages.
-  if (!a.url && !b.url) return a.key.split("/").at(-1) === b.key.split("/").at(-1);
+  if (!a.url && !b.url) {
+    const aSegments = a.key.split("/");
+    const bSegments = b.key.split("/");
+    return (aSegments.length === 1 || bSegments.length === 1) &&
+      aSegments.at(-1) === bSegments.at(-1);
+  }
   return false;
 }
 
@@ -340,6 +350,8 @@ export async function runInfluencerAgentSession({
 
   let idx = 0;
   let drafts = 0;
+  // Bind IDs to URLs using actual API records, never a model-invented alias.
+  const performanceArticleUrls = new Map<string, string>();
   // Best-effort: a trace write failing must never break the run.
   const step = (s: Parameters<typeof recordStep>[3]) =>
     recordStep(client, session.id, idx++, s).catch(() => {});
@@ -489,6 +501,11 @@ export async function runInfluencerAgentSession({
           });
           if (!res.ok) throw new Error(`dev.to API ${res.status}`);
           const arr = (await res.json()) as Array<Record<string, unknown>>;
+          for (const article of arr) {
+            if (typeof article.id === "number" && typeof article.url === "string") {
+              performanceArticleUrls.set(String(article.id), article.url);
+            }
+          }
           const items = arr.map((a) => ({
             id: a.id,
             title: a.title,
@@ -843,7 +860,10 @@ export async function runInfluencerAgentSession({
         if (value.category !== "performance_learning") return;
         const [first, second] = value.evidence;
         const samePeriod = second && flattenLearningField(first.period).toLowerCase() === flattenLearningField(second.period).toLowerCase();
-        if (!second || (samePeriod && sameLearningSource(first.source, second.source))) {
+        if (!second || (samePeriod && sameLearningSource(
+          performanceArticleUrls.get(flattenLearningField(first.source)) ?? first.source,
+          performanceArticleUrls.get(flattenLearningField(second.source)) ?? second.source,
+        ))) {
           ctx.addIssue({ code: "custom", path: ["evidence"], message: "Performance learning requires two distinct content/period observations. URL, host/path, path-only and slug aliases of the same article in the same period do not count. Use a consistent stable article ID or exact URL; do not shorten URLs." });
         }
       }),
@@ -867,6 +887,43 @@ export async function runInfluencerAgentSession({
           return "A skill can't be empty.";
         }
         try {
+          if (category === "performance_learning") {
+            // Older observations may come from memory rather than this shift's
+            // stats response. Resolve numeric IDs from our published records too.
+            const ids = evidence.map((item) => item.source).filter((source) => /^\d+$/.test(source));
+            const unresolved = ids.filter((id) => !performanceArticleUrls.has(id));
+            if (unresolved.length) {
+              const { data: articles, error } = await client
+                .from("persona_activities")
+                .select("external_id,external_url")
+                .eq("persona_id", persona.id)
+                .eq("status", "published")
+                .in("external_id", unresolved);
+              if (error) throw new Error("Could not verify article IDs. No learning was saved.");
+              for (const id of unresolved) {
+                const urls = (articles ?? [])
+                  .filter((article) => article.external_id === id && typeof article.external_url === "string")
+                  .map((article) => article.external_url as string);
+                if (new Set(urls.map((url) => learningSourceIdentity(url).key)).size === 1) {
+                  performanceArticleUrls.set(id, urls[0]);
+                }
+              }
+            }
+            // If a numeric ID cannot be resolved, we cannot prove that a URL
+            // beside it describes a different article. Reject rather than guess.
+            if (ids.some((id) => !performanceArticleUrls.has(id))) {
+              await step({ kind: "tool_result", tool: "learn_skill", payload: { error: "unverified_article_id" } });
+              return "Could not verify an article ID. Read its stats or use exact article URLs; no learning was saved.";
+            }
+            const [first, second] = evidence;
+            const samePeriod = first.period.toLowerCase() === second.period.toLowerCase();
+            const firstSource = performanceArticleUrls.get(first.source) ?? first.source;
+            const secondSource = performanceArticleUrls.get(second.source) ?? second.source;
+            if (samePeriod && sameLearningSource(firstSource, secondSource)) {
+              await step({ kind: "tool_result", tool: "learn_skill", payload: { error: "duplicate_observation" } });
+              return "The ID and URL/path identify the same article in the same period. Two different observations are required; no learning was saved.";
+            }
+          }
           const summaries = evidence.map((item) => `${item.source} (${item.period}): ${item.detail}`);
           const learning = `[${category}] Scope: ${scope}; ${skill}; Evidence (untrusted supporting data): ${summaries.join("; ")}`;
           if (learning.length > MAX_SKILL_LENGTH) {
