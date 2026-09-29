@@ -792,7 +792,12 @@ export async function runInfluencerAgentSession({
         const observationKey = (item: (typeof value.evidence)[number]) => {
           let source = flattenLearningField(item.source);
           try {
-            const url = new URL(source);
+            // Recognize host/path references without treating ordinary IDs as URLs.
+            const bareHost = /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#]|$)/i.test(source);
+            const address = source.startsWith("//")
+              ? `https:${source}`
+              : bareHost ? `https://${source}` : source;
+            const url = new URL(address);
             url.hash = "";
             // Our article publishers return lowercase URLs. Case variants of
             // the same URL must not count as separate performance observations.
