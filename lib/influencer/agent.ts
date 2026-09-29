@@ -155,11 +155,11 @@ function learningSourceIdentity(value: string): LearningSourceIdentity {
       // Query parameters are not article identity in our GSC/GA comparison.
       key: `${url.host.toLowerCase()}${path ? `/${path}` : ""}`,
       url: true,
-      pathAliases: [path, slug].filter(Boolean),
+      pathAliases: path ? [path, slug] : ["/"],
     };
   } catch {
     return {
-      key: source.split(/[?#]/u, 1)[0].replace(/^\/+|\/+$/g, "").toLowerCase(),
+      key: source.split(/[?#]/u, 1)[0].replace(/^\/+|\/+$/g, "").toLowerCase() || "/",
       url: false,
       pathAliases: [],
     };
@@ -900,10 +900,15 @@ export async function runInfluencerAgentSession({
                 .eq("status", "published")
                 .in("external_id", unresolved);
               if (error) throw new Error("Could not verify article IDs. No learning was saved.");
+              const urlsById = new Map<string, string[]>();
+              for (const article of articles ?? []) {
+                if (typeof article.external_id !== "string" || typeof article.external_url !== "string") continue;
+                const urls = urlsById.get(article.external_id) ?? [];
+                urls.push(article.external_url);
+                urlsById.set(article.external_id, urls);
+              }
               for (const id of unresolved) {
-                const urls = (articles ?? [])
-                  .filter((article) => article.external_id === id && typeof article.external_url === "string")
-                  .map((article) => article.external_url as string);
+                const urls = urlsById.get(id) ?? [];
                 if (new Set(urls.map((url) => learningSourceIdentity(url).key)).size === 1) {
                   performanceArticleUrls.set(id, urls[0]);
                 }
