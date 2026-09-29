@@ -499,8 +499,9 @@ type StatusChange = {
   created_at: string;
 };
 
-/** Kinds that mean a person did something on the account. */
-const HUMAN_KINDS = ["status_change", "comment", "note", "outreach_sent"];
+/** Kinds that mean a person did something on the account. trial_request stays
+ *  out: the prospect raised their hand, nobody on our side touched it. */
+export const HUMAN_KINDS = ["status_change", "comment", "note", "outreach_sent"];
 
 async function loadActivities(
   client: SupabaseClient,
@@ -531,6 +532,68 @@ async function loadActivities(
       created_at: r.created_at as string,
     };
   });
+}
+
+type TrialRequest = { company_id: string; created_at: string };
+
+async function loadTrialRequests(
+  client: SupabaseClient,
+  periodStart: string,
+  nextStart: string,
+): Promise<TrialRequest[]> {
+  const { data, error } = await client
+    .from("crm_activities")
+    .select("company_id,created_at")
+    .eq("kind", "trial_request")
+    .gte("created_at", `${periodStart}T00:00:00Z`)
+    .lt("created_at", `${nextStart}T00:00:00Z`)
+    .order("created_at", { ascending: true })
+    .limit(10000);
+  if (error) throw new Error(`crm_activities (trial_request): ${error.message}`);
+  return (data ?? []) as TrialRequest[];
+}
+
+/**
+ * The two self-hosted CRM stages.
+ *
+ * sh_trial counts accounts, like every other stage, so a company that asks
+ * twice in a month is one hand raised. It reads the trial_request activity
+ * (dated by the submission) rather than how the account was created: a
+ * request from an account the CRM already had used to count nowhere. Only
+ * accounts on the CRM list count, which leaves excluded ones out as it does in
+ * every other stage.
+ *
+ * sh_found keeps its meaning: self-hosted accounts created in the period that
+ * did not come in through the form.
+ */
+export function selfHostedStages<
+  C extends { id: string; deployment: string | null; source: string | null; created_at: string },
+>(
+  crm: C[],
+  requests: TrialRequest[],
+  periodStart: string,
+  nextStart: string,
+): { trial: { company: C; askedAt: string }[]; found: C[] } {
+  const from = Date.parse(`${periodStart}T00:00:00Z`);
+  const until = Date.parse(`${nextStart}T00:00:00Z`);
+  const byId = new Map(crm.map((c) => [c.id, c]));
+  const asked = new Map<string, string>();
+  for (const r of requests) {
+    const t = Date.parse(r.created_at);
+    if (!(t >= from && t < until) || asked.has(r.company_id) || !byId.has(r.company_id)) continue;
+    asked.set(r.company_id, r.created_at);
+  }
+  const found = crm.filter(
+    (c) =>
+      c.deployment === "self_hosted" &&
+      c.created_at >= `${periodStart}` &&
+      c.created_at < `${nextStart}T00:00:00Z` &&
+      c.source !== "webhook",
+  );
+  return {
+    trial: [...asked].map(([id, askedAt]) => ({ company: byId.get(id) as C, askedAt })),
+    found,
+  };
 }
 
 function isVerified(props: Record<string, unknown> | null): boolean {
@@ -891,7 +954,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
     }
   };
 
-  const [search, llm, signups, companies, changes, cold, sh, paid] =
+  const [search, llm, signups, companies, changes, cold, sh, paid, trialRequests] =
     await Promise.all([
       settle("search", searchNodes(periodStart, periodEnd)),
       settle("llm", llmReferralNode(periodStart, periodEnd)),
@@ -901,6 +964,7 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
       settle("outbound", coldOutbound(client, periodStart, nextStart)),
       settle("telemetry", selfHostedInstances(periodStart, nextStart)),
       settle("billing", selfServePaid(periodStart, nextStart)),
+      settle("crm_trial_requests", loadTrialRequests(client, periodStart, nextStart)),
     ]);
 
   // Search
@@ -1252,11 +1316,8 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
 
   // Self-hosted
   nodes.sh_instances = sh ?? node("sh_instances", "New instances with company-sized usage", null, "not measured");
-  const shCompanies = crm.filter(
-    (c) => c.deployment === "self_hosted" && c.created_at >= `${periodStart}` && c.created_at < `${nextStart}T00:00:00Z`,
-  );
-  const shTrial = shCompanies.filter((c) => c.source === "webhook");
-  const shFound = shCompanies.filter((c) => c.source !== "webhook");
+  const { trial: shTrial, found: shFound } = selfHostedStages(crm, trialRequests ?? [], periodStart, nextStart);
+  const trialMeasured = Boolean(companies && trialRequests);
   const shRow = (c: CrmCompanyLite): FunnelRow => ({
     company: c.name,
     domain: c.domain,
@@ -1268,13 +1329,14 @@ export async function fetchFunnel(client: SupabaseClient, month: string): Promis
   nodes.sh_trial = node(
     "sh_trial",
     "Asked for a trial (hand raised)",
-    companies ? shTrial.length : null,
-    companies ? `${shTrial.length}` : "not measured",
+    trialMeasured ? shTrial.length : null,
+    trialMeasured ? `${shTrial.length}` : "not measured",
     {
-      source: "CRM (deployment self_hosted, source webhook = trial form)",
-      definition: "Self-hosted accounts created in the period from the trial form (kodus.io/self-hosted-trial).",
-      columns: ["company", "domain", "source", "status", "tier", "created"],
-      rows: shTrial.map(shRow),
+      source: "CRM (trial_request activities from the Tally form GxED1z)",
+      definition:
+        "Distinct accounts that asked for a self-hosted trial through the form (kodus.io/self-hosted-trial) in the period, dated by the submission. Existing accounts count too; an account that asks twice counts once.",
+      columns: ["company", "domain", "source", "status", "tier", "created", "asked"],
+      rows: shTrial.map(({ company, askedAt }) => ({ ...shRow(company), asked: askedAt.slice(0, 10) })),
     },
   );
   facts.sh_found = companies
