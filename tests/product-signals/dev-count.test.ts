@@ -76,6 +76,7 @@ function connectedOrg(overrides: Partial<CollectedOrg> = {}): CollectedOrg {
     codeHostMemberCountAt: "2026-09-01T00:00:00Z",
     prAuthorCount: 20,
     derivedDomain: "acme-logistics.com",
+    noDomainReason: null,
     contacts: [],
     prsReviewed30d: 10,
     suggestions30d: 40,
