@@ -197,6 +197,8 @@ async function main() {
       undecided.push(`${label}  [tier ${cls.tier ?? "?"} — fora do escopo da limpeza]`);
     } else if (
       (decision.reason === "no_domain" ||
+        decision.reason === "domain_free_mail" ||
+        decision.reason === "domain_academic" ||
         decision.reason === "domain_internal") &&
       !CRM_CREATE_TIERS.has(cls.tier ?? "") &&
       row.domain != null &&
@@ -206,13 +208,14 @@ async function main() {
       // CRM row still carries the good domain it was created with. Only the
       // current member emails changed, so this needs a human, not a delete.
       //
-      // The stored domain is what decides, not the gate reason. deriveCompanyDomain
-      // strips free-mail/academic/internal before they ever reach evaluateOrg,
-      // so domain_free_mail and domain_academic are unreachable in practice and
-      // every one of those signups arrives here as plain "no_domain". Keying
-      // this branch off the reason alone would therefore protect the exact
-      // population the cleanup exists to remove — an aged qq.com or
-      // stu.cmb.ac.lk account would survive by having got old.
+      // The stored domain is what decides, not the gate reason. The reason
+      // says what the members are on now (collect.ts noDomainReason), which is
+      // every aged qq.com or stu.cmb.ac.lk account too — keying this branch
+      // off the reason alone would protect the exact population the cleanup
+      // exists to remove, by letting them survive for having got old. All
+      // four domain reasons are listed: until #260 the gate could only ever
+      // say "no_domain" here, and dropping the other three would quietly turn
+      // this "revisar à mão" into a removal.
       undecided.push(
         `${label}  [${decision.reason}, tier ${cls.tier ?? "?"} — domínio no CRM ainda é corporativo, revisar à mão]`,
       );

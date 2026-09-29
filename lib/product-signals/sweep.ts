@@ -293,11 +293,25 @@ export async function runProductSignalsSweep(
   // (signals-only, outside CRM_CREATE_TIERS) would take the account from a
   // fresh t2 sibling and drop a real lead out of outbound, which is the same
   // mistake pointing the other way.
+  //
+  // The key must name the account the org will actually write to, which is
+  // the one linked by org_id when there is one (see `company` below). A linked
+  // account with no domain is therefore keyed by its id, never by the org's
+  // derivedDomain: the sweep creates those for free-mail teams (icp-gate.ts),
+  // and once such an org gains a member on a corporate domain that another
+  // org's account already holds, keying both on that domain would make them
+  // compete for an election over two different accounts — and the loser's
+  // account would silently stop receiving its tier.
   const accountKeyFor = (org: CollectedOrg): string => {
     const linked = companyByOrg.get(org.orgId);
-    const domain = linked?.domain ?? org.derivedDomain;
-    if (domain) return `domain:${domain.toLowerCase()}`;
-    return linked ? `company:${linked.id}` : `org:${org.orgId}`;
+    if (linked) {
+      return linked.domain
+        ? `domain:${linked.domain.toLowerCase()}`
+        : `company:${linked.id}`;
+    }
+    return org.derivedDomain
+      ? `domain:${org.derivedDomain.toLowerCase()}`
+      : `org:${org.orgId}`;
   };
   type Owner = {
     orgId: string;
@@ -425,9 +439,15 @@ export async function runProductSignalsSweep(
         : null;
       if (decision) gate[decision.reason] = (gate[decision.reason] ?? 0) + 1;
 
-      if (!company && decision?.create && org.derivedDomain) {
+      // derivedDomain is null on "pass_devs_no_domain": a free-mail team,
+      // created without a domain and named after its product org. It cannot be
+      // matched by domain, so org_id is its only identity — which is why
+      // companyByOrg is consulted first above, and why an account a human made
+      // for the same company without linking the org would be duplicated here.
+      if (!company && decision?.create) {
         const created = await createCompany(client, {
-          name: org.orgName?.trim() || org.derivedDomain,
+          name:
+            org.orgName?.trim() || org.derivedDomain || `Org ${org.orgId}`,
           domain: org.derivedDomain,
           orgId: org.orgId,
           status: "lead",
@@ -453,7 +473,7 @@ export async function runProductSignalsSweep(
           archived_at: null,
         };
         companyByOrg.set(org.orgId, company);
-        companyByDomain.set(org.derivedDomain, company);
+        if (org.derivedDomain) companyByDomain.set(org.derivedDomain, company);
         companiesCreated += 1;
 
         // No getFirmographics call here any more: "pass_employees" now means
@@ -462,6 +482,9 @@ export async function runProductSignalsSweep(
 
         // isPrimary is per company (not sweep-wide) so each new account gets a lead contact.
         let primarySetForCompany = false;
+        // With no derivedDomain every contact is accepted, and that is right:
+        // on a free-mail team the personal addresses are the only ones there
+        // are, and they belong to the people we would be writing to.
         for (const contact of org.contacts.slice(0, 3)) {
           const corporate =
             !org.derivedDomain || domainOfEmail(contact.email) === org.derivedDomain;

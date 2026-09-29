@@ -8,7 +8,7 @@ import {
 
 import type { CollectedOrg } from "./collect";
 import { resolveDevCount, type DevCountSource } from "./classify";
-import { classifyDomain } from "./domains";
+import { classifyDomain, type DomainVerdict } from "./domains";
 
 // ---------------------------------------------------------------------------
 // Does this product org deserve a CRM account?
@@ -107,6 +107,10 @@ export type GateDecision = {
     | "below_min_employees"
     | "institution_not_company"
     | "pass_devs"
+    /** pass_devs for a free-mail org: the account is created without a
+     *  domain. Its own reason so these can be counted and found — they are
+     *  the accounts a human has to give a domain to. */
+    | "pass_devs_no_domain"
     | "pass_employees";
   devCount: number | null;
   devCountSource: DevCountSource;
@@ -267,8 +271,29 @@ export async function evaluateOrg(
   // 90-day window into t3 would report "tier_not_worked" and never have its
   // domain looked at — so stu.cmb.ac.lk and qq.com, the very things this gate
   // exists to reject, would survive a cleanup by getting old.
-  const verdict = classifyDomain(org.derivedDomain);
-  if (verdict !== "corporate") {
+  //
+  // One exception: free mail on a connected git org with at least MIN_DEVS
+  // developers. The dev count is read from the git org, not from whoever signed
+  // up, so it says a team is there whatever mail that person used — a GitHub
+  // org with 18 members and 13 PR authors is a company even when the signup
+  // came from gmail.com, and rejecting it on the address put real ICP out of
+  // the CRM (#260). It is created without a domain, for a human to fill in.
+  //
+  // The exception is decided here, in full, so the ordering above still holds
+  // for everyone it does not admit: a small or signal-less free-mail org keeps
+  // failing on its domain at any age. Only free mail qualifies. An academic
+  // member makes it a school whatever the dev count (a class is many
+  // developers), internal means our own test orgs, and a never-connected org
+  // has no team-size signal to stand on at all.
+  const verdict: DomainVerdict = org.derivedDomain
+    ? classifyDomain(org.derivedDomain)
+    : (org.noDomainReason ?? "invalid");
+  const teamOnFreeMail =
+    verdict === "free_mail" &&
+    org.connectedGit &&
+    devCount != null &&
+    devCount >= MIN_DEVS;
+  if (verdict !== "corporate" && !teamOnFreeMail) {
     return {
       ...base,
       create: false,
@@ -282,7 +307,6 @@ export async function evaluateOrg(
               : "no_domain",
     };
   }
-  const domain = org.derivedDomain as string;
 
   if (tier == null || !CRM_CREATE_TIERS.has(tier)) {
     return { ...base, create: false, reason: "tier_not_worked" };
@@ -295,12 +319,20 @@ export async function evaluateOrg(
       // code_host_member_count. Nothing to judge on.
       return { ...base, create: false, reason: "no_team_signal" };
     }
-    return devCount >= MIN_DEVS
-      ? { ...base, create: true, reason: "pass_devs" }
-      : { ...base, create: false, reason: "below_min_devs" };
+    if (devCount < MIN_DEVS) {
+      return { ...base, create: false, reason: "below_min_devs" };
+    }
+    return {
+      ...base,
+      create: true,
+      reason: verdict === "corporate" ? "pass_devs" : "pass_devs_no_domain",
+    };
   }
 
   // --- never connected git: buy firmographics ------------------------------
+  // Only corporate orgs get here: the free-mail exception requires connected
+  // git, so it always returned above.
+  const domain = org.derivedDomain as string;
   const enrichment = await opts.enrich(domain);
   if (!enrichment) {
     return { ...base, create: false, reason: "enrichment_unavailable" };
