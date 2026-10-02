@@ -814,7 +814,7 @@ function pickEditorialAngle(email: string): (typeof EDITORIAL_ANGLES)[number] {
   return EDITORIAL_ANGLES[index];
 }
 
-function formatDateInTimezone(date: Date, timeZone: string): string {
+export function formatDateInTimezone(date: Date, timeZone: string): string {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
     year: "numeric",

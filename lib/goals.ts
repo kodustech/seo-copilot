@@ -95,6 +95,13 @@ export type GoalFilters = {
 // Date helpers
 // ---------------------------------------------------------------------------
 
+// YYYY-MM-DD from the date's local calendar parts. toISOString() would turn
+// local midnight into UTC and, in any timezone ahead of UTC, land on the
+// previous day.
+function localIsoDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 // Returns ISO date strings (YYYY-MM-DD) for the Mon-Sun week containing
 // `ref` (default = today). Week starts Monday for sane growth-ops cadence.
 export function currentWeekRange(ref: Date = new Date()): {
@@ -109,10 +116,7 @@ export function currentWeekRange(ref: Date = new Date()): {
   start.setDate(d.getDate() - dow);
   const end = new Date(start);
   end.setDate(start.getDate() + 6);
-  return {
-    start: start.toISOString().slice(0, 10),
-    end: end.toISOString().slice(0, 10),
-  };
+  return { start: localIsoDate(start), end: localIsoDate(end) };
 }
 
 export function currentMonthRange(ref: Date = new Date()): {
@@ -121,10 +125,7 @@ export function currentMonthRange(ref: Date = new Date()): {
 } {
   const start = new Date(ref.getFullYear(), ref.getMonth(), 1);
   const end = new Date(ref.getFullYear(), ref.getMonth() + 1, 0);
-  return {
-    start: start.toISOString().slice(0, 10),
-    end: end.toISOString().slice(0, 10),
-  };
+  return { start: localIsoDate(start), end: localIsoDate(end) };
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +299,7 @@ export async function updateGoal(
     patch.project_ref = trimOrNull(updates.projectRef ?? null);
   if ("notes" in updates) patch.notes = trimOrNull(updates.notes ?? null);
   if ("funnelMetric" in updates) patch.funnel_metric = trimOrNull(updates.funnelMetric ?? null);
+  if ("recurrenceId" in updates) patch.recurrence_id = updates.recurrenceId ?? null;
 
   const { data, error } = await client
     .from("goals")

@@ -64,7 +64,7 @@ import {
   updateWorkItem,
   deleteWorkItem,
 } from "@/lib/kanban";
-import { addBetEntry, compareBetsByHypothesis, createBet, deleteBet, listBetEntries, listBets, updateBet, BET_ENTRY_KINDS, MEASURE_KINDS, type BetEntryKind, type BetMeasure, type BetStatus } from "@/lib/bets";
+import { addBetEntry, compareBetsByHypothesis, createBet, deleteBet, getBet, listBetEntries, listBets, prependBetNote, updateBet, BET_ENTRY_KINDS, MEASURE_KINDS, type BetEntryKind, type BetMeasure, type BetStatus } from "@/lib/bets";
 import { evaluateBet, evaluateBets } from "@/lib/bet-evaluation";
 import { fetchFunnel } from "@/lib/funnel/metrics";
 import { FUNNEL_METRICS } from "@/lib/funnel/goals";
@@ -82,7 +82,15 @@ import {
   currentWeekRange,
   currentMonthRange,
   type Goal,
+  type GoalKind,
 } from "@/lib/goals";
+import { formatDateInTimezone } from "@/lib/social-yolo";
+import {
+  createRecurringGoal,
+  dateAtNoon,
+  repeatGoal,
+  stopRepeatingGoal,
+} from "@/lib/goal-recurrences";
 import {
   createPrompt as createAiPrompt,
   deletePrompt as deleteAiPrompt,
@@ -2764,7 +2772,7 @@ const listGoalsTool = tool({
 function createCreateGoalTool(userEmail?: string) {
   return tool({
     description:
-      "Create a new goal with target count and period. Optionally link existing Kanban cards (tasks) at creation — linked tasks in a 'done' stage auto-count toward the goal's target.",
+      "Create a new goal with target count and period. Optionally link existing Kanban cards (tasks) at creation — linked tasks in a 'done' stage auto-count toward the goal's target. kind 'input' marks effort the team controls (an operation: posts, leads added, calls logged); 'output' is a result. repeat 'weekly' or 'monthly' creates a recurring rule instead of a one-off: the goal for the period containing periodStart (or today) is created now and the cron creates one per period after that, each keeping its own attainment.",
     inputSchema: z.object({
       title: z.string().describe("Goal title"),
       description: z.string().optional(),
@@ -2797,6 +2805,16 @@ function createCreateGoalTool(userEmail?: string) {
         .describe(
           "Bind the goal to a funnel stage the funnel measures (visits, signups, icp, sh_instances, sh_trial, ob_contacts, ob_replies, conversations, meetings, opportunities, self_serve, closed). Progress is then written by the funnel sync, not by hand.",
         ),
+      kind: z
+        .enum(["input", "output"])
+        .optional()
+        .describe("'input' = effort you control (an operation); 'output' = a result. Default output."),
+      repeat: z
+        .enum(["weekly", "monthly"])
+        .optional()
+        .describe(
+          "Make it recurring. The period becomes the Monday-Sunday week or calendar month containing periodStart (or today); period presets and periodEnd are ignored.",
+        ),
       linkTaskIds: z
         .array(z.string())
         .optional()
@@ -2822,6 +2840,8 @@ function createCreateGoalTool(userEmail?: string) {
       projectRef,
       notes,
       funnelMetric,
+      kind,
+      repeat,
       linkTaskIds,
       linkTaskTitles,
     }: {
@@ -2838,35 +2858,82 @@ function createCreateGoalTool(userEmail?: string) {
       projectRef?: string;
       notes?: string;
       funnelMetric?: string;
+      kind?: GoalKind;
+      repeat?: "weekly" | "monthly";
       linkTaskIds?: string[];
       linkTaskTitles?: string[];
     }) => {
       try {
         const client = getSupabaseServiceClient();
-        const range = resolvePeriod(period, periodStart, periodEnd);
-        if (!range) {
-          return {
-            success: false as const,
-            message:
-              "Provide either a period preset or both periodStart and periodEnd (YYYY-MM-DD).",
-          };
-        }
 
-        const goal = await createGoal(client, {
-          title,
-          description: description ?? null,
-          unit: unit ?? null,
-          targetCount,
-          periodStart: range.start,
-          periodEnd: range.end,
-          status,
-          priority,
-          responsibleEmail: responsibleEmail ?? null,
-          projectRef: projectRef ?? null,
-          notes: notes ?? null,
-          funnelMetric: funnelMetric ?? null,
-          createdByEmail: userEmail ?? "agent@kodus.io",
-        });
+        let goal: Goal;
+        let recurrence: Awaited<ReturnType<typeof createRecurringGoal>>["rule"] | null = null;
+        if (repeat) {
+          if (periodStart && !/^\d{4}-\d{2}-\d{2}$/.test(periodStart)) {
+            return { success: false as const, message: "periodStart must be YYYY-MM-DD." };
+          }
+          // Each period's goal is created active by the rule; accepting another
+          // status here would answer success and drop it.
+          if (status && status !== "active") {
+            return {
+              success: false as const,
+              message:
+                "Recurring goals are created as 'active'; drop the status or create the goal without repeat.",
+            };
+          }
+          const created = await createRecurringGoal(
+            client,
+            {
+              title,
+              description: description ?? null,
+              unit: unit ?? null,
+              kind,
+              targetCount,
+              priority,
+              cadence: repeat,
+              responsibleEmail: responsibleEmail ?? null,
+              projectRef: projectRef ?? null,
+              notes: notes ?? null,
+              ...(funnelMetric ? { funnelMetric } : {}),
+              createdByEmail: userEmail ?? "agent@kodus.io",
+            },
+            periodStart ? dateAtNoon(periodStart) : new Date(),
+          );
+          recurrence = created.rule;
+          if (!created.goal) {
+            return {
+              success: false as const,
+              message: `The recurring rule ${created.rule.id} was created, but its goal for this period already existed.`,
+            };
+          }
+          goal = created.goal;
+        } else {
+          const range = resolvePeriod(period, periodStart, periodEnd);
+          if (!range) {
+            return {
+              success: false as const,
+              message:
+                "Provide either a period preset or both periodStart and periodEnd (YYYY-MM-DD).",
+            };
+          }
+
+          goal = await createGoal(client, {
+            title,
+            description: description ?? null,
+            unit: unit ?? null,
+            kind,
+            targetCount,
+            periodStart: range.start,
+            periodEnd: range.end,
+            status,
+            priority,
+            responsibleEmail: responsibleEmail ?? null,
+            projectRef: projectRef ?? null,
+            notes: notes ?? null,
+            funnelMetric: funnelMetric ?? null,
+            createdByEmail: userEmail ?? "agent@kodus.io",
+          });
+        }
 
         const linked: { id: string; title: string }[] = [];
         const failedLinks: { ref: string; reason: string }[] = [];
@@ -2899,6 +2966,7 @@ function createCreateGoalTool(userEmail?: string) {
         return {
           success: true as const,
           goal: finalGoal,
+          ...(recurrence ? { recurrence } : {}),
           linkedTasks: linked,
           ...(failedLinks.length ? { failedLinks } : {}),
         };
@@ -2914,7 +2982,7 @@ function createCreateGoalTool(userEmail?: string) {
 
 const updateGoalTool = tool({
   description:
-    "Update goal fields (title, description, target/current count, period, status, priority, responsible, notes). Identify by goalId (UUID, preferred) or partial title.",
+    "Update goal fields (title, description, target/current count, period, status, priority, responsible, notes, kind). Identify by goalId (UUID, preferred) or partial title. repeat 'weekly' or 'monthly' makes the goal recurring (its period must be exactly one Monday-Sunday week or one calendar month) or turns its rule back on; repeat 'off' stops creating new goals and keeps the ones already made. Field changes apply to this goal only, not to the rule.",
   inputSchema: z.object({
     goalId: z.string().optional(),
     goalTitle: z.string().optional(),
@@ -2935,10 +3003,19 @@ const updateGoalTool = tool({
       .nullable()
       .optional()
       .describe("Funnel stage id to bind (see createGoal); null unbinds."),
+    kind: z
+      .enum(["input", "output"])
+      .optional()
+      .describe("'input' = effort you control (an operation); 'output' = a result."),
+    repeat: z
+      .enum(["weekly", "monthly", "off"])
+      .optional()
+      .describe("Start repeating this goal every week or month, or 'off' to stop."),
   }),
   execute: async ({
     goalId,
     goalTitle,
+    repeat,
     ...updates
   }: {
     goalId?: string;
@@ -2956,6 +3033,8 @@ const updateGoalTool = tool({
     projectRef?: string | null;
     notes?: string | null;
     funnelMetric?: string | null;
+    kind?: GoalKind;
+    repeat?: "weekly" | "monthly" | "off";
   }) => {
     try {
       const client = getSupabaseServiceClient();
@@ -2968,15 +3047,41 @@ const updateGoalTool = tool({
           (cleaned as Record<string, unknown>)[k] = v;
         }
       }
-      if (!Object.keys(cleaned).length) {
+      if (!Object.keys(cleaned).length && !repeat) {
         return {
           success: false as const,
           message: "No fields to update. Provide at least one.",
         };
       }
 
-      const goal = await updateGoal(client, ref.goal.id, cleaned);
-      return { success: true as const, goal };
+      // Refuse an impossible stop before writing anything, so a failed call
+      // never leaves half of its changes applied.
+      if (repeat === "off" && !ref.goal.recurrenceId) {
+        return { success: false as const, message: "This goal does not repeat." };
+      }
+
+      const goal = Object.keys(cleaned).length
+        ? await updateGoal(client, ref.goal.id, cleaned)
+        : ref.goal;
+      if (!repeat) return { success: true as const, goal };
+
+      try {
+        if (repeat === "off") {
+          const recurrence = await stopRepeatingGoal(client, goal);
+          return { success: true as const, goal, recurrence };
+        }
+        const repeated = await repeatGoal(client, goal, repeat);
+        return { success: true as const, goal: repeated.goal, recurrence: repeated.rule };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Error changing the goal's repeat.";
+        return {
+          success: false as const,
+          message: Object.keys(cleaned).length
+            ? `${message} The other field changes were applied.`
+            : message,
+          goal,
+        };
+      }
     } catch (error) {
       return {
         success: false as const,
@@ -3239,9 +3344,10 @@ const betMeasureSchema = z
 
 const updateBetTool = tool({
   description:
-    "Edit a bet: title, hypothesis, action, proving metric text, decision date (YYYY-MM-DD), notes, lever, owner, the machine-readable measure, the Kanban card, the manual value (currentValue, for measure.kind = manual) or actionDoneAt (ISO timestamp when the action was executed). Use decideBet to change status.",
+    "Edit a bet: the goal it belongs to (goalId, e.g. moving a running bet to the new month's goal), title, hypothesis, action, proving metric text, decision date (YYYY-MM-DD), notes (replaces the whole field), lever, owner, the machine-readable measure, the Kanban card, the manual value (currentValue, for measure.kind = manual) or actionDoneAt (ISO timestamp when the action was executed). Use decideBet to change status.",
   inputSchema: z.object({
     betId: z.string(),
+    goalId: z.string().optional().describe("Move the bet to this goal (UUID)."),
     title: z.string().optional(),
     hypothesis: z.string().optional(),
     action: z.string().optional(),
@@ -3260,6 +3366,7 @@ const updateBetTool = tool({
     ...patch
   }: {
     betId: string;
+    goalId?: string;
     title?: string;
     hypothesis?: string;
     action?: string;
@@ -3518,7 +3625,7 @@ const createBetTool = tool({
 
 const decideBetTool = tool({
   description:
-    "Decide or move a bet: status won, lost, operation (became routine work), active (start a queued bet) or queued. Give a one-line verdict when deciding won or lost.",
+    "Decide or move a bet: status won, lost, operation (became routine work), active (start a queued bet) or queued. Give a one-line verdict when deciding won or lost. notes are added, dated, on top of the bet's existing notes; they never replace them.",
   inputSchema: z.object({
     betId: z.string(),
     status: z.enum(["queued", "active", "won", "lost", "operation"]),
@@ -3528,10 +3635,19 @@ const decideBetTool = tool({
   execute: async ({ betId, status, verdict, notes }: { betId: string; status: BetStatus; verdict?: string; notes?: string }) => {
     try {
       const client = getSupabaseServiceClient();
+      let mergedNotes: string | undefined;
+      if (notes !== undefined && notes.trim()) {
+        const current = await getBet(client, betId);
+        if (!current) return { success: false as const, message: `Bet ${betId} not found.` };
+        // Dated in the team's timezone: a UTC date would stamp a decision made
+        // after 21:00 in São Paulo with the next day.
+        const today = formatDateInTimezone(new Date(), "America/Sao_Paulo");
+        mergedNotes = prependBetNote(current.notes, notes, today);
+      }
       const bet = await updateBet(client, betId, {
         status,
         ...(verdict !== undefined ? { verdict } : {}),
-        ...(notes !== undefined ? { notes } : {}),
+        ...(mergedNotes !== undefined ? { notes: mergedNotes } : {}),
       });
       return { success: true as const, bet };
     } catch (error) {

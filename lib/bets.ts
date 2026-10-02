@@ -92,7 +92,7 @@ export type CreateBetInput = {
   createdByEmail?: string | null;
 };
 
-export type UpdateBetInput = Partial<Omit<CreateBetInput, "goalId" | "createdByEmail">> & {
+export type UpdateBetInput = Partial<Omit<CreateBetInput, "createdByEmail">> & {
   verdict?: string | null;
 };
 
@@ -227,6 +227,9 @@ export async function createBet(client: SupabaseClient, input: CreateBetInput): 
 
 export async function updateBet(client: SupabaseClient, id: string, updates: UpdateBetInput): Promise<Bet> {
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  // Moving a bet to another goal: when a month closes, the bets that keep
+  // running follow the new month's goals instead of staying on the old ones.
+  if (updates.goalId !== undefined) patch.goal_id = need(updates.goalId, "goalId");
   if (updates.title !== undefined) patch.title = need(updates.title, "title");
   if (updates.hypothesis !== undefined) patch.hypothesis = need(updates.hypothesis, "hypothesis");
   if (updates.action !== undefined) patch.action = need(updates.action, "action");
@@ -250,6 +253,17 @@ export async function updateBet(client: SupabaseClient, id: string, updates: Upd
   const { data, error } = await client.from("bets").update(patch).eq("id", id).select("*").single();
   if (error) throw new Error(`bets: ${error.message}`);
   return rowToBet(data as Row);
+}
+
+/**
+ * Notes written while deciding a bet go on top of the notes it already has.
+ * Deciding is a moment in the bet's history, so it must never wipe the
+ * reasoning recorded before it (that happened when this replaced the field).
+ */
+export function prependBetNote(existing: string | null, note: string, on: string): string {
+  const entry = `${on}: ${note.trim()}`;
+  const rest = existing?.trim();
+  return rest ? `${entry}\n\n${rest}` : entry;
 }
 
 export async function deleteBet(client: SupabaseClient, id: string): Promise<void> {
