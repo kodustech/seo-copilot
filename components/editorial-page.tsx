@@ -74,8 +74,13 @@ const OPTION_GROUPS: { key: OptionKey; label: string; plural: string }[] = [
   { key: "owner", label: "Responsável", plural: "responsáveis" },
 ];
 
+// Single place that turns an option id into its label. An id that is no longer in the
+// editable list (deleted option) falls back to its default name, then to the raw id.
 function labelOf(list: Option[], id: string) {
-  return list.find((o) => o.id === id)?.label ?? (id || "—");
+  const fromDefaults = Object.values(DEFAULT_OPTIONS)
+    .flat()
+    .find((o) => o.id === id)?.label;
+  return list.find((o) => o.id === id)?.label ?? fromDefaults ?? (id || "—");
 }
 const WEEKDAYS = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"];
 const MONTHS = [
@@ -1119,8 +1124,7 @@ function MetricsView({ items, opts }: { items: EditorialItem[]; opts: Options })
 
   // ---- today's state (ignores the period) ----
   const today = todayYmd();
-  const label = (id: string) =>
-    opts.status.find((o) => o.id === id)?.label ?? DEFAULT_OPTIONS.status.find((o) => o.id === id)?.label ?? id;
+  const label = (id: string) => labelOf(opts.status, id);
   const countStatus = (id: string) => items.filter((i) => i.status === id).length;
   const topPriorities = opts.priority.slice(0, 2);
   const isTop = (i: EditorialItem) => topPriorities.some((o) => o.id === i.priority);
