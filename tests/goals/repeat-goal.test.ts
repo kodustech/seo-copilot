@@ -14,7 +14,7 @@ import {
   repeatGoal,
   stopRepeatingGoal,
 } from "../../lib/goal-recurrences";
-import type { Goal } from "../../lib/goals";
+import { currentMonthRange, currentWeekRange, type Goal } from "../../lib/goals";
 
 type Row = Record<string, unknown>;
 
@@ -103,6 +103,22 @@ function goal(overrides: Partial<Goal> = {}): Goal {
     ...overrides,
   };
 }
+
+describe("period helpers", () => {
+  it("keep the local calendar dates in a timezone ahead of UTC", () => {
+    // Local midnight serialized with toISOString() used to land on the
+    // previous day east of UTC, which made every weekly goal look like a
+    // Sunday-Saturday week to the repeat check.
+    const original = process.env.TZ;
+    process.env.TZ = "Europe/Berlin";
+    try {
+      expect(currentWeekRange(new Date("2026-10-07T12:00:00"))).toEqual({ start: "2026-10-05", end: "2026-10-11" });
+      expect(currentMonthRange(new Date("2026-10-15T12:00:00"))).toEqual({ start: "2026-10-01", end: "2026-10-31" });
+    } finally {
+      process.env.TZ = original;
+    }
+  });
+});
 
 describe("createRecurringGoal", () => {
   it("creates the rule and this week's goal, keeping kind and the funnel binding", async () => {

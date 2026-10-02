@@ -2871,6 +2871,15 @@ function createCreateGoalTool(userEmail?: string) {
           if (periodStart && !/^\d{4}-\d{2}-\d{2}$/.test(periodStart)) {
             return { success: false as const, message: "periodStart must be YYYY-MM-DD." };
           }
+          // Each period's goal is created active by the rule; accepting another
+          // status here would answer success and drop it.
+          if (status && status !== "active") {
+            return {
+              success: false as const,
+              message:
+                "Recurring goals are created as 'active'; drop the status or create the goal without repeat.",
+            };
+          }
           const created = await createRecurringGoal(
             client,
             {
@@ -3044,18 +3053,34 @@ const updateGoalTool = tool({
         };
       }
 
-      let goal = Object.keys(cleaned).length
+      // Refuse an impossible stop before writing anything, so a failed call
+      // never leaves half of its changes applied.
+      if (repeat === "off" && !ref.goal.recurrenceId) {
+        return { success: false as const, message: "This goal does not repeat." };
+      }
+
+      const goal = Object.keys(cleaned).length
         ? await updateGoal(client, ref.goal.id, cleaned)
         : ref.goal;
       if (!repeat) return { success: true as const, goal };
 
-      if (repeat === "off") {
-        const recurrence = await stopRepeatingGoal(client, goal);
-        return { success: true as const, goal, recurrence };
+      try {
+        if (repeat === "off") {
+          const recurrence = await stopRepeatingGoal(client, goal);
+          return { success: true as const, goal, recurrence };
+        }
+        const repeated = await repeatGoal(client, goal, repeat);
+        return { success: true as const, goal: repeated.goal, recurrence: repeated.rule };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Error changing the goal's repeat.";
+        return {
+          success: false as const,
+          message: Object.keys(cleaned).length
+            ? `${message} The other field changes were applied.`
+            : message,
+          goal,
+        };
       }
-      const repeated = await repeatGoal(client, goal, repeat);
-      goal = repeated.goal;
-      return { success: true as const, goal, recurrence: repeated.rule };
     } catch (error) {
       return {
         success: false as const,
@@ -3613,7 +3638,10 @@ const decideBetTool = tool({
       if (notes !== undefined && notes.trim()) {
         const current = await getBet(client, betId);
         if (!current) return { success: false as const, message: `Bet ${betId} not found.` };
-        mergedNotes = prependBetNote(current.notes, notes, new Date().toISOString().slice(0, 10));
+        // Dated in the team's timezone: a UTC date would stamp a decision made
+        // after 21:00 in São Paulo with the next day.
+        const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+        mergedNotes = prependBetNote(current.notes, notes, today);
       }
       const bet = await updateBet(client, betId, {
         status,
