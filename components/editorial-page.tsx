@@ -1097,7 +1097,9 @@ function MetricsView({ items, opts }: { items: EditorialItem[]; opts: Options })
   // Bars are grouped (novos | atualizações), so the scale follows the tallest single bar.
   const top = niceMax(Math.max(0, ...chartRows.flatMap((r) => [r.created, r.updated])));
   const ticks = [top, top / 2, 0];
-  const best = chartRows.length ? chartRows.reduce((a, b) => (b.created + b.updated > a.created + a.updated ? b : a)) : null;
+  // Period figures use the period's own months; the comparison months only widen the chart.
+  const periodRows = period.length ? chartRows.filter((r) => period.includes(r.key)) : chartRows;
+  const best = periodRows.length ? periodRows.reduce((a, b) => (b.created + b.updated > a.created + a.updated ? b : a)) : null;
   const undated = published.filter((i) => !i.scheduledFor).length;
 
   const comparing = compare.length > 0;
@@ -1117,7 +1119,8 @@ function MetricsView({ items, opts }: { items: EditorialItem[]; opts: Options })
 
   // ---- today's state (ignores the period) ----
   const today = todayYmd();
-  const label = (id: string) => labelOf(opts.status, id);
+  const label = (id: string) =>
+    opts.status.find((o) => o.id === id)?.label ?? DEFAULT_OPTIONS.status.find((o) => o.id === id)?.label ?? id;
   const countStatus = (id: string) => items.filter((i) => i.status === id).length;
   const topPriorities = opts.priority.slice(0, 2);
   const isTop = (i: EditorialItem) => topPriorities.some((o) => o.id === i.priority);
@@ -1180,8 +1183,8 @@ function MetricsView({ items, opts }: { items: EditorialItem[]; opts: Options })
           />
           <Tile
             label="Média por mês"
-            value={fmt1(chartRows.length ? statA.total / chartRows.length : 0)}
-            caption={`em ${chartRows.length} ${chartRows.length === 1 ? "mês" : "meses"}`}
+            value={fmt1(periodRows.length ? statA.total / periodRows.length : 0)}
+            caption={`em ${periodRows.length} ${periodRows.length === 1 ? "mês" : "meses"}`}
             extra={statB && compare.length > 0 && `B: ${fmt1(statB.total / compare.length)}`}
           />
           <Tile
@@ -1210,7 +1213,7 @@ function MetricsView({ items, opts }: { items: EditorialItem[]; opts: Options })
             ) : (
               <>
                 Passe o mouse numa coluna para ver o mês
-                {best && chartRows.length > 1 && ` · mais produtivo: ${monthName(best.key)} (${best.created + best.updated})`}
+                {best && periodRows.length > 1 && ` · mais produtivo: ${monthName(best.key)} (${best.created + best.updated})`}
               </>
             )}
           </div>
@@ -1560,6 +1563,9 @@ function AddDialog({
   };
 
   const defaultPriority = opts.priority.find((o) => o.id === "P2")?.id ?? opts.priority[0]?.id ?? "";
+  // New items start in "backlog" if that status still exists, otherwise the first status
+  // in the list, so deleting a status never brings it back through Add.
+  const defaultStatus = opts.status.find((o) => o.id === "backlog")?.id ?? opts.status[0]?.id ?? "";
 
   const submit = () => {
     if (!title.trim()) return;
@@ -1573,7 +1579,8 @@ function AddDialog({
         keywordEn: keyword.trim(),
         reference: reference.trim(),
         note: note.trim(),
-        stageDates: { backlog: new Date().toISOString() },
+        status: defaultStatus,
+        stageDates: defaultStatus ? { [defaultStatus]: new Date().toISOString() } : {},
       }),
     );
     reset();
