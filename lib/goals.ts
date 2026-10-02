@@ -298,6 +298,7 @@ export async function updateGoal(
     patch.project_ref = trimOrNull(updates.projectRef ?? null);
   if ("notes" in updates) patch.notes = trimOrNull(updates.notes ?? null);
   if ("funnelMetric" in updates) patch.funnel_metric = trimOrNull(updates.funnelMetric ?? null);
+  if ("recurrenceId" in updates) patch.recurrence_id = updates.recurrenceId ?? null;
 
   const { data, error } = await client
     .from("goals")
