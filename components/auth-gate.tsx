@@ -15,6 +15,7 @@ import {
   Inbox,
   KanbanSquare,
   Lightbulb,
+  ListChecks,
   Loader2,
   LogOut,
   Mail,
@@ -87,6 +88,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       {
         label: "Attract",
         items: [
+          { href: "/editorial", label: "Editorial", icon: ListChecks },
           { href: "/", label: "Content", icon: Sparkles },
           { href: "/ideas", label: "Ideas", icon: Lightbulb },
           { href: "/dashboard", label: "Performance", icon: BarChart3 },
