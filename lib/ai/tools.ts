@@ -84,6 +84,7 @@ import {
   type Goal,
   type GoalKind,
 } from "@/lib/goals";
+import { formatDateInTimezone } from "@/lib/social-yolo";
 import {
   createRecurringGoal,
   dateAtNoon,
@@ -3640,7 +3641,7 @@ const decideBetTool = tool({
         if (!current) return { success: false as const, message: `Bet ${betId} not found.` };
         // Dated in the team's timezone: a UTC date would stamp a decision made
         // after 21:00 in São Paulo with the next day.
-        const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+        const today = formatDateInTimezone(new Date(), "America/Sao_Paulo");
         mergedNotes = prependBetNote(current.notes, notes, today);
       }
       const bet = await updateBet(client, betId, {

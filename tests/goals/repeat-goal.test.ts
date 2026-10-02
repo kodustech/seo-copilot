@@ -115,7 +115,10 @@ describe("period helpers", () => {
       expect(currentWeekRange(new Date("2026-10-07T12:00:00"))).toEqual({ start: "2026-10-05", end: "2026-10-11" });
       expect(currentMonthRange(new Date("2026-10-15T12:00:00"))).toEqual({ start: "2026-10-01", end: "2026-10-31" });
     } finally {
-      process.env.TZ = original;
+      // Assigning undefined would leave the string "undefined" as the zone
+      // for every later test in this process.
+      if (original === undefined) delete process.env.TZ;
+      else process.env.TZ = original;
     }
   });
 });
